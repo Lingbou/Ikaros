@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose an Ikaros feature
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or maintainer problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the feature and its safety/memory/RAG impact.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - soul/persona
+        - runtime/agent-loop
+        - gateway/automation
+        - harness/policy
+        - memory
+        - rag
+        - skills/tools
+        - models/providers
+        - voice/body
+        - cli
+        - docs/ci

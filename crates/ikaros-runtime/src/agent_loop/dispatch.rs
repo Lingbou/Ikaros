@@ -1,0 +1,140 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+use super::types::{AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolResult};
+use ikaros_core::{Result, ToolResult, redact_json, redact_secrets};
+use ikaros_harness::{
+    AuditEvent, ExecutionSession, GuardrailConfig, GuardrailDecision, GuardrailObservation,
+    GuardrailSignal, GuardrailState, SkillRegistry,
+};
+use ikaros_models::ModelMessage;
+use serde_json::json;
+
+pub(super) async fn dispatch_agent_loop_tool_call(
+    session: &ExecutionSession,
+    registry: &SkillRegistry,
+    iteration: u32,
+    call: AgentLoopToolCall,
+) -> AgentLoopToolResult {
+    let name = redact_secrets(&call.name);
+    match session
+        .execute_skill(registry, &call.name, call.input.clone())
+        .await
+    {
+        Ok(result) => agent_loop_tool_result_from_tool_result(iteration, name, result),
+        Err(error) => AgentLoopToolResult {
+            iteration,
+            name,
+            ok: false,
+            summary: redact_secrets(&error.to_string()),
+            output: json!({"error": redact_secrets(&error.to_string())}),
+        },
+    }
+}
+
+pub(super) fn observe_agent_loop_tool_result(
+    session: &ExecutionSession,
+    task_id: Option<&str>,
+    guardrails: &mut GuardrailState,
+    config: &GuardrailConfig,
+    result: &AgentLoopToolResult,
+) -> Result<Option<AgentLoopStopReason>> {
+    if !should_observe_agent_loop_result(result) {
+        return Ok(None);
+    }
+    let observation = if result.ok {
+        GuardrailObservation::tool(&result.name, result.ok, &result.summary, &result.output)
+    } else {
+        GuardrailObservation::failure(&result.name, &result.summary)
+    };
+    match guardrails.observe(config, &observation) {
+        GuardrailDecision::Continue => Ok(None),
+        GuardrailDecision::Warn(signal) => {
+            audit_agent_loop_guardrail(session, task_id, &signal, false)?;
+            Ok(None)
+        }
+        GuardrailDecision::Halt(signal) => {
+            audit_agent_loop_guardrail(session, task_id, &signal, true)?;
+            Ok(Some(AgentLoopStopReason::GuardrailHalt))
+        }
+    }
+}
+
+pub(super) fn stop_reason_from_tool_result(
+    result: &AgentLoopToolResult,
+) -> Option<AgentLoopStopReason> {
+    match result
+        .output
+        .get("decision")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("deny") => Some(AgentLoopStopReason::PolicyDenied),
+        Some("ask_user") => Some(AgentLoopStopReason::WaitingForApproval),
+        _ if result.output.get("approval_id").is_some() => {
+            Some(AgentLoopStopReason::WaitingForApproval)
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn model_message_for_tool_result(
+    tool_call_id: Option<String>,
+    tool_call_name: String,
+    result: &AgentLoopToolResult,
+) -> ModelMessage {
+    let content = render_tool_result_message(result);
+    match tool_call_id {
+        Some(tool_call_id) if !tool_call_id.trim().is_empty() => {
+            ModelMessage::tool_result(tool_call_id, tool_call_name, content)
+        }
+        _ => ModelMessage::user(content),
+    }
+}
+
+fn agent_loop_tool_result_from_tool_result(
+    iteration: u32,
+    name: String,
+    result: ToolResult,
+) -> AgentLoopToolResult {
+    AgentLoopToolResult {
+        iteration,
+        name,
+        ok: result.ok,
+        summary: redact_secrets(&result.summary),
+        output: redact_json(result.output),
+    }
+}
+
+fn audit_agent_loop_guardrail(
+    session: &ExecutionSession,
+    task_id: Option<&str>,
+    signal: &GuardrailSignal,
+    halted: bool,
+) -> Result<()> {
+    let kind = if halted {
+        "agent_loop_guardrail_halt"
+    } else {
+        "agent_loop_guardrail_warning"
+    };
+    session.audit.append(AuditEvent::new(
+        kind,
+        None,
+        signal.message(),
+        json!({
+            "task_id": task_id,
+            "signal": signal,
+            "halted": halted,
+        }),
+    )?)
+}
+
+fn should_observe_agent_loop_result(result: &AgentLoopToolResult) -> bool {
+    result.ok
+        || (result.output.get("approval_id").is_none() && result.output.get("decision").is_none())
+}
+
+fn render_tool_result_message(result: &AgentLoopToolResult) -> String {
+    redact_secrets(&format!(
+        "Tool result for {}: ok={} summary={} output={}",
+        result.name, result.ok, result.summary, result.output
+    ))
+}

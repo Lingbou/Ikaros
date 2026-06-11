@@ -1,0 +1,123 @@
+# Architecture
+
+Ikaros is a persona-first local Agent Runtime. The core boundary is: runtime orchestrates turns, the harness executes tools, provider adapters only handle model wire formats, and local state stays under `IKAROS_HOME` by default.
+
+This document describes the runtime contract. It is not a module inventory.
+When code moves between files, this page should change only if ownership,
+calling context, persistent state, or user-visible behavior changes.
+
+## Terms
+
+- Runtime: code that resolves config, agent identity, stores, providers, context,
+  and the harness session for one command or worker tick.
+- Harness: the policy, approval, audit, and execution boundary for every tool.
+- Provider: an adapter that talks to a model, embedding, TTS, or ASR API.
+- Transport: the wire-format description for a provider family.
+- Agent profile: persona and policy overlay.
+- Agent instance: runtime identity with `agent_id`, workspace, state directory,
+  session policy, auth scope, and route bindings.
+- Context source: history, memory, RAG, relationship, or persona data that may be
+  assembled into a model turn.
+
+## Crates
+
+- `ikaros-core`: shared config, paths, task types, redaction, errors, agent profiles, and the `AgentInstance` identity model.
+- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and `ContextEngine`.
+- `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
+- `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
+- `ikaros-rag`: local file ingestion, chunk storage, retrieval, and embedding providers.
+- `ikaros-models`: `ModelProvider`, `ModelTransport`, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, usage logging, and request governance.
+- `ikaros-gateway`: local inbox/outbox store plus built-in `GatewayFrame` protocol types.
+- `ikaros-voice`: mock and OpenAI-compatible TTS/ASR providers.
+- `ikaros-skills`: built-in skills exposed through the harness.
+- `ikaros-cli`: command-line interface and terminal rendering.
+- `ikaros-body`: body/status/frame contracts and simple renderers.
+- `ikaros-automation`, `ikaros-service`, `ikaros-coding`, and `ikaros-soul`: focused support crates for their named domains.
+
+## Runtime Flow
+
+Most entry points follow the same path:
+
+1. CLI or workers resolve `IKAROS_HOME`, workspace, config, and agent id/profile.
+2. Runtime resolves an `AgentInstance` with `agent_id`, profile overlay, workspace, state dir, session policy, auth scope, and route bindings.
+3. Runtime builds stores, provider adapters, the skill registry, context engine, and harness session.
+4. Model turns run through `AgentRuntime`; the default implementation is `HarnessAgentRuntime`.
+5. Tool dispatch must go through `ExecutionSession` and `ExecutionEnv`; runtime code should not touch host APIs directly.
+6. The harness evaluates policy, records audit events, and either executes, asks for approval, or denies.
+7. Runtime turns results into stable reports for CLI, body, schedule, gateway, chat, or agent callers.
+
+Chat, task execution, scheduled jobs, gateway drains, and agent handoffs reuse this path.
+
+## Agent Identity
+
+Profiles and instances are intentionally separate.
+
+Profiles describe how an agent should behave: mode, persona overlay, context
+sources, and ordinary policy defaults. Instances describe who is running and
+where state belongs. A configured instance may select a profile while providing
+its own workspace, state directory, session policy, auth scope, and route
+bindings.
+
+Resolution order:
+
+1. If the requested name matches `[agent.instances.<id>]`, runtime creates an
+   `AgentInstance` from that entry.
+2. If no instance matches, the name is resolved as an agent profile.
+3. If no name is passed, `[agent].default` is used.
+4. If the default profile is missing, runtime falls back to the built-in
+   `build` profile.
+
+Callers should pass the resolved `AgentInstance` into harness sessions. Policy
+overlays and approval replay use the instance identity; persona text alone must
+not grant permissions.
+
+## Local State
+
+Default state lives under `~/.ikaros` or `IKAROS_HOME`.
+
+JSONL remains the default local storage format because it is inspectable and easy to recover. SQLite is available for larger local stores such as memory, chat history, and RAG indexes. Remote services are not required for the MVP.
+
+State ownership:
+
+- `memory/`: local memory records and provider-backed memory state.
+- `chat/`: chat history and session summaries.
+- `rag/`: local RAG files, chunks, and embedding indexes.
+- `audit/`: policy decisions, approval records, usage logs, and migration backups.
+- `automation/`: schedule metadata and delivery reports.
+- `gateway/`: inbox/outbox records for local message routing.
+- `skills/`: locally installed plugins and marketplace metadata.
+- `agents/`: per-agent state directories when instances use the default state root.
+
+## Boundaries
+
+- Persona affects prompts and context, not policy.
+- Agent profiles are persona/policy overlays; `AgentInstance` is the runtime identity.
+- `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `AgentRuntime` owns the turn loop.
+- `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.
+- `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks.
+- Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
+- Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
+- Self-modification is a separate approval-gated path, not an ordinary write permission.
+
+## Invariants
+
+- A model response is never trusted as an instruction to execute host operations.
+  Tool calls must be normalized and dispatched through `ExecutionSession`.
+- A provider adapter must not own the agent loop, approval flow, or workspace
+  mutation policy.
+- Context assembly may call safe-read skills with redacted audit input, but the
+  audit log must not store full user prompts.
+- Approval replay must bind the workspace, exact approved input, and agent
+  identity.
+- Gateway ingestion only queues work. It must not call models, tasks, plugins, or
+  tools directly.
+- Self-modify proposals use a dedicated proposal/apply/rollback path and do not
+  imply general write permission.
+
+## Failure Reporting
+
+Most runtime paths return structured reports for internal callers and render a
+human-oriented CLI summary. Reports should include enough information to explain
+why work stopped without storing prompt text or secrets. Common stop conditions
+are policy denial, waiting for approval, iteration budget, guardrail halt,
+provider error, command timeout, and local store errors.

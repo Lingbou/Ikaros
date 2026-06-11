@@ -1,0 +1,40 @@
+[package]
+name = "ikaros-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ikaros"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ikaros-body = { path = "../ikaros-body" }
+ikaros-automation = { path = "../ikaros-automation" }
+ikaros-coding = { path = "../ikaros-coding" }
+ikaros-core = { path = "../ikaros-core" }
+ikaros-gateway = { path = "../ikaros-gateway" }
+ikaros-harness = { path = "../ikaros-harness" }
+ikaros-memory = { path = "../ikaros-memory" }
+ikaros-models = { path = "../ikaros-models" }
+ikaros-rag = { path = "../ikaros-rag" }
+ikaros-runtime = { path = "../ikaros-runtime" }
+ikaros-service = { path = "../ikaros-service" }
+ikaros-skills = { path = "../ikaros-skills" }
+ikaros-soul = { path = "../ikaros-soul" }
+ikaros-voice = { path = "../ikaros-voice" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

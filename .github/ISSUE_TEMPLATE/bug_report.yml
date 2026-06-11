@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible Ikaros bug
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include commands and redacted output.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Ikaros version or commit
+    validations:
+      required: false
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      placeholder: rustc --version
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed real API keys, tokens, passwords, and private information from this report.
+          required: true

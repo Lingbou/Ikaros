@@ -1,0 +1,54 @@
+[workspace]
+members = [
+  "crates/ikaros-body",
+  "crates/ikaros-automation",
+  "crates/ikaros-cli",
+  "crates/ikaros-coding",
+  "crates/ikaros-core",
+  "crates/ikaros-gateway",
+  "crates/ikaros-harness",
+  "crates/ikaros-memory",
+  "crates/ikaros-models",
+  "crates/ikaros-rag",
+  "crates/ikaros-runtime",
+  "crates/ikaros-service",
+  "crates/ikaros-skills",
+  "crates/ikaros-soul",
+  "crates/ikaros-voice",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/lingbou/Ikaros"
+authors = ["Ikaros contributors"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+rustix = { version = "1.1", features = ["fs"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.10"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
+tokio = { version = "1.38", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.10", features = ["serde", "v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"

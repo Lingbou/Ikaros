@@ -1,0 +1,123 @@
+# Harness 模型
+
+Harness 是 Ikaros 的工具执行边界。Runtime、chat loop、agent loop、计划任务、message drain、coding helper 和 plugin run 在修改本地状态或运行进程前都要经过 harness。
+
+Harness 应被看作本地副作用周围的一层小内核：调用方提交 typed request，harness 做策略判断，记录决策，然后通过环境 backend 执行，或返回拒绝/等待审批状态。Harness 之外的代码不应代表模型选择的工具直接打开文件、启动进程或发送网络请求。
+
+## 主要类型
+
+- `Skill` 和 `SkillRegistry`：可执行的命名操作。
+- `SkillDescriptor` 和 `SkillBundle`：区分 executable tool 与 prompt skill，并支持 `disable_model_invocation`。
+- `ExecutionSession`：workspace、policy、approval、audit log、agent overlay、dry-run 状态和 `ExecutionEnv`。
+- `ExecutionEnv`：由 `FileSystem`、`ProcessRunner`、`NetworkEgress` 组成的执行环境抽象。
+- `PolicyRequest` 和 `PolicyEvaluation`：策略输入和结果。
+- `ApprovalRequest` 和 `ApprovalLog`：持久化审批流。
+- `AuditEvent` 和 `AuditLog`：决策和结果的 JSONL 事件流。
+- `RuntimeTaskPlan`、`ExecutablePlanStep` 和 `TaskExecutionReport`：任务 runner 合约。
+- `GuardrailConfig` 和 `GuardrailState`：重复失败和无进展观察。
+
+## 调用上下文
+
+每个 `ExecutionSession` 携带：
+
+- workspace root
+- audit log path
+- 已解析的 agent profile 或 `AgentInstance` overlay
+- dry-run 状态
+- policy engine
+- approval queue
+- `ExecutionEnv`
+
+Session 是 skill 使用的权限来源。如果调用方需要不同 workspace、agent identity 或环境 backend，应创建新的 session，而不是修改全局状态。
+
+## 执行流程
+
+1. 调用方请求 registry 执行一个 skill。
+2. Skill 构造 `PolicyRequest`。
+3. `ExecutionSession` 记录 `tool_call` 审计事件。
+4. 策略引擎返回 allow、ask 或 deny。
+5. Allow 结果通过 `ExecutionEnv` 执行，除非 session 处于 dry-run。
+6. Ask 结果创建审批请求。
+7. Deny 结果直接返回，不执行。
+8. 结果写入审计。
+
+Safe-read skill 可以使用脱敏审计输入，同时用真实本地输入执行。Chat 用这个能力做本地 memory/RAG 查询，避免审计日志保存完整用户 prompt。
+
+## 策略决策
+
+策略有效结果有三类：
+
+- `allow`：通过 `ExecutionEnv` 执行，并记录结果。
+- `ask`：持久化审批请求，不执行。
+- `deny`：直接返回，不执行。
+
+Profile overlay 可以收紧或请求普通写入、shell 和 network 操作。硬性拒绝仍然优先于 profile 配置，例如破坏性命令、受保护路径、直接 secret 访问、发布动作、workspace 外写入和普通自修改。
+
+审批重放不是通用 capability token。它必须匹配原始审批的 workspace、skill、risk、input 和 agent identity。
+
+## ExecutionEnv
+
+`ExecutionEnv` 把 host 操作收敛成三个接口：
+
+- `FileSystem`：读写文件、创建目录、列目录。
+- `ProcessRunner`：运行结构化进程请求。
+- `NetworkEgress`：网络出口请求。
+
+当前 MVP 默认实现是 `LocalExecutionEnv`。文件、shell、coding、RAG maintenance、voice output 和 command-backed plugin 都应走 session/env，不应直接调用 host API。
+
+`ProcessRequest` 有两种模式：
+
+- `program`：用 program + args 执行。
+- `shell`：通过平台 shell 执行。
+
+面向模型的 skill 应优先使用 `program`。`shell` 只用于已经完成 allowlist 校验的内部 adapter。本地 backend 会捕获 stdout/stderr，支持可选 stdin、timeout，并能在输出超过 `max_output_bytes` 时拒绝。Timeout 会尝试 kill 子进程，然后返回 `command timed out`。
+
+`NetworkEgress` 是接口的一部分，但本地 backend 不提供网络实现。需要网络的 provider 调用在策略审批后由 provider adapter 处理，不应由任意 plugin 或 shell 代码直接处理。
+
+## Shell 和 Plugin
+
+- `shell_guarded` 不再执行任意 shell 字符串；它只接受 allowlisted test/check command，并解析成 program + args 执行。
+- `git_status` 和 `git_diff` 是固定结构化命令。
+- `run_tests` 复用同一套 test/check allowlist。
+- Command-backed plugin 不通过 shell 执行；manifest 的 `program` 必须是相对路径，canonicalize 后仍在 plugin 目录内。
+- Plugin manifest 会拒绝异常 timeout、过多参数、超长参数和控制字符。
+- Plugin runtime 会限制 stdin、stdout/stderr 和 timeout，并在输出审计前脱敏。
+
+Plugin command execution 有两层边界：
+
+- Catalog validation 判断 manifest 是否可加载。
+- Harness policy 判断某次 invocation 是否可执行。
+
+Manifest 合法不代表拥有执行权限。声明的 risk 是给 policy 和 audit 的输入，不是覆盖规则。
+
+## 任务 Runner
+
+任务 runner 执行有序 skill 步骤。它处理：
+
+- 每步状态
+- 瞬时失败重试
+- 超时
+- 取消
+- 等待审批
+- guardrail warning 或 halt
+- 最终任务报告
+
+`task run --dry-run` 使用相同路径并启用 dry-run。`task run --agent-loop` 允许模型选择 harness skill，但 dispatch 仍经过 `ExecutionSession`。
+
+## 审计规则
+
+Audit event 应解释决策，但不保存不必要的敏感内容。Safe-read chat context lookup 可以用真实本地输入执行，同时写入脱敏后的 audit input。Command output 和 plugin output 在报告前会脱敏。Provider usage log 应记录 provider、model、时间和 token count，不记录 prompt。
+
+## 扩展规则
+
+新增 skill 应说明：
+
+- risk level
+- policy input
+- path 是否必须在 workspace 内
+- 是否 safe-read
+- 是否会调用 provider 或 network
+- audit 写入的数据
+- dry-run 行为
+
+新增环境 backend 必须实现一致的 file、process 和 network 语义，使已有 skill 不需要 backend-specific 分支。
