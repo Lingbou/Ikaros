@@ -312,6 +312,7 @@ pub(crate) fn parse_stream_response(
                 .collect(),
             tool_calls: response.tool_calls,
             usage: response.usage,
+            events: Vec::new(),
         });
     }
 
@@ -360,6 +361,7 @@ pub(crate) fn parse_stream_response(
         chunks,
         tool_calls,
         usage,
+        events: Vec::new(),
     })
 }
 

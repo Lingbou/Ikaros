@@ -57,36 +57,37 @@ cargo run -p ikaros-cli -- skill list
 
 ## 配置
 
-`ikaros init` 会创建 `IKAROS_HOME/config.toml`。默认配置使用 JSONL 本地存储和通用 OpenAI-compatible provider 条目，凭证字段为空。
+`ikaros init` 会创建 `IKAROS_HOME/config.yaml`。默认配置使用 JSONL 本地存储和通用 OpenAI-compatible provider 条目，凭证字段为空。
 
-可以在 `~/.ikaros/config.toml` 中切换到 SQLite：
+可以在 `~/.ikaros/config.yaml` 中切换到 SQLite：
 
-```toml
-[memory]
-backend = "sqlite"
+```yaml
+memory:
+  backend: sqlite
 
-[chat_history]
-backend = "sqlite"
+chat_history:
+  backend: sqlite
 
-[rag]
-backend = "sqlite"
-embedding_provider = "hash"
+rag:
+  backend: sqlite
+  embedding_provider: hash
 ```
 
-不要把真实 API key 写进这个仓库。远程 provider 应在 `~/.ikaros/config.toml` 或其他 `IKAROS_HOME/config.toml` 中配置。生成的配置会把第三方 provider 设置放在文件最上方：
+不要把真实 API key 写进这个仓库。远程 provider 应在 `~/.ikaros/config.yaml` 或其他 `IKAROS_HOME/config.yaml` 中配置。生成的配置会把第三方 provider 设置放在文件最上方：
 
-```toml
-[providers.model]
-api_key = "replace-with-your-model-key"
-base_url = "https://api.example.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-your-model-key"
+    base_url: "https://api.example.com/v1"
+  embedding:
+    api_key: "replace-with-your-embedding-key"
+    base_url: "https://api.example.com/v1"
 
-[providers.embedding]
-api_key = "replace-with-your-embedding-key"
-base_url = "https://api.example.com/v1"
-
-[model.default]
-provider = "openai-compatible"
-model = "provider-model-id"
+model:
+  default:
+    provider: openai-compatible
+    model: provider-model-id
 ```
 
 Provider 设置只保存在本地，不进仓库。缺 key、URL 或模型名时会在远程调用前直接提示。

@@ -49,10 +49,13 @@ IKAROS_HOME/self-modify/rollback/<proposal-id>/target.snapshot
 
 内置 profile 使用受限 test/check/lint/build 命令。配置可以覆盖：
 
-```toml
-[self_modify.check_profiles.runtime_patch]
-commands = ["cargo check --workspace --all-features"]
-reason = "Runtime patches must keep the workspace compiling."
+```yaml
+self_modify:
+  check_profiles:
+    runtime_patch:
+      commands:
+        - cargo check --workspace --all-features
+      reason: "Runtime patches must keep the workspace compiling."
 ```
 
 允许的 kind：

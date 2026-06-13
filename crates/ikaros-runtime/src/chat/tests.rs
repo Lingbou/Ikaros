@@ -555,15 +555,16 @@ fn write_offline_mock_config(paths: &IkarosPaths) {
     fs::create_dir_all(&paths.home).expect("home");
     fs::write(
         &paths.config,
-        r#"[model.default]
-provider = "mock"
-runtime = "harness-agent-loop"
-transport = "mock"
-model = "mock-ikaros"
+        r#"model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
 
-[rag]
-embedding_provider = "hash"
-embedding_model = "text-embedding-3-small"
+rag:
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
 "#,
     )
     .expect("mock config");

@@ -24,7 +24,7 @@ impl IkarosConfig {
             return Ok(Self::default());
         }
         let raw = fs::read_to_string(path).map_err(|source| IkarosError::io(path, source))?;
-        let mut config: Self = toml::from_str(&raw)?;
+        let mut config: Self = yaml_serde::from_str(&raw)?;
         config.apply_external_provider_config();
         Ok(config)
     }
@@ -33,188 +33,188 @@ impl IkarosConfig {
         let raw = r#"# Ikaros local runtime configuration.
 # This file belongs under IKAROS_HOME and may contain plaintext local credentials.
 
-[providers.model]
-# API key for the default chat/completion provider.
-api_key = ""
-# Base URL for the default chat/completion provider.
-# Examples: https://api.openai.com/v1, https://api.moonshot.cn/v1, https://api.siliconflow.cn/v1.
-base_url = ""
+providers:
+  model:
+    # API key for the default chat/completion provider.
+    api_key: ""
+    # Base URL for the default chat/completion provider.
+    # Examples: https://api.openai.com/v1, https://api.moonshot.cn/v1, https://api.siliconflow.cn/v1.
+    base_url: ""
+  embedding:
+    # API key for the remote embedding provider.
+    api_key: ""
+    # Base URL for the remote embedding provider.
+    # Use the same provider base URL as embeddings support, or a separate embedding service URL.
+    base_url: ""
+  tts:
+    # API key for the remote text-to-speech provider.
+    api_key: ""
+    # Base URL for the remote text-to-speech provider.
+    # Use the same provider base URL as TTS support, or a separate speech service URL.
+    base_url: ""
+  asr:
+    # API key for the remote speech-to-text provider.
+    api_key: ""
+    # Base URL for the remote speech-to-text provider.
+    # Use the same provider base URL as ASR support, or a separate speech service URL.
+    base_url: ""
 
-[providers.embedding]
-# API key for the remote embedding provider.
-api_key = ""
-# Base URL for the remote embedding provider.
-# Use the same provider base URL as embeddings support, or a separate embedding service URL.
-base_url = ""
+agent:
+  # Default agent profile used when no agent or instance is selected explicitly.
+  default: build
+  profiles:
+    build:
+      # Runtime mode for ordinary implementation work.
+      mode: build
+      # Human-readable description shown in diagnostics.
+      description: "Default implementation mode for ordinary local development work."
+      # Prompt overlay for this profile; it must not bypass policy gates.
+      persona_overlay: "Operate as the default local implementation agent. Use harnessed tools and keep writes approval-aware."
+      # Include local memory context in turns started by this profile.
+      memory_context: true
+      # Include local RAG context in turns started by this profile.
+      rag_context: true
+      # Workspace write policy: allow, ask, or deny.
+      workspace_writes: ask
+      # Shell policy: allow, ask, or deny.
+      shell: allow
+      # Network policy: allow, ask, or deny.
+      network: ask
+    plan:
+      # Runtime mode for read-only planning.
+      mode: plan
+      # Human-readable description shown in diagnostics.
+      description: "Read-only planning and code exploration mode."
+      # Prompt overlay for planning turns.
+      persona_overlay: "Operate in read-only planning mode. Prefer analysis, design notes, and explicit implementation plans; do not request file edits."
+      # Include local memory context in planning turns.
+      memory_context: true
+      # Include local RAG context in planning turns.
+      rag_context: true
+      # Planning should not write to the workspace by default.
+      workspace_writes: deny
+      # Shell policy for planning.
+      shell: ask
+      # Network policy for planning.
+      network: ask
+    general:
+      # Runtime mode for general local research.
+      mode: general
+      # Human-readable description shown in diagnostics.
+      description: "General research mode for multi-step local questions."
+      # Prompt overlay for general research turns.
+      persona_overlay: "Operate as a general-purpose research agent. Gather local context first and keep recommendations grounded in available evidence."
+      # Include local memory context in general turns.
+      memory_context: true
+      # Include local RAG context in general turns.
+      rag_context: true
+      # Workspace write policy for general turns.
+      workspace_writes: ask
+      # Shell policy for general turns.
+      shell: ask
+      # Network policy for general turns.
+      network: ask
+  # Agent instances are identities with their own workspace/state/session/auth/routing.
+  # Profiles remain persona and policy overlays.
+  # instances:
+  #   local-build:
+  #     profile: build
+  #     workspace: /path/to/workspace
+  #     state_dir: /path/to/.ikaros/agents/local-build
+  #     session_policy:
+  #       history_scope: workspace # agent, session, workspace
+  #       allow_session_switch: true
+  #       max_parallel_subagents: 4
+  #     auth_scope:
+  #       local_only: true
+  #       allow_network: ask
+  #     route_bindings:
+  #       - channel: cli
 
-[providers.tts]
-# API key for the remote text-to-speech provider.
-api_key = ""
-# Base URL for the remote text-to-speech provider.
-# Use the same provider base URL as TTS support, or a separate speech service URL.
-base_url = ""
+model:
+  default:
+    # Provider family: openai-compatible/openai, anthropic/claude, ollama/local-llm, or mock for tests only.
+    provider: openai-compatible
+    # Agent runtime implementation that owns the turn loop.
+    runtime: harness-agent-loop
+    # Wire protocol used by the provider adapter.
+    transport: openai-compatible-chat-completions
+    # Model identifier sent to the provider.
+    model: ""
+    # Request timeout in milliseconds.
+    timeout_ms: 30000
+    # Provider retry count after the first failed attempt.
+    max_retries: 0
+    # Optional per-minute request budget for model calls.
+    rate_limit_per_minute: 60
+    # Optional daily token budget recorded by the usage ledger.
+    daily_token_budget: 100000
 
-[providers.asr]
-# API key for the remote speech-to-text provider.
-api_key = ""
-# Base URL for the remote speech-to-text provider.
-# Use the same provider base URL as ASR support, or a separate speech service URL.
-base_url = ""
+policy:
+  # Default workspace write policy used when a profile does not override it.
+  workspace_writes: ask
+  # Default network policy used when a profile does not override it.
+  network: ask
+  # Redact secret-like values from audit records.
+  audit_redaction: true
 
-[agent]
-# Default agent profile used when no agent or instance is selected explicitly.
-default = "build"
+memory:
+  # Local memory backend: jsonl or sqlite.
+  backend: jsonl
+  # Only one external memory provider may be enabled at a time.
+  # external_providers:
+  #   - id: team-memory
+  #     provider: plugin
+  #     enabled: false
+  #     endpoint: http://127.0.0.1:8787
+  #     api_key: ""
 
-[agent.profiles.build]
-# Runtime mode for ordinary implementation work.
-mode = "build"
-# Human-readable description shown in diagnostics.
-description = "Default implementation mode for ordinary local development work."
-# Prompt overlay for this profile; it must not bypass policy gates.
-persona_overlay = "Operate as the default local implementation agent. Use harnessed tools and keep writes approval-aware."
-# Include local memory context in turns started by this profile.
-memory_context = true
-# Include local RAG context in turns started by this profile.
-rag_context = true
-# Workspace write policy: allow, ask, or deny.
-workspace_writes = "ask"
-# Shell policy: allow, ask, or deny.
-shell = "allow"
-# Network policy: allow, ask, or deny.
-network = "ask"
+chat_history:
+  # Local chat history backend: jsonl or sqlite.
+  backend: jsonl
 
-[agent.profiles.plan]
-# Runtime mode for read-only planning.
-mode = "plan"
-# Human-readable description shown in diagnostics.
-description = "Read-only planning and code exploration mode."
-# Prompt overlay for planning turns.
-persona_overlay = "Operate in read-only planning mode. Prefer analysis, design notes, and explicit implementation plans; do not request file edits."
-# Include local memory context in planning turns.
-memory_context = true
-# Include local RAG context in planning turns.
-rag_context = true
-# Planning should not write to the workspace by default.
-workspace_writes = "deny"
-# Shell policy for planning.
-shell = "ask"
-# Network policy for planning.
-network = "ask"
+rag:
+  # Local RAG index backend: jsonl or sqlite.
+  backend: jsonl
+  # Embedding provider: hash, sparse, mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
+  embedding_provider: openai-compatible
+  # Embedding model name sent to the provider.
+  embedding_model: ""
+  # Embedding request timeout in milliseconds.
+  embedding_timeout_ms: 30000
+  # Provider retry count for embedding calls.
+  embedding_max_retries: 0
 
-[agent.profiles.general]
-# Runtime mode for general local research.
-mode = "general"
-# Human-readable description shown in diagnostics.
-description = "General research mode for multi-step local questions."
-# Prompt overlay for general research turns.
-persona_overlay = "Operate as a general-purpose research agent. Gather local context first and keep recommendations grounded in available evidence."
-# Include local memory context in general turns.
-memory_context = true
-# Include local RAG context in general turns.
-rag_context = true
-# Workspace write policy for general turns.
-workspace_writes = "ask"
-# Shell policy for general turns.
-shell = "ask"
-# Network policy for general turns.
-network = "ask"
-
-# Agent instances are identities with their own workspace/state/session/auth/routing.
-# Profiles remain persona and policy overlays.
-# [agent.instances.local-build]
-# profile = "build"
-# workspace = "/path/to/workspace"
-# state_dir = "/path/to/.ikaros/agents/local-build"
-# [agent.instances.local-build.session_policy]
-# history_scope = "workspace" # agent, session, workspace
-# allow_session_switch = true
-# max_parallel_subagents = 4
-# [agent.instances.local-build.auth_scope]
-# local_only = true
-# allow_network = "ask"
-# [[agent.instances.local-build.route_bindings]]
-# channel = "cli"
-
-[model.default]
-# Provider family: openai-compatible/openai, anthropic/claude, ollama/local-llm, or mock for tests only.
-provider = "openai-compatible"
-# Agent runtime implementation that owns the turn loop.
-runtime = "harness-agent-loop"
-# Wire protocol used by the provider adapter.
-transport = "openai-compatible-chat-completions"
-# Model identifier sent to the provider.
-model = ""
-# Request timeout in milliseconds.
-timeout_ms = 30000
-# Provider retry count after the first failed attempt.
-max_retries = 0
-# Optional per-minute request budget for model calls.
-rate_limit_per_minute = 60
-# Optional daily token budget recorded by the usage ledger.
-daily_token_budget = 100000
-
-[policy]
-# Default workspace write policy used when a profile does not override it.
-workspace_writes = "ask"
-# Default network policy used when a profile does not override it.
-network = "ask"
-# Redact secret-like values from audit records.
-audit_redaction = true
-
-[memory]
-# Local memory backend: jsonl or sqlite.
-backend = "jsonl"
-# Only one external memory provider may be enabled at a time.
-# [[memory.external_providers]]
-# id = "team-memory"
-# provider = "plugin"
-# enabled = false
-# endpoint = "http://127.0.0.1:8787"
-# api_key = ""
-
-[chat_history]
-# Local chat history backend: jsonl or sqlite.
-backend = "jsonl"
-
-[rag]
-# Local RAG index backend: jsonl or sqlite.
-backend = "jsonl"
-# Embedding provider: hash, sparse, mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
-embedding_provider = "openai-compatible"
-# Embedding model name sent to the provider.
-embedding_model = ""
-# Embedding request timeout in milliseconds.
-embedding_timeout_ms = 30000
-# Provider retry count for embedding calls.
-embedding_max_retries = 0
-
-[voice.tts]
-# Text-to-speech provider: mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
-provider = "openai-compatible"
-# TTS model name sent to the provider.
-model = ""
-# TTS request timeout in milliseconds.
-timeout_ms = 30000
-# Provider retry count for TTS calls.
-max_retries = 0
-# Default TTS voice name.
-voice = "default"
-
-[voice.asr]
-# Speech-to-text provider: mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
-provider = "openai-compatible"
-# ASR model name sent to the provider.
-model = ""
-# ASR request timeout in milliseconds.
-timeout_ms = 30000
-# Provider retry count for ASR calls.
-max_retries = 0
+voice:
+  tts:
+    # Text-to-speech provider: mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
+    provider: openai-compatible
+    # TTS model name sent to the provider.
+    model: ""
+    # TTS request timeout in milliseconds.
+    timeout_ms: 30000
+    # Provider retry count for TTS calls.
+    max_retries: 0
+    # Default TTS voice name.
+    voice: default
+  asr:
+    # Speech-to-text provider: mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
+    provider: openai-compatible
+    # ASR model name sent to the provider.
+    model: ""
+    # ASR request timeout in milliseconds.
+    timeout_ms: 30000
+    # Provider retry count for ASR calls.
+    max_retries: 0
 
 # Optional self-modify check profiles override built-in checks by change kind.
 # Commands are still validated against the restricted test/check/lint/build command set.
-# [self_modify.check_profiles.runtime_patch]
-# commands = ["cargo check --workspace --all-features"]
-# reason = "Runtime changes must keep the workspace compiling."
+# self_modify:
+#   check_profiles:
+#     runtime_patch:
+#       commands:
+#         - cargo check --workspace --all-features
+#       reason: "Runtime changes must keep the workspace compiling."
 "#;
         fs::write(path, raw).map_err(|source| IkarosError::io(path, source))
     }
@@ -270,25 +270,23 @@ mod tests {
     #[test]
     fn top_level_provider_settings_feed_runtime_configs() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join("config.yaml");
         fs::write(
             &path,
             r#"
-[providers.model]
-api_key = "model-secret"
-base_url = "https://model.example/v1"
-
-[providers.embedding]
-api_key = "rag-secret"
-base_url = "https://embedding.example/v1"
-
-[providers.tts]
-api_key = "tts-secret"
-base_url = "https://tts.example/v1"
-
-[providers.asr]
-api_key = "asr-secret"
-base_url = "https://asr.example/v1"
+providers:
+  model:
+    api_key: model-secret
+    base_url: https://model.example/v1
+  embedding:
+    api_key: rag-secret
+    base_url: https://embedding.example/v1
+  tts:
+    api_key: tts-secret
+    base_url: https://tts.example/v1
+  asr:
+    api_key: asr-secret
+    base_url: https://asr.example/v1
 "#,
         )
         .expect("write");
@@ -310,7 +308,7 @@ base_url = "https://asr.example/v1"
     #[test]
     fn generated_default_config_parses() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join("config.yaml");
         IkarosConfig::write_default_config(&path).expect("write");
 
         let config = IkarosConfig::load(&path).expect("load generated config");

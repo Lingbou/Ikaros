@@ -8,40 +8,38 @@ ikaros --ikaros-home /tmp/ikaros-dev doctor
 ```
 
 `ikaros init` creates the runtime home and writes one configuration file:
-`IKAROS_HOME/config.toml`. It does not read configuration from repository
+`IKAROS_HOME/config.yaml`. It does not read configuration from repository
 example directories.
 
 ## Provider Settings
 
 Do not put real API keys in docs, tests, examples, or tracked files. A local
-untracked `IKAROS_HOME/config.toml` may store third-party API keys directly for
+untracked `IKAROS_HOME/config.yaml` may store third-party API keys directly for
 ordinary runs and smoke tests.
 
 `ikaros init` puts external-resource settings at the top of the file. Every
 remote API-backed provider has both an `api_key` and a `base_url`; model names
 stay in the feature section that sends the request.
 
-```toml
-[providers.model]
-api_key = ""
-base_url = ""
-
-[providers.embedding]
-api_key = ""
-base_url = ""
-
-[providers.tts]
-api_key = ""
-base_url = ""
-
-[providers.asr]
-api_key = ""
-base_url = ""
+```yaml
+providers:
+  model:
+    api_key: ""
+    base_url: ""
+  embedding:
+    api_key: ""
+    base_url: ""
+  tts:
+    api_key: ""
+    base_url: ""
+  asr:
+    api_key: ""
+    base_url: ""
 ```
 
-At load time, `[providers.model]` feeds `[model.default]`,
-`[providers.embedding]` feeds `[rag]`, and `[providers.tts]` /
-`[providers.asr]` feed `[voice.tts]` / `[voice.asr]`.
+At load time, `providers.model` feeds `model.default`,
+`providers.embedding` feeds `rag`, and `providers.tts` /
+`providers.asr` feed `voice.tts` / `voice.asr`.
 
 Provider settings are read only from this section. Plaintext keys should only
 live in the local runtime home and must not be committed to the repository.
@@ -51,25 +49,24 @@ Generated configs use these plaintext local fields directly.
 
 Profiles choose persona overlay and ordinary policy behavior:
 
-```toml
-[agent]
-default = "build"
-
-[agent.profiles.build]
-mode = "build"
-workspace_writes = "ask"
-shell = "allow"
-network = "ask"
-memory_context = true
-rag_context = true
-
-[agent.profiles.plan]
-mode = "plan"
-workspace_writes = "deny"
-shell = "ask"
-network = "ask"
-memory_context = true
-rag_context = true
+```yaml
+agent:
+  default: build
+  profiles:
+    build:
+      mode: build
+      workspace_writes: ask
+      shell: allow
+      network: ask
+      memory_context: true
+      rag_context: true
+    plan:
+      mode: plan
+      workspace_writes: deny
+      shell: ask
+      network: ask
+      memory_context: true
+      rag_context: true
 ```
 
 Use a profile with:
@@ -89,23 +86,22 @@ which state and routing policy".
 
 Example:
 
-```toml
-[agent.instances.repo-build]
-profile = "build"
-workspace = "/home/user/src/project"
-state_dir = "/home/user/.ikaros/agents/repo-build"
-
-[agent.instances.repo-build.session_policy]
-history_scope = "workspace"
-allow_session_switch = true
-max_parallel_subagents = 4
-
-[agent.instances.repo-build.auth_scope]
-local_only = true
-allow_network = "ask"
-
-[[agent.instances.repo-build.route_bindings]]
-channel = "cli"
+```yaml
+agent:
+  instances:
+    repo-build:
+      profile: build
+      workspace: /home/user/src/project
+      state_dir: /home/user/.ikaros/agents/repo-build
+      session_policy:
+        history_scope: workspace
+        allow_session_switch: true
+        max_parallel_subagents: 4
+      auth_scope:
+        local_only: true
+        allow_network: ask
+      route_bindings:
+        - channel: cli
 ```
 
 Fields:
@@ -126,9 +122,9 @@ Fields:
 
 Resolution rules:
 
-1. A requested name first matches `[agent.instances.<name>]`.
-2. If no instance exists, the same name is resolved as `[agent.profiles.<name>]`.
-3. Without a requested name, `[agent].default` is used.
+1. A requested name first matches `agent.instances.<name>`.
+2. If no instance exists, the same name is resolved as `agent.profiles.<name>`.
+3. Without a requested name, `agent.default` is used.
 
 Approval and audit records should use the resolved `agent_id` from the instance,
 not just the profile name.
@@ -137,16 +133,16 @@ not just the profile name.
 
 JSONL is the default. SQLite is available for larger local stores:
 
-```toml
-[memory]
-backend = "sqlite"
+```yaml
+memory:
+  backend: sqlite
 
-[chat_history]
-backend = "sqlite"
+chat_history:
+  backend: sqlite
 
-[rag]
-backend = "sqlite"
-embedding_provider = "hash"
+rag:
+  backend: sqlite
+  embedding_provider: hash
 ```
 
 The main local paths are:
@@ -169,16 +165,18 @@ Supported model provider names are `mock`, `openai-compatible`/`openai`, `moonsh
 
 OpenAI-compatible example:
 
-```toml
-[providers.model]
-api_key = "replace-with-provider-key"
-base_url = "https://api.example.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-provider-key"
+    base_url: "https://api.example.com/v1"
 
-[model.default]
-provider = "openai-compatible"
-model = "provider-model-id"
-rate_limit_per_minute = 60
-daily_token_budget = 100000
+model:
+  default:
+    provider: openai-compatible
+    model: provider-model-id
+    rate_limit_per_minute: 60
+    daily_token_budget: 100000
 ```
 
 Provider aliases such as `moonshot` and `siliconflow` use the same
@@ -186,26 +184,30 @@ OpenAI-compatible adapter; they are convenience names, not default vendors.
 
 Anthropic example:
 
-```toml
-[providers.model]
-api_key = "replace-with-anthropic-key"
-base_url = "https://api.anthropic.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-anthropic-key"
+    base_url: "https://api.anthropic.com/v1"
 
-[model.default]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
+model:
+  default:
+    provider: anthropic
+    model: claude-sonnet-4-5
 ```
 
 Ollama local example:
 
-```toml
-[providers.model]
-api_key = ""
-base_url = "http://127.0.0.1:11434"
+```yaml
+providers:
+  model:
+    api_key: ""
+    base_url: "http://127.0.0.1:11434"
 
-[model.default]
-provider = "ollama"
-model = "llama3.2"
+model:
+  default:
+    provider: ollama
+    model: llama3.2
 ```
 
 Usage records are written under local audit state and do not include prompt text.
@@ -214,25 +216,26 @@ Usage records are written under local audit state and do not include prompt text
 
 The generated config uses the same provider shape for remote embeddings:
 
-```toml
-[providers.embedding]
-api_key = ""
-base_url = ""
+```yaml
+providers:
+  embedding:
+    api_key: ""
+    base_url: ""
 
-[rag]
-backend = "jsonl"
-embedding_provider = "openai-compatible"
-embedding_model = ""
+rag:
+  backend: jsonl
+  embedding_provider: openai-compatible
+  embedding_model: ""
 ```
 
 For fully local indexing without provider credentials, select a local embedding
 adapter explicitly:
 
-```toml
-[rag]
-backend = "jsonl"
-embedding_provider = "hash"
-embedding_model = "text-embedding-3-small"
+```yaml
+rag:
+  backend: jsonl
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
 ```
 
 Cloud embeddings use the OpenAI-compatible shape and require approval through
@@ -245,23 +248,23 @@ the harness before provider calls. Supported embedding provider names are
 The generated config uses remote OpenAI-compatible TTS and ASR slots with empty
 credentials and model names:
 
-```toml
-[providers.tts]
-api_key = ""
-base_url = ""
+```yaml
+providers:
+  tts:
+    api_key: ""
+    base_url: ""
+  asr:
+    api_key: ""
+    base_url: ""
 
-[providers.asr]
-api_key = ""
-base_url = ""
-
-[voice.tts]
-provider = "openai-compatible"
-model = ""
-voice = "default"
-
-[voice.asr]
-provider = "openai-compatible"
-model = ""
+voice:
+  tts:
+    provider: openai-compatible
+    model: ""
+    voice: default
+  asr:
+    provider: openai-compatible
+    model: ""
 ```
 
 Offline tests can explicitly choose `mock`. Accepted cloud voice provider names
@@ -272,10 +275,13 @@ redacted before provider calls; output files are treated as workspace writes.
 
 Self-modify apply can use restricted check profiles:
 
-```toml
-[self_modify.check_profiles.runtime_patch]
-commands = ["cargo check --workspace --all-features"]
-reason = "Runtime patches must keep the workspace compiling."
+```yaml
+self_modify:
+  check_profiles:
+    runtime_patch:
+      commands:
+        - cargo check --workspace --all-features
+      reason: "Runtime patches must keep the workspace compiling."
 ```
 
 These checks do not enable autonomous apply. A proposal still needs explicit approval.

@@ -47,46 +47,52 @@ Provider 不应：
 
 OpenAI-compatible 示例：
 
-```toml
-[providers.model]
-api_key = "replace-with-provider-key"
-base_url = "https://api.example.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-provider-key"
+    base_url: "https://api.example.com/v1"
 
-[model.default]
-provider = "openai-compatible"
-model = "provider-model-id"
-runtime = "harness-agent-loop"
-transport = "openai-compatible-chat-completions"
-rate_limit_per_minute = 60
-daily_token_budget = 100000
+model:
+  default:
+    provider: openai-compatible
+    model: provider-model-id
+    runtime: harness-agent-loop
+    transport: openai-compatible-chat-completions
+    rate_limit_per_minute: 60
+    daily_token_budget: 100000
 ```
 
-`api_key` 和 `base_url` 存在于本机 `IKAROS_HOME/config.toml` 的 `[providers.model]`。不要把真实 key 写入 tracked 文件。`moonshot`、`siliconflow` 这类 alias 使用同一个 adapter，只是便捷名称，不是默认厂商。
+`api_key` 和 `base_url` 存在于本机 `IKAROS_HOME/config.yaml` 的 `providers.model`。不要把真实 key 写入 tracked 文件。`moonshot`、`siliconflow` 这类 alias 使用同一个 adapter，只是便捷名称，不是默认厂商。
 
 Anthropic 示例：
 
-```toml
-[providers.model]
-api_key = "replace-with-your-anthropic-key"
-base_url = "https://api.anthropic.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-your-anthropic-key"
+    base_url: "https://api.anthropic.com/v1"
 
-[model.default]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
-transport = "anthropic-messages"
+model:
+  default:
+    provider: anthropic
+    model: claude-sonnet-4-5
+    transport: anthropic-messages
 ```
 
 Ollama 本地示例：
 
-```toml
-[providers.model]
-api_key = ""
-base_url = "http://127.0.0.1:11434"
+```yaml
+providers:
+  model:
+    api_key: ""
+    base_url: "http://127.0.0.1:11434"
 
-[model.default]
-provider = "ollama"
-model = "llama3.2"
-transport = "ollama-chat"
+model:
+  default:
+    provider: ollama
+    model: llama3.2
+    transport: ollama-chat
 ```
 
 ## OpenAI-Compatible Adapter
@@ -142,4 +148,4 @@ export IKAROS_RUN_LIVE_MODEL_TESTS=1
 cargo test -p ikaros-models --test live_model -- --ignored
 ```
 
-当 `[model.default]` 匹配被测 provider 时，Live smoke test 会从当前 `IKAROS_HOME/config.toml` 读取 `api_key`、`base_url` 和 `model`。Live smoke test 只验证连通性、基础响应和用量日志，不应打印模型内容或 secret。
+当 `model.default` 匹配被测 provider 时，Live smoke test 会从当前 `IKAROS_HOME/config.yaml` 读取 `api_key`、`base_url` 和 `model`。Live smoke test 只验证连通性、基础响应和用量日志，不应打印模型内容或 secret。

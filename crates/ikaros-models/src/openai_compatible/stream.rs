@@ -39,6 +39,7 @@ pub(crate) fn parse_stream_response(
                     .unwrap_or_default(),
             ),
             usage: parsed.usage.unwrap_or_default(),
+            events: Vec::new(),
         });
     }
 
@@ -87,6 +88,7 @@ pub(crate) fn parse_stream_response(
         chunks,
         tool_calls,
         usage,
+        events: Vec::new(),
     })
 }
 

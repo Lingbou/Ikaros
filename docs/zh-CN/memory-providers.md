@@ -62,16 +62,15 @@ Chat context assembly 通过 harness safe-read skill 使用 memory。Skill 用�
 
 ## 配置
 
-```toml
-[memory]
-backend = "jsonl"
-
-[[memory.external_providers]]
-id = "team-memory"
-provider = "plugin"
-enabled = false
-endpoint = "http://127.0.0.1:8787"
-api_key = "replace-with-your-provider-key"
+```yaml
+memory:
+  backend: jsonl
+  external_providers:
+    - id: team-memory
+      provider: plugin
+      enabled: false
+      endpoint: http://127.0.0.1:8787
+      api_key: "replace-with-your-provider-key"
 ```
 
 同一时间最多启用一个外部 provider。如果启用了多个，registry 会报告 blocked 状态，而不是把写入拆到多个系统。

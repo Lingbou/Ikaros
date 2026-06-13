@@ -19,10 +19,11 @@ pub use agent::{
     run_agent_handoff_with_options, run_agent_pool, run_agent_pool_with_options,
 };
 pub use agent_loop::{
-    AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall,
-    AgentLoopToolCallDiagnostic, AgentLoopToolCallParseStrategy, AgentLoopToolDefinition,
-    AgentLoopToolResult, AgentRuntime, HarnessAgentRuntime, agent_loop_tool_definitions,
-    run_agent_loop,
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,
+    AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolCallDiagnostic,
+    AgentLoopToolCallParseStrategy, AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime,
+    HarnessAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink, run_agent_loop,
+    run_agent_loop_with_events,
 };
 pub use body::{
     audit_event_to_body_event, audit_event_to_body_event_for_body, base_body_status,

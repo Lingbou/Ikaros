@@ -57,36 +57,37 @@ Use `IKAROS_HOME=/custom/path` or `--ikaros-home /custom/path` to isolate local 
 
 ## Configuration
 
-`ikaros init` creates `IKAROS_HOME/config.toml`. The default config uses local JSONL storage and generic OpenAI-compatible provider entries with empty local credentials.
+`ikaros init` creates `IKAROS_HOME/config.yaml`. The default config uses local JSONL storage and generic OpenAI-compatible provider entries with empty local credentials.
 
-Switch local stores to SQLite by editing `~/.ikaros/config.toml`:
+Switch local stores to SQLite by editing `~/.ikaros/config.yaml`:
 
-```toml
-[memory]
-backend = "sqlite"
+```yaml
+memory:
+  backend: sqlite
 
-[chat_history]
-backend = "sqlite"
+chat_history:
+  backend: sqlite
 
-[rag]
-backend = "sqlite"
-embedding_provider = "hash"
+rag:
+  backend: sqlite
+  embedding_provider: hash
 ```
 
-Real API keys must not be written into this repository. Configure remote providers in `~/.ikaros/config.toml` or another `IKAROS_HOME/config.toml`. The generated file puts plaintext third-party provider settings at the top:
+Real API keys must not be written into this repository. Configure remote providers in `~/.ikaros/config.yaml` or another `IKAROS_HOME/config.yaml`. The generated file puts plaintext third-party provider settings at the top:
 
-```toml
-[providers.model]
-api_key = "replace-with-your-model-key"
-base_url = "https://api.example.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-your-model-key"
+    base_url: "https://api.example.com/v1"
+  embedding:
+    api_key: "replace-with-your-embedding-key"
+    base_url: "https://api.example.com/v1"
 
-[providers.embedding]
-api_key = "replace-with-your-embedding-key"
-base_url = "https://api.example.com/v1"
-
-[model.default]
-provider = "openai-compatible"
-model = "provider-model-id"
+model:
+  default:
+    provider: openai-compatible
+    model: provider-model-id
 ```
 
 Provider settings are local-only and are not kept in the repository. Missing keys, URLs, or model names are reported before the remote call.

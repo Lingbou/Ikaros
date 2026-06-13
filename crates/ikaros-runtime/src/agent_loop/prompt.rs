@@ -30,7 +30,7 @@ pub(super) fn render_agent_loop_system_prompt(
 ) -> String {
     let tool_manifest = serde_json::to_string(tools).unwrap_or_else(|_| "[]".into());
     redact_secrets(&format!(
-        "{system_prompt}\n\nWhen tool use is needed, respond only as JSON: {{\"tool_calls\":[{{\"name\":\"tool_name\",\"input\":{{}}}}]}}. When done, respond as JSON: {{\"final_answer\":\"...\"}}.\nAvailable tools: {tool_manifest}"
+        "{system_prompt}\n\nUse provider-native tool calls when the provider supports them. Otherwise the only accepted JSON fallback is exactly {{\"tool_calls\":[{{\"id\":\"optional_call_id\",\"name\":\"tool_name\",\"input\":{{}}}}]}} for tool use or {{\"final_answer\":\"...\"}} when done. Do not use alternate keys such as tools, calls, function_call, args, arguments, answer, or response.\nAvailable tools: {tool_manifest}"
     ))
 }
 

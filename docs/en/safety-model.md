@@ -37,8 +37,8 @@ Audit events are written to `audit.jsonl` by default. The log rotates when it ex
 
 Model, RAG embedding, and voice providers are adapter-based. Requests are redacted before provider calls where the current implementation supports it. Usage logs store provider/model/token metadata and do not store prompts.
 
-Provider keys and base URLs are read from the local `IKAROS_HOME/config.toml`
-`[providers.*]` tables. Keys must not be stored in repository files, audit logs,
+Provider keys and base URLs are read from the local `IKAROS_HOME/config.yaml`
+`providers.*` entries. Keys must not be stored in repository files, audit logs,
 memory, or RAG indexes.
 
 ## Local Automation

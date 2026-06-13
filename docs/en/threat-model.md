@@ -4,7 +4,7 @@ This document describes the current local MVP threat model. It is not sufficient
 
 ## Protected Assets
 
-- API keys stored in local `IKAROS_HOME/config.toml` `[providers.*]` tables.
+- API keys stored in local `IKAROS_HOME/config.yaml` `providers.*` entries.
 - User memory and relationship notes.
 - Chat history.
 - Project files.

@@ -79,16 +79,15 @@ memory providers should not build model prompts.
 
 ## Config
 
-```toml
-[memory]
-backend = "jsonl"
-
-[[memory.external_providers]]
-id = "team-memory"
-provider = "plugin"
-enabled = false
-endpoint = "http://127.0.0.1:8787"
-api_key = "replace-with-your-provider-key"
+```yaml
+memory:
+  backend: jsonl
+  external_providers:
+    - id: team-memory
+      provider: plugin
+      enabled: false
+      endpoint: http://127.0.0.1:8787
+      api_key: "replace-with-your-provider-key"
 ```
 
 Only one external provider may be enabled. If multiple are enabled, the registry reports a blocked state instead of splitting writes across systems.

@@ -144,12 +144,12 @@ mod tests {
             &paths.config,
             format!(
                 r#"
-[agent]
-default = "build"
-
-[agent.instances.repo-build]
-profile = "build"
-workspace = "{}"
+agent:
+  default: build
+  instances:
+    repo-build:
+      profile: build
+      workspace: "{}"
 "#,
                 configured_workspace.display()
             ),
