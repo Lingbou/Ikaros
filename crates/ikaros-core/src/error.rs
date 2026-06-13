@@ -25,6 +25,8 @@ pub enum IkarosError {
     TomlSer(#[from] toml::ser::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("yaml parse error: {0}")]
+    Yaml(#[from] yaml_serde::Error),
     #[error("time format error: {0}")]
     Time(#[from] time::error::Format),
     #[error("{0}")]

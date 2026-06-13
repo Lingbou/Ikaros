@@ -57,23 +57,24 @@ fn sqlite_memory_and_rag_backends_are_configured_end_to_end() {
     let env = TestHome::new();
     env.init();
     fs::write(
-        env.home.join("config.toml"),
-        r#"[model.default]
-provider = "mock"
-runtime = "harness-agent-loop"
-transport = "mock"
-model = "mock-ikaros"
+        env.home.join("config.yaml"),
+        r#"model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
 
-[memory]
-backend = "sqlite"
+memory:
+  backend: sqlite
 
-[chat_history]
-backend = "sqlite"
+chat_history:
+  backend: sqlite
 
-[rag]
-backend = "sqlite"
-embedding_provider = "hash"
-embedding_model = "text-embedding-3-small"
+rag:
+  backend: sqlite
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
 "#,
     )
     .expect("sqlite config");

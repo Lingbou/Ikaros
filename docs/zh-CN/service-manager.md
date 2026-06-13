@@ -33,4 +33,4 @@ ikaros service render \
 - worker interval 和 limit
 - webhook host 和 port
 
-模板不包含 API key。当 worker 触发 provider 调用时，会从选中的本地 `IKAROS_HOME/config.toml` 读取 `[providers.*]` 设置。
+模板不包含 API key。当 worker 触发 provider 调用时，会从选中的本地 `IKAROS_HOME/config.yaml` 读取 `providers.*` 设置。

@@ -13,29 +13,29 @@ Accepted cloud voice provider names are `openai-compatible`, `openai`, `moonshot
 
 Example:
 
-```toml
-[providers.tts]
-api_key = "replace-with-your-tts-key"
-base_url = "https://api.example.com/v1"
+```yaml
+providers:
+  tts:
+    api_key: "replace-with-your-tts-key"
+    base_url: "https://api.example.com/v1"
+  asr:
+    api_key: "replace-with-your-asr-key"
+    base_url: "https://api.example.com/v1"
 
-[providers.asr]
-api_key = "replace-with-your-asr-key"
-base_url = "https://api.example.com/v1"
-
-[voice.tts]
-provider = "openai-compatible"
-model = "provider-tts-model"
-voice = "alloy"
-
-[voice.asr]
-provider = "openai-compatible"
-model = "provider-asr-model"
+voice:
+  tts:
+    provider: openai-compatible
+    model: provider-tts-model
+    voice: alloy
+  asr:
+    provider: openai-compatible
+    model: provider-asr-model
 ```
 
 ## Safety
 
 - Mock providers require no credentials or network and must be selected explicitly.
-- Cloud providers read plaintext keys and base URLs from the local `IKAROS_HOME/config.toml`.
+- Cloud providers read plaintext keys and base URLs from the local `IKAROS_HOME/config.yaml`.
 - TTS text is redacted before provider calls.
 - Cloud voice calls are network actions and return approval requests when the active policy gates network access.
 - `voice tts --output <path>` is a workspace write and requires approval when policy asks.

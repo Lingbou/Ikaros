@@ -18,24 +18,25 @@ IKAROS_HOME/rag/index.sqlite
 
 生成配置使用远程 provider 形状，并把 provider 设置留空。这样缺少 cloud 配置时会尽早报错，而不是回退到 mock provider：
 
-```toml
-[providers.embedding]
-api_key = ""
-base_url = ""
+```yaml
+providers:
+  embedding:
+    api_key: ""
+    base_url: ""
 
-[rag]
-backend = "jsonl"
-embedding_provider = "openai-compatible"
-embedding_model = ""
+rag:
+  backend: jsonl
+  embedding_provider: openai-compatible
+  embedding_model: ""
 ```
 
 如果要完全本地索引、不使用 provider 凭证，需要显式选择本地 embedding provider：
 
-```toml
-[rag]
-backend = "jsonl"
-embedding_provider = "hash"
-embedding_model = "text-embedding-3-small"
+```yaml
+rag:
+  backend: jsonl
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
 ```
 
 ## 摄取

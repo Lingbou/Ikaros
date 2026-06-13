@@ -34,4 +34,4 @@ Templates include local runtime arguments such as:
 - webhook host and port
 
 Templates do not include API keys. Worker-triggered provider calls read
-`[providers.*]` settings from the selected local `IKAROS_HOME/config.toml`.
+`providers.*` settings from the selected local `IKAROS_HOME/config.yaml`.

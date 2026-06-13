@@ -85,6 +85,7 @@ impl ModelProvider for MockModelProvider {
             chunks: chunk_text(&response.content, 48),
             tool_calls: response.tool_calls,
             usage: response.usage,
+            events: Vec::new(),
         })
     }
 }

@@ -31,7 +31,7 @@ impl IkarosPaths {
     pub fn from_home(home: impl Into<PathBuf>) -> Self {
         let home = home.into();
         Self {
-            config: home.join("config.toml"),
+            config: home.join("config.yaml"),
             persona: home.join("persona.md"),
             memory_dir: home.join("memory"),
             rag_dir: home.join("rag"),

@@ -20,25 +20,26 @@ Generated config uses the remote-provider shape with empty provider settings.
 This makes missing cloud configuration fail early instead of falling back to a
 mock provider:
 
-```toml
-[providers.embedding]
-api_key = ""
-base_url = ""
+```yaml
+providers:
+  embedding:
+    api_key: ""
+    base_url: ""
 
-[rag]
-backend = "jsonl"
-embedding_provider = "openai-compatible"
-embedding_model = ""
+rag:
+  backend: jsonl
+  embedding_provider: openai-compatible
+  embedding_model: ""
 ```
 
 For fully local indexing without provider credentials, select a local embedding
 provider explicitly:
 
-```toml
-[rag]
-backend = "jsonl"
-embedding_provider = "hash"
-embedding_model = "text-embedding-3-small"
+```yaml
+rag:
+  backend: jsonl
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
 ```
 
 ## Ingestion

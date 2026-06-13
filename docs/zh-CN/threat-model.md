@@ -4,7 +4,7 @@
 
 ## 受保护资产
 
-- 存在本地 `IKAROS_HOME/config.toml` `[providers.*]` 表里的 API key。
+- 存在本地 `IKAROS_HOME/config.yaml` `providers.*` 条目里的 API key。
 - 用户记忆和关系笔记。
 - 聊天历史。
 - 项目文件。

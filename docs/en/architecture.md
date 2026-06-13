@@ -13,6 +13,10 @@ calling context, persistent state, or user-visible behavior changes.
 - Harness: the policy, approval, audit, and execution boundary for every tool.
 - Provider: an adapter that talks to a model, embedding, TTS, or ASR API.
 - Transport: the wire-format description for a provider family.
+- Model stream event: a normalized model delta such as text, reasoning, tool-call
+  start/update/end, usage, error, or done.
+- Agent event: the typed runtime event emitted for session, turn, user, model,
+  tool, approval, context, error, and turn-end milestones.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
   session policy, auth scope, and route bindings.
@@ -42,9 +46,12 @@ Most entry points follow the same path:
 2. Runtime resolves an `AgentInstance` with `agent_id`, profile overlay, workspace, state dir, session policy, auth scope, and route bindings.
 3. Runtime builds stores, provider adapters, the skill registry, context engine, and harness session.
 4. Model turns run through `AgentRuntime`; the default implementation is `HarnessAgentRuntime`.
+   Runtime emits typed `AgentEvent` records while still returning a final report
+   for existing CLI and worker callers.
 5. Tool dispatch must go through `ExecutionSession` and `ExecutionEnv`; runtime code should not touch host APIs directly.
 6. The harness evaluates policy, records audit events, and either executes, asks for approval, or denies.
-7. Runtime turns results into stable reports for CLI, body, schedule, gateway, chat, or agent callers.
+7. Runtime reduces the same turn path into stable reports for CLI, body,
+   schedule, gateway, chat, or agent callers.
 
 Chat, task execution, scheduled jobs, gateway drains, and agent handoffs reuse this path.
 
@@ -60,10 +67,10 @@ bindings.
 
 Resolution order:
 
-1. If the requested name matches `[agent.instances.<id>]`, runtime creates an
+1. If the requested name matches `agent.instances.<id>`, runtime creates an
    `AgentInstance` from that entry.
 2. If no instance matches, the name is resolved as an agent profile.
-3. If no name is passed, `[agent].default` is used.
+3. If no name is passed, `agent.default` is used.
 4. If the default profile is missing, runtime falls back to the built-in
    `build` profile.
 
@@ -92,7 +99,7 @@ State ownership:
 
 - Persona affects prompts and context, not policy.
 - Agent profiles are persona/policy overlays; `AgentInstance` is the runtime identity.
-- `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `AgentRuntime` owns the turn loop.
+- `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `ModelStreamEvent` normalizes provider deltas; `AgentRuntime` owns the turn loop and emits `AgentEvent`.
 - `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.
 - `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
@@ -103,6 +110,8 @@ State ownership:
 
 - A model response is never trusted as an instruction to execute host operations.
   Tool calls must be normalized and dispatched through `ExecutionSession`.
+- Runtime events are append-only observations of a turn. Reports may summarize
+  them, but tooling should prefer typed event fields over parsing human text.
 - A provider adapter must not own the agent loop, approval flow, or workspace
   mutation policy.
 - Context assembly may call safe-read skills with redacted audit input, but the

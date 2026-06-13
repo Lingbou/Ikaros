@@ -52,26 +52,27 @@ impl TestHome {
 
     pub fn use_offline_mock_config(&self) {
         fs::write(
-            self.home.join("config.toml"),
-            r#"[model.default]
-provider = "mock"
-runtime = "harness-agent-loop"
-transport = "mock"
-model = "mock-ikaros"
+            self.home.join("config.yaml"),
+            r#"model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
 
-[rag]
-backend = "jsonl"
-embedding_provider = "hash"
-embedding_model = "text-embedding-3-small"
+rag:
+  backend: jsonl
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
 
-[voice.tts]
-provider = "mock"
-model = "mock-tts"
-voice = "default"
-
-[voice.asr]
-provider = "mock"
-model = "mock-asr"
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
 "#,
         )
         .expect("write offline mock config");

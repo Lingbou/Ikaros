@@ -214,7 +214,7 @@ reason = "Runtime changes must compile."
     fn paths_respect_custom_home() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = IkarosPaths::from_home(temp.path());
-        assert_eq!(paths.config, temp.path().join("config.toml"));
+        assert_eq!(paths.config, temp.path().join("config.yaml"));
         assert_eq!(paths.rag_dir, temp.path().join("rag"));
         assert_eq!(paths.automation_dir, temp.path().join("automation"));
         assert_eq!(paths.gateway_dir, temp.path().join("gateway"));

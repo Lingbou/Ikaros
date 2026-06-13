@@ -25,6 +25,7 @@ pub(super) fn finish_agent_loop(
         iterations: finish.iterations,
         tool_call_diagnostics: finish.tool_call_diagnostics,
         tool_results: finish.tool_results,
+        events: finish.events,
     };
     session.audit.append(AuditEvent::new(
         "agent_loop_end",
@@ -40,6 +41,7 @@ pub(super) fn finish_agent_loop(
             "iterations": report.iterations,
             "tool_call_diagnostics": &report.tool_call_diagnostics,
             "tool_result_count": report.tool_results.len(),
+            "event_count": report.events.len(),
             "final_content_chars": report.final_content.chars().count(),
         }),
     )?)?;

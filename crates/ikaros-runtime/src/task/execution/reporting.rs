@@ -108,7 +108,12 @@ fn agent_loop_final_step(report: &AgentLoopReport) -> Result<StepExecutionRecord
         AgentLoopStopReason::WaitingForApproval => PlanStepStatus::WaitingForApproval,
         AgentLoopStopReason::PolicyDenied
         | AgentLoopStopReason::GuardrailHalt
-        | AgentLoopStopReason::IterationBudget => PlanStepStatus::Failed,
+        | AgentLoopStopReason::IterationBudget
+        | AgentLoopStopReason::Cancelled
+        | AgentLoopStopReason::ProviderError
+        | AgentLoopStopReason::Compacted
+        | AgentLoopStopReason::ToolError
+        | AgentLoopStopReason::ContextLimit => PlanStepStatus::Failed,
     };
     let summary = if report.final_content.trim().is_empty() {
         format!("agent loop ended: {:?}", report.stop_reason)
@@ -135,7 +140,12 @@ fn task_state_from_agent_loop(report: &AgentLoopReport) -> TaskState {
         AgentLoopStopReason::WaitingForApproval => TaskState::WaitingForApproval,
         AgentLoopStopReason::PolicyDenied
         | AgentLoopStopReason::GuardrailHalt
-        | AgentLoopStopReason::IterationBudget => TaskState::Blocked,
+        | AgentLoopStopReason::IterationBudget
+        | AgentLoopStopReason::Cancelled
+        | AgentLoopStopReason::ProviderError
+        | AgentLoopStopReason::Compacted
+        | AgentLoopStopReason::ToolError
+        | AgentLoopStopReason::ContextLimit => TaskState::Blocked,
     }
 }
 

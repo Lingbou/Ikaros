@@ -21,8 +21,8 @@ pub use transport::{
     ModelTransport, ModelTransportDescriptor, model_transport_descriptor_from_config,
 };
 pub use types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelToolCall,
-    ModelToolDefinition, TokenUsage,
+    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
+    ModelToolCall, ModelToolDefinition, TokenUsage,
 };
 pub use usage::{ModelUsageLedger, ModelUsageRecord};
 

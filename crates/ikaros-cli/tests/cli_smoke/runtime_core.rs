@@ -9,7 +9,7 @@ fn init_doctor_chat_and_task_dry_run_work_with_explicit_offline_mock_config() {
     let env = TestHome::new();
     let init = env.init();
     assert!(init.contains("Ikaros initialized"));
-    assert!(env.home.join("config.toml").exists());
+    assert!(env.home.join("config.yaml").exists());
     assert!(env.home.join("persona.md").exists());
     env.use_offline_mock_config();
 
@@ -193,23 +193,20 @@ fn memory_provider_inspection_reports_external_single_active_issues() {
     let env = TestHome::new();
     env.init();
     fs::write(
-        env.home.join("config.toml"),
-        r#"[memory]
-backend = "jsonl"
-
-[[memory.external_providers]]
-id = "remote-a"
-provider = "plugin"
-enabled = true
-endpoint = "http://127.0.0.1:8787"
-api_key = "memory-key-a"
-
-[[memory.external_providers]]
-id = "remote-b"
-provider = "plugin"
-enabled = true
-endpoint = "http://127.0.0.1:8788"
-api_key = "memory-key-b"
+        env.home.join("config.yaml"),
+        r#"memory:
+  backend: jsonl
+  external_providers:
+    - id: remote-a
+      provider: plugin
+      enabled: true
+      endpoint: http://127.0.0.1:8787
+      api_key: memory-key-a
+    - id: remote-b
+      provider: plugin
+      enabled: true
+      endpoint: http://127.0.0.1:8788
+      api_key: memory-key-b
 "#,
     )
     .expect("provider config");

@@ -192,12 +192,65 @@ pub struct ModelStream {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ModelToolCall>,
     pub usage: TokenUsage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<ModelStreamEvent>,
 }
 
 impl ModelStream {
     pub fn content(&self) -> String {
         self.chunks.join("")
     }
+
+    pub fn normalized_events(&self) -> Vec<ModelStreamEvent> {
+        if !self.events.is_empty() {
+            return self.events.clone();
+        }
+        let mut events = vec![ModelStreamEvent::Start {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+        }];
+        events.extend(
+            self.chunks
+                .iter()
+                .filter(|chunk| !chunk.is_empty())
+                .cloned()
+                .map(ModelStreamEvent::TextDelta),
+        );
+        for call in &self.tool_calls {
+            let id = call.id.clone().unwrap_or_else(|| call.name.clone());
+            events.push(ModelStreamEvent::ToolCallStart {
+                id: id.clone(),
+                name: call.name.clone(),
+            });
+            if let Some(arguments) = &call.raw_arguments {
+                events.push(ModelStreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    args_delta: arguments.clone(),
+                });
+            }
+            events.push(ModelStreamEvent::ToolCallEnd { id });
+        }
+        if self.usage.total_or_prompt_completion() > 0 {
+            events.push(ModelStreamEvent::Usage(self.usage.clone()));
+        }
+        events.push(ModelStreamEvent::Done);
+        events
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ModelStreamEvent {
+    Start { provider: String, model: String },
+    TextDelta(String),
+    ReasoningDelta(String),
+    ToolCallStart { id: String, name: String },
+    ToolCallDelta { id: String, args_delta: String },
+    ToolCallEnd { id: String },
+    RefusalDelta(String),
+    Usage(TokenUsage),
+    Error { message: String },
+    Done,
 }
 
 #[async_trait]
@@ -212,6 +265,7 @@ pub trait ModelProvider: Send + Sync {
             chunks: vec![response.content],
             tool_calls: response.tool_calls,
             usage: response.usage,
+            events: Vec::new(),
         })
     }
 }

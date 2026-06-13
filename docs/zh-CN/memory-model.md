@@ -31,9 +31,9 @@ IKAROS_HOME/memory/memory.sqlite
 
 在配置中选择后端：
 
-```toml
-[memory]
-backend = "sqlite"
+```yaml
+memory:
+  backend: sqlite
 ```
 
 ## 关系记忆

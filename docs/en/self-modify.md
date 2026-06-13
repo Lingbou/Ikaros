@@ -49,10 +49,13 @@ IKAROS_HOME/self-modify/rollback/<proposal-id>/target.snapshot
 
 Built-in profiles use restricted test/check/lint/build commands. Config can override them:
 
-```toml
-[self_modify.check_profiles.runtime_patch]
-commands = ["cargo check --workspace --all-features"]
-reason = "Runtime patches must keep the workspace compiling."
+```yaml
+self_modify:
+  check_profiles:
+    runtime_patch:
+      commands:
+        - cargo check --workspace --all-features
+      reason: "Runtime patches must keep the workspace compiling."
 ```
 
 Allowed kinds:

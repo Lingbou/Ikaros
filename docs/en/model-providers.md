@@ -52,49 +52,55 @@ Accepted provider names and aliases:
 
 OpenAI-compatible example:
 
-```toml
-[providers.model]
-api_key = "replace-with-provider-key"
-base_url = "https://api.example.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-provider-key"
+    base_url: "https://api.example.com/v1"
 
-[model.default]
-provider = "openai-compatible"
-model = "provider-model-id"
-runtime = "harness-agent-loop"
-transport = "openai-compatible-chat-completions"
-rate_limit_per_minute = 60
-daily_token_budget = 100000
+model:
+  default:
+    provider: openai-compatible
+    model: provider-model-id
+    runtime: harness-agent-loop
+    transport: openai-compatible-chat-completions
+    rate_limit_per_minute: 60
+    daily_token_budget: 100000
 ```
 
-`api_key` and `base_url` live in the local `IKAROS_HOME/config.toml` under
-`[providers.model]`. Do not write real keys into tracked files. Aliases such as
+`api_key` and `base_url` live in the local `IKAROS_HOME/config.yaml` under
+`providers.model`. Do not write real keys into tracked files. Aliases such as
 `moonshot` and `siliconflow` use the same adapter and are convenience names, not
 default vendors.
 
 Anthropic example:
 
-```toml
-[providers.model]
-api_key = "replace-with-your-anthropic-key"
-base_url = "https://api.anthropic.com/v1"
+```yaml
+providers:
+  model:
+    api_key: "replace-with-your-anthropic-key"
+    base_url: "https://api.anthropic.com/v1"
 
-[model.default]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
-transport = "anthropic-messages"
+model:
+  default:
+    provider: anthropic
+    model: claude-sonnet-4-5
+    transport: anthropic-messages
 ```
 
 Ollama local example:
 
-```toml
-[providers.model]
-api_key = ""
-base_url = "http://127.0.0.1:11434"
+```yaml
+providers:
+  model:
+    api_key: ""
+    base_url: "http://127.0.0.1:11434"
 
-[model.default]
-provider = "ollama"
-model = "llama3.2"
-transport = "ollama-chat"
+model:
+  default:
+    provider: ollama
+    model: llama3.2
+    transport: ollama-chat
 ```
 
 ## OpenAI-Compatible Adapter
@@ -163,6 +169,6 @@ cargo test -p ikaros-models --test live_model -- --ignored
 ```
 
 Live smoke tests read `api_key`, `base_url`, and `model` from the selected local
-`IKAROS_HOME/config.toml` when `[model.default]` matches the tested provider.
+`IKAROS_HOME/config.yaml` when `model.default` matches the tested provider.
 Live smoke tests verify connectivity, basic responses, and usage logging only;
 they should not print model content or secrets.

@@ -13,7 +13,7 @@ pub fn resolve_config_value(value: &str, label: impl AsRef<str>) -> Result<Strin
         return Ok(value.into());
     }
     Err(IkarosError::Message(format!(
-        "{label} is not configured: set it in IKAROS_HOME/config.toml"
+        "{label} is not configured: set it in IKAROS_HOME/config.yaml"
     )))
 }
 
@@ -30,6 +30,6 @@ mod tests {
     #[test]
     fn rejects_empty_config_secret() {
         let error = resolve_config_secret(" ", "test").expect_err("secret error");
-        assert!(error.to_string().contains("IKAROS_HOME/config.toml"));
+        assert!(error.to_string().contains("IKAROS_HOME/config.yaml"));
     }
 }

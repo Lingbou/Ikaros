@@ -124,6 +124,7 @@ impl ModelProvider for AnthropicProvider {
                 .collect(),
             tool_calls: response.tool_calls,
             usage: response.usage,
+            events: Vec::new(),
         })
     }
 }

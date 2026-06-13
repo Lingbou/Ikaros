@@ -37,7 +37,7 @@ Dry-run 仍然评估策略并写审计事件，但允许的技能返回 dry-run 
 
 模型、RAG embedding 和语音 provider 都通过 adapter 访问。当前实现支持的路径会在 provider 调用前脱敏。用量日志只存 provider、model、token 等元数据，不存 prompt。
 
-Provider key 和 base URL 从本地 `IKAROS_HOME/config.toml` 的 `[providers.*]` 表读取。不要把 key 写入仓库文件、审计日志、记忆或 RAG 索引。
+Provider key 和 base URL 从本地 `IKAROS_HOME/config.yaml` 的 `providers.*` 条目读取。不要把 key 写入仓库文件、审计日志、记忆或 RAG 索引。
 
 ## 本地自动化
 

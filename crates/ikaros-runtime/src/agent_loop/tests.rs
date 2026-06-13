@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    AgentLoopInput, AgentLoopOptions, AgentLoopStopReason, AgentLoopToolCallParseStrategy,
-    run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
+    AgentEventKind, AgentLoopInput, AgentLoopOptions, AgentLoopStopReason,
+    AgentLoopToolCallParseStrategy, run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
 };
 use async_trait::async_trait;
 use ikaros_core::{Result, RiskLevel};
@@ -10,7 +10,8 @@ use ikaros_harness::{
     ExecutionSession, GuardrailConfig, Skill, SkillContext, SkillOutput, SkillRegistry,
 };
 use ikaros_models::{
-    ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelToolCall, TokenUsage,
+    ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent, ModelToolCall,
+    TokenUsage,
 };
 use serde_json::json;
 use std::sync::{
@@ -125,6 +126,7 @@ impl ModelProvider for StreamingNativeToolProvider {
                     completion_tokens: Some(1),
                     total_tokens: Some(3),
                 },
+                events: Vec::new(),
             });
         }
         Ok(ModelStream {
@@ -141,6 +143,7 @@ impl ModelProvider for StreamingNativeToolProvider {
                 completion_tokens: Some(4),
                 total_tokens: Some(7),
             },
+            events: Vec::new(),
         })
     }
 }
@@ -237,13 +240,13 @@ async fn agent_loop_dispatches_tool_then_finishes() {
     assert_eq!(report.tool_call_diagnostics.len(), 2);
     assert_eq!(
         report.tool_call_diagnostics[0].strategy,
-        AgentLoopToolCallParseStrategy::DirectJsonObject
+        AgentLoopToolCallParseStrategy::JsonFallback
     );
     assert!(!report.tool_call_diagnostics[0].repaired);
     assert_eq!(report.tool_call_diagnostics[0].tool_call_count, 1);
     assert_eq!(
         report.tool_call_diagnostics[1].strategy,
-        AgentLoopToolCallParseStrategy::DirectJsonObject
+        AgentLoopToolCallParseStrategy::JsonFallback
     );
     assert!(report.tool_call_diagnostics[1].has_final_answer);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -408,7 +411,7 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
     );
     assert_eq!(
         report.tool_call_diagnostics[1].strategy,
-        AgentLoopToolCallParseStrategy::DirectJsonObject
+        AgentLoopToolCallParseStrategy::JsonFallback
     );
     assert_eq!(
         report.final_content,
@@ -420,6 +423,39 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
     assert!(!streamed.contains("abc123"));
     assert!(streamed.contains("[REDACTED_SECRET]"));
     assert_eq!(report.usage.total_tokens, Some(10));
+    assert!(matches!(
+        report.events.first().map(|event| &event.kind),
+        Some(AgentEventKind::SessionStart)
+    ));
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnStart))
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolStart))
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolEnd))
+    );
+    assert!(report.events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            AgentEventKind::ModelStream(ModelStreamEvent::ToolCallStart { name, .. })
+                if name == "loop_echo"
+        )
+    }));
+    assert!(matches!(
+        report.events.last().map(|event| &event.kind),
+        Some(AgentEventKind::TurnEnd)
+    ));
     let events = session.audit.read_all().expect("audit");
     assert!(events.iter().any(|event| {
         event.kind == "agent_loop_model_result"
@@ -450,44 +486,42 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
 }
 
 #[test]
-fn repairs_common_json_tool_call_shapes() {
+fn parses_only_canonical_json_tool_call_fallback() {
     let envelope = parse_agent_loop_model_envelope(
-        r#"Use this:
-```json
-[{"name":"loop_echo","args":"{\"text\":\"hello token=abc123\"}"}]
-```"#,
+        r#"{"tool_calls":[{"id":"call_1","name":"loop_echo","input":{"text":"hello token=abc123"}}]}"#,
     )
-    .expect("array tool call");
+    .expect("canonical tool call");
     assert_eq!(envelope.tool_calls.len(), 1);
     assert_eq!(
         envelope.parse_strategy,
-        Some(AgentLoopToolCallParseStrategy::FencedJson)
+        Some(AgentLoopToolCallParseStrategy::JsonFallback)
     );
+    assert_eq!(envelope.tool_calls[0].id.as_deref(), Some("call_1"));
     assert_eq!(envelope.tool_calls[0].name, "loop_echo");
     assert_eq!(
         envelope.tool_calls[0].input["text"],
         "hello token=[REDACTED_SECRET]"
     );
 
-    let openai_shape = parse_agent_loop_model_envelope(
-        r#"{"tool_calls":[{"function":{"name":"loop_echo","arguments":"{\"text\":\"hi\"}"}}]}"#,
-    )
-    .expect("openai-style tool call");
-    assert_eq!(openai_shape.tool_calls.len(), 1);
-    assert_eq!(
-        openai_shape.parse_strategy,
-        Some(AgentLoopToolCallParseStrategy::DirectJsonObject)
+    assert!(
+        parse_agent_loop_model_envelope(
+            r#"{"tool_calls":[{"function":{"name":"loop_echo","arguments":"{\"text\":\"hi\"}"}}]}"#,
+        )
+        .is_none()
     );
-    assert_eq!(openai_shape.tool_calls[0].name, "loop_echo");
-    assert_eq!(openai_shape.tool_calls[0].input["text"], "hi");
-
-    let embedded = parse_agent_loop_model_envelope(
-        r#"I will call this tool: {"tool_call":{"name":"loop_echo","args":{"text":"embedded"}}}"#,
-    )
-    .expect("embedded object tool call");
-    assert_eq!(embedded.tool_calls.len(), 1);
-    assert_eq!(
-        embedded.parse_strategy,
-        Some(AgentLoopToolCallParseStrategy::EmbeddedJsonObject)
+    assert!(
+        parse_agent_loop_model_envelope(
+            r#"Use this:
+```json
+[{"name":"loop_echo","args":"{\"text\":\"hello\"}"}]
+```"#,
+        )
+        .is_none()
+    );
+    assert!(
+        parse_agent_loop_model_envelope(
+            r#"I will call this tool: {"tool_call":{"name":"loop_echo","args":{"text":"embedded"}}}"#,
+        )
+        .is_none()
     );
 }

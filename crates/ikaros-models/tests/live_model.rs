@@ -98,9 +98,9 @@ fn load_local_config() -> Option<IkarosConfig> {
 
 fn default_config_path() -> Option<PathBuf> {
     if let Some(home) = env::var_os("IKAROS_HOME") {
-        return Some(PathBuf::from(home).join("config.toml"));
+        return Some(PathBuf::from(home).join("config.yaml"));
     }
-    env::var_os("HOME").map(|home| PathBuf::from(home).join(".ikaros/config.toml"))
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".ikaros/config.yaml"))
 }
 
 fn model_config_matches(config: &ModelConfig, provider: &str, default_base_url: &str) -> bool {

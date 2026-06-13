@@ -31,9 +31,9 @@ IKAROS_HOME/memory/memory.sqlite
 
 Select the backend in config:
 
-```toml
-[memory]
-backend = "sqlite"
+```yaml
+memory:
+  backend: sqlite
 ```
 
 ## Relationship Memory
