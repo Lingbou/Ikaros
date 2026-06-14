@@ -37,9 +37,11 @@ providers:
     base_url: ""
 ```
 
-At load time, `providers.model` feeds `model.default`,
-`providers.embedding` feeds `rag`, and `providers.tts` /
-`providers.asr` feed `voice.tts` / `voice.asr`.
+`providers.*` is a schema-only credentials and endpoint section. It is not
+merged into `model.default`, `rag`, or `voice`; runtime code passes the matching
+provider settings to the model, embedding, TTS, and ASR factories alongside the
+feature config that selects provider family, transport, model, timeout, and
+budgets.
 
 Provider settings are read only from this section. Plaintext keys should only
 live in the local runtime home and must not be committed to the repository.
@@ -53,11 +55,13 @@ Validate the local runtime config after editing it:
 ikaros config validate
 ```
 
-The validator reads `IKAROS_HOME/config.yaml`, checks the YAML shape, rejects
-unknown fields, checks provider/runtime/transport/backend combinations, and
-reports missing keys, URLs, and model names before a remote call is attempted.
-Validation output uses field paths such as `providers.model.api_key`; it reports
-whether a value is missing or invalid but never prints secret values.
+Normal runtime config loading already checks YAML shape and rejects unknown
+fields before returning an `IkarosConfig`. The explicit validator runs the same
+shape checks plus semantic checks for provider/runtime/transport/backend
+combinations, missing keys, URLs, model names, and descriptor-only external
+memory providers before a remote call is attempted. Validation output uses field
+paths such as `providers.model.api_key`; it reports whether a value is missing
+or invalid but never prints secret values.
 
 ## Agent Profiles
 

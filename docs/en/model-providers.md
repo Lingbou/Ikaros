@@ -48,8 +48,8 @@ Implemented:
 
 Streaming status:
 
-- `openai-compatible` parses provider SSE responses into rich `ModelStreamEvent`
-  records.
+- `openai-compatible` parses provider SSE response bodies into rich
+  `ModelStreamEvent` records.
 - `ollama` parses `/api/chat` streaming JSON lines into the same event shape.
 - `anthropic` currently exposes generate-backed normalized stream events; it is
   not yet a native Anthropic streaming parser.
@@ -124,12 +124,14 @@ provider-specific aliases or model-specific request normalization; endpoint
 differences belong in configuration or a future explicit adapter option, not in
 the provider name.
 
-Streaming parses SSE chunks incrementally. Text, reasoning, refusal, native
-tool-call, usage, and done markers become typed `ModelStreamEvent` values.
-Tool-call deltas are accumulated until a complete normalized tool call can be
-reported back to the agent loop. Argument fragments are not emitted one by one;
-the adapter emits a redacted accumulated `ToolCallDelta` before `ToolCallEnd` so
-split secret-like values cannot leak through fragment-level redaction.
+The current adapter reads the provider response body and parses SSE `data:`
+lines into typed events. Text, reasoning, refusal, native tool-call, usage, and
+done markers become `ModelStreamEvent` values. Tool-call fragments are
+accumulated until the complete normalized call is available; `ToolCallStart`, a
+single redacted accumulated `ToolCallDelta`, and `ToolCallEnd` are emitted after
+that assembly step. This avoids partial tool names and prevents split
+secret-like values from leaking through fragment-level redaction. It is not yet
+a true network-incremental streaming parser.
 
 ## Governance
 

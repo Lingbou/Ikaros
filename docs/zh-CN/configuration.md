@@ -31,7 +31,7 @@ providers:
     base_url: ""
 ```
 
-加载配置时，`providers.model` 会注入 `model.default`，`providers.embedding` 会注入 `rag`，`providers.tts` 和 `providers.asr` 会分别注入 `voice.tts`、`voice.asr`。
+`providers.*` 是 schema-only 的凭证和 endpoint 区域。它不会被合并进 `model.default`、`rag` 或 `voice` 结构；runtime 会把对应的 provider 设置和选择 provider family、transport、model、timeout、budget 的功能配置一起传给 model、embedding、TTS、ASR factory。
 
 Provider 设置只从这个区域读取。明文 key 只应存在于本机 runtime home，不应提交进仓库。生成配置直接使用这些本地明文字段。
 
@@ -43,7 +43,7 @@ Provider 设置只从这个区域读取。明文 key 只应存在于本机 runti
 ikaros config validate
 ```
 
-校验器读取 `IKAROS_HOME/config.yaml`，检查 YAML 形状，拒绝未知字段，校验 provider/runtime/transport/backend 组合，并在远程调用前报告缺失的 key、URL 和模型名。输出只使用 `providers.model.api_key` 这类字段路径说明缺失或非法，不会打印 secret 值。
+普通 runtime 加载配置时已经会检查 YAML 形状，并在返回 `IkarosConfig` 前拒绝未知字段。显式 `config validate` 会复用同一套 shape check，并额外校验 provider/runtime/transport/backend 组合、缺失的 key、URL、模型名，以及 descriptor-only 的外部 memory provider。输出只使用 `providers.model.api_key` 这类字段路径说明缺失或非法，不会打印 secret 值。
 
 ## Agent Profile
 
