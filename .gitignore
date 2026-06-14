@@ -1,11 +1,29 @@
+# Ikaros local ignores.
+
+# Project runtime / local state
 .temp/
-target/
 .ikaros/
 .ikaros.local/
-*.log
-*.tmp
+.ikaros.cache/
+docs/ops-log.local.md
+**/secrets/
+
+# Local environment files
 .env
 .env.*
 !.env.example
-**/secrets/
-docs/ops-log.local.md
+!.env.sample
+!.env.template
+
+# Rust / Cargo build artifacts
+/target/
+**/*.rs.bk
+
+# Logs and scratch files
+*.log
+*.log.*
+*.tmp
+*.temp
+
+# Local agent/tooling state
+.claude/settings.local.json
