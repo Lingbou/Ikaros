@@ -16,9 +16,11 @@ calling context, persistent state, or user-visible behavior changes.
 - Model stream event: a normalized model delta such as text, reasoning, tool-call
   start/update/end, usage, error, or done.
 - Agent event: the typed runtime event emitted for session, turn, user, model,
-  tool, approval, context, error, and turn-end milestones.
+  tool, approval, memory lifecycle, audit anchor, context, error, and turn-end
+  milestones.
 - Session store: the append-only session, turn, event, approval, and replay
-  persistence boundary. The current implementation is local SQLite.
+  persistence boundary. The current implementation is local SQLite with FTS5
+  and trigram indexes for session entry search.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
   session policy, auth scope, and route bindings.
@@ -30,7 +32,7 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-core`: shared config, paths, task types, redaction, errors, agent profiles, and the `AgentInstance` identity model.
 - `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
   session entries, `SessionStore`, `SessionWriter`, SQLite `state.db`, and
-  replay reads.
+  replay/search/branch reads.
 - `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and `ContextEngine`.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
 - `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
@@ -93,9 +95,13 @@ JSONL remains the default local storage format because it is inspectable and eas
 State ownership:
 
 - `state.db`: session metadata, append-only session entries, persisted
-  agent-loop events, approval records, and replay data. Agent-loop event writes
-  can use a turn-scoped `SessionWriter` transaction. Broader chat, gateway,
-  schedule, memory, and audit migration into this store is still in progress.
+  chat/agent-loop events, gateway and schedule evidence, approval records,
+  FTS5/trigram search indexes, branch/compact/retry markers, and replay data.
+  Built-in chat turns write user/assistant entries through a turn-scoped
+  `SessionWriter` transaction. Gateway and schedule workers also map their
+  request/result/delivery evidence into the same store. Memory lifecycle and
+  audit logs still keep their own stores, with selected session evidence rather
+  than full prompt-bearing duplication.
 - `memory/`: local memory records and memory provider registry metadata.
 - `chat/`: chat history and session summaries.
 - `rag/`: local RAG files, chunks, and embedding indexes.
@@ -112,9 +118,14 @@ State ownership:
 - `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `ModelStreamEvent` normalizes provider deltas; `AgentRuntime` owns the turn loop and emits `AgentEvent`.
 - `AgentEvent`, session ids, turn ids, append-only session entries, and replay
   reads belong to `ikaros-session`, not to the runtime loop.
-- `SessionWriter` owns turn-scoped session transactions. Current built-in usage
-  wraps agent-loop event persistence; whole-chat-turn atomicity is still future
-  work.
+- `SessionWriter` owns turn-scoped session transactions. Built-in chat uses it
+  for session entries and typed events. Gateway and schedule workers write
+  high-level evidence entries/events into `state.db`. Memory, audit, and legacy
+  chat-history writes remain separate stores, with session evidence kept
+  explicit and redacted.
+- Built-in chat turns commit session entries and chat events together. Failed
+  provider or local post-processing turns keep the user entry, a redacted error
+  event, and a failed turn-end event for replay/debug callers.
 - `session_id` identifies persisted timelines. `task_id` is task/report
   metadata and must not be used as an implicit session fallback.
 - `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.
@@ -129,8 +140,9 @@ State ownership:
   Tool calls must be normalized and dispatched through `ExecutionSession`.
 - Runtime events are append-only observations of a turn. Reports may summarize
   them, but tooling should prefer typed event fields over parsing human text.
-- Persisted session timelines are append-only. Branch, compact, retry, and
-  replay work should add entries or events instead of mutating old turn facts.
+- Persisted session timelines are append-only. Branch, compact, retry, active
+  leaf switching, and replay add or select entries instead of mutating old turn
+  facts.
 - A provider adapter must not own the agent loop, approval flow, or workspace
   mutation policy.
 - Context assembly may call safe-read skills with redacted audit input, but the
@@ -149,3 +161,9 @@ human-oriented CLI summary. Reports should include enough information to explain
 why work stopped without storing prompt text or secrets. Common stop conditions
 are policy denial, waiting for approval, iteration budget, guardrail halt,
 provider error, command timeout, and local store errors.
+
+Session replay is currently strongest for completed and failed chat/agent-loop
+turns, and it also contains high-level gateway and schedule request/result/
+delivery evidence. Memory and audit still have dedicated stores, so long-running
+workers should treat `state.db` as the primary timeline and those stores as
+supporting evidence until their lifecycle records are fully modeled.

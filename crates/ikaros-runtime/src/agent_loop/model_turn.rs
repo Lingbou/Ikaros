@@ -17,14 +17,18 @@ use super::{
         AgentSessionId, AgentTurnId,
     },
 };
-use ikaros_core::{Result, redact_secrets};
+use ikaros_core::{IkarosError, Result, redact_json, redact_secrets};
 use ikaros_harness::{AuditEvent, ExecutionSession, GuardrailState, SkillRegistry};
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall,
     TokenUsage,
 };
-use ikaros_session::{SessionId, TurnId};
+use ikaros_session::{
+    ApprovalRecord as SessionApprovalRecord, ApprovalStatus as SessionApprovalStatus, SessionId,
+    TurnId,
+};
 use serde_json::json;
+use time::OffsetDateTime;
 
 pub(super) async fn run_agent_loop_turn(
     input: AgentLoopInput,
@@ -41,7 +45,12 @@ pub(super) async fn run_agent_loop_turn(
         .filter(|id| !id.trim().is_empty())
         .map(SessionId::from)
         .unwrap_or_default();
-    let turn_id = TurnId::new();
+    let turn_id = input
+        .turn_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(TurnId::from)
+        .unwrap_or_default();
     let mut events = Vec::new();
     emit_agent_event(
         &mut events,
@@ -125,6 +134,7 @@ pub(super) async fn run_agent_loop_turn(
         {
             Ok(turn) => turn,
             Err(error) => {
+                let error = IkarosError::Message(redact_secrets(&error.to_string()));
                 emit_agent_event(
                     &mut events,
                     event_sink,
@@ -136,6 +146,20 @@ pub(super) async fn run_agent_loop_turn(
                         "iteration": iteration,
                         "stop_reason": AgentLoopStopReason::ProviderError,
                         "message": redact_secrets(&error.to_string()),
+                    }),
+                )?;
+                emit_agent_event(
+                    &mut events,
+                    event_sink,
+                    &session_id,
+                    &turn_id,
+                    AgentEventSource::Runtime,
+                    AgentEventKind::TurnEnd,
+                    json!({
+                        "stop_reason": AgentLoopStopReason::ProviderError,
+                        "iterations": iteration,
+                        "tool_result_count": tool_results.len(),
+                        "status": "failed",
                     }),
                 )?;
                 return Err(error);
@@ -263,6 +287,13 @@ pub(super) async fn run_agent_loop_turn(
                             "tool": &tool_result.name,
                             "output": &tool_result.output,
                         }),
+                    )?;
+                    emit_session_approval_record(
+                        event_sink,
+                        session,
+                        &session_id,
+                        &turn_id,
+                        &tool_result.output,
                     )?;
                 }
                 emit_agent_event(
@@ -464,6 +495,51 @@ fn emit_agent_event(
     sink.emit(&event)?;
     events.push(event);
     Ok(())
+}
+
+fn emit_session_approval_record(
+    sink: &dyn AgentEventSink,
+    session: &ExecutionSession,
+    session_id: &AgentSessionId,
+    turn_id: &AgentTurnId,
+    output: &serde_json::Value,
+) -> Result<()> {
+    let Some(approval_id) = output
+        .get("approval_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(());
+    };
+    let Some(record) = session.approvals.get(approval_id)? else {
+        return Ok(());
+    };
+    let status = match record.status {
+        ikaros_harness::ApprovalStatus::Pending => SessionApprovalStatus::Requested,
+        ikaros_harness::ApprovalStatus::Approved => SessionApprovalStatus::Approved,
+        ikaros_harness::ApprovalStatus::Denied => SessionApprovalStatus::Denied,
+        ikaros_harness::ApprovalStatus::Executed => SessionApprovalStatus::Executed,
+    };
+    let decision = match record.status {
+        ikaros_harness::ApprovalStatus::Pending => None,
+        _ => Some(redacted_json_value(json!({
+            "status": format!("{:?}", record.status),
+            "note": record.note,
+            "result": record.result,
+        }))),
+    };
+    sink.emit_approval(&SessionApprovalRecord {
+        approval_id: approval_id.into(),
+        session_id: session_id.clone(),
+        turn_id: Some(turn_id.clone()),
+        at: OffsetDateTime::now_utc(),
+        status,
+        request: redacted_json_value(serde_json::to_value(&record.request)?),
+        decision,
+    })
+}
+
+fn redacted_json_value(value: serde_json::Value) -> serde_json::Value {
+    redact_json(value)
 }
 
 fn finish_agent_loop_turn(

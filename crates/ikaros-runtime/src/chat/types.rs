@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_models::ModelResponse;
+use ikaros_session::SessionSource;
 use ikaros_soul::EmotionState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ pub struct ChatRunOptions {
     pub scope: Option<String>,
     pub no_context: bool,
     pub session_id: Option<String>,
+    pub session_source: Option<SessionSource>,
     pub chat_history_path: Option<PathBuf>,
     pub chat_history_backend: Option<String>,
 }
@@ -38,6 +40,7 @@ impl Default for ChatRunOptions {
             scope: None,
             no_context: false,
             session_id: None,
+            session_source: None,
             chat_history_path: None,
             chat_history_backend: None,
         }

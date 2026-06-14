@@ -1,10 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::*;
-use ikaros_core::{AgentProfile, ContextBuilder, IkarosPaths, RagConfig, ResolvedAgentProfile};
-use ikaros_session::{AgentEventKind, SessionId, SessionStore, SqliteSessionStore};
+use async_trait::async_trait;
+use ikaros_core::{
+    AgentProfile, ContextBuilder, IkarosError, IkarosPaths, RagConfig, ResolvedAgentProfile, Result,
+};
+use ikaros_models::{ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent};
+use ikaros_session::{
+    AgentEventKind, PersistingAgentTurnSink, SessionEntryKind, SessionId, SessionSource,
+    SessionStore, SqliteSessionStore,
+};
 use ikaros_soul::{EmotionState, PersonaLoader};
-use std::fs;
+use std::{fs, sync::Arc};
+
+#[derive(Debug)]
+struct FailingProvider;
+
+#[async_trait]
+impl ModelProvider for FailingProvider {
+    fn name(&self) -> &str {
+        "failing"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Err(IkarosError::Message(
+            "provider failed with token=abc123".into(),
+        ))
+    }
+}
 
 #[test]
 fn chat_context_extractors_redact_values() {
@@ -418,11 +441,52 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
         .expect("session replay")
         .expect("persisted chat session");
     assert_eq!(replay.session.agent_id.as_deref(), Some("build"));
+    assert_eq!(replay.entries.len(), 4);
+    assert_eq!(replay.entries[0].kind, SessionEntryKind::UserMessage);
+    assert_eq!(replay.entries[1].kind, SessionEntryKind::AssistantMessage);
+    assert_eq!(replay.entries[2].kind, SessionEntryKind::UserMessage);
+    assert_eq!(replay.entries[3].kind, SessionEntryKind::AssistantMessage);
+    assert_eq!(
+        replay.entries[1].parent_entry_id,
+        Some(replay.entries[0].entry_id.clone())
+    );
+    assert_eq!(
+        replay.entries[2].parent_entry_id,
+        Some(replay.entries[1].entry_id.clone())
+    );
+    assert_eq!(
+        replay.entries[3].parent_entry_id,
+        Some(replay.entries[2].entry_id.clone())
+    );
+    assert_eq!(
+        replay.entries[0]
+            .turn_id
+            .as_ref()
+            .expect("first entry turn")
+            .as_str(),
+        history[0].turn_id
+    );
+    assert_eq!(
+        replay.entries[2]
+            .turn_id
+            .as_ref()
+            .expect("second entry turn")
+            .as_str(),
+        history[1].turn_id
+    );
     assert!(
         replay
             .agent_events
             .iter()
-            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+            .any(|event| event.turn_id.as_str() == history[0].turn_id
+                && matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| event.turn_id.as_str() == history[1].turn_id
+                && matches!(event.kind, AgentEventKind::TurnEnd))
     );
     let replay_json = serde_json::to_string(&replay).expect("replay json");
     assert!(!replay_json.contains("abc123"));
@@ -453,6 +517,275 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
             .iter()
             .any(|event| event.kind == "agent_loop_end")
     );
+}
+
+#[tokio::test]
+async fn run_chat_message_persists_single_call_chat_timeline() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
+
+    let result = run_chat_message(
+        "single call chat token=abc123",
+        &paths,
+        &workspace,
+        Some("build"),
+        ChatRunOptions {
+            agent_loop: false,
+            no_context: true,
+            relationship_learning: false,
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect("single-call chat");
+
+    assert_eq!(result.provider, "mock");
+    assert_eq!(result.relationship_learned, 0);
+    let history = ChatHistoryStore::new(&paths.home)
+        .read_all()
+        .expect("chat history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].session_id, result.chat_session_id);
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let replay = session_store
+        .replay_session(&SessionId::from(result.chat_session_id.clone()))
+        .expect("session replay")
+        .expect("persisted chat session");
+
+    assert_eq!(replay.entries.len(), 2);
+    assert_eq!(replay.entries[0].kind, SessionEntryKind::UserMessage);
+    assert_eq!(replay.entries[1].kind, SessionEntryKind::AssistantMessage);
+    assert_eq!(
+        replay.entries[1].parent_entry_id,
+        Some(replay.entries[0].entry_id.clone())
+    );
+    assert_eq!(
+        replay.entries[0]
+            .turn_id
+            .as_ref()
+            .expect("user entry turn")
+            .as_str(),
+        history[0].turn_id
+    );
+    assert_eq!(
+        replay.entries[1]
+            .turn_id
+            .as_ref()
+            .expect("assistant entry turn")
+            .as_str(),
+        history[0].turn_id
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .all(|event| event.turn_id.as_str() == history[0].turn_id)
+    );
+    assert!(matches!(
+        replay.agent_events.first().map(|event| &event.kind),
+        Some(AgentEventKind::SessionStart)
+    ));
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnStart))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::UserMessage))
+    );
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            AgentEventKind::ModelStream(ModelStreamEvent::Start { provider, .. })
+                if provider == "mock"
+        )
+    }));
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            AgentEventKind::ModelStream(ModelStreamEvent::TextDelta(content))
+                if content.contains("[REDACTED_SECRET]")
+        )
+    }));
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            AgentEventKind::ModelStream(ModelStreamEvent::Done)
+        )
+    }));
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::MemoryLifecycle)
+            && event.payload["phase"] == "sync_turn"
+            && event.payload["status"] == "ok"
+    }));
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::AuditAnchor)
+            && event.payload["audit_path"].as_str().is_some()
+            && event.payload["model_usage_path"].as_str().is_some()
+    }));
+
+    let replay_json = serde_json::to_string(&replay).expect("replay json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn failed_single_call_provider_turn_is_replayable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
+    let agent = ResolvedAgentProfile {
+        name: "build".into(),
+        profile: AgentProfile::build(),
+    };
+    let session_store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(temp.path()));
+    let sink = PersistingAgentTurnSink::new(session_store.clone())
+        .with_source(SessionSource::Cli)
+        .with_agent_id("build")
+        .with_workspace(&workspace);
+
+    let error = run_chat_turn_with_events(
+        "please fail token=abc123",
+        &persona,
+        &FailingProvider,
+        &agent,
+        &execution,
+        &registry,
+        ChatTurnEventOptions {
+            options: &ChatRunOptions {
+                agent_loop: false,
+                no_context: true,
+                session_id: Some("failed-provider-session".into()),
+                ..ChatRunOptions::default()
+            },
+            event_sink: &sink,
+            session_sink: Some(&sink),
+            parent_entry_id: None,
+            turn_id: None,
+        },
+    )
+    .await
+    .expect_err("provider should fail");
+    assert!(error.to_string().contains("[REDACTED_SECRET]"));
+    sink.commit().expect("commit failed timeline");
+
+    let replay = session_store
+        .replay_session(&SessionId::from("failed-provider-session"))
+        .expect("replay")
+        .expect("failed session exists");
+    assert_eq!(replay.entries.len(), 1);
+    assert_eq!(replay.entries[0].kind, SessionEntryKind::UserMessage);
+    assert!(
+        replay.entries[0]
+            .visible_text
+            .as_deref()
+            .expect("visible text")
+            .contains("[REDACTED_SECRET]")
+    );
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::Error)
+            && event
+                .payload
+                .get("phase")
+                .and_then(serde_json::Value::as_str)
+                == Some("provider_generate")
+    }));
+    assert!(matches!(
+        replay.agent_events.last().map(|event| &event.kind),
+        Some(AgentEventKind::TurnEnd)
+    ));
+    assert_eq!(
+        replay.agent_events.last().and_then(|event| {
+            event
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+        }),
+        Some("failed")
+    );
+    let replay_json = serde_json::to_string(&replay).expect("replay json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn failed_chat_history_write_keeps_replayable_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
+    fs::create_dir_all(paths.home.join("chat/history.jsonl")).expect("history dir");
+
+    let error = run_chat_message(
+        "store failure token=abc123",
+        &paths,
+        &workspace,
+        Some("build"),
+        ChatRunOptions {
+            agent_loop: false,
+            no_context: true,
+            relationship_learning: false,
+            session_id: Some("history-failure-session".into()),
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect_err("chat history append should fail");
+    assert!(error.to_string().contains("history.jsonl"));
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let replay = session_store
+        .replay_session(&SessionId::from("history-failure-session"))
+        .expect("replay")
+        .expect("failed session exists");
+    assert_eq!(replay.entries.len(), 2);
+    assert_eq!(replay.entries[0].kind, SessionEntryKind::UserMessage);
+    assert_eq!(replay.entries[1].kind, SessionEntryKind::AssistantMessage);
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::Error)
+            && event
+                .payload
+                .get("phase")
+                .and_then(serde_json::Value::as_str)
+                == Some("chat_history_append")
+    }));
+    assert!(matches!(
+        replay.agent_events.last().map(|event| &event.kind),
+        Some(AgentEventKind::TurnEnd)
+    ));
+    assert_eq!(
+        replay.agent_events.last().and_then(|event| {
+            event
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+        }),
+        Some("failed")
+    );
+    let replay_json = serde_json::to_string(&replay).expect("replay json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
 }
 
 #[test]
@@ -555,18 +888,21 @@ fn chat_history_store_searches_records_for_all_backends() {
 }
 
 fn chat_history_record(session_id: &str, user_message: &str) -> ChatHistoryRecord {
-    super::history::build_chat_history_record(super::history::ChatHistoryAppend {
-        session_id,
-        agent: "build",
-        provider: "mock",
-        model: "mock-ikaros",
-        streamed: false,
-        user_message,
-        assistant_message: "stored safely",
-        relationship_hits: 0,
-        memory_hits: 0,
-        rag_hits: 0,
-    })
+    super::history::build_chat_history_record_with_turn_id(
+        uuid::Uuid::new_v4().to_string(),
+        super::history::ChatHistoryAppend {
+            session_id,
+            agent: "build",
+            provider: "mock",
+            model: "mock-ikaros",
+            streamed: false,
+            user_message,
+            assistant_message: "stored safely",
+            relationship_hits: 0,
+            memory_hits: 0,
+            rag_hits: 0,
+        },
+    )
     .expect("record")
 }
 

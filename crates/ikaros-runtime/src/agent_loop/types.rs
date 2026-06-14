@@ -14,6 +14,8 @@ pub struct AgentLoopInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub system_prompt: String,
     pub user_input: String,

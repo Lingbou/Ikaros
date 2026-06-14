@@ -359,6 +359,7 @@ impl From<&ChatArgs> for ChatRunOptions {
             scope: args.scope.clone(),
             no_context: args.no_context,
             session_id: args.chat_session.clone(),
+            session_source: None,
             chat_history_path: None,
             chat_history_backend: None,
         }

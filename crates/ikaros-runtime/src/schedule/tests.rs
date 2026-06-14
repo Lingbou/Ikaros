@@ -3,6 +3,7 @@
 use super::*;
 use ikaros_automation::{LocalScheduleStore, ScheduleDeliveryTarget};
 use ikaros_core::{IkarosPaths, TaskState};
+use ikaros_session::{SessionSource, SessionStore, SqliteSessionStore};
 
 #[tokio::test]
 async fn run_schedule_worker_tick_executes_due_job_and_records_update() {
@@ -60,6 +61,25 @@ async fn run_schedule_worker_tick_executes_due_job_and_records_update() {
         .expect("stored job");
     assert!(!stored.enabled);
     assert_eq!(stored.last_status.as_deref(), Some("Completed"));
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let session_id = crate::session::schedule_session_id(&job.id);
+    let replay = session_store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("schedule session");
+    assert!(matches!(
+        replay.session.source,
+        SessionSource::Schedule { .. }
+    ));
+    assert_eq!(replay.entries.len(), 2);
+    assert_eq!(
+        replay.entries[0].visible_text.as_deref(),
+        Some("summarize runtime schedule")
+    );
+    assert_eq!(replay.entries[1].payload["kind"], "schedule_run");
+    assert_eq!(replay.entries[1].payload["status"], "completed");
+    assert_eq!(replay.agent_events.len(), 4);
 }
 
 #[tokio::test]

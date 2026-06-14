@@ -8,8 +8,8 @@ mod sqlite;
 mod types;
 
 pub use context::{
-    build_chat_history_record, chat_history_context_lines, chat_history_context_lines_with_summary,
-    new_chat_session_id,
+    build_chat_history_record_with_turn_id, chat_history_context_lines,
+    chat_history_context_lines_with_summary, new_chat_session_id,
 };
 use ikaros_core::{Result, redact_secrets};
 pub use types::{

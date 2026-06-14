@@ -18,10 +18,14 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Runtime
 
 - Harden `AgentRuntime` so future runtimes can plug in without changing provider adapters.
-- Expand `ikaros-session` from the initial event store into the runtime fact
-  source for chat, gateway, schedule, approvals, replay, and reports.
-- Extend turn-scoped session transactions from agent-loop event persistence to
-  ordinary chat, gateway, schedule, audit, and approval writes.
+- Keep `ikaros-session` as the runtime fact source for chat, gateway,
+  schedule, approvals, replay, search, and branch navigation.
+- Expand session evidence for memory and audit lifecycle boundaries without
+  duplicating full prompt or secret-bearing audit payloads.
+- Move more cross-store writes toward turn-scoped transactions where rollback
+  semantics matter.
+- Extend durable failed-turn timelines for memory and audit lifecycle flows that
+  still live partly outside `state.db`.
 - Derive more runtime reports from persisted event streams rather than carrying
   separate one-off summaries.
 - Refine tool continuation behavior and report fields for automation users.
@@ -38,9 +42,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 
 ## Gateway And Automation
 
-- Evolve the local gateway worker into a long-running daemon with device pairing, capabilities, and multi-channel routing.
+- Evolve the local gateway worker into a long-running daemon with device pairing, capabilities, multi-channel routing, and session continuity across channel threads.
 - Add external message adapters that only write into the governed local gateway inbox.
-- Broaden schedule delivery targets after external adapters have clear routing and audit behavior.
+- Broaden schedule delivery targets after external adapters have clear routing, audit behavior, and replay evidence.
 - Keep schedules as work requests; execution should continue to pass through runtime and harness boundaries.
 
 ## Execution Environment

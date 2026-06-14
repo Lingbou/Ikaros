@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    AgentEvent, AgentEventKind, ApprovalRecord, ApprovalStatus, SessionEntry, SessionEntryId,
-    SessionEntryKind, SessionId, SessionRecord, SessionSource, SessionStore, SessionWriter, TurnId,
+    AgentEvent, AgentEventKind, ApprovalRecord, ApprovalStatus, SessionBranch,
+    SessionBranchSummaryInput, SessionCompactionInput, SessionEntry, SessionEntryId,
+    SessionEntryKind, SessionId, SessionRecord, SessionRetryInput, SessionSearchHit,
+    SessionSearchIndex, SessionSearchQuery, SessionSource, SessionStore, SessionWriter, TurnId,
 };
 use ikaros_core::{IkarosError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const SESSION_SCHEMA_VERSION: i64 = 1;
+const SESSION_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct SqliteSessionStore {
@@ -89,6 +92,24 @@ impl SqliteSessionStore {
             CREATE INDEX IF NOT EXISTS session_entries_parent_idx
                 ON session_entries(parent_entry_id);
 
+            CREATE VIRTUAL TABLE IF NOT EXISTS session_entries_fts USING fts5(
+                entry_id UNINDEXED,
+                session_id UNINDEXED,
+                turn_id UNINDEXED,
+                kind UNINDEXED,
+                visible_text,
+                tokenize = 'unicode61'
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS session_entries_trigram USING fts5(
+                entry_id UNINDEXED,
+                session_id UNINDEXED,
+                turn_id UNINDEXED,
+                kind UNINDEXED,
+                visible_text,
+                tokenize = 'trigram'
+            );
+
             CREATE TABLE IF NOT EXISTS agent_events (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -118,10 +139,11 @@ impl SqliteSessionStore {
             CREATE INDEX IF NOT EXISTS approvals_session_at_idx
                 ON approvals(session_id, at);
 
-            PRAGMA user_version = 1;
+            PRAGMA user_version = 2;
             "#,
         )
-        .map_err(|source| sqlite_error(&self.path, source))
+        .map_err(|source| sqlite_error(&self.path, source))?;
+        rebuild_missing_entry_search_indexes(conn, &self.path)
     }
 }
 
@@ -229,6 +251,14 @@ impl SessionStore for SqliteSessionStore {
         .transpose()
     }
 
+    fn session_entry(&self, entry_id: &SessionEntryId) -> Result<Option<SessionEntry>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let conn = self.open()?;
+        session_entry(&conn, &self.path, entry_id)
+    }
+
     fn session_entries(&self, session_id: &SessionId) -> Result<Vec<SessionEntry>> {
         if !self.path.exists() {
             return Ok(Vec::new());
@@ -260,20 +290,50 @@ impl SessionStore for SqliteSessionStore {
             .map_err(|source| sqlite_error(&self.path, source))?;
         let mut entries = Vec::new();
         for row in rows {
-            let (id, session_id, parent_entry_id, turn_id, at, kind, visible_text, payload_json) =
-                row.map_err(|source| sqlite_error(&self.path, source))?;
-            entries.push(SessionEntry {
-                entry_id: SessionEntryId::from(id),
-                session_id: SessionId::from(session_id),
-                parent_entry_id: parent_entry_id.map(SessionEntryId::from),
-                turn_id: turn_id.map(TurnId::from),
-                at: parse_time(&at)?,
-                kind: entry_kind_from_str(&kind)?,
-                visible_text,
-                payload: serde_json::from_str(&payload_json)?,
-            });
+            let row = row.map_err(|source| sqlite_error(&self.path, source))?;
+            entries.push(session_entry_from_parts(row)?);
         }
         Ok(entries)
+    }
+
+    fn active_branch(&self, session_id: &SessionId) -> Result<Option<SessionBranch>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let conn = self.open()?;
+        active_branch(&conn, &self.path, session_id)
+    }
+
+    fn set_active_leaf(&self, session_id: &SessionId, entry_id: &SessionEntryId) -> Result<()> {
+        let conn = self.open()?;
+        set_active_leaf(&conn, &self.path, session_id, entry_id)
+    }
+
+    fn append_branch_summary(&self, input: &SessionBranchSummaryInput) -> Result<SessionEntry> {
+        let conn = self.open()?;
+        append_branch_summary(&conn, &self.path, input)
+    }
+
+    fn append_compaction(&self, input: &SessionCompactionInput) -> Result<SessionEntry> {
+        let conn = self.open()?;
+        append_compaction(&conn, &self.path, input)
+    }
+
+    fn append_retry_marker(&self, input: &SessionRetryInput) -> Result<SessionEntry> {
+        let conn = self.open()?;
+        append_retry_marker(&conn, &self.path, input)
+    }
+
+    fn search_entries(&self, query: &SessionSearchQuery) -> Result<Vec<SessionSearchHit>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let query_text = query.query.trim();
+        if query_text.is_empty() || query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.open()?;
+        search_entries(&conn, &self.path, query)
     }
 
     fn agent_events(&self, session_id: &SessionId) -> Result<Vec<AgentEvent>> {
@@ -323,6 +383,14 @@ impl SessionStore for SqliteSessionStore {
         Ok(events)
     }
 
+    fn approval_record(&self, approval_id: &str) -> Result<Option<ApprovalRecord>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let conn = self.open()?;
+        approval_record(&conn, &self.path, approval_id)
+    }
+
     fn approvals(&self, session_id: &SessionId) -> Result<Vec<ApprovalRecord>> {
         if !self.path.exists() {
             return Ok(Vec::new());
@@ -353,23 +421,38 @@ impl SessionStore for SqliteSessionStore {
             .map_err(|source| sqlite_error(&self.path, source))?;
         let mut approvals = Vec::new();
         for row in rows {
-            let (approval_id, session_id, turn_id, at, status, request_json, decision_json) =
-                row.map_err(|source| sqlite_error(&self.path, source))?;
-            approvals.push(ApprovalRecord {
-                approval_id,
-                session_id: session_id.into(),
-                turn_id: turn_id.map(Into::into),
-                at: parse_time(&at)?,
-                status: approval_status_from_str(&status)?,
-                request: serde_json::from_str(&request_json)?,
-                decision: decision_json
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()?,
-            });
+            approvals.push(approval_record_from_parts(
+                row.map_err(|source| sqlite_error(&self.path, source))?,
+            )?);
         }
         Ok(approvals)
     }
+}
+
+type ApprovalRecordRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
+fn approval_record_from_parts(row: ApprovalRecordRow) -> Result<ApprovalRecord> {
+    let (approval_id, session_id, turn_id, at, status, request_json, decision_json) = row;
+    Ok(ApprovalRecord {
+        approval_id,
+        session_id: session_id.into(),
+        turn_id: turn_id.map(Into::into),
+        at: parse_time(&at)?,
+        status: approval_status_from_str(&status)?,
+        request: serde_json::from_str(&request_json)?,
+        decision: decision_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
+    })
 }
 
 struct SqliteSessionWriter {
@@ -585,6 +668,59 @@ fn append_entry(conn: &Connection, path: &Path, entry: &SessionEntry) -> Result<
         params![entry.entry_id.as_str(), entry.session_id.as_str()],
     )
     .map_err(|source| sqlite_error(path, source))?;
+    index_session_entry(conn, path, entry)?;
+    Ok(())
+}
+
+fn index_session_entry(conn: &Connection, path: &Path, entry: &SessionEntry) -> Result<()> {
+    let Some(text) = entry.visible_text.as_deref() else {
+        return Ok(());
+    };
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let turn_id = entry.turn_id.as_ref().map(TurnId::as_str);
+    for table in ["session_entries_fts", "session_entries_trigram"] {
+        conn.execute(
+            &format!(
+                r#"
+                INSERT INTO {table} (entry_id, session_id, turn_id, kind, visible_text)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#
+            ),
+            params![
+                entry.entry_id.as_str(),
+                entry.session_id.as_str(),
+                turn_id,
+                entry_kind_to_str(entry.kind),
+                text,
+            ],
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn rebuild_missing_entry_search_indexes(conn: &Connection, path: &Path) -> Result<()> {
+    for table in ["session_entries_fts", "session_entries_trigram"] {
+        conn.execute(
+            &format!(
+                r#"
+                INSERT INTO {table} (entry_id, session_id, turn_id, kind, visible_text)
+                SELECT e.id, e.session_id, e.turn_id, e.kind, e.visible_text
+                FROM session_entries e
+                WHERE e.visible_text IS NOT NULL
+                  AND trim(e.visible_text) != ''
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {table} idx
+                    WHERE idx.entry_id = e.id
+                  )
+                "#
+            ),
+            [],
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    }
     Ok(())
 }
 
@@ -620,6 +756,13 @@ fn append_approval(conn: &Connection, path: &Path, approval: &ApprovalRecord) ->
             id, session_id, turn_id, at, status, request_json, decision_json
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(id) DO UPDATE SET
+            session_id = excluded.session_id,
+            turn_id = excluded.turn_id,
+            at = excluded.at,
+            status = excluded.status,
+            request_json = excluded.request_json,
+            decision_json = excluded.decision_json
         "#,
         params![
             approval.approval_id.as_str(),
@@ -637,6 +780,510 @@ fn append_approval(conn: &Connection, path: &Path, approval: &ApprovalRecord) ->
     )
     .map_err(|source| sqlite_error(path, source))?;
     Ok(())
+}
+
+fn approval_record(
+    conn: &Connection,
+    path: &Path,
+    approval_id: &str,
+) -> Result<Option<ApprovalRecord>> {
+    conn.query_row(
+        r#"
+        SELECT id, session_id, turn_id, at, status, request_json, decision_json
+        FROM approvals
+        WHERE id = ?1
+        "#,
+        params![approval_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|source| sqlite_error(path, source))?
+    .map(approval_record_from_parts)
+    .transpose()
+}
+
+fn session_record(
+    conn: &Connection,
+    path: &Path,
+    session_id: &SessionId,
+) -> Result<Option<SessionRecord>> {
+    conn.query_row(
+        r#"
+        SELECT id, source_json, agent_id, workspace, parent_session_id,
+               active_leaf_entry_id, started_at, ended_at
+        FROM sessions
+        WHERE id = ?1
+        "#,
+        params![session_id.as_str()],
+        |row| {
+            let source_json: String = row.get(1)?;
+            let workspace: Option<String> = row.get(3)?;
+            let parent_session_id: Option<String> = row.get(4)?;
+            let active_leaf_entry_id: Option<String> = row.get(5)?;
+            let started_at: String = row.get(6)?;
+            let ended_at: Option<String> = row.get(7)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                source_json,
+                row.get::<_, Option<String>>(2)?,
+                workspace,
+                parent_session_id,
+                active_leaf_entry_id,
+                started_at,
+                ended_at,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|source| sqlite_error(path, source))?
+    .map(
+        |(
+            id,
+            source_json,
+            agent_id,
+            workspace,
+            parent_session_id,
+            active_leaf_entry_id,
+            started_at,
+            ended_at,
+        )| {
+            Ok(SessionRecord {
+                session_id: SessionId::from(id),
+                source: serde_json::from_str(&source_json)?,
+                agent_id,
+                workspace: workspace.map(PathBuf::from),
+                parent_session_id: parent_session_id.map(SessionId::from),
+                active_leaf_entry_id: active_leaf_entry_id.map(SessionEntryId::from),
+                started_at: parse_time(&started_at)?,
+                ended_at: ended_at.as_deref().map(parse_time).transpose()?,
+            })
+        },
+    )
+    .transpose()
+}
+
+type SessionEntryRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    String,
+);
+
+fn session_entry_from_parts(row: SessionEntryRow) -> Result<SessionEntry> {
+    let (id, session_id, parent_entry_id, turn_id, at, kind, visible_text, payload_json) = row;
+    Ok(SessionEntry {
+        entry_id: SessionEntryId::from(id),
+        session_id: SessionId::from(session_id),
+        parent_entry_id: parent_entry_id.map(SessionEntryId::from),
+        turn_id: turn_id.map(TurnId::from),
+        at: parse_time(&at)?,
+        kind: entry_kind_from_str(&kind)?,
+        visible_text,
+        payload: serde_json::from_str(&payload_json)?,
+    })
+}
+
+fn session_entry(
+    conn: &Connection,
+    path: &Path,
+    entry_id: &SessionEntryId,
+) -> Result<Option<SessionEntry>> {
+    conn.query_row(
+        r#"
+        SELECT id, session_id, parent_entry_id, turn_id, at, kind, visible_text, payload_json
+        FROM session_entries
+        WHERE id = ?1
+        "#,
+        params![entry_id.as_str()],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|source| sqlite_error(path, source))?
+    .map(session_entry_from_parts)
+    .transpose()
+}
+
+fn active_branch(
+    conn: &Connection,
+    path: &Path,
+    session_id: &SessionId,
+) -> Result<Option<SessionBranch>> {
+    let Some(session) = session_record(conn, path, session_id)? else {
+        return Ok(None);
+    };
+    let Some(mut current_id) = session.active_leaf_entry_id.clone() else {
+        return Ok(Some(SessionBranch {
+            session,
+            entries: Vec::new(),
+        }));
+    };
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    loop {
+        if !seen.insert(current_id.as_str().to_owned()) {
+            return Err(IkarosError::Message(format!(
+                "session {} has a cycle at entry {}",
+                session.session_id, current_id
+            )));
+        }
+        let Some(entry) = session_entry(conn, path, &current_id)? else {
+            return Err(IkarosError::Message(format!(
+                "session {} active branch points at missing entry {}",
+                session.session_id, current_id
+            )));
+        };
+        if entry.session_id != session.session_id {
+            return Err(IkarosError::Message(format!(
+                "session {} active branch crossed into session {} at entry {}",
+                session.session_id, entry.session_id, entry.entry_id
+            )));
+        }
+        let parent_entry_id = entry.parent_entry_id.clone();
+        entries.push(entry);
+        let Some(parent_entry_id) = parent_entry_id else {
+            break;
+        };
+        current_id = parent_entry_id;
+    }
+    entries.reverse();
+    Ok(Some(SessionBranch { session, entries }))
+}
+
+fn set_active_leaf(
+    conn: &Connection,
+    path: &Path,
+    session_id: &SessionId,
+    entry_id: &SessionEntryId,
+) -> Result<()> {
+    let Some(entry) = session_entry(conn, path, entry_id)? else {
+        return Err(IkarosError::Message(format!(
+            "session entry not found: {entry_id}"
+        )));
+    };
+    if &entry.session_id != session_id {
+        return Err(IkarosError::Message(format!(
+            "entry {entry_id} belongs to session {}, not {session_id}",
+            entry.session_id
+        )));
+    }
+    let updated = conn
+        .execute(
+            "UPDATE sessions SET active_leaf_entry_id = ?1 WHERE id = ?2",
+            params![entry_id.as_str(), session_id.as_str()],
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    if updated == 0 {
+        return Err(IkarosError::Message(format!(
+            "session not found while setting active leaf: {session_id}"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_parent_entry(
+    conn: &Connection,
+    path: &Path,
+    session_id: &SessionId,
+    parent_entry_id: &SessionEntryId,
+) -> Result<()> {
+    let Some(parent) = session_entry(conn, path, parent_entry_id)? else {
+        return Err(IkarosError::Message(format!(
+            "parent session entry not found: {parent_entry_id}"
+        )));
+    };
+    if &parent.session_id != session_id {
+        return Err(IkarosError::Message(format!(
+            "parent entry {parent_entry_id} belongs to session {}, not {session_id}",
+            parent.session_id
+        )));
+    }
+    Ok(())
+}
+
+fn append_branch_summary(
+    conn: &Connection,
+    path: &Path,
+    input: &SessionBranchSummaryInput,
+) -> Result<SessionEntry> {
+    ensure_parent_entry(conn, path, &input.session_id, &input.parent_entry_id)?;
+    let mut entry = SessionEntry::new(input.session_id.clone(), SessionEntryKind::BranchSummary);
+    entry.parent_entry_id = Some(input.parent_entry_id.clone());
+    entry.visible_text = Some(input.summary.clone());
+    entry.payload = serde_json::json!({
+        "operation": "branch_summary",
+        "parent_entry_id": input.parent_entry_id.as_str(),
+        "summary": &input.summary,
+        "data": &input.payload,
+    });
+    append_entry(conn, path, &entry)?;
+    Ok(entry)
+}
+
+fn append_compaction(
+    conn: &Connection,
+    path: &Path,
+    input: &SessionCompactionInput,
+) -> Result<SessionEntry> {
+    ensure_parent_entry(conn, path, &input.session_id, &input.parent_entry_id)?;
+    let compacted_entry_ids = input
+        .compacted_entry_ids
+        .iter()
+        .map(SessionEntryId::as_str)
+        .collect::<Vec<_>>();
+    let mut entry = SessionEntry::new(input.session_id.clone(), SessionEntryKind::Compaction);
+    entry.parent_entry_id = Some(input.parent_entry_id.clone());
+    entry.visible_text = Some(input.summary.clone());
+    entry.payload = serde_json::json!({
+        "operation": "compaction",
+        "parent_entry_id": input.parent_entry_id.as_str(),
+        "compacted_entry_ids": compacted_entry_ids,
+        "summary": &input.summary,
+        "data": &input.payload,
+    });
+    append_entry(conn, path, &entry)?;
+    Ok(entry)
+}
+
+fn append_retry_marker(
+    conn: &Connection,
+    path: &Path,
+    input: &SessionRetryInput,
+) -> Result<SessionEntry> {
+    ensure_parent_entry(conn, path, &input.session_id, &input.parent_entry_id)?;
+    let mut entry = SessionEntry::new(input.session_id.clone(), SessionEntryKind::Leaf);
+    entry.parent_entry_id = Some(input.parent_entry_id.clone());
+    entry.visible_text = input.reason.clone();
+    entry.payload = serde_json::json!({
+        "operation": "retry",
+        "parent_entry_id": input.parent_entry_id.as_str(),
+        "reason": &input.reason,
+        "data": &input.payload,
+    });
+    append_entry(conn, path, &entry)?;
+    Ok(entry)
+}
+
+fn search_entries(
+    conn: &Connection,
+    path: &Path,
+    query: &SessionSearchQuery,
+) -> Result<Vec<SessionSearchHit>> {
+    let query_text = query.query.trim();
+    if query_text.is_empty() || query.limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut hits = Vec::new();
+    let mut seen = HashSet::new();
+    let fts_query = quoted_fts_query(query_text);
+    collect_index_hits(
+        conn,
+        path,
+        &mut hits,
+        &mut seen,
+        ("session_entries_fts", SessionSearchIndex::Fts),
+        &fts_query,
+        query,
+    )?;
+    collect_index_hits(
+        conn,
+        path,
+        &mut hits,
+        &mut seen,
+        ("session_entries_trigram", SessionSearchIndex::Trigram),
+        &fts_query,
+        query,
+    )?;
+    collect_substring_hits(conn, path, &mut hits, &mut seen, query)?;
+
+    hits.sort_by(|left, right| {
+        left.score
+            .partial_cmp(&right.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.entry.at.cmp(&right.entry.at))
+            .then_with(|| left.entry.entry_id.cmp(&right.entry.entry_id))
+    });
+    hits.truncate(query.limit);
+    Ok(hits)
+}
+
+fn collect_index_hits(
+    conn: &Connection,
+    path: &Path,
+    hits: &mut Vec<SessionSearchHit>,
+    seen: &mut HashSet<String>,
+    index_spec: (&str, SessionSearchIndex),
+    fts_query: &str,
+    query: &SessionSearchQuery,
+) -> Result<()> {
+    let (table, index) = index_spec;
+    let sql = format!(
+        r#"
+        SELECT e.id, e.session_id, e.parent_entry_id, e.turn_id, e.at, e.kind, e.visible_text,
+               e.payload_json, bm25({table}) AS score
+        FROM {table}
+        JOIN session_entries e ON e.id = {table}.entry_id
+        WHERE {table} MATCH ?1
+          AND (?2 IS NULL OR e.session_id = ?2)
+        ORDER BY score ASC, e.at ASC
+        LIMIT ?3
+        "#
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|source| sqlite_error(path, source))?;
+    let rows = stmt
+        .query_map(
+            params![
+                fts_query,
+                query.session_id.as_ref().map(SessionId::as_str),
+                query.limit as i64,
+            ],
+            |row| {
+                Ok((
+                    (
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                    ),
+                    row.get::<_, f64>(8)?,
+                ))
+            },
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    for row in rows {
+        let (entry_row, score) = row.map_err(|source| sqlite_error(path, source))?;
+        let entry = session_entry_from_parts(entry_row)?;
+        if seen.insert(entry.entry_id.as_str().to_owned()) {
+            hits.push(SessionSearchHit {
+                snippet: entry_snippet(entry.visible_text.as_deref(), &query.query),
+                entry,
+                score,
+                index,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn collect_substring_hits(
+    conn: &Connection,
+    path: &Path,
+    hits: &mut Vec<SessionSearchHit>,
+    seen: &mut HashSet<String>,
+    query: &SessionSearchQuery,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, session_id, parent_entry_id, turn_id, at, kind, visible_text, payload_json
+            FROM session_entries
+            WHERE visible_text IS NOT NULL
+              AND instr(visible_text, ?1) > 0
+              AND (?2 IS NULL OR session_id = ?2)
+            ORDER BY at ASC, rowid ASC
+            LIMIT ?3
+            "#,
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    let rows = stmt
+        .query_map(
+            params![
+                query.query.trim(),
+                query.session_id.as_ref().map(SessionId::as_str),
+                query.limit as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    for row in rows {
+        let entry = session_entry_from_parts(row.map_err(|source| sqlite_error(path, source))?)?;
+        if seen.insert(entry.entry_id.as_str().to_owned()) {
+            hits.push(SessionSearchHit {
+                snippet: entry_snippet(entry.visible_text.as_deref(), &query.query),
+                score: 10_000.0 + hits.len() as f64,
+                entry,
+                index: SessionSearchIndex::Substring,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn quoted_fts_query(query: &str) -> String {
+    format!("\"{}\"", query.trim().replace('"', "\"\""))
+}
+
+fn entry_snippet(visible_text: Option<&str>, query: &str) -> String {
+    let Some(text) = visible_text else {
+        return String::new();
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return text.chars().take(160).collect();
+    }
+    let start_byte = text.find(query).unwrap_or(0);
+    let prefix_start = text[..start_byte]
+        .char_indices()
+        .rev()
+        .nth(40)
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    let end_byte = text[start_byte..]
+        .char_indices()
+        .nth(query.chars().count().saturating_add(80))
+        .map(|(idx, _)| start_byte + idx)
+        .unwrap_or(text.len());
+    let mut snippet = String::new();
+    if prefix_start > 0 {
+        snippet.push_str("...");
+    }
+    snippet.push_str(&text[prefix_start..end_byte]);
+    if end_byte < text.len() {
+        snippet.push_str("...");
+    }
+    snippet
 }
 
 fn format_time(value: OffsetDateTime) -> Result<String> {
@@ -687,6 +1334,8 @@ fn event_source_to_str(source: crate::AgentEventSource) -> &'static str {
         crate::AgentEventSource::Tool => "tool",
         crate::AgentEventSource::Harness => "harness",
         crate::AgentEventSource::Context => "context",
+        crate::AgentEventSource::Memory => "memory",
+        crate::AgentEventSource::Audit => "audit",
     }
 }
 
@@ -698,6 +1347,8 @@ fn event_source_from_str(value: &str) -> Result<crate::AgentEventSource> {
         "tool" => Ok(crate::AgentEventSource::Tool),
         "harness" => Ok(crate::AgentEventSource::Harness),
         "context" => Ok(crate::AgentEventSource::Context),
+        "memory" => Ok(crate::AgentEventSource::Memory),
+        "audit" => Ok(crate::AgentEventSource::Audit),
         other => Err(IkarosError::Message(format!(
             "unknown agent event source in state.db: {other}"
         ))),
@@ -1099,5 +1750,297 @@ mod tests {
             .expect("session exists");
         assert_eq!(replay.session.agent_id.as_deref(), Some("build"));
         assert_eq!(replay.agent_events, events);
+    }
+
+    #[test]
+    fn session_tree_reads_and_switches_active_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-branch");
+        let turn_id = TurnId::from("turn-branch");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+        let root = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::UserMessage,
+            "root",
+        );
+        store.append_entry(&root).expect("root");
+        let mut first_child = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::AssistantMessage,
+            "first child",
+        );
+        first_child.parent_entry_id = Some(root.entry_id.clone());
+        store.append_entry(&first_child).expect("first child");
+        let mut second_child = sample_entry(
+            session_id.clone(),
+            turn_id,
+            SessionEntryKind::AssistantMessage,
+            "second child",
+        );
+        second_child.parent_entry_id = Some(root.entry_id.clone());
+        store.append_entry(&second_child).expect("second child");
+
+        let branch = store
+            .active_branch(&session_id)
+            .expect("active branch")
+            .expect("session exists");
+        assert_eq!(branch.entries.len(), 2);
+        assert_eq!(branch.entries[0].entry_id, root.entry_id);
+        assert_eq!(branch.entries[1].entry_id, second_child.entry_id);
+
+        store
+            .set_active_leaf(&session_id, &first_child.entry_id)
+            .expect("switch leaf");
+        let branch = store
+            .active_branch(&session_id)
+            .expect("active branch")
+            .expect("session exists");
+        assert_eq!(
+            branch
+                .entries
+                .iter()
+                .map(|entry| entry.visible_text.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("root"), Some("first child")]
+        );
+    }
+
+    #[test]
+    fn session_tree_rejects_cross_session_active_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-active");
+        let other_session_id = SessionId::from("session-other-active");
+        let turn_id = TurnId::from("turn-active");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+        store
+            .upsert_session(&sample_session(other_session_id.clone()))
+            .expect("other session");
+        let other = sample_entry(
+            other_session_id,
+            turn_id,
+            SessionEntryKind::UserMessage,
+            "other",
+        );
+        store.append_entry(&other).expect("other");
+
+        let error = store
+            .set_active_leaf(&session_id, &other.entry_id)
+            .expect_err("cross-session active leaf");
+        assert!(error.to_string().contains("belongs to session"));
+    }
+
+    #[test]
+    fn session_tree_appends_branch_compaction_and_retry_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-tree-ops");
+        let turn_id = TurnId::from("turn-tree-ops");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+        let root = sample_entry(
+            session_id.clone(),
+            turn_id,
+            SessionEntryKind::UserMessage,
+            "original user message",
+        );
+        store.append_entry(&root).expect("root");
+
+        let branch = store
+            .branch_from_entry(&SessionBranchSummaryInput {
+                session_id: session_id.clone(),
+                parent_entry_id: root.entry_id.clone(),
+                summary: "try a shorter answer".into(),
+                payload: json!({"reason": "user retry"}),
+            })
+            .expect("branch summary");
+        assert_eq!(branch.kind, SessionEntryKind::BranchSummary);
+        assert_eq!(branch.parent_entry_id, Some(root.entry_id.clone()));
+
+        let compaction = store
+            .append_compaction(&SessionCompactionInput {
+                session_id: session_id.clone(),
+                parent_entry_id: branch.entry_id.clone(),
+                summary: "compressed prior context".into(),
+                compacted_entry_ids: vec![root.entry_id.clone(), branch.entry_id.clone()],
+                payload: json!({"tokens_saved": 128}),
+            })
+            .expect("compaction");
+        assert_eq!(compaction.kind, SessionEntryKind::Compaction);
+        assert_eq!(
+            compaction.payload["compacted_entry_ids"],
+            json!([root.entry_id.as_str(), branch.entry_id.as_str()])
+        );
+
+        let retry = store
+            .retry_from_entry(&SessionRetryInput {
+                session_id: session_id.clone(),
+                parent_entry_id: compaction.entry_id.clone(),
+                reason: Some("retry after compaction".into()),
+                payload: json!({"attempt": 2}),
+            })
+            .expect("retry");
+        assert_eq!(retry.kind, SessionEntryKind::Leaf);
+        assert_eq!(retry.parent_entry_id, Some(compaction.entry_id.clone()));
+
+        let replay = store
+            .replay_session(&session_id)
+            .expect("replay")
+            .expect("session exists");
+        assert_eq!(replay.session.active_leaf_entry_id, Some(retry.entry_id));
+        let active_branch = store
+            .active_branch(&session_id)
+            .expect("active branch")
+            .expect("session exists");
+        assert_eq!(
+            active_branch
+                .entries
+                .iter()
+                .map(|entry| entry.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                SessionEntryKind::UserMessage,
+                SessionEntryKind::BranchSummary,
+                SessionEntryKind::Compaction,
+                SessionEntryKind::Leaf,
+            ]
+        );
+    }
+
+    #[test]
+    fn session_search_uses_fts_trigram_and_substring_indexes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-search");
+        let other_session_id = SessionId::from("session-other");
+        let turn_id = TurnId::from("turn-search");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+        store
+            .upsert_session(&sample_session(other_session_id.clone()))
+            .expect("other session");
+
+        let english = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::UserMessage,
+            "Prefer concise project search notes.",
+        );
+        let chinese = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::AssistantMessage,
+            "中文搜索体验需要支持子串匹配。",
+        );
+        let other = sample_entry(
+            other_session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::UserMessage,
+            "Prefer concise notes in another session.",
+        );
+        store.append_entry(&english).expect("english entry");
+        store.append_entry(&chinese).expect("chinese entry");
+        store.append_entry(&other).expect("other entry");
+
+        let english_hits = store
+            .search_entries(
+                &SessionSearchQuery::new("concise")
+                    .for_session(session_id.clone())
+                    .with_limit(10),
+            )
+            .expect("english search");
+        assert_eq!(english_hits.len(), 1);
+        assert_eq!(english_hits[0].entry.entry_id, english.entry_id);
+        assert_eq!(english_hits[0].index, SessionSearchIndex::Fts);
+        assert!(english_hits[0].snippet.contains("concise"));
+
+        let trigram_hits = store
+            .search_entries(
+                &SessionSearchQuery::new("搜索体验")
+                    .for_session(session_id.clone())
+                    .with_limit(10),
+            )
+            .expect("trigram search");
+        assert_eq!(trigram_hits.len(), 1);
+        assert_eq!(trigram_hits[0].entry.entry_id, chinese.entry_id);
+        assert_eq!(trigram_hits[0].index, SessionSearchIndex::Trigram);
+        assert!(trigram_hits[0].snippet.contains("搜索体验"));
+
+        let short_cjk_hits = store
+            .search_entries(
+                &SessionSearchQuery::new("中文")
+                    .for_session(session_id)
+                    .with_limit(10),
+            )
+            .expect("short cjk search");
+        assert_eq!(short_cjk_hits.len(), 1);
+        assert_eq!(short_cjk_hits[0].entry.entry_id, chinese.entry_id);
+        assert_eq!(short_cjk_hits[0].index, SessionSearchIndex::Substring);
+    }
+
+    #[test]
+    fn session_search_indexes_turn_writer_entries_on_commit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-writer-search");
+        let turn_id = TurnId::from("turn-writer-search");
+        let session = sample_session(session_id.clone());
+        let entry = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::AssistantMessage,
+            "writer committed searchable content",
+        );
+
+        let mut writer = store.begin_turn(&session, &turn_id).expect("writer");
+        writer.append_entry(&entry).expect("entry");
+        writer.commit().expect("commit");
+
+        let hits = store
+            .search_entries(
+                &SessionSearchQuery::new("searchable")
+                    .for_session(session_id)
+                    .with_limit(5),
+            )
+            .expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.entry_id, entry.entry_id);
+    }
+
+    #[test]
+    fn session_search_does_not_index_rolled_back_writer_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-writer-search-rollback");
+        let turn_id = TurnId::from("turn-writer-search-rollback");
+        let session = sample_session(session_id.clone());
+        let entry = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::AssistantMessage,
+            "rolled back searchable content",
+        );
+
+        let mut writer = store.begin_turn(&session, &turn_id).expect("writer");
+        writer.append_entry(&entry).expect("entry");
+        writer.rollback().expect("rollback");
+
+        let hits = store
+            .search_entries(
+                &SessionSearchQuery::new("searchable")
+                    .for_session(session_id)
+                    .with_limit(5),
+            )
+            .expect("search");
+        assert!(hits.is_empty());
     }
 }

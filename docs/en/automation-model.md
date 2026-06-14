@@ -18,6 +18,11 @@ IKAROS_HOME/automation/deliveries/
 
 Schedule records include redacted task text, optional agent profile, next run time, optional recurrence interval, enabled state, last run metadata, and delivery targets.
 
+Each executed job also writes redacted session evidence into the resolved
+agent's `state.db`. The automation JSONL file remains the schedule source of
+truth; session replay records the runtime request, result, delivery summary, and
+failed-run events for debugging and cross-entry continuity.
+
 ## Commands
 
 ```bash
@@ -39,3 +44,7 @@ ikaros schedule delete <id>
 Due jobs are converted into runtime task reports and executed through the deterministic harness task runner. Policy, approvals, audit logging, memory writes, and agent profile overlays still apply.
 
 Default delivery writes a redacted local Markdown report. `--delivery local-file` and `--delivery gateway-outbox` can be repeated to choose one or both delivery targets.
+
+The session id is derived from the schedule job id, and each run gets a
+schedule-scoped turn id. Replay entries include the scheduled task as a user
+message and the redacted task result/delivery evidence as a runtime entry.

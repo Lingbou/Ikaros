@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use ikaros_core::IkarosPaths;
 use ikaros_harness::ApprovalStatus;
+use ikaros_runtime::record_approval_resolution;
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
@@ -43,6 +44,7 @@ pub(crate) async fn approval_command(
         }
         ApprovalCommand::Approve { id, note } => {
             let record = session.decide_approval(&id, ApprovalStatus::Approved, note)?;
+            let _ = record_approval_resolution(paths, workspace, agent_override, &record)?;
             println!("{}", serde_json::to_string_pretty(&record)?);
             if record.request.call.name == "self_modify_apply" {
                 let proposal_id = record
@@ -69,10 +71,14 @@ pub(crate) async fn approval_command(
                 return Ok(());
             }
             let result = session.execute_approved_skill(&registry, &id).await?;
+            if let Some(record) = session.approvals.get(&id)? {
+                let _ = record_approval_resolution(paths, workspace, agent_override, &record)?;
+            }
             print_skill_result(&result)?;
         }
         ApprovalCommand::Deny { id, note } => {
             let record = session.decide_approval(&id, ApprovalStatus::Denied, note)?;
+            let _ = record_approval_resolution(paths, workspace, agent_override, &record)?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
     }

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{AgentEvent, ApprovalRecord, SessionEntry, SessionId, SessionRecord, SessionReplay};
+use crate::{
+    AgentEvent, ApprovalRecord, SessionBranch, SessionBranchSummaryInput, SessionCompactionInput,
+    SessionEntry, SessionEntryId, SessionId, SessionRecord, SessionReplay, SessionRetryInput,
+    SessionSearchHit, SessionSearchQuery,
+};
 use ikaros_core::Result;
 use time::OffsetDateTime;
 
@@ -24,8 +28,22 @@ pub trait SessionStore: Send + Sync {
     fn append_agent_event(&self, event: &AgentEvent) -> Result<()>;
     fn append_approval(&self, approval: &ApprovalRecord) -> Result<()>;
     fn get_session(&self, session_id: &SessionId) -> Result<Option<SessionRecord>>;
+    fn session_entry(&self, entry_id: &SessionEntryId) -> Result<Option<SessionEntry>>;
     fn session_entries(&self, session_id: &SessionId) -> Result<Vec<SessionEntry>>;
+    fn active_branch(&self, session_id: &SessionId) -> Result<Option<SessionBranch>>;
+    fn set_active_leaf(&self, session_id: &SessionId, entry_id: &SessionEntryId) -> Result<()>;
+    fn append_branch_summary(&self, input: &SessionBranchSummaryInput) -> Result<SessionEntry>;
+    fn append_compaction(&self, input: &SessionCompactionInput) -> Result<SessionEntry>;
+    fn append_retry_marker(&self, input: &SessionRetryInput) -> Result<SessionEntry>;
+    fn branch_from_entry(&self, input: &SessionBranchSummaryInput) -> Result<SessionEntry> {
+        self.append_branch_summary(input)
+    }
+    fn retry_from_entry(&self, input: &SessionRetryInput) -> Result<SessionEntry> {
+        self.append_retry_marker(input)
+    }
+    fn search_entries(&self, query: &SessionSearchQuery) -> Result<Vec<SessionSearchHit>>;
     fn agent_events(&self, session_id: &SessionId) -> Result<Vec<AgentEvent>>;
+    fn approval_record(&self, approval_id: &str) -> Result<Option<ApprovalRecord>>;
     fn approvals(&self, session_id: &SessionId) -> Result<Vec<ApprovalRecord>>;
 
     fn replay_session(&self, session_id: &SessionId) -> Result<Option<SessionReplay>> {

@@ -22,7 +22,7 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 
 `AgentRuntime::run_turn()` 接收：
 
-- `AgentLoopInput`：可选 session id、可选 task id、system prompt 和 user input。
+- `AgentLoopInput`：可选 session id、可选 turn id、可选 task id、system prompt 和 user input。
 - `ModelProvider`：当前配置的 provider adapter。
 - `ExecutionSession`：policy、approval、audit 和 environment 上下文。
 - `SkillRegistry`：可执行的 harness skill。
@@ -32,7 +32,7 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 
 需要持久化 timeline 的调用方应使用 `run_turn_with_events()` 并传入 `AgentEventSink`。`ikaros-session` 提供逐事件写入的 `PersistingAgentEventSink`，也提供按 turn 事务写入本地 SQLite `SessionStore` 的 `PersistingAgentTurnSink`。
 
-`session_id` 是 event timeline 的持久化身份；`task_id` 只作为 task/report 元数据。调用方不传 session id 时，loop 会为该 turn 创建新的 `SessionId`，不会再落到全局 `"local"` session。
+`session_id` 是 event timeline 的持久化身份；`turn_id` 标识该 timeline 内的一轮持久化 turn。调用方需要让 chat history、session entry 和 agent event 共用同一个 turn identity 时，可以显式传入 turn id。`task_id` 只作为 task/report 元数据。调用方不传 session id 时，loop 会为该 turn 创建新的 `SessionId`，不会再落到全局 `"local"` session。
 
 默认选项：
 
@@ -134,11 +134,13 @@ Loop 会报告这些 parse strategy：
 
 Tool result summary 和 output 由 harness 产生。展示给用户或写入审计前应完成脱敏。
 
-`AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。后续 replay、gateway 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
+`AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。Replay、gateway、schedule 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
 
-当前内置持久化接在 agent-loop turn 上，包括默认的非 streaming chat 路径。通过 `--no-agent-loop` 选择的单次 provider chat 仍使用 chat history 和 audit store，还没有完整 agent event timeline。
+内置 chat 路径使用 `PersistingAgentTurnSink`。agent-loop chat 和通过 `--no-agent-loop` 选择的单次 provider chat 都会写入 user/assistant `SessionEntry`。单次 provider chat 还会发出最小 typed event timeline：session start、turn start、user message、标准化 model stream event 和 turn end。`MemoryLifecycle`、`AuditAnchor` 这类 post-turn evidence 可能出现在 `TurnEnd` 之后；消费者应依赖 event kind，不要假设最后一个 event 一定是 turn end。
 
-内置 chat agent-loop 路径使用 `PersistingAgentTurnSink`，同一个 turn 里发出的 agent-loop event 会一起 commit 或 rollback。chat history、memory sync、relationship learning 和 audit 目前仍是独立 store，后续 M1 步骤再纳入更大的 session-store transaction 模型。
+同一个 turn 的 session entry 和 chat agent event 会一起 commit 或 rollback。chat history、memory sync、relationship learning 和 audit 目前仍是独立 store。持久化 agent-loop turn 创建 approval request 时，会把脱敏后的 approval request 双写进 session approval table；后续 approve、deny 或 execute decision 会更新同一条 session approval record，并发出 `ApprovalResolved`。
+
+provider failure 和本地后处理 failure 会在返回失败前写入 session。失败的 chat turn 会保留 user `SessionEntry`，发出带脱敏 message 和 phase 的 `Error` event，并以 failed `TurnEnd` event 收尾，所以 replay/debug 调用方不会丢掉这段 timeline。
 
 ## 不变量
 

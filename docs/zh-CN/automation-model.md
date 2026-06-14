@@ -18,6 +18,8 @@ IKAROS_HOME/automation/deliveries/
 
 Schedule record 包含脱敏后的 task text、可选 agent profile、next run time、可选 recurrence interval、enabled 状态、last run 元数据和 delivery target。
 
+每次 job 执行还会把脱敏后的 session evidence 写入解析后的 agent `state.db`。Automation JSONL 文件仍然是 schedule 的事实来源；session replay 记录 runtime request、result、delivery summary 和 failed-run event，便于调试和跨入口连续性。
+
 ## 命令
 
 ```bash
@@ -39,3 +41,5 @@ ikaros schedule delete <id>
 Due job 会转换为 runtime task report，并通过确定性的 harness task runner 执行。Policy、approval、audit logging、memory write 和 agent profile overlay 仍然适用。
 
 默认 delivery 写入脱敏后的本地 Markdown report。`--delivery local-file` 和 `--delivery gateway-outbox` 可以重复传入，用来选择一个或两个投递目标。
+
+Session id 由 schedule job id 派生，每次运行有 schedule-scoped turn id。Replay entry 会把计划任务写成 user message，并把脱敏后的 task result / delivery evidence 写成 runtime entry。

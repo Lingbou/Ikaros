@@ -24,7 +24,8 @@ The model never executes tools directly. Every tool call is normalized and sent 
 
 `AgentRuntime::run_turn()` receives:
 
-- `AgentLoopInput`: optional session id, optional task id, system prompt, and user input.
+- `AgentLoopInput`: optional session id, optional turn id, optional task id,
+  system prompt, and user input.
 - `ModelProvider`: the configured provider adapter.
 - `ExecutionSession`: policy, approval, audit, and environment context.
 - `SkillRegistry`: executable harness skills.
@@ -39,9 +40,12 @@ Callers that need durable timelines should call `run_turn_with_events()` with an
 per-event writes and `PersistingAgentTurnSink` for turn-scoped transaction
 writes into the local SQLite `SessionStore`.
 
-`session_id` is the persistence identity for the event timeline. `task_id`
-remains task/report metadata. If no session id is supplied, the loop creates a
-fresh `SessionId` for that turn instead of reusing a global fallback session.
+`session_id` is the persistence identity for the event timeline. `turn_id`
+identifies one persisted turn inside that timeline. Callers may supply a turn id
+when they need chat history, session entries, and agent events to share the same
+turn identity. `task_id` remains task/report metadata. If no session id is
+supplied, the loop creates a fresh `SessionId` for that turn instead of reusing a
+global fallback session.
 
 Default options:
 
@@ -155,19 +159,28 @@ redacted before surfacing to users or audit output.
 
 `AgentLoopReport.events` is a compatibility summary for current callers. The
 durable fact source is the `ikaros-session` event stream when a persisting sink
-is attached. Future replay, gateway, and UI paths should read the session store
-instead of reconstructing timelines from human output.
+is attached. Replay, gateway, schedule, and UI paths should read the session
+store instead of reconstructing timelines from human output.
 
-Current built-in persistence is attached to agent-loop turns, including the
-default non-stream chat path. Single-call chat runs selected with
-`--no-agent-loop` still use chat history and audit stores rather than a full
-agent event timeline.
+The built-in chat path uses `PersistingAgentTurnSink`. Agent-loop chat and
+single-call chat selected with `--no-agent-loop` both write user/assistant
+`SessionEntry` records. Single-call chat also emits a minimal typed event
+timeline: session start, turn start, user message, normalized model stream
+events, and turn end. Post-turn evidence such as `MemoryLifecycle` and
+`AuditAnchor` may appear after `TurnEnd`; consumers should use event kinds
+rather than assuming the last event is always the turn end.
 
-The built-in chat agent-loop path uses `PersistingAgentTurnSink`, so emitted
-agent-loop events for one turn commit or roll back together. Chat history,
-memory sync, relationship learning, and audit writes are still separate stores
-for now; they will move under the broader session-store transaction model in a
-later M1 step.
+Those session entries and chat agent events for one turn commit or roll back
+together. Chat history, memory sync, relationship learning, and audit writes
+are still separate stores for now. Approval requests created by a persisting
+agent-loop turn are double-written into the session approval table with
+redacted request data; later approve, deny, or execute decisions update the
+same session approval record and emit `ApprovalResolved`.
+
+Provider failures and local post-processing failures are recorded before the
+turn is reported as failed. A failed chat turn keeps the user `SessionEntry`,
+emits an `Error` event with a redacted message and phase, and ends with a
+failed `TurnEnd` event so replay/debug callers do not lose the timeline.
 
 ## Invariants
 

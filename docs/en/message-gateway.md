@@ -13,6 +13,11 @@ IKAROS_HOME/gateway/inbox.jsonl
 IKAROS_HOME/gateway/outbox.jsonl
 ```
 
+Gateway processing also writes high-level evidence into the resolved agent
+`state.db` session store. The gateway JSONL files remain the queue and delivery
+state; `state.db` is the replay timeline that links the external message to the
+runtime turn.
+
 Inbox records include:
 
 - `id`
@@ -114,6 +119,12 @@ Processing context:
    they do for direct CLI commands.
 5. The inbox record is marked processed or failed.
 6. Successful results create a `GatewayDelivery` in the outbox.
+7. The session store receives redacted request/result/delivery evidence.
+
+`chat` messages reuse the chat session id derived from the gateway channel,
+account, peer, and thread/message id. `task` messages write a gateway-scoped
+user entry, a runtime result entry, and typed start/end/error events. Delivery
+records include the outbox delivery id and kind, not the full unredacted output.
 
 If a message requires approval, the worker records the pending approval state in
 the processing summary; it does not auto-approve or retry with broader
@@ -138,3 +149,5 @@ The webhook only enqueues a redacted message. It does not call models, tools, pl
 - Session source identifies the external conversation; `agent` selects runtime
   context but does not grant permissions.
 - Outbox delivery content is redacted before storage.
+- Session replay is evidence, not a second queue. Adapters should continue to
+  use inbox/outbox for delivery state.

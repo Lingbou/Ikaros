@@ -62,6 +62,7 @@ pub(super) async fn execute_agent_loop_task(
     let loop_report = run_agent_loop(
         AgentLoopInput {
             session_id: Some(input.task_id.to_owned()),
+            turn_id: None,
             task_id: Some(input.task_id.to_owned()),
             system_prompt: render_task_agent_loop_system_prompt(
                 input.agent,

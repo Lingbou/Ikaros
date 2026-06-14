@@ -8,14 +8,13 @@ pub fn new_chat_session_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-pub fn new_chat_turn_id() -> String {
-    Uuid::new_v4().to_string()
-}
-
-pub fn build_chat_history_record(input: ChatHistoryAppend<'_>) -> Result<ChatHistoryRecord> {
+pub fn build_chat_history_record_with_turn_id(
+    turn_id: impl Into<String>,
+    input: ChatHistoryAppend<'_>,
+) -> Result<ChatHistoryRecord> {
     Ok(ChatHistoryRecord {
         session_id: redact_secrets(input.session_id),
-        turn_id: new_chat_turn_id(),
+        turn_id: redact_secrets(&turn_id.into()),
         created_at: now_rfc3339()?,
         agent: redact_secrets(input.agent),
         provider: redact_secrets(input.provider),

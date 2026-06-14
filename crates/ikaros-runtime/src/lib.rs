@@ -12,6 +12,7 @@ mod message;
 mod persona;
 mod relationship;
 mod schedule;
+mod session;
 mod task;
 
 pub use agent::{
@@ -67,6 +68,7 @@ pub use schedule::{
     ScheduleDeliveryReport, ScheduleWorkerTickReport, ScheduledJobRunReport, run_due_jobs,
     run_schedule_worker_tick, run_scheduled_job,
 };
+pub use session::record_approval_resolution;
 pub use task::{
     RuntimeTaskExecution, RuntimeTaskPlan, TaskRunOptions, build_task_plan,
     execute_task_for_automation, execute_task_text, execute_task_text_with_options,

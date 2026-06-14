@@ -3,6 +3,7 @@
 use super::*;
 use ikaros_core::IkarosPaths;
 use ikaros_gateway::{GatewayMessageKind, GatewayMessageStatus, GatewayRoute, LocalGatewayStore};
+use ikaros_session::{SessionSource, SessionStore, SqliteSessionStore};
 
 #[tokio::test]
 async fn drain_gateway_chat_message_records_delivery_and_redacts_inbox() {
@@ -41,6 +42,24 @@ async fn drain_gateway_chat_message_records_delivery_and_redacts_inbox() {
     let inbox = std::fs::read_to_string(store.inbox_path()).expect("inbox");
     assert!(!inbox.contains("abc123"));
     assert!(inbox.contains("[REDACTED_SECRET]"));
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let session_id = crate::session::gateway_session_id(&queued);
+    let replay = session_store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("gateway chat session");
+    assert!(matches!(
+        replay.session.source,
+        SessionSource::Gateway { .. }
+    ));
+    assert!(replay.entries.len() >= 3);
+    assert!(
+        replay
+            .entries
+            .iter()
+            .any(|entry| entry.payload["kind"] == "gateway_delivery")
+    );
 }
 
 #[tokio::test]
@@ -80,6 +99,25 @@ async fn drain_gateway_task_message_records_task_report_delivery() {
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].kind, "task_report");
     assert!(deliveries[0].content.contains("\"task_id\""));
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let session_id = crate::session::gateway_session_id(&queued);
+    let replay = session_store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("gateway task session");
+    assert!(matches!(
+        replay.session.source,
+        SessionSource::Gateway { .. }
+    ));
+    assert_eq!(replay.entries.len(), 2);
+    assert_eq!(
+        replay.entries[0].visible_text.as_deref(),
+        Some("summarize runtime gateway")
+    );
+    assert_eq!(replay.entries[1].payload["source"], "gateway");
+    assert_eq!(replay.entries[1].payload["status"], "processed");
+    assert_eq!(replay.agent_events.len(), 4);
 }
 
 #[tokio::test]

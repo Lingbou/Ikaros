@@ -229,6 +229,8 @@ pub enum AgentEventSource {
     Tool,
     Harness,
     Context,
+    Memory,
+    Audit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -242,6 +244,8 @@ pub enum AgentEventKind {
     ToolUpdate,
     ToolEnd,
     ContextCompacted,
+    MemoryLifecycle,
+    AuditAnchor,
     ApprovalRequested,
     ApprovalResolved,
     TurnEnd,
@@ -250,6 +254,10 @@ pub enum AgentEventKind {
 
 pub trait AgentEventSink: Send + Sync {
     fn emit(&self, event: &AgentEvent) -> Result<()>;
+
+    fn emit_approval(&self, _approval: &ApprovalRecord) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -282,4 +290,84 @@ pub struct SessionReplay {
     pub entries: Vec<SessionEntry>,
     pub agent_events: Vec<AgentEvent>,
     pub approvals: Vec<ApprovalRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionBranch {
+    pub session: SessionRecord,
+    pub entries: Vec<SessionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionBranchSummaryInput {
+    pub session_id: SessionId,
+    pub parent_entry_id: SessionEntryId,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionCompactionInput {
+    pub session_id: SessionId,
+    pub parent_entry_id: SessionEntryId,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compacted_entry_ids: Vec<SessionEntryId>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionRetryInput {
+    pub session_id: SessionId,
+    pub parent_entry_id: SessionEntryId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionSearchQuery {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    pub limit: usize,
+}
+
+impl SessionSearchQuery {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            session_id: None,
+            limit: 20,
+        }
+    }
+
+    pub fn for_session(mut self, session_id: impl Into<SessionId>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSearchIndex {
+    Fts,
+    Trigram,
+    Substring,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionSearchHit {
+    pub entry: SessionEntry,
+    pub snippet: String,
+    pub score: f64,
+    pub index: SessionSearchIndex,
 }

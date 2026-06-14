@@ -5,7 +5,7 @@ use super::{
     AgentLoopToolCallParseStrategy, run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
 };
 use async_trait::async_trait;
-use ikaros_core::{Result, RiskLevel};
+use ikaros_core::{IkarosError, IkarosPaths, Result, RiskLevel};
 use ikaros_harness::{
     ExecutionSession, GuardrailConfig, Skill, SkillContext, SkillOutput, SkillRegistry,
 };
@@ -13,7 +13,9 @@ use ikaros_models::{
     ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent, ModelToolCall,
     TokenUsage,
 };
-use ikaros_session::{PersistingAgentEventSink, SessionId, SessionStore, SqliteSessionStore};
+use ikaros_session::{
+    PersistingAgentEventSink, PersistingAgentTurnSink, SessionId, SessionStore, SqliteSessionStore,
+};
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -32,9 +34,17 @@ struct NativeToolProvider {
 }
 
 #[derive(Debug)]
+struct ApprovalToolProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug)]
 struct StreamingNativeToolProvider {
     calls: AtomicUsize,
 }
+
+#[derive(Debug)]
+struct FailingProvider;
 
 #[async_trait]
 impl ModelProvider for NativeToolProvider {
@@ -73,6 +83,42 @@ impl ModelProvider for NativeToolProvider {
 }
 
 #[async_trait]
+impl ModelProvider for ApprovalToolProvider {
+    fn name(&self) -> &str {
+        "approval-native"
+    }
+
+    async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            !request.tools.is_empty(),
+            "agent loop should expose approval tool definitions"
+        );
+        if index == 0 {
+            return Ok(ModelResponse {
+                provider: self.name().into(),
+                model: "approval-model".into(),
+                content: String::new(),
+                tool_calls: vec![ModelToolCall {
+                    id: Some("approval-call-1".into()),
+                    name: "loop_write".into(),
+                    input: json!({"content": "write token=abc123"}),
+                    raw_arguments: None,
+                }],
+                usage: TokenUsage::default(),
+            });
+        }
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "approval-model".into(),
+            content: r#"{"final_answer":"waiting for approval"}"#.into(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+        })
+    }
+}
+
+#[async_trait]
 impl ModelProvider for SequenceProvider {
     fn name(&self) -> &str {
         "sequence"
@@ -92,6 +138,19 @@ impl ModelProvider for SequenceProvider {
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
         })
+    }
+}
+
+#[async_trait]
+impl ModelProvider for FailingProvider {
+    fn name(&self) -> &str {
+        "failing"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Err(IkarosError::Message(
+            "agent-loop provider failed token=abc123".into(),
+        ))
     }
 }
 
@@ -204,6 +263,32 @@ impl Skill for NoProgressSkill {
     }
 }
 
+#[derive(Debug)]
+struct WriteSkill;
+
+#[async_trait]
+impl Skill for WriteSkill {
+    fn name(&self) -> &'static str {
+        "loop_write"
+    }
+
+    fn description(&self) -> &'static str {
+        "writes local state"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::LocalWrite
+    }
+
+    async fn execute(&self, _input: serde_json::Value, _ctx: SkillContext) -> Result<SkillOutput> {
+        Ok(SkillOutput::new("write ok", json!({"ok": true})))
+    }
+}
+
 #[tokio::test]
 async fn agent_loop_dispatches_tool_then_finishes() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -224,6 +309,7 @@ async fn agent_loop_dispatches_tool_then_finishes() {
     let report = run_agent_loop(
         AgentLoopInput {
             session_id: Some("loop-task".into()),
+            turn_id: None,
             task_id: Some("loop-task".into()),
             system_prompt: "Use tools when useful.".into(),
             user_input: "start token=abc123".into(),
@@ -281,6 +367,7 @@ async fn agent_loop_halts_on_guardrail_no_progress() {
     let report = run_agent_loop(
         AgentLoopInput {
             session_id: Some("loop-guardrail".into()),
+            turn_id: None,
             task_id: Some("loop-guardrail".into()),
             system_prompt: "Use tools when useful.".into(),
             user_input: "start".into(),
@@ -328,6 +415,7 @@ async fn agent_loop_dispatches_provider_native_tool_calls() {
     let report = run_agent_loop(
         AgentLoopInput {
             session_id: Some("native-loop".into()),
+            turn_id: None,
             task_id: Some("native-loop".into()),
             system_prompt: "Use native tools when useful.".into(),
             user_input: "start".into(),
@@ -390,6 +478,7 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
     let report = run_agent_loop(
         AgentLoopInput {
             session_id: Some("stream-loop".into()),
+            turn_id: None,
             task_id: Some("stream-loop".into()),
             system_prompt: "Use tools when useful.".into(),
             user_input: "start".into(),
@@ -507,6 +596,7 @@ async fn agent_loop_can_persist_event_timeline_to_session_store() {
     let report = super::run_agent_loop_with_events(
         AgentLoopInput {
             session_id: Some("persist-loop".into()),
+            turn_id: None,
             task_id: Some("persist-loop".into()),
             system_prompt: "Use native tools when useful.".into(),
             user_input: "start token=abc123".into(),
@@ -540,6 +630,216 @@ async fn agent_loop_can_persist_event_timeline_to_session_store() {
 }
 
 #[tokio::test]
+async fn agent_loop_persists_approval_records_to_session_store() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let execution = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let session_store = Arc::new(SqliteSessionStore::new(temp.path().join("state")));
+    let event_sink = PersistingAgentTurnSink::new(session_store.clone()).with_agent_id("build");
+    let mut registry = SkillRegistry::new();
+    registry.register(WriteSkill);
+    let provider = ApprovalToolProvider {
+        calls: AtomicUsize::new(0),
+    };
+
+    let report = super::run_agent_loop_with_events(
+        AgentLoopInput {
+            session_id: Some("approval-loop".into()),
+            turn_id: Some("approval-turn".into()),
+            task_id: Some("approval-task".into()),
+            system_prompt: "Use native tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &execution,
+        &registry,
+        &event_sink,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+    event_sink.commit().expect("commit");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::WaitingForApproval);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ApprovalRequested))
+    );
+    let replay = session_store
+        .replay_session(&SessionId::from("approval-loop"))
+        .expect("replay")
+        .expect("session exists");
+    assert_eq!(replay.approvals.len(), 1);
+    assert_eq!(
+        replay.approvals[0].turn_id.as_ref().map(|id| id.as_str()),
+        Some("approval-turn")
+    );
+    assert!(matches!(
+        replay.approvals[0].status,
+        ikaros_session::ApprovalStatus::Requested
+    ));
+    let replay_json = serde_json::to_string(&replay).expect("json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn approval_resolution_updates_session_replay() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
+    let execution = ExecutionSession::new(&workspace, &paths.audit_dir);
+    let session_store = Arc::new(SqliteSessionStore::new(
+        paths.home.join("agents").join("build"),
+    ));
+    let event_sink = PersistingAgentTurnSink::new(session_store.clone()).with_agent_id("build");
+    let mut registry = SkillRegistry::new();
+    registry.register(WriteSkill);
+    let provider = ApprovalToolProvider {
+        calls: AtomicUsize::new(0),
+    };
+
+    let report = super::run_agent_loop_with_events(
+        AgentLoopInput {
+            session_id: Some("approval-resolution-loop".into()),
+            turn_id: Some("approval-resolution-turn".into()),
+            task_id: Some("approval-resolution-task".into()),
+            system_prompt: "Use native tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &execution,
+        &registry,
+        &event_sink,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+    event_sink.commit().expect("commit");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::WaitingForApproval);
+    let replay = session_store
+        .replay_session(&SessionId::from("approval-resolution-loop"))
+        .expect("replay")
+        .expect("session exists");
+    let approval_id = replay.approvals[0].approval_id.clone();
+    let denied = execution
+        .decide_approval(
+            &approval_id,
+            ikaros_harness::ApprovalStatus::Denied,
+            Some("test denial token=abc123".into()),
+        )
+        .expect("deny");
+
+    assert!(
+        crate::record_approval_resolution(&paths, &workspace, Some("build"), &denied)
+            .expect("record resolution")
+    );
+    let replay = session_store
+        .replay_session(&SessionId::from("approval-resolution-loop"))
+        .expect("replay")
+        .expect("session exists");
+    assert!(matches!(
+        replay.approvals[0].status,
+        ikaros_session::ApprovalStatus::Denied
+    ));
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ApprovalResolved))
+    );
+    let replay_json = serde_json::to_string(&replay).expect("json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn agent_loop_provider_failure_persists_failed_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let execution = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let session_store = Arc::new(SqliteSessionStore::new(temp.path().join("state")));
+    let event_sink = PersistingAgentTurnSink::new(session_store.clone()).with_agent_id("build");
+    let registry = SkillRegistry::new();
+
+    let error = super::run_agent_loop_with_events(
+        AgentLoopInput {
+            session_id: Some("failed-loop".into()),
+            turn_id: Some("failed-loop-turn".into()),
+            task_id: Some("failed-loop-task".into()),
+            system_prompt: "Fail clearly.".into(),
+            user_input: "start token=abc123".into(),
+        },
+        &FailingProvider,
+        &execution,
+        &registry,
+        &event_sink,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect_err("provider should fail");
+    assert!(error.to_string().contains("[REDACTED_SECRET]"));
+    event_sink.commit().expect("commit failed turn");
+
+    let replay = session_store
+        .replay_session(&SessionId::from("failed-loop"))
+        .expect("replay")
+        .expect("session exists");
+    assert_eq!(replay.session.agent_id.as_deref(), Some("build"));
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .all(|event| event.turn_id.as_str() == "failed-loop-turn")
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::Error))
+    );
+    assert!(matches!(
+        replay.agent_events.last().map(|event| &event.kind),
+        Some(AgentEventKind::TurnEnd)
+    ));
+    assert_eq!(
+        replay.agent_events.last().and_then(|event| {
+            event
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+        }),
+        Some("failed")
+    );
+    let replay_json = serde_json::to_string(&replay).expect("json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+fn write_offline_mock_config(paths: &IkarosPaths) {
+    std::fs::create_dir_all(&paths.home).expect("home");
+    std::fs::write(
+        &paths.config,
+        r#"model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
+
+rag:
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
+"#,
+    )
+    .expect("mock config");
+}
+
+#[tokio::test]
 async fn agent_loop_without_session_id_uses_fresh_session_id() {
     let temp = tempfile::tempdir().expect("tempdir");
     let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
@@ -548,6 +848,7 @@ async fn agent_loop_without_session_id_uses_fresh_session_id() {
     let first = run_agent_loop(
         AgentLoopInput {
             session_id: None,
+            turn_id: None,
             task_id: None,
             system_prompt: "Answer directly.".into(),
             user_input: "first".into(),
@@ -565,6 +866,7 @@ async fn agent_loop_without_session_id_uses_fresh_session_id() {
     let second = run_agent_loop(
         AgentLoopInput {
             session_id: None,
+            turn_id: None,
             task_id: None,
             system_prompt: "Answer directly.".into(),
             user_input: "second".into(),
