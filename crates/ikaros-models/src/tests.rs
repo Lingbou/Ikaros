@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::*;
-use crate::anthropic::{parse_messages_response, test_messages_request_body};
+use crate::anthropic::{
+    parse_messages_response, test_messages_request_body, test_model_stream_events_from_response,
+};
 use crate::ollama::{
     parse_chat_response as parse_ollama_chat_response,
     parse_stream_response as parse_ollama_stream_response, test_chat_request_body,
@@ -18,6 +20,24 @@ use std::{
 
 struct CapturingProvider {
     seen: Arc<Mutex<Option<ModelRequest>>>,
+}
+
+fn model_stream_event_kinds(events: &[ModelStreamEvent]) -> Vec<&'static str> {
+    events
+        .iter()
+        .map(|event| match event {
+            ModelStreamEvent::Start { .. } => "start",
+            ModelStreamEvent::TextDelta(_) => "text_delta",
+            ModelStreamEvent::ReasoningDelta(_) => "reasoning_delta",
+            ModelStreamEvent::ToolCallStart { .. } => "tool_call_start",
+            ModelStreamEvent::ToolCallDelta { .. } => "tool_call_delta",
+            ModelStreamEvent::ToolCallEnd { .. } => "tool_call_end",
+            ModelStreamEvent::RefusalDelta(_) => "refusal_delta",
+            ModelStreamEvent::Usage(_) => "usage",
+            ModelStreamEvent::Error { .. } => "error",
+            ModelStreamEvent::Done => "done",
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -69,6 +89,27 @@ async fn mock_provider_streams_redacted_chunks() {
     assert!(stream.chunks.len() > 1);
     assert!(!stream.content().contains("abc123"));
     assert!(stream.content().contains("[REDACTED_SECRET]"));
+    assert!(matches!(
+        stream.events.first(),
+        Some(ModelStreamEvent::Start { provider, model })
+            if provider == "mock" && model == "mock-ikaros"
+    ));
+    let event_text = stream
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ModelStreamEvent::TextDelta(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(event_text.contains("[REDACTED_SECRET]"));
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::Usage(_)))
+    );
+    assert!(matches!(stream.events.last(), Some(ModelStreamEvent::Done)));
 }
 
 #[test]
@@ -284,6 +325,51 @@ fn parses_anthropic_tool_use_response() {
 }
 
 #[test]
+fn anthropic_generate_backed_stream_events_are_normalized() {
+    let tool_call = ModelToolCall {
+        id: Some("toolu-token=[REDACTED_SECRET]".into()),
+        name: "memory_search".into(),
+        input: serde_json::json!({"query": "hello token=[REDACTED_SECRET]"}),
+        raw_arguments: Some(r#"{"query":"hello token=[REDACTED_SECRET]"}"#.into()),
+    };
+    let usage = TokenUsage {
+        prompt_tokens: Some(5),
+        completion_tokens: Some(7),
+        total_tokens: Some(12),
+    };
+    let events = test_model_stream_events_from_response(
+        "anthropic",
+        "claude-sonnet-4-5",
+        &["I'll search.".into()],
+        &[tool_call],
+        &usage,
+    );
+
+    assert_eq!(
+        model_stream_event_kinds(&events),
+        vec![
+            "start",
+            "text_delta",
+            "tool_call_start",
+            "tool_call_delta",
+            "tool_call_end",
+            "usage",
+            "done"
+        ]
+    );
+    assert!(matches!(
+        &events[0],
+        ModelStreamEvent::Start { provider, model }
+            if provider == "anthropic" && model == "claude-sonnet-4-5"
+    ));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ToolCallDelta { args_delta, .. } if args_delta.contains("[REDACTED_SECRET]")))
+    );
+}
+
+#[test]
 fn ollama_request_body_uses_local_chat_tool_history() {
     let config = ModelConfig {
         provider: "ollama".into(),
@@ -402,6 +488,29 @@ fn parses_ollama_stream_chunks_and_tool_calls() {
     assert_eq!(stream.tool_calls[0].name, "get_weather");
     assert!(stream.content().contains("[REDACTED_SECRET]"));
     assert_eq!(stream.usage.total_tokens, Some(8));
+    assert_eq!(
+        model_stream_event_kinds(&stream.events),
+        vec![
+            "start",
+            "tool_call_start",
+            "tool_call_delta",
+            "tool_call_end",
+            "text_delta",
+            "usage",
+            "done"
+        ]
+    );
+    assert!(matches!(
+        &stream.events[0],
+        ModelStreamEvent::Start { provider, model }
+            if provider == "ollama" && model == "llama3.2"
+    ));
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::TextDelta(text) if text.contains("[REDACTED_SECRET]")))
+    );
 }
 
 #[tokio::test]
@@ -548,6 +657,64 @@ data: [DONE]
 }
 
 #[test]
+fn openai_compatible_stream_fixture_emits_canonical_event_sequence() {
+    let text = r#"data: {"model":"fixture-model","choices":[{"delta":{"content":"Hello ","reasoning":"thinking token=abc123"}}]}
+
+data: {"model":"fixture-model","choices":[{"delta":{"refusal":"cannot reveal token=abc123"}}]}
+
+data: {"model":"fixture-model","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"memory_search","arguments":"{\"query\":\"hi "}}]}}]}
+
+data: {"model":"fixture-model","choices":[{"delta":{"content":"world","tool_calls":[{"index":0,"function":{"arguments":"token=abc123\"}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}
+
+data: [DONE]
+"#;
+    let stream = parse_stream_response(text, "openai-compatible", "fallback").expect("stream");
+
+    assert_eq!(stream.model, "fixture-model");
+    assert_eq!(stream.content(), "Hello world");
+    assert_eq!(stream.tool_calls.len(), 1);
+    assert_eq!(stream.tool_calls[0].name, "memory_search");
+    assert_eq!(
+        stream.tool_calls[0].input["query"],
+        "hi token=[REDACTED_SECRET]"
+    );
+    assert_eq!(stream.usage.total_tokens, Some(8));
+    assert_eq!(
+        model_stream_event_kinds(&stream.events),
+        vec![
+            "start",
+            "text_delta",
+            "reasoning_delta",
+            "refusal_delta",
+            "text_delta",
+            "tool_call_start",
+            "tool_call_delta",
+            "tool_call_end",
+            "usage",
+            "done"
+        ]
+    );
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ReasoningDelta(text) if text.contains("[REDACTED_SECRET]")))
+    );
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::RefusalDelta(text) if text.contains("[REDACTED_SECRET]")))
+    );
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ToolCallDelta { args_delta, .. } if args_delta.contains("[REDACTED_SECRET]")))
+    );
+}
+
+#[test]
 fn openai_compatible_http_errors_redact_response_body() {
     let error = redacted_model_http_error(
         reqwest::StatusCode::BAD_REQUEST,
@@ -613,7 +780,7 @@ fn parses_openai_compatible_stream_tool_call_deltas() {
     );
     assert_eq!(stream.usage.total_tokens, Some(6));
     assert!(stream.events.iter().any(
-        |event| matches!(event, ModelStreamEvent::ToolCallStart { name, .. } if name == "memory_")
+        |event| matches!(event, ModelStreamEvent::ToolCallStart { name, .. } if name == "memory_search")
     ));
     assert!(
         stream

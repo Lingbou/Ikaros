@@ -431,6 +431,17 @@ fn model_stream_events_from_response(
     events
 }
 
+#[cfg(test)]
+pub(crate) fn test_model_stream_events_from_response(
+    provider: &str,
+    model: &str,
+    chunks: &[String],
+    tool_calls: &[ModelToolCall],
+    usage: &TokenUsage,
+) -> Vec<ModelStreamEvent> {
+    model_stream_events_from_response(provider, model, chunks, tool_calls, usage)
+}
+
 impl From<AnthropicUsage> for TokenUsage {
     fn from(usage: AnthropicUsage) -> Self {
         TokenUsage {

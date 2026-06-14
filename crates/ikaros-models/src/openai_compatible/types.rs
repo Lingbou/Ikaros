@@ -136,5 +136,4 @@ pub(super) struct OpenAiStreamToolCallAccumulator {
     pub(super) id: Option<String>,
     pub(super) name: String,
     pub(super) arguments: String,
-    pub(super) start_emitted: bool,
 }

@@ -92,17 +92,17 @@ pub(crate) fn parse_stream_response(
                     events.push(ModelStreamEvent::RefusalDelta(refusal));
                 }
             }
-            accumulate_stream_tool_calls(
-                &mut tool_call_accumulators,
-                choice.delta.tool_calls,
-                &mut events,
-            );
+            accumulate_stream_tool_calls(&mut tool_call_accumulators, choice.delta.tool_calls);
         }
     }
 
     for (index, accumulator) in tool_call_accumulators.iter().enumerate() {
-        if accumulator.start_emitted {
+        if stream_tool_call_has_payload(accumulator) {
             let id = stream_tool_call_id(index, accumulator);
+            events.push(ModelStreamEvent::ToolCallStart {
+                id: id.clone(),
+                name: stream_tool_call_name(index, accumulator),
+            });
             let redacted_arguments = redact_secrets(accumulator.arguments.trim());
             if !redacted_arguments.is_empty() {
                 events.push(ModelStreamEvent::ToolCallDelta {
@@ -153,7 +153,6 @@ pub(crate) fn parse_stream_response(
 fn accumulate_stream_tool_calls(
     accumulators: &mut Vec<OpenAiStreamToolCallAccumulator>,
     deltas: Vec<super::types::OpenAiStreamToolCallDelta>,
-    events: &mut Vec<ModelStreamEvent>,
 ) {
     for (position, delta) in deltas.into_iter().enumerate() {
         let index = delta.index.unwrap_or(position);
@@ -170,32 +169,15 @@ fn accumulate_stream_tool_calls(
             }
             if let Some(arguments) = function.arguments {
                 accumulator.arguments.push_str(&arguments);
-                if !accumulator.start_emitted {
-                    emit_tool_call_start(index, accumulator, events);
-                }
             }
-        }
-        if !accumulator.start_emitted
-            && (accumulator.id.is_some() || !accumulator.name.trim().is_empty())
-        {
-            emit_tool_call_start(index, accumulator, events);
         }
     }
 }
 
-fn emit_tool_call_start(
-    index: usize,
-    accumulator: &mut OpenAiStreamToolCallAccumulator,
-    events: &mut Vec<ModelStreamEvent>,
-) {
-    if accumulator.start_emitted {
-        return;
-    }
-    accumulator.start_emitted = true;
-    events.push(ModelStreamEvent::ToolCallStart {
-        id: stream_tool_call_id(index, accumulator),
-        name: stream_tool_call_name(index, accumulator),
-    });
+fn stream_tool_call_has_payload(accumulator: &OpenAiStreamToolCallAccumulator) -> bool {
+    accumulator.id.is_some()
+        || !accumulator.name.trim().is_empty()
+        || !accumulator.arguments.trim().is_empty()
 }
 
 fn stream_tool_call_id(index: usize, accumulator: &OpenAiStreamToolCallAccumulator) -> String {

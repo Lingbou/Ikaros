@@ -38,6 +38,13 @@ Provider 不应：
 - `anthropic`：原生 Anthropic Messages API adapter，解析 `tool_use`。
 - `ollama`：本地 Ollama `/api/chat` adapter；模型支持时解析 tool call。
 
+Streaming 状态：
+
+- `openai-compatible` 会把 provider SSE response 解析成 rich `ModelStreamEvent`。
+- `ollama` 会把 `/api/chat` streaming JSON lines 解析成同样的 event 形状。
+- `anthropic` 当前暴露的是 generate-backed 的归一化 stream event；还不是原生 Anthropic streaming parser。
+- `mock` 为测试发出确定性的本地 chunk。
+
 支持的 provider 名称：
 
 - OpenAI-compatible：`openai-compatible`
@@ -102,7 +109,7 @@ OpenAI-compatible adapter 负责 Chat Completions 请求/响应、HTTP client、
 
 OpenAI-compatible provider 是厂商中立的。它不携带 provider alias，也不做模型名专用的请求修正；endpoint 差异应放在配置里，或后续通过显式 adapter option 表达，不应藏在 provider 名称里。
 
-Streaming 会增量解析 SSE chunk。文本、reasoning、refusal、native tool-call、usage 和 done marker 都会转换成 typed `ModelStreamEvent`。Tool-call delta 会累计，直到能形成完整的标准化 tool call，再交回 agent loop；单个 argument delta 也会作为 stream event 发出。
+Streaming 会增量解析 SSE chunk。文本、reasoning、refusal、native tool-call、usage 和 done marker 都会转换成 typed `ModelStreamEvent`。Tool-call delta 会累计，直到能形成完整的标准化 tool call，再交回 agent loop。参数片段不会逐个作为 event 发出；adapter 会在 `ToolCallEnd` 前发出累计后脱敏的 `ToolCallDelta`，避免 split secret-like 值通过 fragment-level redaction 泄漏。
 
 ## 治理
 

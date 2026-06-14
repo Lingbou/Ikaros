@@ -46,6 +46,15 @@ Implemented:
 - `anthropic`: native Anthropic Messages API adapter with `tool_use` parsing.
 - `ollama`: local Ollama `/api/chat` adapter with tool call support for models that expose it.
 
+Streaming status:
+
+- `openai-compatible` parses provider SSE responses into rich `ModelStreamEvent`
+  records.
+- `ollama` parses `/api/chat` streaming JSON lines into the same event shape.
+- `anthropic` currently exposes generate-backed normalized stream events; it is
+  not yet a native Anthropic streaming parser.
+- `mock` emits deterministic local chunks for tests.
+
 Accepted provider names:
 
 - OpenAI-compatible: `openai-compatible`
@@ -118,8 +127,9 @@ the provider name.
 Streaming parses SSE chunks incrementally. Text, reasoning, refusal, native
 tool-call, usage, and done markers become typed `ModelStreamEvent` values.
 Tool-call deltas are accumulated until a complete normalized tool call can be
-reported back to the agent loop, while individual argument deltas are still
-emitted as stream events.
+reported back to the agent loop. Argument fragments are not emitted one by one;
+the adapter emits a redacted accumulated `ToolCallDelta` before `ToolCallEnd` so
+split secret-like values cannot leak through fragment-level redaction.
 
 ## Governance
 
