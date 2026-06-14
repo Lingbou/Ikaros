@@ -29,7 +29,8 @@ calling context, persistent state, or user-visible behavior changes.
 
 - `ikaros-core`: shared config, paths, task types, redaction, errors, agent profiles, and the `AgentInstance` identity model.
 - `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
-  session entries, `SessionStore`, SQLite `state.db`, and replay reads.
+  session entries, `SessionStore`, `SessionWriter`, SQLite `state.db`, and
+  replay reads.
 - `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and `ContextEngine`.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
 - `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
@@ -92,9 +93,9 @@ JSONL remains the default local storage format because it is inspectable and eas
 State ownership:
 
 - `state.db`: session metadata, append-only session entries, persisted
-  agent-loop events, approval records, and replay data. Broader chat,
-  gateway, schedule, memory, and audit migration into this store is still in
-  progress.
+  agent-loop events, approval records, and replay data. Agent-loop event writes
+  can use a turn-scoped `SessionWriter` transaction. Broader chat, gateway,
+  schedule, memory, and audit migration into this store is still in progress.
 - `memory/`: local memory records and memory provider registry metadata.
 - `chat/`: chat history and session summaries.
 - `rag/`: local RAG files, chunks, and embedding indexes.
@@ -111,6 +112,9 @@ State ownership:
 - `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `ModelStreamEvent` normalizes provider deltas; `AgentRuntime` owns the turn loop and emits `AgentEvent`.
 - `AgentEvent`, session ids, turn ids, append-only session entries, and replay
   reads belong to `ikaros-session`, not to the runtime loop.
+- `SessionWriter` owns turn-scoped session transactions. Current built-in usage
+  wraps agent-loop event persistence; whole-chat-turn atomicity is still future
+  work.
 - `session_id` identifies persisted timelines. `task_id` is task/report
   metadata and must not be used as an implicit session fallback.
 - `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.

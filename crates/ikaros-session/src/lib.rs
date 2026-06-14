@@ -6,9 +6,11 @@ mod sqlite;
 mod store;
 mod types;
 
-pub use sink::{NoopAgentEventSink, PersistingAgentEventSink, noop_agent_event_sink};
+pub use sink::{
+    NoopAgentEventSink, PersistingAgentEventSink, PersistingAgentTurnSink, noop_agent_event_sink,
+};
 pub use sqlite::SqliteSessionStore;
-pub use store::SessionStore;
+pub use store::{SessionStore, SessionWriter};
 pub use types::{
     AgentEvent, AgentEventId, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId,
     AgentTurnId, ApprovalRecord, ApprovalStatus, EventId, SessionEntry, SessionEntryId,

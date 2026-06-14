@@ -2,7 +2,7 @@
 
 use crate::{
     AgentEvent, AgentEventKind, ApprovalRecord, ApprovalStatus, SessionEntry, SessionEntryId,
-    SessionEntryKind, SessionId, SessionRecord, SessionSource, SessionStore, TurnId,
+    SessionEntryKind, SessionId, SessionRecord, SessionSource, SessionStore, SessionWriter, TurnId,
 };
 use ikaros_core::{IkarosError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -123,155 +123,50 @@ impl SqliteSessionStore {
         )
         .map_err(|source| sqlite_error(&self.path, source))
     }
-
-    fn insert_missing_session(&self, conn: &Connection, session_id: &SessionId) -> Result<()> {
-        let started_at = format_time(OffsetDateTime::now_utc())?;
-        let source_json = serde_json::to_string(&SessionSource::Runtime)?;
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions (id, source_json, started_at) VALUES (?1, ?2, ?3)",
-            params![session_id.as_str(), source_json, started_at],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(())
-    }
 }
 
 impl SessionStore for SqliteSessionStore {
     fn upsert_session(&self, session: &SessionRecord) -> Result<()> {
         let conn = self.open()?;
-        let source_json = serde_json::to_string(&session.source)?;
-        let started_at = format_time(session.started_at)?;
-        let ended_at = session.ended_at.map(format_time).transpose()?;
-        let workspace = session
-            .workspace
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string());
-        conn.execute(
-            r#"
-            INSERT INTO sessions (
-                id, source_json, agent_id, workspace, parent_session_id,
-                active_leaf_entry_id, started_at, ended_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            ON CONFLICT(id) DO UPDATE SET
-                source_json = excluded.source_json,
-                agent_id = COALESCE(excluded.agent_id, sessions.agent_id),
-                workspace = COALESCE(excluded.workspace, sessions.workspace),
-                parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
-                active_leaf_entry_id = COALESCE(excluded.active_leaf_entry_id, sessions.active_leaf_entry_id),
-                ended_at = COALESCE(excluded.ended_at, sessions.ended_at)
-            "#,
-            params![
-                session.session_id.as_str(),
-                source_json,
-                session.agent_id.as_deref(),
-                workspace.as_deref(),
-                session.parent_session_id.as_ref().map(SessionId::as_str),
-                session
-                    .active_leaf_entry_id
-                    .as_ref()
-                    .map(SessionEntryId::as_str),
-                started_at,
-                ended_at.as_deref(),
-            ],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(())
+        upsert_session(&conn, &self.path, session)
     }
 
     fn finish_session(&self, session_id: &SessionId, ended_at: OffsetDateTime) -> Result<()> {
         let conn = self.open()?;
-        self.insert_missing_session(&conn, session_id)?;
-        conn.execute(
-            "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
-            params![format_time(ended_at)?, session_id.as_str()],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(())
+        finish_session(&conn, &self.path, session_id, ended_at)
+    }
+
+    fn begin_turn(
+        &self,
+        session: &SessionRecord,
+        turn_id: &TurnId,
+    ) -> Result<Box<dyn SessionWriter>> {
+        let conn = self.open()?;
+        conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+            .map_err(|source| sqlite_error(&self.path, source))?;
+        upsert_session(&conn, &self.path, session)?;
+        Ok(Box::new(SqliteSessionWriter {
+            conn: Some(conn),
+            path: self.path.clone(),
+            session_id: session.session_id.clone(),
+            turn_id: turn_id.clone(),
+            failed: false,
+        }))
     }
 
     fn append_entry(&self, entry: &SessionEntry) -> Result<()> {
         let conn = self.open()?;
-        self.insert_missing_session(&conn, &entry.session_id)?;
-        let payload_json = serde_json::to_string(&entry.payload)?;
-        conn.execute(
-            r#"
-            INSERT INTO session_entries (
-                id, session_id, parent_entry_id, turn_id, at, kind, visible_text, payload_json
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            "#,
-            params![
-                entry.entry_id.as_str(),
-                entry.session_id.as_str(),
-                entry.parent_entry_id.as_ref().map(SessionEntryId::as_str),
-                entry.turn_id.as_ref().map(TurnId::as_str),
-                format_time(entry.at)?,
-                entry_kind_to_str(entry.kind),
-                entry.visible_text.as_deref(),
-                payload_json,
-            ],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        conn.execute(
-            "UPDATE sessions SET active_leaf_entry_id = ?1 WHERE id = ?2",
-            params![entry.entry_id.as_str(), entry.session_id.as_str()],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(())
+        append_entry(&conn, &self.path, entry)
     }
 
     fn append_agent_event(&self, event: &AgentEvent) -> Result<()> {
         let conn = self.open()?;
-        self.insert_missing_session(&conn, &event.session_id)?;
-        conn.execute(
-            r#"
-            INSERT INTO agent_events (
-                id, session_id, turn_id, parent_event_id, at, source, kind_json, payload_json
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            "#,
-            params![
-                event.event_id.as_str(),
-                event.session_id.as_str(),
-                event.turn_id.as_str(),
-                event.parent_event_id.as_ref().map(|id| id.as_str()),
-                format_time(event.at)?,
-                event_source_to_str(event.source),
-                serde_json::to_string(&event.kind)?,
-                serde_json::to_string(&event.payload)?,
-            ],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(())
+        append_agent_event(&conn, &self.path, event)
     }
 
     fn append_approval(&self, approval: &ApprovalRecord) -> Result<()> {
         let conn = self.open()?;
-        self.insert_missing_session(&conn, &approval.session_id)?;
-        conn.execute(
-            r#"
-            INSERT INTO approvals (
-                id, session_id, turn_id, at, status, request_json, decision_json
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            "#,
-            params![
-                approval.approval_id.as_str(),
-                approval.session_id.as_str(),
-                approval.turn_id.as_ref().map(TurnId::as_str),
-                format_time(approval.at)?,
-                approval_status_to_str(approval.status),
-                serde_json::to_string(&approval.request)?,
-                approval
-                    .decision
-                    .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()?,
-            ],
-        )
-        .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(())
+        append_approval(&conn, &self.path, approval)
     }
 
     fn get_session(&self, session_id: &SessionId) -> Result<Option<SessionRecord>> {
@@ -477,6 +372,273 @@ impl SessionStore for SqliteSessionStore {
     }
 }
 
+struct SqliteSessionWriter {
+    conn: Option<Connection>,
+    path: PathBuf,
+    session_id: SessionId,
+    turn_id: TurnId,
+    failed: bool,
+}
+
+impl SqliteSessionWriter {
+    fn conn(&self) -> Result<&Connection> {
+        self.conn.as_ref().ok_or_else(|| {
+            IkarosError::Message("session writer transaction is already closed".into())
+        })
+    }
+
+    fn mark<T>(&mut self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn ensure_session_scope(&mut self, session_id: &SessionId) -> Result<()> {
+        if session_id != &self.session_id {
+            self.failed = true;
+            return Err(IkarosError::Message(format!(
+                "session writer expected session {}, got {}",
+                self.session_id, session_id
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_optional_turn_scope(&mut self, turn_id: Option<&TurnId>) -> Result<()> {
+        if let Some(turn_id) = turn_id {
+            if turn_id != &self.turn_id {
+                self.failed = true;
+                return Err(IkarosError::Message(format!(
+                    "session writer expected turn {}, got {}",
+                    self.turn_id, turn_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_turn_scope(&mut self, turn_id: &TurnId) -> Result<()> {
+        if turn_id != &self.turn_id {
+            self.failed = true;
+            return Err(IkarosError::Message(format!(
+                "session writer expected turn {}, got {}",
+                self.turn_id, turn_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl SessionWriter for SqliteSessionWriter {
+    fn append_entry(&mut self, entry: &SessionEntry) -> Result<()> {
+        self.ensure_session_scope(&entry.session_id)?;
+        self.ensure_optional_turn_scope(entry.turn_id.as_ref())?;
+        let result = append_entry(self.conn()?, &self.path, entry);
+        self.mark(result)
+    }
+
+    fn append_agent_event(&mut self, event: &AgentEvent) -> Result<()> {
+        self.ensure_session_scope(&event.session_id)?;
+        self.ensure_turn_scope(&event.turn_id)?;
+        let result = append_agent_event(self.conn()?, &self.path, event);
+        self.mark(result)
+    }
+
+    fn append_approval(&mut self, approval: &ApprovalRecord) -> Result<()> {
+        self.ensure_session_scope(&approval.session_id)?;
+        self.ensure_optional_turn_scope(approval.turn_id.as_ref())?;
+        let result = append_approval(self.conn()?, &self.path, approval);
+        self.mark(result)
+    }
+
+    fn commit(mut self: Box<Self>) -> Result<()> {
+        let Some(conn) = self.conn.take() else {
+            return Err(IkarosError::Message(
+                "session writer transaction is already closed".into(),
+            ));
+        };
+        if self.failed {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(IkarosError::Message(
+                "session writer transaction has failed and was rolled back".into(),
+            ));
+        }
+        match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(()),
+            Err(source) => {
+                let error = sqlite_error(&self.path, source);
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    fn rollback(mut self: Box<Self>) -> Result<()> {
+        let Some(conn) = self.conn.take() else {
+            return Ok(());
+        };
+        conn.execute_batch("ROLLBACK")
+            .map_err(|source| sqlite_error(&self.path, source))
+    }
+}
+
+impl Drop for SqliteSessionWriter {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+fn upsert_session(conn: &Connection, path: &Path, session: &SessionRecord) -> Result<()> {
+    let source_json = serde_json::to_string(&session.source)?;
+    let started_at = format_time(session.started_at)?;
+    let ended_at = session.ended_at.map(format_time).transpose()?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    conn.execute(
+        r#"
+        INSERT INTO sessions (
+            id, source_json, agent_id, workspace, parent_session_id,
+            active_leaf_entry_id, started_at, ended_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(id) DO UPDATE SET
+            source_json = excluded.source_json,
+            agent_id = COALESCE(excluded.agent_id, sessions.agent_id),
+            workspace = COALESCE(excluded.workspace, sessions.workspace),
+            parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
+            active_leaf_entry_id = COALESCE(excluded.active_leaf_entry_id, sessions.active_leaf_entry_id),
+            ended_at = COALESCE(excluded.ended_at, sessions.ended_at)
+        "#,
+        params![
+            session.session_id.as_str(),
+            source_json,
+            session.agent_id.as_deref(),
+            workspace.as_deref(),
+            session.parent_session_id.as_ref().map(SessionId::as_str),
+            session
+                .active_leaf_entry_id
+                .as_ref()
+                .map(SessionEntryId::as_str),
+            started_at,
+            ended_at.as_deref(),
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    Ok(())
+}
+
+fn insert_missing_session(conn: &Connection, path: &Path, session_id: &SessionId) -> Result<()> {
+    let started_at = format_time(OffsetDateTime::now_utc())?;
+    let source_json = serde_json::to_string(&SessionSource::Runtime)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, source_json, started_at) VALUES (?1, ?2, ?3)",
+        params![session_id.as_str(), source_json, started_at],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    Ok(())
+}
+
+fn finish_session(
+    conn: &Connection,
+    path: &Path,
+    session_id: &SessionId,
+    ended_at: OffsetDateTime,
+) -> Result<()> {
+    insert_missing_session(conn, path, session_id)?;
+    conn.execute(
+        "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
+        params![format_time(ended_at)?, session_id.as_str()],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    Ok(())
+}
+
+fn append_entry(conn: &Connection, path: &Path, entry: &SessionEntry) -> Result<()> {
+    insert_missing_session(conn, path, &entry.session_id)?;
+    let payload_json = serde_json::to_string(&entry.payload)?;
+    conn.execute(
+        r#"
+        INSERT INTO session_entries (
+            id, session_id, parent_entry_id, turn_id, at, kind, visible_text, payload_json
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        params![
+            entry.entry_id.as_str(),
+            entry.session_id.as_str(),
+            entry.parent_entry_id.as_ref().map(SessionEntryId::as_str),
+            entry.turn_id.as_ref().map(TurnId::as_str),
+            format_time(entry.at)?,
+            entry_kind_to_str(entry.kind),
+            entry.visible_text.as_deref(),
+            payload_json,
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    conn.execute(
+        "UPDATE sessions SET active_leaf_entry_id = ?1 WHERE id = ?2",
+        params![entry.entry_id.as_str(), entry.session_id.as_str()],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    Ok(())
+}
+
+fn append_agent_event(conn: &Connection, path: &Path, event: &AgentEvent) -> Result<()> {
+    insert_missing_session(conn, path, &event.session_id)?;
+    conn.execute(
+        r#"
+        INSERT INTO agent_events (
+            id, session_id, turn_id, parent_event_id, at, source, kind_json, payload_json
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        params![
+            event.event_id.as_str(),
+            event.session_id.as_str(),
+            event.turn_id.as_str(),
+            event.parent_event_id.as_ref().map(|id| id.as_str()),
+            format_time(event.at)?,
+            event_source_to_str(event.source),
+            serde_json::to_string(&event.kind)?,
+            serde_json::to_string(&event.payload)?,
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    Ok(())
+}
+
+fn append_approval(conn: &Connection, path: &Path, approval: &ApprovalRecord) -> Result<()> {
+    insert_missing_session(conn, path, &approval.session_id)?;
+    conn.execute(
+        r#"
+        INSERT INTO approvals (
+            id, session_id, turn_id, at, status, request_json, decision_json
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            approval.approval_id.as_str(),
+            approval.session_id.as_str(),
+            approval.turn_id.as_ref().map(TurnId::as_str),
+            format_time(approval.at)?,
+            approval_status_to_str(approval.status),
+            serde_json::to_string(&approval.request)?,
+            approval
+                .decision
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    Ok(())
+}
+
 fn format_time(value: OffsetDateTime) -> Result<String> {
     value.format(&Rfc3339).map_err(IkarosError::Time)
 }
@@ -574,11 +736,70 @@ mod tests {
     use super::*;
     use crate::{
         AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, ApprovalStatus,
-        PersistingAgentEventSink,
+        PersistingAgentEventSink, PersistingAgentTurnSink,
     };
     use ikaros_models::ModelStreamEvent;
     use serde_json::json;
     use std::sync::Arc;
+
+    fn sample_session(session_id: SessionId) -> SessionRecord {
+        let mut session = SessionRecord::new(session_id, SessionSource::Cli);
+        session.agent_id = Some("build".into());
+        session
+    }
+
+    fn sample_entry(
+        session_id: SessionId,
+        turn_id: TurnId,
+        kind: SessionEntryKind,
+        text: &str,
+    ) -> SessionEntry {
+        let mut entry = SessionEntry::new(session_id, kind);
+        entry.turn_id = Some(turn_id);
+        entry.visible_text = Some(text.into());
+        entry.payload = json!({ "text": text });
+        entry
+    }
+
+    fn sample_events(session_id: SessionId, turn_id: TurnId) -> Vec<AgentEvent> {
+        let start = AgentEvent::new(
+            session_id.clone(),
+            turn_id.clone(),
+            None,
+            AgentEventSource::Runtime,
+            AgentEventKind::TurnStart,
+            json!({"step": 1}),
+        );
+        let model = AgentEvent::new(
+            session_id.clone(),
+            turn_id.clone(),
+            Some(start.event_id.clone()),
+            AgentEventSource::Model,
+            AgentEventKind::ModelStream(ModelStreamEvent::TextDelta("hello".into())),
+            json!({"step": 2}),
+        );
+        let end = AgentEvent::new(
+            session_id,
+            turn_id,
+            Some(model.event_id.clone()),
+            AgentEventSource::Runtime,
+            AgentEventKind::TurnEnd,
+            json!({"step": 3}),
+        );
+        vec![start, model, end]
+    }
+
+    fn sample_approval(session_id: SessionId, turn_id: TurnId) -> ApprovalRecord {
+        ApprovalRecord {
+            approval_id: "approval-turn".into(),
+            session_id,
+            turn_id: Some(turn_id),
+            at: OffsetDateTime::now_utc(),
+            status: ApprovalStatus::Requested,
+            request: json!({"tool": "write_file"}),
+            decision: None,
+        }
+    }
 
     #[test]
     fn sqlite_store_replays_session_timeline() {
@@ -710,5 +931,173 @@ mod tests {
             .expect("session exists");
         assert_eq!(replay.session.parent_session_id, Some(parent.session_id));
         assert_eq!(replay.session.active_leaf_entry_id, Some(leaf_id));
+    }
+
+    #[test]
+    fn session_writer_preserves_event_order_for_one_turn() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-writer-order");
+        let turn_id = TurnId::from("turn-writer-order");
+        let session = sample_session(session_id.clone());
+        let events = sample_events(session_id.clone(), turn_id.clone());
+
+        let mut writer = store.begin_turn(&session, &turn_id).expect("writer");
+        for event in &events {
+            writer.append_agent_event(event).expect("event");
+        }
+        writer.commit().expect("commit");
+
+        let replay = store
+            .replay_session(&session_id)
+            .expect("replay")
+            .expect("session exists");
+        let stored_ids = replay
+            .agent_events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        let expected_ids = events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(stored_ids, expected_ids);
+    }
+
+    #[test]
+    fn session_writer_event_write_does_not_clear_active_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-writer-leaf");
+        let turn_id = TurnId::from("turn-writer-leaf");
+        let session = sample_session(session_id.clone());
+        store.upsert_session(&session).expect("session");
+        let leaf = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::Leaf,
+            "leaf",
+        );
+        let leaf_id = leaf.entry_id.clone();
+        store.append_entry(&leaf).expect("leaf");
+        let event = sample_events(session_id.clone(), turn_id.clone())
+            .into_iter()
+            .next()
+            .expect("event");
+
+        let mut writer = store.begin_turn(&session, &turn_id).expect("writer");
+        writer.append_agent_event(&event).expect("event");
+        writer.commit().expect("commit");
+
+        let replay = store
+            .replay_session(&session_id)
+            .expect("replay")
+            .expect("session exists");
+        assert_eq!(replay.session.active_leaf_entry_id, Some(leaf_id));
+    }
+
+    #[test]
+    fn session_writer_rolls_back_after_mid_turn_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-writer-rollback");
+        let turn_id = TurnId::from("turn-writer-rollback");
+        let session = sample_session(session_id.clone());
+        let event = sample_events(session_id.clone(), turn_id.clone())
+            .into_iter()
+            .next()
+            .expect("event");
+        let wrong_session_event = AgentEvent::new(
+            "other-session",
+            turn_id.clone(),
+            None,
+            AgentEventSource::Runtime,
+            AgentEventKind::TurnEnd,
+            serde_json::Value::Null,
+        );
+
+        let mut writer = store.begin_turn(&session, &turn_id).expect("writer");
+        writer.append_agent_event(&event).expect("event");
+        assert!(writer.append_agent_event(&wrong_session_event).is_err());
+        assert!(writer.commit().is_err());
+
+        assert!(store.replay_session(&session_id).expect("replay").is_none());
+    }
+
+    #[test]
+    fn session_writer_replay_matches_one_shot_writes() {
+        let one_shot_temp = tempfile::tempdir().expect("one shot tempdir");
+        let writer_temp = tempfile::tempdir().expect("writer tempdir");
+        let one_shot = SqliteSessionStore::new(one_shot_temp.path());
+        let writer_store = SqliteSessionStore::new(writer_temp.path());
+        let session_id = SessionId::from("session-writer-parity");
+        let turn_id = TurnId::from("turn-writer-parity");
+        let session = sample_session(session_id.clone());
+        let user = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::UserMessage,
+            "hello",
+        );
+        let mut assistant = sample_entry(
+            session_id.clone(),
+            turn_id.clone(),
+            SessionEntryKind::AssistantMessage,
+            "world",
+        );
+        assistant.parent_entry_id = Some(user.entry_id.clone());
+        let events = sample_events(session_id.clone(), turn_id.clone());
+        let approval = sample_approval(session_id.clone(), turn_id.clone());
+
+        one_shot.upsert_session(&session).expect("session");
+        one_shot.append_entry(&user).expect("user");
+        one_shot.append_entry(&assistant).expect("assistant");
+        for event in &events {
+            one_shot.append_agent_event(event).expect("event");
+        }
+        one_shot.append_approval(&approval).expect("approval");
+
+        let mut writer = writer_store.begin_turn(&session, &turn_id).expect("writer");
+        writer.append_entry(&user).expect("user");
+        writer.append_entry(&assistant).expect("assistant");
+        for event in &events {
+            writer.append_agent_event(event).expect("event");
+        }
+        writer.append_approval(&approval).expect("approval");
+        writer.commit().expect("commit");
+
+        let one_shot_replay = one_shot
+            .replay_session(&session_id)
+            .expect("one shot replay")
+            .expect("session exists");
+        let writer_replay = writer_store
+            .replay_session(&session_id)
+            .expect("writer replay")
+            .expect("session exists");
+        assert_eq!(writer_replay, one_shot_replay);
+    }
+
+    #[test]
+    fn persisting_turn_sink_commits_events_in_one_transaction() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(temp.path()));
+        let sink = PersistingAgentTurnSink::new(store.clone())
+            .with_source(SessionSource::Cli)
+            .with_agent_id("build");
+        let session_id = SessionId::from("session-turn-sink");
+        let turn_id = TurnId::from("turn-turn-sink");
+        let events = sample_events(session_id.clone(), turn_id);
+
+        for event in &events {
+            sink.emit(event).expect("emit");
+        }
+        sink.commit().expect("commit");
+
+        let replay = store
+            .replay_session(&session_id)
+            .expect("replay")
+            .expect("session exists");
+        assert_eq!(replay.session.agent_id.as_deref(), Some("build"));
+        assert_eq!(replay.agent_events, events);
     }
 }

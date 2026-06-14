@@ -4,9 +4,22 @@ use crate::{AgentEvent, ApprovalRecord, SessionEntry, SessionId, SessionRecord, 
 use ikaros_core::Result;
 use time::OffsetDateTime;
 
+pub trait SessionWriter: Send {
+    fn append_entry(&mut self, entry: &SessionEntry) -> Result<()>;
+    fn append_agent_event(&mut self, event: &AgentEvent) -> Result<()>;
+    fn append_approval(&mut self, approval: &ApprovalRecord) -> Result<()>;
+    fn commit(self: Box<Self>) -> Result<()>;
+    fn rollback(self: Box<Self>) -> Result<()>;
+}
+
 pub trait SessionStore: Send + Sync {
     fn upsert_session(&self, session: &SessionRecord) -> Result<()>;
     fn finish_session(&self, session_id: &SessionId, ended_at: OffsetDateTime) -> Result<()>;
+    fn begin_turn(
+        &self,
+        session: &SessionRecord,
+        turn_id: &crate::TurnId,
+    ) -> Result<Box<dyn SessionWriter>>;
     fn append_entry(&self, entry: &SessionEntry) -> Result<()>;
     fn append_agent_event(&self, event: &AgentEvent) -> Result<()>;
     fn append_approval(&self, approval: &ApprovalRecord) -> Result<()>;

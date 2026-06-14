@@ -28,7 +28,7 @@ use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelUsageLedger,
     governed_provider_from_config,
 };
-use ikaros_session::{PersistingAgentEventSink, SessionSource, SqliteSessionStore};
+use ikaros_session::{PersistingAgentTurnSink, SessionSource, SqliteSessionStore};
 use ikaros_soul::{PersonaProfile, RuntimeSignal, load_or_default};
 use serde_json::json;
 use std::{path::Path, sync::Arc};
@@ -54,7 +54,7 @@ pub async fn run_chat_message(
         &paths.audit_dir,
     )?;
     let event_sink =
-        PersistingAgentEventSink::new(Arc::new(SqliteSessionStore::new(&agent_instance.state_dir)))
+        PersistingAgentTurnSink::new(Arc::new(SqliteSessionStore::new(&agent_instance.state_dir)))
             .with_source(SessionSource::Cli)
             .with_agent_id(agent_instance.agent_id.clone())
             .with_workspace(agent_instance.workspace.clone());
@@ -74,7 +74,7 @@ pub async fn run_chat_message(
     }
     options.chat_history_path = Some(history_store.path().to_path_buf());
     options.chat_history_backend = Some(history_store.backend_name().into());
-    let report = run_chat_turn_with_events(
+    let report = match run_chat_turn_with_events(
         message,
         &persona,
         provider.as_ref(),
@@ -86,7 +86,17 @@ pub async fn run_chat_message(
             event_sink: &event_sink,
         },
     )
-    .await?;
+    .await
+    {
+        Ok(report) => {
+            event_sink.commit()?;
+            report
+        }
+        Err(error) => {
+            let _ = event_sink.rollback();
+            return Err(error);
+        }
+    };
     memory_provider.sync_turn(MemoryTurnRecord {
         session_id: report.chat_session_id.clone(),
         agent_id: Some(agent_instance.agent_id.clone()),

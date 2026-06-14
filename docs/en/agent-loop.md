@@ -35,8 +35,9 @@ different loop implementation should swap the runtime layer, not the provider
 adapter.
 
 Callers that need durable timelines should call `run_turn_with_events()` with an
-`AgentEventSink`. `ikaros-session` provides `PersistingAgentEventSink`, which
-writes the emitted events into the local SQLite `SessionStore`.
+`AgentEventSink`. `ikaros-session` provides `PersistingAgentEventSink` for
+per-event writes and `PersistingAgentTurnSink` for turn-scoped transaction
+writes into the local SQLite `SessionStore`.
 
 `session_id` is the persistence identity for the event timeline. `task_id`
 remains task/report metadata. If no session id is supplied, the loop creates a
@@ -161,6 +162,12 @@ Current built-in persistence is attached to agent-loop turns, including the
 default non-stream chat path. Single-call chat runs selected with
 `--no-agent-loop` still use chat history and audit stores rather than a full
 agent event timeline.
+
+The built-in chat agent-loop path uses `PersistingAgentTurnSink`, so emitted
+agent-loop events for one turn commit or roll back together. Chat history,
+memory sync, relationship learning, and audit writes are still separate stores
+for now; they will move under the broader session-store transaction model in a
+later M1 step.
 
 ## Invariants
 
