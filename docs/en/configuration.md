@@ -217,7 +217,8 @@ Ollama local example:
 providers:
   model:
     api_key: ""
-    base_url: "http://127.0.0.1:11434"
+    # Optional. Empty uses http://127.0.0.1:11434.
+    base_url: ""
 
 model:
   default:

@@ -162,18 +162,21 @@ fn anthropic_and_ollama_canonical_providers_are_supported() {
 
     let ollama_settings = RemoteProviderConfig {
         api_key: String::new(),
-        base_url: "http://127.0.0.1:11434".into(),
+        base_url: String::new(),
     };
-    let ollama = provider_from_config(
-        &ModelConfig {
-            provider: "ollama".into(),
-            model: "llama3.2".into(),
-            ..ModelConfig::default()
-        },
-        &ollama_settings,
-    )
-    .expect("ollama provider");
+    let ollama_config = ModelConfig {
+        provider: "ollama".into(),
+        model: "llama3.2".into(),
+        ..ModelConfig::default()
+    };
+    let ollama = provider_from_config(&ollama_config, &ollama_settings).expect("ollama provider");
     assert_eq!(ollama.name(), "ollama");
+    let ollama =
+        OllamaProvider::from_config("ollama", &ollama_config, &ollama_settings).expect("ollama");
+    assert_eq!(
+        ollama.transport_descriptor().base_url.as_deref(),
+        Some("http://127.0.0.1:11434")
+    );
 }
 
 #[test]
@@ -623,6 +626,49 @@ fn parses_openai_compatible_stream_tool_call_deltas() {
             .events
             .iter()
             .any(|event| matches!(event, ModelStreamEvent::ToolCallEnd { id } if id.contains("[REDACTED_SECRET]")))
+    );
+}
+
+#[test]
+fn openai_compatible_stream_redacts_split_tool_argument_secrets() {
+    let first_chunk = serde_json::json!({
+        "model": "stream-tool-model",
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call-1",
+                    "function": {
+                        "name": "memory_search",
+                        "arguments": "{\"query\":\"sk-"
+                    }
+                }]
+            }
+        }]
+    });
+    let second_chunk = serde_json::json!({
+        "model": "stream-tool-model",
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": {
+                        "arguments": "abc\"}"
+                    }
+                }]
+            }
+        }]
+    });
+    let text = format!("data: {first_chunk}\n\ndata: {second_chunk}\n\ndata: [DONE]\n");
+    let stream = parse_stream_response(&text, "openai-compatible", "fallback").expect("stream");
+    let rendered_events = serde_json::to_string(&stream.events).expect("events");
+
+    assert!(!rendered_events.contains("sk-"));
+    assert!(!rendered_events.contains("abc"));
+    assert!(rendered_events.contains("[REDACTED_SECRET]"));
+    assert_eq!(
+        stream.tool_calls[0].input["query"],
+        serde_json::json!("[REDACTED_SECRET]")
     );
 }
 

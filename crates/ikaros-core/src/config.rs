@@ -423,6 +423,32 @@ voice:
     }
 
     #[test]
+    fn config_validation_allows_ollama_default_base_url() {
+        let report = IkarosConfig::validate_yaml(
+            r#"
+model:
+  default:
+    provider: ollama
+    runtime: harness-agent-loop
+    transport: ollama-chat
+    model: llama3.2
+
+rag:
+  embedding_provider: hash
+
+voice:
+  tts:
+    provider: mock
+  asr:
+    provider: mock
+"#,
+        )
+        .expect("validate");
+
+        assert!(report.is_valid(), "{report:#?}");
+    }
+
+    #[test]
     fn config_validation_rejects_unknown_fields_and_missing_remote_settings() {
         let report = IkarosConfig::validate_yaml(
             r#"
@@ -1126,12 +1152,18 @@ fn validate_model_config(
         return;
     }
     validate_required("model.default.model", &config.model, report);
-    validate_required_url(
-        "providers.model.base_url",
-        &provider_settings.base_url,
-        report,
-    );
-    if provider != "ollama" {
+    if provider == "ollama" {
+        validate_optional_url(
+            "providers.model.base_url",
+            &provider_settings.base_url,
+            report,
+        );
+    } else {
+        validate_required_url(
+            "providers.model.base_url",
+            &provider_settings.base_url,
+            report,
+        );
         validate_required(
             "providers.model.api_key",
             &provider_settings.api_key,
@@ -1354,6 +1386,17 @@ fn validate_required_url(
     let path = path.into();
     if value.trim().is_empty() {
         report.error(path, "must not be empty");
+        return;
+    }
+    validate_url(path, value, report);
+}
+
+fn validate_optional_url(
+    path: impl Into<String>,
+    value: &str,
+    report: &mut ConfigValidationReport,
+) {
+    if value.trim().is_empty() {
         return;
     }
     validate_url(path, value, report);

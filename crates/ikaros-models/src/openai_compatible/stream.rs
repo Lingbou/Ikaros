@@ -102,9 +102,15 @@ pub(crate) fn parse_stream_response(
 
     for (index, accumulator) in tool_call_accumulators.iter().enumerate() {
         if accumulator.start_emitted {
-            events.push(ModelStreamEvent::ToolCallEnd {
-                id: stream_tool_call_id(index, accumulator),
-            });
+            let id = stream_tool_call_id(index, accumulator);
+            let redacted_arguments = redact_secrets(accumulator.arguments.trim());
+            if !redacted_arguments.is_empty() {
+                events.push(ModelStreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    args_delta: redacted_arguments,
+                });
+            }
+            events.push(ModelStreamEvent::ToolCallEnd { id });
         }
     }
     let tool_calls = model_tool_calls_from_stream_accumulators(tool_call_accumulators);
@@ -166,13 +172,6 @@ fn accumulate_stream_tool_calls(
                 accumulator.arguments.push_str(&arguments);
                 if !accumulator.start_emitted {
                     emit_tool_call_start(index, accumulator, events);
-                }
-                let redacted_arguments = redact_secrets(&arguments);
-                if !redacted_arguments.is_empty() {
-                    events.push(ModelStreamEvent::ToolCallDelta {
-                        id: stream_tool_call_id(index, accumulator),
-                        args_delta: redacted_arguments,
-                    });
                 }
             }
         }

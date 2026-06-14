@@ -14,6 +14,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
+
 #[derive(Debug, Clone)]
 pub struct OllamaProvider {
     name: String,
@@ -466,12 +468,15 @@ fn token_total(prompt: Option<u32>, completion: Option<u32>) -> Option<u32> {
 }
 
 fn provider_base_url(provider_settings: &RemoteProviderConfig) -> Result<String> {
-    Ok(resolve_config_value(
-        &provider_settings.base_url,
-        "providers.model.base_url for Ollama model provider",
-    )?
-    .trim_end_matches('/')
-    .into())
+    let configured = provider_settings.base_url.trim().trim_end_matches('/');
+    if configured.is_empty() {
+        Ok(DEFAULT_OLLAMA_BASE_URL.into())
+    } else {
+        resolve_config_value(
+            configured,
+            "providers.model.base_url for Ollama model provider",
+        )
+    }
 }
 
 #[cfg(test)]

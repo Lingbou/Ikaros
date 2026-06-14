@@ -86,7 +86,8 @@ Ollama 本地示例：
 providers:
   model:
     api_key: ""
-    base_url: "http://127.0.0.1:11434"
+    # 可选。留空时使用 http://127.0.0.1:11434。
+    base_url: ""
 
 model:
   default:
