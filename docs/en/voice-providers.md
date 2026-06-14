@@ -9,10 +9,9 @@ Implemented:
 - `mock`: deterministic local TTS/ASR provider for explicit offline tests.
 - `openai-compatible`: adapter for `/audio/speech` and `/audio/transcriptions`.
 
-Accepted cloud voice provider names are aliases for the OpenAI-compatible
-adapter: `openai-compatible`, `openai`, `moonshot`, and `siliconflow`. The alias
-only selects the wire format; the configured remote service must actually expose
-the requested TTS or ASR endpoint.
+The only cloud voice provider name is `openai-compatible`. It selects the wire
+format; the configured remote service must actually expose the requested TTS or
+ASR endpoint.
 
 Example:
 

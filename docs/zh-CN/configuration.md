@@ -152,7 +152,7 @@ rag:
 
 生成配置使用协议级 `openai-compatible` provider，key、URL 和模型名为空。模型调用会在网络请求之前检查这些字段，缺少任何必要字段都会直接报错。
 
-支持的模型 provider 名称包括 `mock`、`openai-compatible`/`openai`、`moonshot`、`siliconflow`、`anthropic`/`claude` 和 `ollama`/`local-llm`。
+支持的模型 provider 名称包括 `mock`、`openai-compatible`、`anthropic` 和 `ollama`。
 
 OpenAI-compatible 示例：
 
@@ -170,7 +170,7 @@ model:
     daily_token_budget: 100000
 ```
 
-`moonshot`、`siliconflow` 这类 provider alias 仍使用同一个 OpenAI-compatible adapter；它们只是便捷名称，不是默认厂商。
+Provider 名称表示 adapter family，不表示厂商。任何 Chat Completions-compatible 服务都使用 `openai-compatible`，具体 endpoint 和模型写在 `providers.model.base_url` 和 `model.default.model`。
 
 Anthropic 示例：
 
@@ -227,7 +227,7 @@ rag:
   embedding_model: text-embedding-3-small
 ```
 
-Cloud embedding 使用 OpenAI-compatible 形状，并在 provider 调用前通过 harness 审批。支持的 embedding provider 名称包括 `hash`、`sparse`、`mock`、`openai-compatible`/`openai`、`moonshot` 和 `siliconflow`。
+Cloud embedding 使用 OpenAI-compatible 形状，并在 provider 调用前通过 harness 审批。支持的 embedding provider 名称包括 `hash`、`sparse`、`mock` 和 `openai-compatible`。
 
 外部 memory provider 目前只是 descriptor 元数据。远程 append/search adapter 尚未实现，因此 `ikaros config validate` 会拒绝启用的外部 memory provider。
 
@@ -254,7 +254,7 @@ voice:
     model: ""
 ```
 
-离线测试可以显式选择 `mock`。Cloud voice provider 名称是 OpenAI-compatible adapter 的别名：`openai-compatible`、`openai`、`moonshot` 和 `siliconflow`。厂商别名不代表远端服务一定同时提供 TTS 和 ASR endpoint。TTS 文本在 provider 调用前脱敏；输出文件视为 workspace 写入。
+离线测试可以显式选择 `mock`。Cloud voice provider 只接受 `openai-compatible`；配置的远端服务必须实际提供对应的 TTS 或 ASR endpoint。TTS 文本在 provider 调用前脱敏；输出文件视为 workspace 写入。
 
 ## Self-Modify 检查
 

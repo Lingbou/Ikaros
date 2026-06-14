@@ -3,7 +3,7 @@
 use super::policy::rag_risk_level;
 use crate::support::input_string;
 use async_trait::async_trait;
-use ikaros_core::{RagConfig, Result, RiskLevel};
+use ikaros_core::{RagConfig, RemoteProviderConfig, Result, RiskLevel};
 use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_rag::{LocalRagStore, RagHit, RagQuery};
 use serde_json::json;
@@ -13,11 +13,20 @@ use std::path::Path;
 pub struct RagSearchSkill {
     index: LocalRagStore,
     rag_config: RagConfig,
+    provider_settings: RemoteProviderConfig,
 }
 
 impl RagSearchSkill {
-    pub(crate) fn new(index: LocalRagStore, rag_config: RagConfig) -> Self {
-        Self { index, rag_config }
+    pub(crate) fn new(
+        index: LocalRagStore,
+        rag_config: RagConfig,
+        provider_settings: RemoteProviderConfig,
+    ) -> Self {
+        Self {
+            index,
+            rag_config,
+            provider_settings,
+        }
     }
 }
 
@@ -65,6 +74,7 @@ impl Skill for RagSearchSkill {
                     .map(ToOwned::to_owned),
             },
             &self.rag_config,
+            &self.provider_settings,
         )?;
         Ok(SkillOutput::new(
             "rag search complete",

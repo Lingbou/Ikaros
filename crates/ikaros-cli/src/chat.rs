@@ -111,7 +111,11 @@ pub(crate) async fn chat_command(
     paths.ensure()?;
     let config = IkarosConfig::load(&paths.config)?;
     let persona = load_or_default(&paths.persona)?;
-    let provider = governed_provider_from_config(&config.model.default, &paths.audit_dir)?;
+    let provider = governed_provider_from_config(
+        &config.model.default,
+        &config.providers.model,
+        &paths.audit_dir,
+    )?;
     let history_store =
         ChatHistoryStore::new_with_backend(&paths.home, &config.chat_history.backend)?;
     let mut options = ChatRunOptions::from(&args);

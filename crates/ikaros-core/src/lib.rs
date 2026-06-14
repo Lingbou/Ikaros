@@ -52,12 +52,12 @@ mod tests {
             config.model.default.transport,
             "openai-compatible-chat-completions"
         );
-        assert!(config.model.default.base_url.is_empty());
-        assert!(config.model.default.api_key.is_empty());
+        assert!(config.providers.model.base_url.is_empty());
+        assert!(config.providers.model.api_key.is_empty());
         assert!(config.model.default.model.is_empty());
         assert_eq!(config.rag.embedding_provider, "openai-compatible");
-        assert!(config.rag.embedding_base_url.is_empty());
-        assert!(config.rag.embedding_api_key.is_empty());
+        assert!(config.providers.embedding.base_url.is_empty());
+        assert!(config.providers.embedding.api_key.is_empty());
         assert!(config.rag.embedding_model.is_empty());
         assert_eq!(config.voice.tts.provider, "openai-compatible");
         assert_eq!(config.voice.asr.provider, "openai-compatible");

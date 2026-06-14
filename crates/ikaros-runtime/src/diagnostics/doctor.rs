@@ -58,7 +58,7 @@ pub fn runtime_doctor_report(
             model: config.model.default.model,
             runtime: config.model.default.runtime,
             transport: config.model.default.transport,
-            api_key_configured: secret_configured(&config.model.default.api_key),
+            api_key_configured: secret_configured(&config.providers.model.api_key),
             rate_limit_per_minute: config.model.default.rate_limit_per_minute,
             daily_token_budget: config.model.default.daily_token_budget,
         },
@@ -72,7 +72,7 @@ pub fn runtime_doctor_report(
             backend: config.rag.backend,
             embedding_provider: config.rag.embedding_provider,
             embedding_model: config.rag.embedding_model,
-            embedding_api_key_configured: secret_configured(&config.rag.embedding_api_key),
+            embedding_api_key_configured: secret_configured(&config.providers.embedding.api_key),
             path: rag_store.path().to_path_buf(),
         },
         voice: VoiceSummary {

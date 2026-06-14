@@ -58,7 +58,11 @@ impl ExecutionSession {
         let execution_request = self
             .approvals
             .execution_request(approval_id)?
-            .unwrap_or_else(|| record.request.clone());
+            .ok_or_else(|| {
+                IkarosError::Message(format!(
+                    "approval {approval_id} is missing its execution request; legacy approval replay is not supported"
+                ))
+            })?;
         if let Some(root) = &execution_request.workspace_root {
             let expected = canonicalize_path_for_policy(root);
             let actual = canonicalize_path_for_policy(&self.sandbox.workspace_root);

@@ -9,29 +9,30 @@ use crate::{
     types::ModelProvider,
     usage::ModelUsageLedger,
 };
-use ikaros_core::{IkarosError, ModelConfig, Result};
+use ikaros_core::{IkarosError, ModelConfig, RemoteProviderConfig, Result};
 use std::path::PathBuf;
 
-pub fn provider_from_config(config: &ModelConfig) -> Result<Box<dyn ModelProvider>> {
+pub fn provider_from_config(
+    config: &ModelConfig,
+    provider_settings: &RemoteProviderConfig,
+) -> Result<Box<dyn ModelProvider>> {
     match config.provider.to_ascii_lowercase().as_str() {
         "mock" => Ok(Box::new(MockModelProvider::new(config.model.clone()))),
-        "moonshot" => Ok(Box::new(OpenAiCompatibleProvider::from_config(
-            "moonshot", config,
-        )?)),
-        "siliconflow" | "silicon-flow" => Ok(Box::new(OpenAiCompatibleProvider::from_config(
-            "siliconflow",
+        "openai-compatible" => Ok(Box::new(OpenAiCompatibleProvider::from_config(
+            "openai-compatible",
             config,
+            provider_settings,
         )?)),
-        "openai-compatible" | "openai_compatible" | "openai" => Ok(Box::new(
-            OpenAiCompatibleProvider::from_config("openai-compatible", config)?,
-        )),
-        "anthropic" | "claude" => Ok(Box::new(AnthropicProvider::from_config(
+        "anthropic" => Ok(Box::new(AnthropicProvider::from_config(
             "anthropic",
             config,
+            provider_settings,
         )?)),
-        "ollama" | "local-llm" | "local_llm" => {
-            Ok(Box::new(OllamaProvider::from_config("ollama", config)?))
-        }
+        "ollama" => Ok(Box::new(OllamaProvider::from_config(
+            "ollama",
+            config,
+            provider_settings,
+        )?)),
         other => Err(IkarosError::Message(format!(
             "unsupported model provider: {other}"
         ))),
@@ -40,10 +41,11 @@ pub fn provider_from_config(config: &ModelConfig) -> Result<Box<dyn ModelProvide
 
 pub fn governed_provider_from_config(
     config: &ModelConfig,
+    provider_settings: &RemoteProviderConfig,
     audit_dir: impl Into<PathBuf>,
 ) -> Result<Box<dyn ModelProvider>> {
     Ok(Box::new(GovernedModelProvider::new(
-        provider_from_config(config)?,
+        provider_from_config(config, provider_settings)?,
         ModelUsageLedger::new(audit_dir),
         ModelRuntimeLimits::from(config),
     )))

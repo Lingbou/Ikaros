@@ -157,7 +157,11 @@ async fn append_model_code_review_notes(
     session: &ExecutionSession,
 ) -> Result<PathBuf> {
     let config = ikaros_core::IkarosConfig::load(&paths.config)?;
-    let provider = governed_provider_from_config(&config.model.default, &paths.audit_dir)?;
+    let provider = governed_provider_from_config(
+        &config.model.default,
+        &config.providers.model,
+        &paths.audit_dir,
+    )?;
     let usage_ledger = ModelUsageLedger::new(&paths.audit_dir);
     let prompt = build_model_code_review_prompt(diff, &result.output)?;
     let response = provider

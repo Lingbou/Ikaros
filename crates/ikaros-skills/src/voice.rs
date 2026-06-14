@@ -2,7 +2,7 @@
 
 use crate::support::{input_path, input_string, optional_input_path};
 use async_trait::async_trait;
-use ikaros_core::{IkarosError, Result, RiskLevel, redact_secrets};
+use ikaros_core::{IkarosError, RemoteProviderConfig, Result, RiskLevel, redact_secrets};
 use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_voice::{
     AsrRequest, AudioFormat, TtsRequest, VoiceProviderConfig, asr_provider_from_config,
@@ -17,11 +17,15 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct VoiceTtsSkill {
     config: VoiceProviderConfig,
+    provider_settings: RemoteProviderConfig,
 }
 
 impl VoiceTtsSkill {
-    pub fn new(config: VoiceProviderConfig) -> Self {
-        Self { config }
+    pub fn new(config: VoiceProviderConfig, provider_settings: RemoteProviderConfig) -> Self {
+        Self {
+            config,
+            provider_settings,
+        }
     }
 }
 
@@ -100,7 +104,7 @@ impl Skill for VoiceTtsSkill {
             .map(ToOwned::to_owned);
         let sample_rate_hz = optional_u32(&input, "sample_rate_hz")?;
         let redacted_text = redact_secrets(&text);
-        let provider = tts_provider_from_config(&self.config)?;
+        let provider = tts_provider_from_config(&self.config, &self.provider_settings)?;
         let mut output = provider
             .synthesize(TtsRequest {
                 text: redacted_text,
@@ -139,11 +143,15 @@ impl Skill for VoiceTtsSkill {
 #[derive(Debug, Clone)]
 pub struct VoiceAsrSkill {
     config: VoiceProviderConfig,
+    provider_settings: RemoteProviderConfig,
 }
 
 impl VoiceAsrSkill {
-    pub fn new(config: VoiceProviderConfig) -> Self {
-        Self { config }
+    pub fn new(config: VoiceProviderConfig, provider_settings: RemoteProviderConfig) -> Self {
+        Self {
+            config,
+            provider_settings,
+        }
     }
 }
 
@@ -217,7 +225,7 @@ impl Skill for VoiceAsrSkill {
             .map(parse_audio_format)
             .transpose()?;
         let sample_rate_hz = optional_u32(&input, "sample_rate_hz")?;
-        let provider = asr_provider_from_config(&self.config)?;
+        let provider = asr_provider_from_config(&self.config, &self.provider_settings)?;
         let transcript = provider
             .transcribe(AsrRequest {
                 audio_path: path,

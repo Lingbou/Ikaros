@@ -44,7 +44,11 @@ pub async fn run_chat_message(
         profile: agent_instance.profile.clone(),
     };
     let persona = load_or_default(&paths.persona)?;
-    let provider = governed_provider_from_config(&config.model.default, &paths.audit_dir)?;
+    let provider = governed_provider_from_config(
+        &config.model.default,
+        &config.providers.model,
+        &paths.audit_dir,
+    )?;
     let (session, registry) = session_and_registry_for_instance(paths, &config, &agent_instance)?;
     let memory_provider = LocalMemoryStore::new(&paths.memory_dir, &config.memory.backend)?;
     memory_provider.turn_start(MemoryTurnStart {

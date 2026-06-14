@@ -3,7 +3,7 @@
 use super::policy::{rag_path_policy_request, rag_risk_level};
 use crate::support::input_path;
 use async_trait::async_trait;
-use ikaros_core::{RagConfig, Result, RiskLevel};
+use ikaros_core::{RagConfig, RemoteProviderConfig, Result, RiskLevel};
 use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_rag::{IngestOptions, LocalRagStore};
 use serde_json::json;
@@ -13,11 +13,20 @@ use std::path::Path;
 pub struct RagIngestSkill {
     index: LocalRagStore,
     rag_config: RagConfig,
+    provider_settings: RemoteProviderConfig,
 }
 
 impl RagIngestSkill {
-    pub(crate) fn new(index: LocalRagStore, rag_config: RagConfig) -> Self {
-        Self { index, rag_config }
+    pub(crate) fn new(
+        index: LocalRagStore,
+        rag_config: RagConfig,
+        provider_settings: RemoteProviderConfig,
+    ) -> Self {
+        Self {
+            index,
+            rag_config,
+            provider_settings,
+        }
     }
 }
 
@@ -57,6 +66,7 @@ impl Skill for RagIngestSkill {
                 ..IngestOptions::default()
             },
             &self.rag_config,
+            &self.provider_settings,
         )?;
         Ok(SkillOutput::new("rag ingest complete", json!(report)))
     }
@@ -66,11 +76,20 @@ impl Skill for RagIngestSkill {
 pub struct RagReindexSkill {
     index: LocalRagStore,
     rag_config: RagConfig,
+    provider_settings: RemoteProviderConfig,
 }
 
 impl RagReindexSkill {
-    pub(crate) fn new(index: LocalRagStore, rag_config: RagConfig) -> Self {
-        Self { index, rag_config }
+    pub(crate) fn new(
+        index: LocalRagStore,
+        rag_config: RagConfig,
+        provider_settings: RemoteProviderConfig,
+    ) -> Self {
+        Self {
+            index,
+            rag_config,
+            provider_settings,
+        }
     }
 }
 
@@ -110,6 +129,7 @@ impl Skill for RagReindexSkill {
                 ..IngestOptions::default()
             },
             &self.rag_config,
+            &self.provider_settings,
         )?;
         Ok(SkillOutput::new("rag reindex complete", json!(report)))
     }

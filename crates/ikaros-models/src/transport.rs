@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use ikaros_core::ModelConfig;
+use ikaros_core::{ModelConfig, RemoteProviderConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,7 +18,10 @@ pub trait ModelTransport: Send + Sync {
     fn transport_descriptor(&self) -> ModelTransportDescriptor;
 }
 
-pub fn model_transport_descriptor_from_config(config: &ModelConfig) -> ModelTransportDescriptor {
+pub fn model_transport_descriptor_from_config(
+    config: &ModelConfig,
+    provider_settings: &RemoteProviderConfig,
+) -> ModelTransportDescriptor {
     ModelTransportDescriptor {
         provider: config.provider.clone(),
         model: config.model.clone(),
@@ -27,7 +30,7 @@ pub fn model_transport_descriptor_from_config(config: &ModelConfig) -> ModelTran
             &config.transport,
             default_transport_for_provider(&config.provider),
         ),
-        base_url: non_empty(config.base_url.clone()),
+        base_url: non_empty(provider_settings.base_url.clone()),
         supports_streaming: true,
         normalizes_tool_calls: true,
     }
@@ -55,10 +58,11 @@ pub(crate) fn descriptor(
 
 fn default_transport_for_provider(provider: &str) -> &'static str {
     match provider {
-        "anthropic" | "claude" => "anthropic-messages",
-        "ollama" | "local-llm" => "ollama-chat",
+        "openai-compatible" => "openai-compatible-chat-completions",
+        "anthropic" => "anthropic-messages",
+        "ollama" => "ollama-chat",
         "mock" => "mock",
-        _ => "openai-compatible-chat-completions",
+        _ => "",
     }
 }
 

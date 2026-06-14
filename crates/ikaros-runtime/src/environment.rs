@@ -108,10 +108,13 @@ pub fn skill_environment(
         memory_store: LocalMemoryStore::new(&paths.memory_dir, &config.memory.backend)?,
         rag_index: LocalRagStore::new(&paths.rag_dir, &config.rag.backend)?,
         rag_config: config.rag.clone(),
+        rag_provider: config.providers.embedding.clone(),
         persona_path: paths.persona.clone(),
         skills_dir: paths.skills_dir.clone(),
         voice_tts: config.voice.tts.clone(),
+        voice_tts_provider: config.providers.tts.clone(),
         voice_asr: config.voice.asr.clone(),
+        voice_asr_provider: config.providers.asr.clone(),
     })
 }
 

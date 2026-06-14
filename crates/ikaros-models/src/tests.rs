@@ -10,7 +10,7 @@ use crate::openai_compatible::{
     parse_chat_completion_response, parse_stream_response, redacted_model_http_error,
 };
 use async_trait::async_trait;
-use ikaros_core::{IkarosError, ModelConfig, Result};
+use ikaros_core::{IkarosError, ModelConfig, RemoteProviderConfig, Result};
 use std::{
     fs,
     sync::{Arc, Mutex},
@@ -74,18 +74,26 @@ async fn mock_provider_streams_redacted_chunks() {
 #[test]
 fn model_transport_descriptor_separates_runtime_and_wire_format() {
     let config = ModelConfig {
-        provider: "moonshot".into(),
-        model: "kimi-k2.6".into(),
+        provider: "openai-compatible".into(),
+        model: "chat-model".into(),
         runtime: "harness-agent-loop".into(),
         transport: "openai-compatible-chat-completions".into(),
         ..ModelConfig::default()
     };
-    let descriptor = model_transport_descriptor_from_config(&config);
+    let provider_settings = RemoteProviderConfig {
+        api_key: "test-key".into(),
+        base_url: "https://api.example/v1".into(),
+    };
+    let descriptor = model_transport_descriptor_from_config(&config, &provider_settings);
 
-    assert_eq!(descriptor.provider, "moonshot");
-    assert_eq!(descriptor.model, "kimi-k2.6");
+    assert_eq!(descriptor.provider, "openai-compatible");
+    assert_eq!(descriptor.model, "chat-model");
     assert_eq!(descriptor.runtime, "harness-agent-loop");
     assert_eq!(descriptor.transport, "openai-compatible-chat-completions");
+    assert_eq!(
+        descriptor.base_url.as_deref(),
+        Some("https://api.example/v1")
+    );
     assert!(descriptor.supports_streaming);
     assert!(descriptor.normalizes_tool_calls);
 }
@@ -107,69 +115,90 @@ async fn mock_provider_returns_concise_code_review_notes() {
 }
 
 #[test]
-fn siliconflow_provider_alias_uses_openai_compatible_adapter() {
-    let config = ModelConfig {
-        provider: "siliconflow".into(),
-        base_url: "https://api.siliconflow.cn/v1".into(),
+fn model_factory_accepts_only_canonical_provider_names() {
+    let provider_settings = RemoteProviderConfig {
         api_key: "test-key".into(),
+        base_url: "https://api.example/v1".into(),
+    };
+    let config = ModelConfig {
+        provider: "openai-compatible".into(),
         model: "example-model".into(),
         ..ModelConfig::default()
     };
-    let provider = provider_from_config(&config).expect("provider");
-    assert_eq!(provider.name(), "siliconflow");
+    let provider = provider_from_config(&config, &provider_settings).expect("provider");
+    assert_eq!(provider.name(), "openai-compatible");
+
+    let alias = ModelConfig {
+        provider: "openai".into(),
+        model: "example-model".into(),
+        ..ModelConfig::default()
+    };
+    let error = provider_from_config(&alias, &provider_settings)
+        .err()
+        .expect("alias rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported model provider: openai")
+    );
 }
 
 #[test]
-fn anthropic_and_ollama_provider_aliases_are_supported() {
-    let anthropic = provider_from_config(&ModelConfig {
-        provider: "anthropic".into(),
-        base_url: "https://api.anthropic.com/v1".into(),
+fn anthropic_and_ollama_canonical_providers_are_supported() {
+    let model_settings = RemoteProviderConfig {
         api_key: "test-key".into(),
-        model: "claude-sonnet-4-5".into(),
-        ..ModelConfig::default()
-    })
+        base_url: "https://api.anthropic.com/v1".into(),
+    };
+    let anthropic = provider_from_config(
+        &ModelConfig {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-5".into(),
+            ..ModelConfig::default()
+        },
+        &model_settings,
+    )
     .expect("anthropic provider");
     assert_eq!(anthropic.name(), "anthropic");
 
-    let ollama = provider_from_config(&ModelConfig {
-        provider: "ollama".into(),
-        model: "llama3.2".into(),
-        ..ModelConfig::default()
-    })
+    let ollama_settings = RemoteProviderConfig {
+        api_key: String::new(),
+        base_url: "http://127.0.0.1:11434".into(),
+    };
+    let ollama = provider_from_config(
+        &ModelConfig {
+            provider: "ollama".into(),
+            model: "llama3.2".into(),
+            ..ModelConfig::default()
+        },
+        &ollama_settings,
+    )
     .expect("ollama provider");
     assert_eq!(ollama.name(), "ollama");
 }
 
 #[test]
-fn moonshot_kimi_k26_temperature_is_normalized() {
+fn openai_compatible_temperature_is_passthrough() {
     let config = ModelConfig {
-        provider: "moonshot".into(),
-        base_url: "https://api.moonshot.cn/v1".into(),
-        api_key: "test-key".into(),
+        provider: "openai-compatible".into(),
         model: "kimi-k2.6".into(),
         ..ModelConfig::default()
     };
-    let provider = OpenAiCompatibleProvider::from_config("moonshot", &config).expect("provider");
-    assert_eq!(provider.compatible_temperature(Some(0.0)), Some(1.0));
-    assert_eq!(provider.compatible_temperature(Some(0.4)), Some(1.0));
-    assert_eq!(provider.compatible_temperature(None), None);
-
-    let other = ModelConfig {
-        provider: "siliconflow".into(),
-        base_url: "https://api.siliconflow.cn/v1".into(),
+    let provider_settings = RemoteProviderConfig {
         api_key: "test-key".into(),
-        model: "Qwen/Qwen3-Coder-30B-A3B-Instruct".into(),
-        ..ModelConfig::default()
+        base_url: "https://api.example/v1".into(),
     };
-    let provider = OpenAiCompatibleProvider::from_config("siliconflow", &other).expect("provider");
+    let provider =
+        OpenAiCompatibleProvider::from_config("openai-compatible", &config, &provider_settings)
+            .expect("provider");
+    assert_eq!(provider.compatible_temperature(Some(0.0)), Some(0.0));
     assert_eq!(provider.compatible_temperature(Some(0.4)), Some(0.4));
+    assert_eq!(provider.compatible_temperature(None), None);
 }
 
 #[test]
 fn anthropic_request_body_uses_messages_api_tool_blocks() {
     let config = ModelConfig {
         provider: "anthropic".into(),
-        api_key: "test-key".into(),
         model: "claude-sonnet-4-5".into(),
         ..ModelConfig::default()
     };
@@ -491,8 +520,8 @@ data: {"model":"stream-model","choices":[{"delta":{"content":"world token=abc123
 
 data: [DONE]
 "#;
-    let stream = parse_stream_response(text, "moonshot", "fallback").expect("stream");
-    assert_eq!(stream.provider, "moonshot");
+    let stream = parse_stream_response(text, "openai-compatible", "fallback").expect("stream");
+    assert_eq!(stream.provider, "openai-compatible");
     assert_eq!(stream.model, "stream-model");
     assert_eq!(stream.usage.total_tokens, Some(5));
     assert_eq!(stream.chunks.len(), 2);
@@ -504,7 +533,7 @@ data: [DONE]
         Some(ModelStreamEvent::Start {
             provider,
             model
-        }) if provider == "moonshot" && model == "stream-model"
+        }) if provider == "openai-compatible" && model == "stream-model"
     ));
     assert!(stream.events.iter().any(
         |event| matches!(event, ModelStreamEvent::TextDelta(text) if text.contains("Hello "))
@@ -561,9 +590,9 @@ fn parses_openai_compatible_stream_tool_call_deltas() {
         "usage": {"prompt_tokens": 2, "completion_tokens": 4, "total_tokens": 6}
     });
     let text = format!("data: {first_chunk}\n\ndata: {second_chunk}\n\ndata: [DONE]\n");
-    let stream = parse_stream_response(&text, "moonshot", "fallback").expect("stream");
+    let stream = parse_stream_response(&text, "openai-compatible", "fallback").expect("stream");
 
-    assert_eq!(stream.provider, "moonshot");
+    assert_eq!(stream.provider, "openai-compatible");
     assert_eq!(stream.model, "stream-tool-model");
     assert!(stream.chunks.is_empty());
     assert_eq!(stream.tool_calls.len(), 1);
@@ -609,7 +638,7 @@ fn parses_openai_compatible_stream_reasoning_and_refusal_events() {
         }]
     });
     let text = format!("data: {first_chunk}\n\ndata: [DONE]\n");
-    let stream = parse_stream_response(&text, "moonshot", "fallback").expect("stream");
+    let stream = parse_stream_response(&text, "openai-compatible", "fallback").expect("stream");
 
     assert!(
         stream
@@ -646,9 +675,10 @@ fn parses_openai_compatible_native_tool_calls() {
         "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
     }"#;
 
-    let response = parse_chat_completion_response(text, "moonshot", "fallback").expect("response");
+    let response =
+        parse_chat_completion_response(text, "openai-compatible", "fallback").expect("response");
 
-    assert_eq!(response.provider, "moonshot");
+    assert_eq!(response.provider, "openai-compatible");
     assert_eq!(response.model, "tool-model");
     assert!(response.content.is_empty());
     assert_eq!(response.tool_calls.len(), 1);

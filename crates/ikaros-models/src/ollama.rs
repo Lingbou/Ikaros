@@ -6,12 +6,13 @@ use crate::types::{
     ModelToolCall, ModelToolDefinition, TokenUsage,
 };
 use async_trait::async_trait;
-use ikaros_core::{IkarosError, ModelConfig, Result, redact_json, redact_secrets};
+use ikaros_core::{
+    IkarosError, ModelConfig, RemoteProviderConfig, Result, redact_json, redact_secrets,
+    resolve_config_value,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-
-const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 
 #[derive(Debug, Clone)]
 pub struct OllamaProvider {
@@ -23,7 +24,11 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
-    pub fn from_config(provider_name: impl Into<String>, config: &ModelConfig) -> Result<Self> {
+    pub fn from_config(
+        provider_name: impl Into<String>,
+        config: &ModelConfig,
+        provider_settings: &RemoteProviderConfig,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
@@ -32,7 +37,7 @@ impl OllamaProvider {
             })?;
         Ok(Self {
             name: provider_name.into(),
-            base_url: provider_base_url(config, DEFAULT_OLLAMA_BASE_URL),
+            base_url: provider_base_url(provider_settings)?,
             model: config.model.clone(),
             max_retries: config.max_retries,
             client,
@@ -460,14 +465,13 @@ fn token_total(prompt: Option<u32>, completion: Option<u32>) -> Option<u32> {
     }
 }
 
-fn provider_base_url(config: &ModelConfig, provider_default: &str) -> String {
-    let inherited_default = ModelConfig::default().base_url;
-    let configured = config.base_url.trim().trim_end_matches('/');
-    if configured.is_empty() || configured == inherited_default.trim_end_matches('/') {
-        provider_default.into()
-    } else {
-        configured.into()
-    }
+fn provider_base_url(provider_settings: &RemoteProviderConfig) -> Result<String> {
+    Ok(resolve_config_value(
+        &provider_settings.base_url,
+        "providers.model.base_url for Ollama model provider",
+    )?
+    .trim_end_matches('/')
+    .into())
 }
 
 #[cfg(test)]

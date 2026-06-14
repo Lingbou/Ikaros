@@ -3,8 +3,8 @@
 use crate::{AsrProvider, AsrRequest, AudioOutput, Transcript, TtsProvider, TtsRequest};
 use async_trait::async_trait;
 use ikaros_core::{
-    IkarosError, Result, VoiceProviderConfig, redact_secrets, resolve_config_secret,
-    resolve_config_value,
+    IkarosError, RemoteProviderConfig, Result, VoiceProviderConfig, redact_secrets,
+    resolve_config_secret, resolve_config_value,
 };
 use reqwest::{
     Client,
@@ -29,6 +29,7 @@ impl OpenAiCompatibleVoiceProvider {
     pub fn from_config(
         provider_name: impl Into<String>,
         config: &VoiceProviderConfig,
+        provider_settings: &RemoteProviderConfig,
     ) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
@@ -38,11 +39,14 @@ impl OpenAiCompatibleVoiceProvider {
             })?;
         Ok(Self {
             name: provider_name.into(),
-            base_url: resolve_config_value(&config.base_url, "providers.tts/asr.base_url")?
-                .trim_end_matches('/')
-                .into(),
+            base_url: resolve_config_value(
+                &provider_settings.base_url,
+                "providers.tts/asr.base_url",
+            )?
+            .trim_end_matches('/')
+            .into(),
             model: resolve_config_value(&config.model, "voice.tts/asr.model")?,
-            api_key: config.api_key.clone(),
+            api_key: provider_settings.api_key.clone(),
             default_voice: config.voice.clone(),
             max_retries: config.max_retries,
             client,

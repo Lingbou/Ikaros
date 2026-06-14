@@ -75,7 +75,7 @@ ikaros rag delete-scope scratch
 
 - `openai-compatible`
 
-当前 factory 接受的 cloud 别名包括 `openai`、`openai-compatible`、`moonshot` 和 `siliconflow`。
+`openai-compatible` 是唯一的 cloud embedding provider 名称。Provider endpoint 通过 `providers.embedding.base_url` 配置，不通过 provider-name alias 表达。
 
 Cloud embedding call 是网络动作，ingest、reindex 和 search 都需要 harness 审批。文本在 provider 调用前脱敏。测试显式使用本地/mock provider，不需要凭证。
 

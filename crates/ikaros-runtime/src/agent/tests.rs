@@ -11,6 +11,7 @@ async fn agent_handoff_records_audit_event() {
     let workspace = temp.path().join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace");
     let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
 
     let report = run_agent_handoff(&paths, &workspace, Some("build"), "inspect runtime", true)
         .await
@@ -30,6 +31,7 @@ async fn agent_pool_runs_multiple_dry_run_handoffs() {
     let workspace = temp.path().join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace");
     let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
 
     let report = run_agent_pool(
         &paths,

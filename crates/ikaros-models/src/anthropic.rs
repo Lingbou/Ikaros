@@ -7,8 +7,8 @@ use crate::types::{
 };
 use async_trait::async_trait;
 use ikaros_core::{
-    IkarosError, ModelConfig, Result, redact_json, redact_secrets, resolve_config_secret,
-    resolve_config_value,
+    IkarosError, ModelConfig, RemoteProviderConfig, Result, redact_json, redact_secrets,
+    resolve_config_secret, resolve_config_value,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,11 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn from_config(provider_name: impl Into<String>, config: &ModelConfig) -> Result<Self> {
+    pub fn from_config(
+        provider_name: impl Into<String>,
+        config: &ModelConfig,
+        provider_settings: &RemoteProviderConfig,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
@@ -36,9 +40,9 @@ impl AnthropicProvider {
             })?;
         Ok(Self {
             name: provider_name.into(),
-            base_url: provider_base_url(config)?,
+            base_url: provider_base_url(provider_settings)?,
             model: resolve_config_value(&config.model, "model.default.model")?,
-            api_key: config.api_key.clone(),
+            api_key: provider_settings.api_key.clone(),
             max_retries: config.max_retries,
             client,
         })
@@ -440,9 +444,9 @@ impl From<AnthropicUsage> for TokenUsage {
     }
 }
 
-fn provider_base_url(config: &ModelConfig) -> Result<String> {
+fn provider_base_url(provider_settings: &RemoteProviderConfig) -> Result<String> {
     Ok(resolve_config_value(
-        &config.base_url,
+        &provider_settings.base_url,
         "providers.model.base_url for Anthropic-compatible model provider",
     )?
     .trim_end_matches('/')

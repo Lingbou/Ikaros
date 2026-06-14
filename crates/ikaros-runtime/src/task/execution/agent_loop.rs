@@ -43,8 +43,11 @@ pub(super) async fn execute_agent_loop_task(
     input: AgentLoopTaskInput<'_>,
 ) -> Result<(TaskExecutionReport, Option<AgentLoopReport>)> {
     let persona = load_or_default(&input.paths.persona)?;
-    let provider =
-        governed_provider_from_config(&input.config.model.default, &input.paths.audit_dir)?;
+    let provider = governed_provider_from_config(
+        &input.config.model.default,
+        &input.config.providers.model,
+        &input.paths.audit_dir,
+    )?;
     input.session.audit.append(AuditEvent::new(
         "task_execution_start",
         None,

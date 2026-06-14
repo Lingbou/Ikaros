@@ -43,15 +43,15 @@ Implemented:
 
 - `mock`: deterministic local provider for explicit offline tests.
 - `openai-compatible`: Chat Completions adapter.
-- `moonshot` and `siliconflow`: aliases/config helpers over the OpenAI-compatible adapter.
-- `anthropic` / `claude`: native Anthropic Messages API adapter with `tool_use` parsing.
+- `anthropic`: native Anthropic Messages API adapter with `tool_use` parsing.
 - `ollama`: local Ollama `/api/chat` adapter with tool call support for models that expose it.
 
-Accepted provider names and aliases:
+Accepted provider names:
 
-- OpenAI-compatible: `openai-compatible`, `openai_compatible`, `openai`, `moonshot`, `siliconflow`, `silicon-flow`
-- Anthropic: `anthropic`, `claude`
-- Ollama: `ollama`, `local-llm`, `local_llm`
+- OpenAI-compatible: `openai-compatible`
+- Anthropic: `anthropic`
+- Ollama: `ollama`
+- Offline tests: `mock`
 
 OpenAI-compatible example:
 
@@ -72,9 +72,8 @@ model:
 ```
 
 `api_key` and `base_url` live in the local `IKAROS_HOME/config.yaml` under
-`providers.model`. Do not write real keys into tracked files. Aliases such as
-`moonshot` and `siliconflow` use the same adapter and are convenience names, not
-default vendors.
+`providers.model`. Do not write real keys into tracked files. Provider names are
+adapter families; do not encode vendor names in `model.default.provider`.
 
 Anthropic example:
 
@@ -110,10 +109,10 @@ model:
 
 The OpenAI-compatible adapter owns Chat Completions requests and responses, HTTP client setup, normal completions, SSE stream parsing, tool-call conversion, and the stream tool-call accumulator. It does not own the agent loop.
 
-OpenAI-compatible aliases such as `moonshot` and `siliconflow` use the same
-adapter with provider-specific normalization. Kimi K2.6 temperature normalization
-is handled in the adapter path so runtime callers do not need provider-specific
-branches.
+The OpenAI-compatible provider is vendor-neutral. It does not carry
+provider-specific aliases or model-specific request normalization; endpoint
+differences belong in configuration or a future explicit adapter option, not in
+the provider name.
 
 Streaming parses SSE chunks incrementally. Text, reasoning, refusal, native
 tool-call, usage, and done markers become typed `ModelStreamEvent` values.

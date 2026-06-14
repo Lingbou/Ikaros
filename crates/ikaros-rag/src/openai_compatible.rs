@@ -2,7 +2,8 @@
 
 use crate::EmbeddingProvider;
 use ikaros_core::{
-    IkarosError, RagConfig, Result, redact_secrets, resolve_config_secret, resolve_config_value,
+    IkarosError, RagConfig, RemoteProviderConfig, Result, redact_secrets, resolve_config_secret,
+    resolve_config_value,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -19,17 +20,21 @@ pub struct OpenAiCompatibleEmbeddingProvider {
 }
 
 impl OpenAiCompatibleEmbeddingProvider {
-    pub fn from_config(provider_name: impl Into<String>, config: &RagConfig) -> Result<Self> {
+    pub fn from_config(
+        provider_name: impl Into<String>,
+        config: &RagConfig,
+        provider_settings: &RemoteProviderConfig,
+    ) -> Result<Self> {
         Ok(Self {
             name: provider_name.into(),
             base_url: resolve_config_value(
-                &config.embedding_base_url,
+                &provider_settings.base_url,
                 "providers.embedding.base_url",
             )?
             .trim_end_matches('/')
             .into(),
             model: resolve_config_value(&config.embedding_model, "rag.embedding_model")?,
-            api_key: config.embedding_api_key.clone(),
+            api_key: provider_settings.api_key.clone(),
             timeout: Duration::from_millis(config.embedding_timeout_ms),
             max_retries: config.embedding_max_retries,
         })

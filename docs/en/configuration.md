@@ -175,7 +175,7 @@ The generated config uses the protocol-level `openai-compatible` provider with
 empty key, URL, and model fields. A model call fails before the network request
 until all required fields are configured.
 
-Supported model provider names are `mock`, `openai-compatible`/`openai`, `moonshot`, `siliconflow`, `anthropic`/`claude`, and `ollama`/`local-llm`.
+Supported model provider names are `mock`, `openai-compatible`, `anthropic`, and `ollama`.
 
 OpenAI-compatible example:
 
@@ -193,8 +193,9 @@ model:
     daily_token_budget: 100000
 ```
 
-Provider aliases such as `moonshot` and `siliconflow` use the same
-OpenAI-compatible adapter; they are convenience names, not default vendors.
+Provider names are adapter families, not vendor names. Use `openai-compatible`
+for any Chat Completions-compatible service and put the selected endpoint and
+model in `providers.model.base_url` and `model.default.model`.
 
 Anthropic example:
 
@@ -254,8 +255,7 @@ rag:
 
 Cloud embeddings use the OpenAI-compatible shape and require approval through
 the harness before provider calls. Supported embedding provider names are
-`hash`, `sparse`, `mock`, `openai-compatible`/`openai`, `moonshot`, and
-`siliconflow`.
+`hash`, `sparse`, `mock`, and `openai-compatible`.
 
 External memory providers are descriptor metadata only in the current runtime.
 `ikaros config validate` rejects enabled external memory providers because
@@ -285,11 +285,10 @@ voice:
     model: ""
 ```
 
-Offline tests can explicitly choose `mock`. Accepted cloud voice provider names
-are aliases for the OpenAI-compatible adapter: `openai-compatible`, `openai`,
-`moonshot`, and `siliconflow`. A vendor alias does not guarantee that the remote
-service exposes both TTS and ASR endpoints. TTS text is redacted before provider
-calls; output files are treated as workspace writes.
+Offline tests can explicitly choose `mock`. The only cloud voice provider name
+is `openai-compatible`; the configured remote service must actually expose the
+requested TTS or ASR endpoint. TTS text is redacted before provider calls; output
+files are treated as workspace writes.
 
 ## Self-Modify Checks
 

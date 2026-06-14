@@ -22,10 +22,13 @@ fn test_env(root: &Path, workspace: &Path) -> SkillEnvironment {
         memory_store: LocalMemoryStore::new(root.join("memory"), "jsonl").expect("memory"),
         rag_index: LocalRagStore::new(root.join("rag"), "jsonl").expect("rag"),
         rag_config,
+        rag_provider: ikaros_core::RemoteProviderConfig::default(),
         persona_path: root.join("persona.md"),
         skills_dir: root.join("skills"),
         voice_tts: ikaros_voice::VoiceProviderConfig::mock_tts(),
+        voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
         voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
+        voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
     }
 }
 
@@ -279,12 +282,14 @@ async fn cloud_rag_search_requires_network_approval_before_provider_execution() 
     let registry = builtin_registry(SkillEnvironment {
         rag_config: ikaros_core::RagConfig {
             embedding_provider: "openai-compatible".into(),
-            embedding_base_url: "https://example.invalid/v1".into(),
-            embedding_api_key: "test-rag-key".into(),
             embedding_model: "embedding-model".into(),
             embedding_timeout_ms: 1000,
             embedding_max_retries: 0,
             ..ikaros_core::RagConfig::default()
+        },
+        rag_provider: ikaros_core::RemoteProviderConfig {
+            api_key: "test-rag-key".into(),
+            base_url: "https://example.invalid/v1".into(),
         },
         ..test_env(temp.path(), &workspace)
     });
@@ -738,12 +743,14 @@ async fn cloud_voice_tts_requires_network_approval_before_provider_execution() {
     let registry = builtin_registry(SkillEnvironment {
         voice_tts: ikaros_voice::VoiceProviderConfig {
             provider: "openai-compatible".into(),
-            base_url: "https://example.invalid/v1".into(),
-            api_key: "test-voice-key".into(),
             model: "tts-model".into(),
             timeout_ms: 1000,
             max_retries: 0,
             voice: Some("nova".into()),
+        },
+        voice_tts_provider: ikaros_core::RemoteProviderConfig {
+            api_key: "test-voice-key".into(),
+            base_url: "https://example.invalid/v1".into(),
         },
         ..test_env(temp.path(), &workspace)
     });
@@ -770,12 +777,14 @@ async fn cloud_voice_tts_with_output_path_requires_network_approval_before_file_
     let registry = builtin_registry(SkillEnvironment {
         voice_tts: ikaros_voice::VoiceProviderConfig {
             provider: "openai-compatible".into(),
-            base_url: "https://example.invalid/v1".into(),
-            api_key: "test-voice-key".into(),
             model: "tts-model".into(),
             timeout_ms: 1000,
             max_retries: 0,
             voice: Some("nova".into()),
+        },
+        voice_tts_provider: ikaros_core::RemoteProviderConfig {
+            api_key: "test-voice-key".into(),
+            base_url: "https://example.invalid/v1".into(),
         },
         ..test_env(temp.path(), &workspace)
     });

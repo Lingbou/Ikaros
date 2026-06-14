@@ -78,7 +78,9 @@ Optional cloud provider:
 
 - `openai-compatible`
 
-Cloud aliases accepted by the current factory are `openai`, `openai-compatible`, `moonshot`, and `siliconflow`.
+`openai-compatible` is the only cloud embedding provider name. Provider
+endpoints are configured through `providers.embedding.base_url`, not through
+provider-name aliases.
 
 Cloud embedding calls are network actions and require harness approval for
 ingest, reindex, and search. Text is redacted before provider calls. Tests use

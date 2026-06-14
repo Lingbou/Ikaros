@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
-use ikaros_core::{IkarosError, ModelConfig, Result, resolve_config_secret, resolve_config_value};
+use ikaros_core::{
+    IkarosError, ModelConfig, RemoteProviderConfig, Result, resolve_config_secret,
+    resolve_config_value,
+};
 use reqwest::Client;
 use std::time::Duration;
 
@@ -16,7 +19,11 @@ pub struct OpenAiCompatibleProvider {
 }
 
 impl OpenAiCompatibleProvider {
-    pub fn from_config(provider_name: impl Into<String>, config: &ModelConfig) -> Result<Self> {
+    pub fn from_config(
+        provider_name: impl Into<String>,
+        config: &ModelConfig,
+        provider_settings: &RemoteProviderConfig,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
@@ -26,13 +33,13 @@ impl OpenAiCompatibleProvider {
         Ok(Self {
             name: provider_name.into(),
             base_url: resolve_config_value(
-                &config.base_url,
+                &provider_settings.base_url,
                 "providers.model.base_url for OpenAI-compatible model provider",
             )?
             .trim_end_matches('/')
             .into(),
             model: resolve_config_value(&config.model, "model.default.model")?,
-            api_key: config.api_key.clone(),
+            api_key: provider_settings.api_key.clone(),
             max_retries: config.max_retries,
             client,
         })
@@ -47,15 +54,6 @@ impl OpenAiCompatibleProvider {
     }
 
     pub(crate) fn compatible_temperature(&self, temperature: Option<f32>) -> Option<f32> {
-        let model = self.model.to_ascii_lowercase();
-        let provider = self.name.to_ascii_lowercase();
-        let base_url = self.base_url.to_ascii_lowercase();
-        if temperature.is_some()
-            && model == "kimi-k2.6"
-            && (provider == "moonshot" || base_url.contains("api.moonshot.cn"))
-        {
-            return Some(1.0);
-        }
         temperature
     }
 }

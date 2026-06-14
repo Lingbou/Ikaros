@@ -6,7 +6,7 @@ use crate::{
     sqlite::SqliteRagIndex,
     types::{IngestOptions, IngestReport, RagHit, RagQuery, RagStore},
 };
-use ikaros_core::{IkarosError, RagConfig, Result};
+use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -48,14 +48,19 @@ impl LocalRagStore {
         path: &Path,
         options: IngestOptions,
         config: &RagConfig,
+        provider_settings: &RemoteProviderConfig,
     ) -> Result<IngestReport> {
         match self {
-            Self::Jsonl(store) => with_embedding_provider_config(config, |provider| {
-                store.ingest_path_with_embedding(path, options, provider)
-            }),
-            Self::Sqlite(store) => with_embedding_provider_config(config, |provider| {
-                store.ingest_path_with_embedding(path, options, provider)
-            }),
+            Self::Jsonl(store) => {
+                with_embedding_provider_config(config, provider_settings, |provider| {
+                    store.ingest_path_with_embedding(path, options, provider)
+                })
+            }
+            Self::Sqlite(store) => {
+                with_embedding_provider_config(config, provider_settings, |provider| {
+                    store.ingest_path_with_embedding(path, options, provider)
+                })
+            }
         }
     }
 
@@ -78,14 +83,19 @@ impl LocalRagStore {
         &self,
         query: RagQuery,
         config: &RagConfig,
+        provider_settings: &RemoteProviderConfig,
     ) -> Result<Vec<RagHit>> {
         match self {
-            Self::Jsonl(store) => with_embedding_provider_config(config, |provider| {
-                store.search_with_embedding(query, provider)
-            }),
-            Self::Sqlite(store) => with_embedding_provider_config(config, |provider| {
-                store.search_with_embedding(query, provider)
-            }),
+            Self::Jsonl(store) => {
+                with_embedding_provider_config(config, provider_settings, |provider| {
+                    store.search_with_embedding(query, provider)
+                })
+            }
+            Self::Sqlite(store) => {
+                with_embedding_provider_config(config, provider_settings, |provider| {
+                    store.search_with_embedding(query, provider)
+                })
+            }
         }
     }
 }

@@ -16,7 +16,7 @@ pub use coding::{
     TaskSummarizeSkill,
 };
 pub use fs::{FsReadSkill, FsWriteGuardedSkill, ListDirSkill};
-use ikaros_core::RagConfig;
+use ikaros_core::{RagConfig, RemoteProviderConfig};
 use ikaros_harness::SkillRegistry;
 use ikaros_memory::LocalMemoryStore;
 use ikaros_rag::LocalRagStore;
@@ -38,10 +38,13 @@ pub struct SkillEnvironment {
     pub memory_store: LocalMemoryStore,
     pub rag_index: LocalRagStore,
     pub rag_config: RagConfig,
+    pub rag_provider: RemoteProviderConfig,
     pub persona_path: PathBuf,
     pub skills_dir: PathBuf,
     pub voice_tts: VoiceProviderConfig,
+    pub voice_tts_provider: RemoteProviderConfig,
     pub voice_asr: VoiceProviderConfig,
+    pub voice_asr_provider: RemoteProviderConfig,
 }
 
 pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
@@ -57,8 +60,14 @@ pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     registry.register(MemoryUpdateSkill::new(env.memory_store.clone()));
     registry.register(MemoryDeleteSkill::new(env.memory_store.clone()));
     registry.register(PersonaLoadSkill::new(env.persona_path));
-    registry.register(VoiceTtsSkill::new(env.voice_tts.clone()));
-    registry.register(VoiceAsrSkill::new(env.voice_asr.clone()));
+    registry.register(VoiceTtsSkill::new(
+        env.voice_tts.clone(),
+        env.voice_tts_provider.clone(),
+    ));
+    registry.register(VoiceAsrSkill::new(
+        env.voice_asr.clone(),
+        env.voice_asr_provider.clone(),
+    ));
     registry.register(TaskSummarizeSkill);
     registry.register(RepoScanSkill);
     registry.register(RunTestsSkill);
@@ -68,15 +77,21 @@ pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     registry.register(RagIngestSkill::new(
         env.rag_index.clone(),
         env.rag_config.clone(),
+        env.rag_provider.clone(),
     ));
     registry.register(RagSearchSkill::new(
         env.rag_index.clone(),
         env.rag_config.clone(),
+        env.rag_provider.clone(),
     ));
     registry.register(RagStaleSkill::new(env.rag_index.clone()));
     registry.register(RagDeleteScopeSkill::new(env.rag_index.clone()));
     registry.register(RagDeletePathSkill::new(env.rag_index.clone()));
-    registry.register(RagReindexSkill::new(env.rag_index, env.rag_config));
+    registry.register(RagReindexSkill::new(
+        env.rag_index,
+        env.rag_config,
+        env.rag_provider,
+    ));
     registry.register(PluginCommandRunSkill::new(env.skills_dir));
     registry
 }

@@ -25,12 +25,13 @@ pub struct IkarosConfig {
 impl IkarosConfig {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(Self::default());
+            return Err(IkarosError::Message(format!(
+                "config file not found: {}; run `ikaros init` to create config.yaml under IKAROS_HOME",
+                path.display()
+            )));
         }
         let raw = fs::read_to_string(path).map_err(|source| IkarosError::io(path, source))?;
-        let mut config: Self = yaml_serde::from_str(&raw)?;
-        config.apply_external_provider_config();
-        Ok(config)
+        Ok(yaml_serde::from_str(&raw)?)
     }
 
     pub fn write_default_config(path: &Path) -> Result<()> {
@@ -42,7 +43,7 @@ providers:
     # API key for the default chat/completion provider.
     api_key: ""
     # Base URL for the default chat/completion provider.
-    # Examples: https://api.openai.com/v1, https://api.moonshot.cn/v1, https://api.siliconflow.cn/v1.
+    # Example: https://api.example.com/v1.
     base_url: ""
   embedding:
     # API key for the remote embedding provider.
@@ -137,7 +138,7 @@ agent:
 
 model:
   default:
-    # Provider family: openai-compatible/openai, anthropic/claude, ollama/local-llm, or mock for tests only.
+    # Provider family: openai-compatible, anthropic, ollama, or mock for tests only.
     provider: openai-compatible
     # Agent runtime implementation that owns the turn loop.
     runtime: harness-agent-loop
@@ -180,7 +181,7 @@ chat_history:
 rag:
   # Local RAG index backend: jsonl or sqlite.
   backend: jsonl
-  # Embedding provider: hash, sparse, mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
+  # Embedding provider: hash, sparse, mock, or openai-compatible.
   embedding_provider: openai-compatible
   # Embedding model name sent to the provider.
   embedding_model: ""
@@ -191,7 +192,7 @@ rag:
 
 voice:
   tts:
-    # Text-to-speech provider: mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
+    # Text-to-speech provider: mock or openai-compatible.
     provider: openai-compatible
     # TTS model name sent to the provider.
     model: ""
@@ -202,7 +203,7 @@ voice:
     # Default TTS voice name.
     voice: default
   asr:
-    # Speech-to-text provider: mock, openai-compatible/openai, or provider aliases such as moonshot/siliconflow.
+    # Speech-to-text provider: mock or openai-compatible.
     provider: openai-compatible
     # ASR model name sent to the provider.
     model: ""
@@ -244,8 +245,7 @@ voice:
         let mut report = ConfigValidationReport::default();
         validate_yaml_shape(&value, &mut report);
 
-        let mut config: Self = yaml_serde::from_str(raw)?;
-        config.apply_external_provider_config();
+        let config: Self = yaml_serde::from_str(raw)?;
         config.validate_into(&mut report);
         Ok(report)
     }
@@ -256,42 +256,27 @@ voice:
         report
     }
 
-    fn apply_external_provider_config(&mut self) {
-        if !self.providers.model.api_key.trim().is_empty() {
-            self.model.default.api_key = self.providers.model.api_key.clone();
-        }
-        if !self.providers.model.base_url.trim().is_empty() {
-            self.model.default.base_url = self.providers.model.base_url.clone();
-        }
-        if !self.providers.embedding.api_key.trim().is_empty() {
-            self.rag.embedding_api_key = self.providers.embedding.api_key.clone();
-        }
-        if !self.providers.embedding.base_url.trim().is_empty() {
-            self.rag.embedding_base_url = self.providers.embedding.base_url.clone();
-        }
-        if !self.providers.tts.api_key.trim().is_empty() {
-            self.voice.tts.api_key = self.providers.tts.api_key.clone();
-        }
-        if !self.providers.tts.base_url.trim().is_empty() {
-            self.voice.tts.base_url = self.providers.tts.base_url.clone();
-        }
-        if !self.providers.asr.api_key.trim().is_empty() {
-            self.voice.asr.api_key = self.providers.asr.api_key.clone();
-        }
-        if !self.providers.asr.base_url.trim().is_empty() {
-            self.voice.asr.base_url = self.providers.asr.base_url.clone();
-        }
-    }
-
     fn validate_into(&self, report: &mut ConfigValidationReport) {
         validate_agent_config(&self.agent, report);
-        validate_model_config(&self.model.default, report);
+        validate_model_config(&self.model.default, &self.providers.model, report);
         validate_policy_config(&self.policy, report);
         validate_memory_config(&self.memory, report);
         validate_local_backend("chat_history.backend", &self.chat_history.backend, report);
-        validate_rag_config(&self.rag, report);
-        validate_voice_config("voice.tts", &self.voice.tts, true, report);
-        validate_voice_config("voice.asr", &self.voice.asr, false, report);
+        validate_rag_config(&self.rag, &self.providers.embedding, report);
+        validate_voice_config(
+            "voice.tts",
+            &self.voice.tts,
+            &self.providers.tts,
+            true,
+            report,
+        );
+        validate_voice_config(
+            "voice.asr",
+            &self.voice.asr,
+            &self.providers.asr,
+            false,
+            report,
+        );
         validate_self_modify_config(&self.self_modify, report);
     }
 }
@@ -349,7 +334,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn top_level_provider_settings_feed_runtime_configs() {
+    fn top_level_provider_settings_are_schema_only() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("config.yaml");
         fs::write(
@@ -373,17 +358,17 @@ providers:
         .expect("write");
 
         let config = IkarosConfig::load(&path).expect("config");
-        assert_eq!(config.model.default.api_key, "model-secret");
-        assert_eq!(config.model.default.base_url, "https://model.example/v1");
-        assert_eq!(config.rag.embedding_api_key, "rag-secret");
+        assert_eq!(config.providers.model.api_key, "model-secret");
+        assert_eq!(config.providers.model.base_url, "https://model.example/v1");
+        assert_eq!(config.providers.embedding.api_key, "rag-secret");
         assert_eq!(
-            config.rag.embedding_base_url,
+            config.providers.embedding.base_url,
             "https://embedding.example/v1"
         );
-        assert_eq!(config.voice.tts.api_key, "tts-secret");
-        assert_eq!(config.voice.tts.base_url, "https://tts.example/v1");
-        assert_eq!(config.voice.asr.api_key, "asr-secret");
-        assert_eq!(config.voice.asr.base_url, "https://asr.example/v1");
+        assert_eq!(config.providers.tts.api_key, "tts-secret");
+        assert_eq!(config.providers.tts.base_url, "https://tts.example/v1");
+        assert_eq!(config.providers.asr.api_key, "asr-secret");
+        assert_eq!(config.providers.asr.base_url, "https://asr.example/v1");
     }
 
     #[test]
@@ -394,12 +379,12 @@ providers:
 
         let config = IkarosConfig::load(&path).expect("load generated config");
         assert_eq!(config.model.default.provider, "openai-compatible");
-        assert!(config.model.default.api_key.is_empty());
-        assert_eq!(config.model.default.base_url, "");
+        assert!(config.providers.model.api_key.is_empty());
+        assert!(config.providers.model.base_url.is_empty());
         assert_eq!(config.rag.embedding_provider, "openai-compatible");
-        assert_eq!(config.rag.embedding_base_url, "");
+        assert!(config.providers.embedding.base_url.is_empty());
         assert_eq!(config.voice.tts.provider, "openai-compatible");
-        assert_eq!(config.voice.tts.base_url, "");
+        assert!(config.providers.tts.base_url.is_empty());
     }
 
     #[test]
@@ -526,10 +511,6 @@ pub struct ModelConfig {
     pub provider: String,
     pub runtime: String,
     pub transport: String,
-    #[serde(skip)]
-    pub base_url: String,
-    #[serde(skip)]
-    pub api_key: String,
     pub model: String,
     pub timeout_ms: u64,
     pub max_retries: u8,
@@ -543,8 +524,6 @@ impl Default for ModelConfig {
             provider: "openai-compatible".into(),
             runtime: "harness-agent-loop".into(),
             transport: "openai-compatible-chat-completions".into(),
-            base_url: String::new(),
-            api_key: String::new(),
             model: String::new(),
             timeout_ms: 30_000,
             max_retries: 0,
@@ -617,10 +596,6 @@ impl Default for LocalStoreConfig {
 pub struct RagConfig {
     pub backend: String,
     pub embedding_provider: String,
-    #[serde(skip)]
-    pub embedding_base_url: String,
-    #[serde(skip)]
-    pub embedding_api_key: String,
     pub embedding_model: String,
     pub embedding_timeout_ms: u64,
     pub embedding_max_retries: u8,
@@ -631,8 +606,6 @@ impl Default for RagConfig {
         Self {
             backend: "jsonl".into(),
             embedding_provider: "openai-compatible".into(),
-            embedding_base_url: String::new(),
-            embedding_api_key: String::new(),
             embedding_model: String::new(),
             embedding_timeout_ms: 30_000,
             embedding_max_retries: 0,
@@ -660,10 +633,6 @@ impl Default for VoiceConfig {
 #[serde(default)]
 pub struct VoiceProviderConfig {
     pub provider: String,
-    #[serde(skip)]
-    pub base_url: String,
-    #[serde(skip)]
-    pub api_key: String,
     pub model: String,
     pub timeout_ms: u64,
     pub max_retries: u8,
@@ -674,8 +643,6 @@ impl VoiceProviderConfig {
     pub fn remote_tts() -> Self {
         Self {
             provider: "openai-compatible".into(),
-            base_url: String::new(),
-            api_key: String::new(),
             model: String::new(),
             timeout_ms: 30_000,
             max_retries: 0,
@@ -686,8 +653,6 @@ impl VoiceProviderConfig {
     pub fn remote_asr() -> Self {
         Self {
             provider: "openai-compatible".into(),
-            base_url: String::new(),
-            api_key: String::new(),
             model: String::new(),
             timeout_ms: 30_000,
             max_retries: 0,
@@ -698,8 +663,6 @@ impl VoiceProviderConfig {
     pub fn mock_tts() -> Self {
         Self {
             provider: "mock".into(),
-            base_url: "https://api.openai.com/v1".into(),
-            api_key: String::new(),
             model: "mock-tts".into(),
             timeout_ms: 30_000,
             max_retries: 0,
@@ -710,8 +673,6 @@ impl VoiceProviderConfig {
     pub fn mock_asr() -> Self {
         Self {
             provider: "mock".into(),
-            base_url: "https://api.openai.com/v1".into(),
-            api_key: String::new(),
             model: "mock-asr".into(),
             timeout_ms: 30_000,
             max_retries: 0,
@@ -1124,7 +1085,11 @@ fn validate_agent_config(config: &AgentConfig, report: &mut ConfigValidationRepo
     }
 }
 
-fn validate_model_config(config: &ModelConfig, report: &mut ConfigValidationReport) {
+fn validate_model_config(
+    config: &ModelConfig,
+    provider_settings: &RemoteProviderConfig,
+    report: &mut ConfigValidationReport,
+) {
     let provider = normalize(&config.provider);
     if !is_allowed_model_provider(&provider) {
         report.error(
@@ -1161,9 +1126,17 @@ fn validate_model_config(config: &ModelConfig, report: &mut ConfigValidationRepo
         return;
     }
     validate_required("model.default.model", &config.model, report);
-    validate_required_url("providers.model.base_url", &config.base_url, report);
-    if !matches!(provider.as_str(), "ollama" | "local-llm" | "local_llm") {
-        validate_required("providers.model.api_key", &config.api_key, report);
+    validate_required_url(
+        "providers.model.base_url",
+        &provider_settings.base_url,
+        report,
+    );
+    if provider != "ollama" {
+        validate_required(
+            "providers.model.api_key",
+            &provider_settings.api_key,
+            report,
+        );
     }
 }
 
@@ -1175,9 +1148,10 @@ fn validate_model_transport(provider: &str, transport: &str, report: &mut Config
     }
     let expected = match provider {
         "mock" => "mock",
-        "anthropic" | "claude" => "anthropic-messages",
-        "ollama" | "local-llm" | "local_llm" => "ollama-chat",
-        _ => "openai-compatible-chat-completions",
+        "openai-compatible" => "openai-compatible-chat-completions",
+        "anthropic" => "anthropic-messages",
+        "ollama" => "ollama-chat",
+        _ => return,
     };
     if transport != expected {
         report.error(
@@ -1225,7 +1199,11 @@ fn validate_memory_config(config: &MemoryConfig, report: &mut ConfigValidationRe
     }
 }
 
-fn validate_rag_config(config: &RagConfig, report: &mut ConfigValidationReport) {
+fn validate_rag_config(
+    config: &RagConfig,
+    provider_settings: &RemoteProviderConfig,
+    report: &mut ConfigValidationReport,
+) {
     validate_local_backend("rag.backend", &config.backend, report);
     let provider = normalize(&config.embedding_provider);
     if !is_allowed_embedding_provider(&provider) {
@@ -1247,12 +1225,12 @@ fn validate_rag_config(config: &RagConfig, report: &mut ConfigValidationReport) 
         validate_required("rag.embedding_model", &config.embedding_model, report);
         validate_required_url(
             "providers.embedding.base_url",
-            &config.embedding_base_url,
+            &provider_settings.base_url,
             report,
         );
         validate_required(
             "providers.embedding.api_key",
-            &config.embedding_api_key,
+            &provider_settings.api_key,
             report,
         );
     }
@@ -1261,6 +1239,7 @@ fn validate_rag_config(config: &RagConfig, report: &mut ConfigValidationReport) 
 fn validate_voice_config(
     path: &str,
     config: &VoiceProviderConfig,
+    provider_settings: &RemoteProviderConfig,
     is_tts: bool,
     report: &mut ConfigValidationReport,
 ) {
@@ -1284,10 +1263,14 @@ fn validate_voice_config(
     };
     validate_required_url(
         format!("{provider_path}.base_url"),
-        &config.base_url,
+        &provider_settings.base_url,
         report,
     );
-    validate_required(format!("{provider_path}.api_key"), &config.api_key, report);
+    validate_required(
+        format!("{provider_path}.api_key"),
+        &provider_settings.api_key,
+        report,
+    );
     if is_tts {
         if let Some(voice) = &config.voice {
             if voice.trim().is_empty() {
@@ -1387,40 +1370,20 @@ fn validate_url(path: impl Into<String>, value: &str, report: &mut ConfigValidat
 fn is_allowed_model_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "mock"
-            | "moonshot"
-            | "siliconflow"
-            | "silicon-flow"
-            | "openai"
-            | "openai-compatible"
-            | "openai_compatible"
-            | "anthropic"
-            | "claude"
-            | "ollama"
-            | "local-llm"
-            | "local_llm"
+        "mock" | "openai-compatible" | "anthropic" | "ollama"
     )
 }
 
 fn is_allowed_embedding_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "hash" | "sparse" | "mock" | "openai" | "openai-compatible" | "moonshot" | "siliconflow"
-    )
+    matches!(provider, "hash" | "sparse" | "mock" | "openai-compatible")
 }
 
 fn is_remote_embedding_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "openai" | "openai-compatible" | "moonshot" | "siliconflow"
-    )
+    provider == "openai-compatible"
 }
 
 fn is_allowed_voice_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "mock" | "openai" | "openai-compatible" | "moonshot" | "siliconflow"
-    )
+    matches!(provider, "mock" | "openai-compatible")
 }
 
 fn normalize(value: &str) -> String {

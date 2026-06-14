@@ -35,15 +35,15 @@ Provider 不应：
 
 - `mock`：确定性的本地 provider，用于显式离线测试。
 - `openai-compatible`：Chat Completions adapter。
-- `moonshot` 和 `siliconflow`：基于 OpenAI-compatible adapter 的别名/配置辅助。
-- `anthropic` / `claude`：原生 Anthropic Messages API adapter，解析 `tool_use`。
+- `anthropic`：原生 Anthropic Messages API adapter，解析 `tool_use`。
 - `ollama`：本地 Ollama `/api/chat` adapter；模型支持时解析 tool call。
 
-支持的 provider 名称和别名：
+支持的 provider 名称：
 
-- OpenAI-compatible：`openai-compatible`、`openai_compatible`、`openai`、`moonshot`、`siliconflow`、`silicon-flow`
-- Anthropic：`anthropic`、`claude`
-- Ollama：`ollama`、`local-llm`、`local_llm`
+- OpenAI-compatible：`openai-compatible`
+- Anthropic：`anthropic`
+- Ollama：`ollama`
+- 离线测试：`mock`
 
 OpenAI-compatible 示例：
 
@@ -63,7 +63,7 @@ model:
     daily_token_budget: 100000
 ```
 
-`api_key` 和 `base_url` 存在于本机 `IKAROS_HOME/config.yaml` 的 `providers.model`。不要把真实 key 写入 tracked 文件。`moonshot`、`siliconflow` 这类 alias 使用同一个 adapter，只是便捷名称，不是默认厂商。
+`api_key` 和 `base_url` 存在于本机 `IKAROS_HOME/config.yaml` 的 `providers.model`。不要把真实 key 写入 tracked 文件。Provider 名称表示 adapter family，不应把厂商名编码进 `model.default.provider`。
 
 Anthropic 示例：
 
@@ -99,7 +99,7 @@ model:
 
 OpenAI-compatible adapter 负责 Chat Completions 请求/响应、HTTP client、普通 completion、SSE stream parsing、tool-call 转换和 stream tool-call accumulator。它不拥有 agent loop。
 
-`moonshot` 和 `siliconflow` 这类 OpenAI-compatible alias 使用同一个 adapter，并带有 provider-specific normalization。Kimi K2.6 temperature normalization 在 adapter 路径处理，因此 runtime 调用方不需要 provider-specific 分支。
+OpenAI-compatible provider 是厂商中立的。它不携带 provider alias，也不做模型名专用的请求修正；endpoint 差异应放在配置里，或后续通过显式 adapter option 表达，不应藏在 provider 名称里。
 
 Streaming 会增量解析 SSE chunk。文本、reasoning、refusal、native tool-call、usage 和 done marker 都会转换成 typed `ModelStreamEvent`。Tool-call delta 会累计，直到能形成完整的标准化 tool call，再交回 agent loop；单个 argument delta 也会作为 stream event 发出。
 

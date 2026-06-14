@@ -238,10 +238,13 @@ fn cloud_rag_is_not_used_for_redacted_safe_read_chat_lookup() {
             embedding_provider: "openai-compatible".into(),
             ..RagConfig::default()
         },
+        rag_provider: ikaros_core::RemoteProviderConfig::default(),
         persona_path: temp.path().join("persona.md"),
         skills_dir: temp.path().join("skills"),
         voice_tts: ikaros_voice::VoiceProviderConfig::mock_tts(),
+        voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
         voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
+        voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
     });
 
     assert!(!context_lookup_is_safe_read(&registry, "rag_search"));

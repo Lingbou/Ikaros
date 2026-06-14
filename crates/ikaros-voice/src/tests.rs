@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::*;
-use ikaros_core::VoiceProviderConfig;
+use ikaros_core::{RemoteProviderConfig, VoiceProviderConfig};
 use std::path::PathBuf;
 
 #[tokio::test]
@@ -36,22 +36,27 @@ async fn mock_asr_does_not_echo_audio_path() {
 }
 
 #[test]
-fn provider_factory_supports_mock_and_openai_compatible_aliases() {
-    let tts = tts_provider_from_config(&VoiceProviderConfig::mock_tts()).expect("mock tts");
+fn provider_factory_supports_canonical_mock_and_openai_compatible() {
+    let empty_provider = RemoteProviderConfig::default();
+    let tts = tts_provider_from_config(&VoiceProviderConfig::mock_tts(), &empty_provider)
+        .expect("mock tts");
     assert_eq!(tts.name(), "mock-tts");
-    let asr = asr_provider_from_config(&VoiceProviderConfig::mock_asr()).expect("mock asr");
+    let asr = asr_provider_from_config(&VoiceProviderConfig::mock_asr(), &empty_provider)
+        .expect("mock asr");
     assert_eq!(asr.name(), "mock-asr");
 
     let config = VoiceProviderConfig {
         provider: "openai-compatible".into(),
-        base_url: "https://example.invalid/v1/".into(),
-        api_key: "test-voice-key".into(),
         model: "tts-model".into(),
         timeout_ms: 1000,
         max_retries: 0,
         voice: Some("alloy".into()),
     };
-    let provider = tts_provider_from_config(&config).expect("compatible tts");
+    let provider_settings = RemoteProviderConfig {
+        api_key: "test-voice-key".into(),
+        base_url: "https://example.invalid/v1/".into(),
+    };
+    let provider = tts_provider_from_config(&config, &provider_settings).expect("compatible tts");
     assert_eq!(provider.name(), "openai-compatible");
 }
 
@@ -59,8 +64,6 @@ fn provider_factory_supports_mock_and_openai_compatible_aliases() {
 fn openai_compatible_tts_body_redacts_input() {
     let config = VoiceProviderConfig {
         provider: "openai-compatible".into(),
-        base_url: "https://example.invalid/v1".into(),
-        api_key: "test-voice-key".into(),
         model: "tts-model".into(),
         timeout_ms: 1000,
         max_retries: 0,
