@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//! Session, turn, and runtime event persistence.
+
+mod sink;
+mod sqlite;
+mod store;
+mod types;
+
+pub use sink::{NoopAgentEventSink, PersistingAgentEventSink, noop_agent_event_sink};
+pub use sqlite::SqliteSessionStore;
+pub use store::SessionStore;
+pub use types::{
+    AgentEvent, AgentEventId, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId,
+    AgentTurnId, ApprovalRecord, ApprovalStatus, EventId, SessionEntry, SessionEntryId,
+    SessionEntryKind, SessionId, SessionRecord, SessionReplay, SessionSource, TurnId,
+};

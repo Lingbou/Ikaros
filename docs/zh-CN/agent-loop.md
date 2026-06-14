@@ -22,13 +22,17 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 
 `AgentRuntime::run_turn()` 接收：
 
-- `AgentLoopInput`：可选 task id、system prompt 和 user input。
+- `AgentLoopInput`：可选 session id、可选 task id、system prompt 和 user input。
 - `ModelProvider`：当前配置的 provider adapter。
 - `ExecutionSession`：policy、approval、audit 和 environment 上下文。
 - `SkillRegistry`：可执行的 harness skill。
 - `AgentLoopOptions`：iteration、sampling、streaming 和 guardrail 设置。
 
 默认实现是 `HarnessAgentRuntime`。如果调用方需要不同 loop 实现，应替换 runtime 层，而不是污染 provider adapter。
+
+需要持久化 timeline 的调用方应使用 `run_turn_with_events()` 并传入 `AgentEventSink`。`ikaros-session` 提供 `PersistingAgentEventSink`，可以把发出的事件写入本地 SQLite `SessionStore`。
+
+`session_id` 是 event timeline 的持久化身份；`task_id` 只作为 task/report 元数据。调用方不传 session id 时，loop 会为该 turn 创建新的 `SessionId`，不会再落到全局 `"local"` session。
 
 默认选项：
 
@@ -129,6 +133,10 @@ Loop 会报告这些 parse strategy：
 - tool results
 
 Tool result summary 和 output 由 harness 产生。展示给用户或写入审计前应完成脱敏。
+
+`AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。后续 replay、gateway 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
+
+当前内置持久化接在 agent-loop turn 上，包括默认的非 streaming chat 路径。通过 `--no-agent-loop` 选择的单次 provider chat 仍使用 chat history 和 audit store，还没有完整 agent event timeline。
 
 ## 不变量
 

@@ -17,7 +17,7 @@ pub use history::{
     ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, new_chat_session_id,
 };
 pub use prompt::{render_chat_system_prompt, render_persona_agent_context};
-pub use turn::{run_chat_message, run_chat_turn};
+pub use turn::{ChatTurnEventOptions, run_chat_message, run_chat_turn, run_chat_turn_with_events};
 pub use types::{
     ChatContext, ChatMessageResult, ChatRunOptions, ChatTurnReport,
     DEFAULT_CHAT_CONTEXT_CHAR_BUDGET,

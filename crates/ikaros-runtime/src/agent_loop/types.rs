@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use ikaros_core::{Result, RiskLevel};
+use ikaros_core::RiskLevel;
 use ikaros_harness::GuardrailConfig;
 use ikaros_models::{ModelResponse, ModelStreamEvent, TokenUsage};
+pub use ikaros_session::{
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId, AgentTurnId,
+    noop_agent_event_sink,
+};
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
-use uuid::Uuid;
-
-pub type AgentEventId = String;
-pub type AgentSessionId = String;
-pub type AgentTurnId = String;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentLoopInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub system_prompt: String,
     pub user_input: String,
@@ -69,90 +70,6 @@ pub struct AgentLoopReport {
     pub tool_results: Vec<AgentLoopToolResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<AgentEvent>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentEvent {
-    pub event_id: AgentEventId,
-    pub session_id: AgentSessionId,
-    pub turn_id: AgentTurnId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_event_id: Option<AgentEventId>,
-    #[serde(with = "time::serde::rfc3339")]
-    pub at: OffsetDateTime,
-    pub source: AgentEventSource,
-    pub kind: AgentEventKind,
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub payload: serde_json::Value,
-}
-
-impl AgentEvent {
-    pub fn new(
-        session_id: impl Into<AgentSessionId>,
-        turn_id: impl Into<AgentTurnId>,
-        parent_event_id: Option<AgentEventId>,
-        source: AgentEventSource,
-        kind: AgentEventKind,
-        payload: serde_json::Value,
-    ) -> Self {
-        Self {
-            event_id: Uuid::new_v4().to_string(),
-            session_id: session_id.into(),
-            turn_id: turn_id.into(),
-            parent_event_id,
-            at: OffsetDateTime::now_utc(),
-            source,
-            kind,
-            payload,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentEventSource {
-    Runtime,
-    User,
-    Model,
-    Tool,
-    Harness,
-    Context,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
-pub enum AgentEventKind {
-    SessionStart,
-    TurnStart,
-    UserMessage,
-    ModelStream(ModelStreamEvent),
-    ToolStart,
-    ToolUpdate,
-    ToolEnd,
-    ContextCompacted,
-    ApprovalRequested,
-    ApprovalResolved,
-    TurnEnd,
-    Error,
-}
-
-pub trait AgentEventSink: Send + Sync {
-    fn emit(&self, event: &AgentEvent) -> Result<()>;
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopAgentEventSink;
-
-impl AgentEventSink for NoopAgentEventSink {
-    fn emit(&self, _event: &AgentEvent) -> Result<()> {
-        Ok(())
-    }
-}
-
-static NOOP_AGENT_EVENT_SINK: NoopAgentEventSink = NoopAgentEventSink;
-
-pub fn noop_agent_event_sink() -> &'static dyn AgentEventSink {
-    &NOOP_AGENT_EVENT_SINK
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

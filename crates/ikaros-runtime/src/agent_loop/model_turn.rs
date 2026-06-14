@@ -23,8 +23,8 @@ use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall,
     TokenUsage,
 };
+use ikaros_session::{SessionId, TurnId};
 use serde_json::json;
-use uuid::Uuid;
 
 pub(super) async fn run_agent_loop_turn(
     input: AgentLoopInput,
@@ -36,12 +36,12 @@ pub(super) async fn run_agent_loop_turn(
 ) -> Result<AgentLoopReport> {
     let tool_definitions = agent_loop_tool_definitions(registry);
     let session_id = input
-        .task_id
+        .session_id
         .as_deref()
         .filter(|id| !id.trim().is_empty())
-        .unwrap_or("local")
-        .to_owned();
-    let turn_id = Uuid::new_v4().to_string();
+        .map(SessionId::from)
+        .unwrap_or_default();
+    let turn_id = TurnId::new();
     let mut events = Vec::new();
     emit_agent_event(
         &mut events,

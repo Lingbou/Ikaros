@@ -764,6 +764,7 @@ dependencies = [
  "ikaros-memory",
  "ikaros-models",
  "ikaros-rag",
+ "ikaros-session",
  "ikaros-skills",
  "ikaros-soul",
  "ikaros-voice",
@@ -783,6 +784,20 @@ dependencies = [
  "ikaros-core",
  "serde",
  "tempfile",
+]
+
+[[package]]
+name = "ikaros-session"
+version = "0.1.0"
+dependencies = [
+ "ikaros-core",
+ "ikaros-models",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "uuid",
 ]
 
 [[package]]

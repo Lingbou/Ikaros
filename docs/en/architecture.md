@@ -17,6 +17,8 @@ calling context, persistent state, or user-visible behavior changes.
   start/update/end, usage, error, or done.
 - Agent event: the typed runtime event emitted for session, turn, user, model,
   tool, approval, context, error, and turn-end milestones.
+- Session store: the append-only session, turn, event, approval, and replay
+  persistence boundary. The current implementation is local SQLite.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
   session policy, auth scope, and route bindings.
@@ -26,6 +28,8 @@ calling context, persistent state, or user-visible behavior changes.
 ## Crates
 
 - `ikaros-core`: shared config, paths, task types, redaction, errors, agent profiles, and the `AgentInstance` identity model.
+- `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
+  session entries, `SessionStore`, SQLite `state.db`, and replay reads.
 - `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and `ContextEngine`.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
 - `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
@@ -46,8 +50,9 @@ Most entry points follow the same path:
 2. Runtime resolves an `AgentInstance` with `agent_id`, profile overlay, workspace, state dir, session policy, auth scope, and route bindings.
 3. Runtime builds stores, provider adapters, the skill registry, context engine, and harness session.
 4. Model turns run through `AgentRuntime`; the default implementation is `HarnessAgentRuntime`.
-   Runtime emits typed `AgentEvent` records while still returning a final report
-   for existing CLI and worker callers.
+   Runtime emits typed `AgentEvent` records. Callers may attach an
+   `AgentEventSink` to persist those records in `ikaros-session`, while existing
+   CLI and worker callers can still use the final report.
 5. Tool dispatch must go through `ExecutionSession` and `ExecutionEnv`; runtime code should not touch host APIs directly.
 6. The harness evaluates policy, records audit events, and either executes, asks for approval, or denies.
 7. Runtime reduces the same turn path into stable reports for CLI, body,
@@ -86,6 +91,10 @@ JSONL remains the default local storage format because it is inspectable and eas
 
 State ownership:
 
+- `state.db`: session metadata, append-only session entries, persisted
+  agent-loop events, approval records, and replay data. Broader chat,
+  gateway, schedule, memory, and audit migration into this store is still in
+  progress.
 - `memory/`: local memory records and memory provider registry metadata.
 - `chat/`: chat history and session summaries.
 - `rag/`: local RAG files, chunks, and embedding indexes.
@@ -100,6 +109,10 @@ State ownership:
 - Persona affects prompts and context, not policy.
 - Agent profiles are persona/policy overlays; `AgentInstance` is the runtime identity.
 - `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `ModelStreamEvent` normalizes provider deltas; `AgentRuntime` owns the turn loop and emits `AgentEvent`.
+- `AgentEvent`, session ids, turn ids, append-only session entries, and replay
+  reads belong to `ikaros-session`, not to the runtime loop.
+- `session_id` identifies persisted timelines. `task_id` is task/report
+  metadata and must not be used as an implicit session fallback.
 - `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.
 - `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
@@ -112,6 +125,8 @@ State ownership:
   Tool calls must be normalized and dispatched through `ExecutionSession`.
 - Runtime events are append-only observations of a turn. Reports may summarize
   them, but tooling should prefer typed event fields over parsing human text.
+- Persisted session timelines are append-only. Branch, compact, retry, and
+  replay work should add entries or events instead of mutating old turn facts.
 - A provider adapter must not own the agent loop, approval flow, or workspace
   mutation policy.
 - Context assembly may call safe-read skills with redacted audit input, but the

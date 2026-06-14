@@ -11,6 +11,7 @@ members = [
   "crates/ikaros-models",
   "crates/ikaros-rag",
   "crates/ikaros-runtime",
+  "crates/ikaros-session",
   "crates/ikaros-service",
   "crates/ikaros-skills",
   "crates/ikaros-soul",

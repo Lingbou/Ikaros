@@ -2,6 +2,7 @@
 
 use super::*;
 use ikaros_core::{AgentProfile, ContextBuilder, IkarosPaths, RagConfig, ResolvedAgentProfile};
+use ikaros_session::{AgentEventKind, SessionId, SessionStore, SqliteSessionStore};
 use ikaros_soul::{EmotionState, PersonaLoader};
 use std::fs;
 
@@ -411,6 +412,21 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
     assert_eq!(history[1].relationship_hits, 1);
     assert_eq!(history[1].memory_hits, second.memory_hits);
     assert_eq!(history[2].session_id, "isolated-session");
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let replay = session_store
+        .replay_session(&SessionId::from(result.chat_session_id.clone()))
+        .expect("session replay")
+        .expect("persisted chat session");
+    assert_eq!(replay.session.agent_id.as_deref(), Some("build"));
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+    let replay_json = serde_json::to_string(&replay).expect("replay json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
     let audit_events = ikaros_harness::AuditLog::new(&paths.audit_dir)
         .read_all()
         .expect("audit events");

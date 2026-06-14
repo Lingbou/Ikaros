@@ -24,7 +24,7 @@ The model never executes tools directly. Every tool call is normalized and sent 
 
 `AgentRuntime::run_turn()` receives:
 
-- `AgentLoopInput`: optional task id, system prompt, and user input.
+- `AgentLoopInput`: optional session id, optional task id, system prompt, and user input.
 - `ModelProvider`: the configured provider adapter.
 - `ExecutionSession`: policy, approval, audit, and environment context.
 - `SkillRegistry`: executable harness skills.
@@ -33,6 +33,14 @@ The model never executes tools directly. Every tool call is normalized and sent 
 The default implementation is `HarnessAgentRuntime`. Callers that need a
 different loop implementation should swap the runtime layer, not the provider
 adapter.
+
+Callers that need durable timelines should call `run_turn_with_events()` with an
+`AgentEventSink`. `ikaros-session` provides `PersistingAgentEventSink`, which
+writes the emitted events into the local SQLite `SessionStore`.
+
+`session_id` is the persistence identity for the event timeline. `task_id`
+remains task/report metadata. If no session id is supplied, the loop creates a
+fresh `SessionId` for that turn instead of reusing a global fallback session.
 
 Default options:
 
@@ -143,6 +151,16 @@ so the runtime contract stays narrow.
 
 Tool result summaries and outputs are produced by the harness. They should be
 redacted before surfacing to users or audit output.
+
+`AgentLoopReport.events` is a compatibility summary for current callers. The
+durable fact source is the `ikaros-session` event stream when a persisting sink
+is attached. Future replay, gateway, and UI paths should read the session store
+instead of reconstructing timelines from human output.
+
+Current built-in persistence is attached to agent-loop turns, including the
+default non-stream chat path. Single-call chat runs selected with
+`--no-agent-loop` still use chat history and audit stores rather than a full
+agent event timeline.
 
 ## Invariants
 

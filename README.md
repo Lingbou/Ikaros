@@ -27,6 +27,7 @@ The project is currently a pre-MVP local runtime for development and experimenta
 - `crates/ikaros-models`: mock, OpenAI-compatible, Anthropic, and Ollama model providers with governance and usage logging.
 - `crates/ikaros-rag`: local RAG ingestion, indexing, retrieval, and embedding providers.
 - `crates/ikaros-runtime`: runtime orchestration for chat, tasks, schedules, gateway drain, body status, diagnostics, and agent handoff.
+- `crates/ikaros-session`: session ids, turn ids, typed agent events, SQLite `state.db`, append-only session entries, and replay reads.
 - `crates/ikaros-service`: service-manager template rendering for local worker processes.
 - `crates/ikaros-skills`: built-in harness skills for filesystem, shell/git, memory, RAG, voice, coding, persona, and plugins.
 - `crates/ikaros-soul`: persona, emotion, tone, and relationship primitives.

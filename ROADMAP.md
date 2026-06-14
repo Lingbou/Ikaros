@@ -18,7 +18,10 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Runtime
 
 - Harden `AgentRuntime` so future runtimes can plug in without changing provider adapters.
-- Persist typed turn events into the future session store and derive reports from the event stream.
+- Expand `ikaros-session` from the initial event store into the runtime fact
+  source for chat, gateway, schedule, approvals, replay, and reports.
+- Derive more runtime reports from persisted event streams rather than carrying
+  separate one-off summaries.
 - Refine tool continuation behavior and report fields for automation users.
 - Continue separating provider transport concerns from turn-loop ownership.
 - Add stricter compatibility tests for provider-specific tool-call differences.

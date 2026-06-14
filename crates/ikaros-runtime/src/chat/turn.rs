@@ -13,7 +13,10 @@ use super::{
     prompt::{render_chat_system_prompt, render_persona_agent_context},
     types::{ChatMessageResult, ChatRunOptions, ChatTurnReport},
 };
-use crate::{AgentLoopInput, AgentLoopOptions, run_agent_loop};
+use crate::{
+    AgentEventSink, AgentLoopInput, AgentLoopOptions, noop_agent_event_sink,
+    run_agent_loop_with_events,
+};
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
 use ikaros_core::{
     ContextBuilder, IkarosConfig, IkarosPaths, ResolvedAgentProfile, Result, redact_secrets,
@@ -25,9 +28,10 @@ use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelUsageLedger,
     governed_provider_from_config,
 };
+use ikaros_session::{PersistingAgentEventSink, SessionSource, SqliteSessionStore};
 use ikaros_soul::{PersonaProfile, RuntimeSignal, load_or_default};
 use serde_json::json;
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 pub async fn run_chat_message(
     message: &str,
@@ -49,6 +53,11 @@ pub async fn run_chat_message(
         &config.providers.model,
         &paths.audit_dir,
     )?;
+    let event_sink =
+        PersistingAgentEventSink::new(Arc::new(SqliteSessionStore::new(&agent_instance.state_dir)))
+            .with_source(SessionSource::Cli)
+            .with_agent_id(agent_instance.agent_id.clone())
+            .with_workspace(agent_instance.workspace.clone());
     let (session, registry) = session_and_registry_for_instance(paths, &config, &agent_instance)?;
     let memory_provider = LocalMemoryStore::new(&paths.memory_dir, &config.memory.backend)?;
     memory_provider.turn_start(MemoryTurnStart {
@@ -65,14 +74,17 @@ pub async fn run_chat_message(
     }
     options.chat_history_path = Some(history_store.path().to_path_buf());
     options.chat_history_backend = Some(history_store.backend_name().into());
-    let report = run_chat_turn(
+    let report = run_chat_turn_with_events(
         message,
         &persona,
         provider.as_ref(),
         &agent,
         &session,
         &registry,
-        &options,
+        ChatTurnEventOptions {
+            options: &options,
+            event_sink: &event_sink,
+        },
     )
     .await?;
     memory_provider.sync_turn(MemoryTurnRecord {
@@ -120,6 +132,38 @@ pub async fn run_chat_turn(
     registry: &SkillRegistry,
     options: &ChatRunOptions,
 ) -> Result<ChatTurnReport> {
+    run_chat_turn_with_events(
+        input,
+        persona,
+        provider,
+        agent,
+        session,
+        registry,
+        ChatTurnEventOptions {
+            options,
+            event_sink: noop_agent_event_sink(),
+        },
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+pub struct ChatTurnEventOptions<'a> {
+    pub options: &'a ChatRunOptions,
+    pub event_sink: &'a dyn AgentEventSink,
+}
+
+pub async fn run_chat_turn_with_events(
+    input: &str,
+    persona: &PersonaProfile,
+    provider: &dyn ModelProvider,
+    agent: &ResolvedAgentProfile,
+    session: &ExecutionSession,
+    registry: &SkillRegistry,
+    event_options: ChatTurnEventOptions<'_>,
+) -> Result<ChatTurnReport> {
+    let options = event_options.options;
+    let event_sink = event_options.event_sink;
     let context_engine = LocalChatContextEngine;
     context_engine
         .ingest(ContextEvent {
@@ -180,8 +224,9 @@ pub async fn run_chat_turn(
         }),
     )?;
     let (response, streamed, stream_chunks) = if options.agent_loop {
-        let loop_report = run_agent_loop(
+        let loop_report = run_agent_loop_with_events(
             AgentLoopInput {
+                session_id: options.session_id.clone(),
                 task_id: None,
                 system_prompt,
                 user_input: input.into(),
@@ -189,6 +234,7 @@ pub async fn run_chat_turn(
             provider,
             session,
             registry,
+            event_sink,
             AgentLoopOptions {
                 max_iterations: 4,
                 max_tokens: Some(512),

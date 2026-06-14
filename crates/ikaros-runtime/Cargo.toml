@@ -16,6 +16,7 @@ ikaros-harness = { path = "../ikaros-harness" }
 ikaros-memory = { path = "../ikaros-memory" }
 ikaros-models = { path = "../ikaros-models" }
 ikaros-rag = { path = "../ikaros-rag" }
+ikaros-session = { path = "../ikaros-session" }
 ikaros-skills = { path = "../ikaros-skills" }
 ikaros-soul = { path = "../ikaros-soul" }
 serde.workspace = true

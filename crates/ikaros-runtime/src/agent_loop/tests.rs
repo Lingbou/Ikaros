@@ -13,6 +13,7 @@ use ikaros_models::{
     ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent, ModelToolCall,
     TokenUsage,
 };
+use ikaros_session::{PersistingAgentEventSink, SessionId, SessionStore, SqliteSessionStore};
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -222,6 +223,7 @@ async fn agent_loop_dispatches_tool_then_finishes() {
 
     let report = run_agent_loop(
         AgentLoopInput {
+            session_id: Some("loop-task".into()),
             task_id: Some("loop-task".into()),
             system_prompt: "Use tools when useful.".into(),
             user_input: "start token=abc123".into(),
@@ -278,6 +280,7 @@ async fn agent_loop_halts_on_guardrail_no_progress() {
 
     let report = run_agent_loop(
         AgentLoopInput {
+            session_id: Some("loop-guardrail".into()),
             task_id: Some("loop-guardrail".into()),
             system_prompt: "Use tools when useful.".into(),
             user_input: "start".into(),
@@ -324,6 +327,7 @@ async fn agent_loop_dispatches_provider_native_tool_calls() {
 
     let report = run_agent_loop(
         AgentLoopInput {
+            session_id: Some("native-loop".into()),
             task_id: Some("native-loop".into()),
             system_prompt: "Use native tools when useful.".into(),
             user_input: "start".into(),
@@ -385,6 +389,7 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
 
     let report = run_agent_loop(
         AgentLoopInput {
+            session_id: Some("stream-loop".into()),
             task_id: Some("stream-loop".into()),
             system_prompt: "Use tools when useful.".into(),
             user_input: "start".into(),
@@ -483,6 +488,103 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
                 .and_then(serde_json::Value::as_u64)
                 == Some(1)
     }));
+}
+
+#[tokio::test]
+async fn agent_loop_can_persist_event_timeline_to_session_store() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let execution = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let session_store = Arc::new(SqliteSessionStore::new(temp.path().join("state")));
+    let event_sink = PersistingAgentEventSink::new(session_store.clone()).with_agent_id("build");
+    let mut registry = SkillRegistry::new();
+    registry.register(EchoSkill {
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let provider = NativeToolProvider {
+        calls: AtomicUsize::new(0),
+    };
+
+    let report = super::run_agent_loop_with_events(
+        AgentLoopInput {
+            session_id: Some("persist-loop".into()),
+            task_id: Some("persist-loop".into()),
+            system_prompt: "Use native tools when useful.".into(),
+            user_input: "start token=abc123".into(),
+        },
+        &provider,
+        &execution,
+        &registry,
+        &event_sink,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+
+    let replay = session_store
+        .replay_session(&SessionId::from("persist-loop"))
+        .expect("replay")
+        .expect("session exists");
+    assert_eq!(replay.session.agent_id.as_deref(), Some("build"));
+    assert_eq!(replay.agent_events, report.events);
+    assert!(matches!(
+        replay.agent_events.first().map(|event| &event.kind),
+        Some(AgentEventKind::SessionStart)
+    ));
+    assert!(matches!(
+        replay.agent_events.last().map(|event| &event.kind),
+        Some(AgentEventKind::TurnEnd)
+    ));
+    let replay_json = serde_json::to_string(&replay).expect("json");
+    assert!(!replay_json.contains("abc123"));
+    assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn agent_loop_without_session_id_uses_fresh_session_id() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let registry = SkillRegistry::new();
+
+    let first = run_agent_loop(
+        AgentLoopInput {
+            session_id: None,
+            task_id: None,
+            system_prompt: "Answer directly.".into(),
+            user_input: "first".into(),
+        },
+        &SequenceProvider {
+            calls: AtomicUsize::new(0),
+            responses: vec![r#"{"final_answer":"first done"}"#.into()],
+        },
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("first loop");
+    let second = run_agent_loop(
+        AgentLoopInput {
+            session_id: None,
+            task_id: None,
+            system_prompt: "Answer directly.".into(),
+            user_input: "second".into(),
+        },
+        &SequenceProvider {
+            calls: AtomicUsize::new(0),
+            responses: vec![r#"{"final_answer":"second done"}"#.into()],
+        },
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("second loop");
+
+    let first_session = &first.events[0].session_id;
+    let second_session = &second.events[0].session_id;
+    assert_ne!(first_session.as_str(), "local");
+    assert_ne!(second_session.as_str(), "local");
+    assert_ne!(first_session, second_session);
 }
 
 #[test]
