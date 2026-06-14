@@ -12,9 +12,9 @@ The loop is small by design:
 
 - bounded iteration count
 - provider-native tool calls when available
-- fallback JSON tool-call parsing for non-native output
-- deterministic repair for common JSON shapes
+- strict fallback JSON tool-call parsing for non-native output
 - harness skill dispatch
+- typed `AgentEvent` and `ModelStreamEvent` records
 - prompt-free audit metadata
 - guardrail observation
 
@@ -68,6 +68,8 @@ The loop can stop because:
 - policy denied a requested tool
 - a requested tool needs approval
 - a guardrail halted execution
+- a provider error was observed
+- a cancellation, compaction, tool error, or context limit stopped the turn
 
 Task and agent commands can opt into the loop with `--agent-loop`. Non-stream chat uses it by default; `--no-agent-loop` forces a single provider call.
 
@@ -78,10 +80,15 @@ Structured reports use these stop reasons:
 - `PolicyDenied`
 - `WaitingForApproval`
 - `GuardrailHalt`
+- `Cancelled`
+- `ProviderError`
+- `Compacted`
+- `ToolError`
+- `ContextLimit`
 
-Provider transport errors, malformed provider responses, local store errors, and
-unexpected execution errors are returned as command errors rather than encoded
-as normal stop reasons.
+Transport and local store failures may still return command errors when no
+complete report can be built. When the runtime can emit an event before
+returning, provider failures are also surfaced as typed error events.
 
 ## Tool Calls
 
@@ -95,7 +102,7 @@ Preferred path:
 Fallback path:
 
 ```json
-{"tool_calls":[{"name":"tool_name","input":{}}]}
+{"tool_calls":[{"id":"optional_call_id","name":"tool_name","input":{}}]}
 ```
 
 Final answer:
@@ -104,20 +111,20 @@ Final answer:
 {"final_answer":"..."}
 ```
 
-The parser also accepts a few common variants such as fenced JSON, top-level arrays, `tool_call`, `function_call`, `args`, and `arguments`. Each iteration records the parse strategy in the report.
+The fallback parser only accepts the canonical top-level JSON object shown
+above. It does not accept fenced JSON, embedded JSON, top-level arrays, or alias
+keys such as `tools`, `calls`, `tool_call`, `function_call`, `args`,
+`arguments`, `answer`, or `response`. Each iteration records the parse strategy
+in the report.
 
 Parse strategies reported by the loop are:
 
 - `provider_native_tool_calls`
-- `direct_json_object`
-- `direct_json_array`
-- `fenced_json`
-- `embedded_json_object`
-- `embedded_json_array`
+- `json_fallback`
 - `plain_text`
 
-Strategies that required repair are marked with `repaired = true` in
-`tool_call_diagnostics`.
+`repaired` is currently always false. Broad JSON repair was removed before MVP
+so the runtime contract stays narrow.
 
 ## Report Contract
 
@@ -129,6 +136,7 @@ Strategies that required repair are marked with `repaired = true` in
 - token usage
 - whether streaming was used
 - stream chunks when streaming is enabled
+- typed events emitted during the turn
 - iteration count
 - tool-call diagnostics
 - tool results

@@ -672,7 +672,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
- "toml",
  "uuid",
  "yaml_serde",
 ]

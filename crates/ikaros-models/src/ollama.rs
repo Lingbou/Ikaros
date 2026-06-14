@@ -2,8 +2,8 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelToolCall,
-    ModelToolDefinition, TokenUsage,
+    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
+    ModelToolCall, ModelToolDefinition, TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, ModelConfig, Result, redact_json, redact_secrets};
@@ -303,16 +303,24 @@ pub(crate) fn parse_stream_response(
 ) -> Result<ModelStream> {
     if text.trim_start().starts_with('{') && text.lines().count() <= 1 {
         let response = parse_chat_response(text, provider, fallback_model)?;
+        let chunks = (!response.content.is_empty())
+            .then_some(response.content)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let events = model_stream_events_from_response(
+            &response.provider,
+            &response.model,
+            &chunks,
+            &response.tool_calls,
+            &response.usage,
+        );
         return Ok(ModelStream {
             provider: response.provider,
             model: response.model,
-            chunks: (!response.content.is_empty())
-                .then_some(response.content)
-                .into_iter()
-                .collect(),
+            chunks,
             tool_calls: response.tool_calls,
             usage: response.usage,
-            events: Vec::new(),
+            events,
         });
     }
 
@@ -320,6 +328,7 @@ pub(crate) fn parse_stream_response(
     let mut chunks = Vec::new();
     let mut tool_calls = Vec::new();
     let mut usage = TokenUsage::default();
+    let mut events = Vec::<ModelStreamEvent>::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -343,9 +352,15 @@ pub(crate) fn parse_stream_response(
         if let Some(message) = parsed.message {
             let content = redact_secrets(&message.content);
             if !content.is_empty() {
+                events.push(ModelStreamEvent::TextDelta(content.clone()));
                 chunks.push(content);
             }
-            tool_calls.extend(model_tool_calls(message.tool_calls));
+            let next_calls = model_tool_calls(message.tool_calls);
+            for (offset, call) in next_calls.iter().enumerate() {
+                let index = tool_calls.len() + offset;
+                push_tool_call_events(&mut events, index, call);
+            }
+            tool_calls.extend(next_calls);
         }
     }
 
@@ -354,14 +369,26 @@ pub(crate) fn parse_stream_response(
             "Ollama stream response did not contain content chunks".into(),
         ));
     }
+    let model = model.unwrap_or_else(|| fallback_model.into());
+    events.insert(
+        0,
+        ModelStreamEvent::Start {
+            provider: provider.into(),
+            model: model.clone(),
+        },
+    );
+    if usage.total_or_prompt_completion() > 0 {
+        events.push(ModelStreamEvent::Usage(usage.clone()));
+    }
+    events.push(ModelStreamEvent::Done);
 
     Ok(ModelStream {
         provider: provider.into(),
-        model: model.unwrap_or_else(|| fallback_model.into()),
+        model,
         chunks,
         tool_calls,
         usage,
-        events: Vec::new(),
+        events,
     })
 }
 
@@ -378,6 +405,52 @@ fn model_tool_calls(calls: Vec<OllamaToolCall>) -> Vec<ModelToolCall> {
             }
         })
         .collect()
+}
+
+fn model_stream_events_from_response(
+    provider: &str,
+    model: &str,
+    chunks: &[String],
+    tool_calls: &[ModelToolCall],
+    usage: &TokenUsage,
+) -> Vec<ModelStreamEvent> {
+    let mut events = vec![ModelStreamEvent::Start {
+        provider: provider.into(),
+        model: model.into(),
+    }];
+    events.extend(
+        chunks
+            .iter()
+            .filter(|chunk| !chunk.is_empty())
+            .cloned()
+            .map(ModelStreamEvent::TextDelta),
+    );
+    for (index, call) in tool_calls.iter().enumerate() {
+        push_tool_call_events(&mut events, index, call);
+    }
+    if usage.total_or_prompt_completion() > 0 {
+        events.push(ModelStreamEvent::Usage(usage.clone()));
+    }
+    events.push(ModelStreamEvent::Done);
+    events
+}
+
+fn push_tool_call_events(events: &mut Vec<ModelStreamEvent>, index: usize, call: &ModelToolCall) {
+    let id = call
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("tool_call_{index}"));
+    events.push(ModelStreamEvent::ToolCallStart {
+        id: id.clone(),
+        name: call.name.clone(),
+    });
+    if let Some(arguments) = &call.raw_arguments {
+        events.push(ModelStreamEvent::ToolCallDelta {
+            id: id.clone(),
+            args_delta: arguments.clone(),
+        });
+    }
+    events.push(ModelStreamEvent::ToolCallEnd { id });
 }
 
 fn token_total(prompt: Option<u32>, completion: Option<u32>) -> Option<u32> {

@@ -45,6 +45,20 @@ Provider settings are read only from this section. Plaintext keys should only
 live in the local runtime home and must not be committed to the repository.
 Generated configs use these plaintext local fields directly.
 
+## Validation
+
+Validate the local runtime config after editing it:
+
+```bash
+ikaros config validate
+```
+
+The validator reads `IKAROS_HOME/config.yaml`, checks the YAML shape, rejects
+unknown fields, checks provider/runtime/transport/backend combinations, and
+reports missing keys, URLs, and model names before a remote call is attempted.
+Validation output uses field paths such as `providers.model.api_key`; it reports
+whether a value is missing or invalid but never prints secret values.
+
 ## Agent Profiles
 
 Profiles choose persona overlay and ordinary policy behavior:
@@ -243,6 +257,10 @@ the harness before provider calls. Supported embedding provider names are
 `hash`, `sparse`, `mock`, `openai-compatible`/`openai`, `moonshot`, and
 `siliconflow`.
 
+External memory providers are descriptor metadata only in the current runtime.
+`ikaros config validate` rejects enabled external memory providers because
+remote append/search adapters are not implemented.
+
 ## Voice
 
 The generated config uses remote OpenAI-compatible TTS and ASR slots with empty
@@ -268,8 +286,10 @@ voice:
 ```
 
 Offline tests can explicitly choose `mock`. Accepted cloud voice provider names
-are `openai-compatible`, `openai`, `moonshot`, and `siliconflow`. TTS text is
-redacted before provider calls; output files are treated as workspace writes.
+are aliases for the OpenAI-compatible adapter: `openai-compatible`, `openai`,
+`moonshot`, and `siliconflow`. A vendor alias does not guarantee that the remote
+service exposes both TTS and ASR endpoints. TTS text is redacted before provider
+calls; output files are treated as workspace writes.
 
 ## Self-Modify Checks
 

@@ -13,9 +13,9 @@
 `ModelProvider` 暴露两个操作：
 
 - `generate(request)`：返回一个 `ModelResponse`。
-- `stream(request)`：返回由 chunk 和最终元数据组成的 `ModelStream`。
+- `stream(request)`：返回包含文本 chunk、标准化 tool call、最终元数据和 typed `ModelStreamEvent` 的 `ModelStream`。
 
-`ModelRequest` 携带 model name、messages、可选 max tokens、可选 temperature 和可选 tool definition。`ModelResponse` 携带 provider、model、content、usage 和标准化 tool call。
+`ModelRequest` 携带 model name、messages、可选 max tokens、可选 temperature 和可选 tool definition。`ModelResponse` 携带 provider、model、content、usage 和标准化 tool call。`ModelStreamEvent` 是 runtime event 层消费的 stream 协议；`chunks` 和 `tool_calls` 仍作为聚合字段保留给现有调用方。
 
 Provider 不应：
 
@@ -101,7 +101,7 @@ OpenAI-compatible adapter 负责 Chat Completions 请求/响应、HTTP client、
 
 `moonshot` 和 `siliconflow` 这类 OpenAI-compatible alias 使用同一个 adapter，并带有 provider-specific normalization。Kimi K2.6 temperature normalization 在 adapter 路径处理，因此 runtime 调用方不需要 provider-specific 分支。
 
-Streaming 会增量解析 SSE chunk。文本 delta 变成 stream chunk。Tool-call delta 会累计，直到能形成完整的标准化 tool call，再交回 agent loop。
+Streaming 会增量解析 SSE chunk。文本、reasoning、refusal、native tool-call、usage 和 done marker 都会转换成 typed `ModelStreamEvent`。Tool-call delta 会累计，直到能形成完整的标准化 tool call，再交回 agent loop；单个 argument delta 也会作为 stream event 发出。
 
 ## 治理
 

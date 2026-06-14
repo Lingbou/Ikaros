@@ -6,6 +6,7 @@ mod approval;
 mod body;
 mod chat;
 mod code;
+mod config;
 mod diagnostics;
 mod fs;
 mod git;

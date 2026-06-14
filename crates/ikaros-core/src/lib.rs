@@ -16,9 +16,10 @@ pub use agent::{
     AgentPermission, AgentProfile, AgentRouteBinding, AgentSessionPolicy, ResolvedAgentProfile,
 };
 pub use config::{
-    ExternalMemoryProviderConfig, ExternalProvidersConfig, IkarosConfig, LocalStoreConfig,
-    MemoryConfig, ModelConfig, ModelTable, PolicyConfig, RagConfig, RemoteProviderConfig,
-    SelfModifyCheckProfileConfig, SelfModifyConfig, VoiceConfig, VoiceProviderConfig,
+    ConfigValidationIssue, ConfigValidationReport, ExternalMemoryProviderConfig,
+    ExternalProvidersConfig, IkarosConfig, LocalStoreConfig, MemoryConfig, ModelConfig, ModelTable,
+    PolicyConfig, RagConfig, RemoteProviderConfig, SelfModifyCheckProfileConfig, SelfModifyConfig,
+    VoiceConfig, VoiceProviderConfig,
 };
 pub use context::{ContextBuilder, RuntimeContext};
 pub use error::{IkarosError, Result};
@@ -65,38 +66,35 @@ mod tests {
 
     #[test]
     fn config_parses_agent_instances_separate_from_profiles() {
-        let config: IkarosConfig = toml::from_str(
+        let config: IkarosConfig = yaml_serde::from_str(
             r#"
-[agent]
-default = "build"
-
-[agent.profiles.research]
-mode = "general"
-description = "Repository research"
-persona_overlay = "Stay read-heavy."
-memory_context = true
-rag_context = true
-workspace_writes = "deny"
-shell = "ask"
-network = "deny"
-
-[agent.instances.repo-research]
-profile = "research"
-workspace = "/workspace/repo"
-state_dir = "/state/repo-research"
-
-[agent.instances.repo-research.session_policy]
-history_scope = "agent"
-allow_session_switch = false
-max_parallel_subagents = 2
-
-[agent.instances.repo-research.auth_scope]
-local_only = true
-allow_network = "deny"
-
-[[agent.instances.repo-research.route_bindings]]
-channel = "cli"
-thread = "main"
+agent:
+  default: build
+  profiles:
+    research:
+      mode: general
+      description: "Repository research"
+      persona_overlay: "Stay read-heavy."
+      memory_context: true
+      rag_context: true
+      workspace_writes: deny
+      shell: ask
+      network: deny
+  instances:
+    repo-research:
+      profile: research
+      workspace: /workspace/repo
+      state_dir: /state/repo-research
+      session_policy:
+        history_scope: agent
+        allow_session_switch: false
+        max_parallel_subagents: 2
+      auth_scope:
+        local_only: true
+        allow_network: deny
+      route_bindings:
+        - channel: cli
+          thread: main
 "#,
         )
         .expect("config");
@@ -131,17 +129,16 @@ thread = "main"
 
     #[test]
     fn config_parses_external_memory_providers() {
-        let config: IkarosConfig = toml::from_str(
+        let config: IkarosConfig = yaml_serde::from_str(
             r#"
-[memory]
-backend = "sqlite"
-
-[[memory.external_providers]]
-id = "remote-a"
-provider = "plugin"
-enabled = true
-endpoint = "http://127.0.0.1:8787"
-api_key = "memory-provider-key"
+memory:
+  backend: sqlite
+  external_providers:
+    - id: remote-a
+      provider: plugin
+      enabled: true
+      endpoint: http://127.0.0.1:8787
+      api_key: memory-provider-key
 "#,
         )
         .expect("config");
@@ -157,20 +154,20 @@ api_key = "memory-provider-key"
 
     #[test]
     fn config_parses_agent_profiles() {
-        let config: IkarosConfig = toml::from_str(
+        let config: IkarosConfig = yaml_serde::from_str(
             r#"
-[agent]
-default = "research"
-
-[agent.profiles.research]
-mode = "general"
-description = "Repository research"
-persona_overlay = "Stay read-heavy and cite local context."
-memory_context = false
-rag_context = true
-workspace_writes = "deny"
-shell = "ask"
-network = "deny"
+agent:
+  default: research
+  profiles:
+    research:
+      mode: general
+      description: "Repository research"
+      persona_overlay: "Stay read-heavy and cite local context."
+      memory_context: false
+      rag_context: true
+      workspace_writes: deny
+      shell: ask
+      network: deny
 "#,
         )
         .expect("config");
@@ -186,11 +183,14 @@ network = "deny"
 
     #[test]
     fn config_parses_self_modify_check_profiles() {
-        let config: IkarosConfig = toml::from_str(
+        let config: IkarosConfig = yaml_serde::from_str(
             r#"
-[self_modify.check_profiles.runtime_patch]
-commands = ["cargo check --workspace --all-features"]
-reason = "Runtime changes must compile."
+self_modify:
+  check_profiles:
+    runtime_patch:
+      commands:
+        - cargo check --workspace --all-features
+      reason: "Runtime changes must compile."
 "#,
         )
         .expect("config");

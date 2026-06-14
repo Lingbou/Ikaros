@@ -6,6 +6,7 @@ use crate::{
     body::{self, BodyCommand},
     chat::{ChatArgs, chat_command},
     code::{CodeCommand, code_command},
+    config::{ConfigCommand, config_command},
     diagnostics::{DoctorArgs, doctor, init},
     fs::{FsCommand, fs_command},
     git::{GitCommand, git_command},
@@ -45,6 +46,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Init,
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     Doctor(DoctorArgs),
     Persona {
         #[command(subcommand)]
@@ -149,6 +154,7 @@ pub(crate) async fn run() -> Result<()> {
 
     match cli.command {
         Commands::Init => init(&paths)?,
+        Commands::Config { command } => config_command(command, &paths)?,
         Commands::Doctor(args) => doctor(args, &paths, &workspace, cli.agent.as_deref())?,
         Commands::Persona { command } => persona_command(command, &paths)?,
         Commands::Memory { command } => {
@@ -247,6 +253,15 @@ mod tests {
             agent_run.command,
             Commands::Agent {
                 command: AgentCommand::Run(_)
+            }
+        ));
+
+        let config_validate =
+            Cli::try_parse_from(["ikaros", "config", "validate"]).expect("config validate");
+        assert!(matches!(
+            config_validate.command,
+            Commands::Config {
+                command: ConfigCommand::Validate
             }
         ));
     }

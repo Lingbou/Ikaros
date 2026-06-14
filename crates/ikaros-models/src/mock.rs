@@ -79,13 +79,15 @@ impl ModelProvider for MockModelProvider {
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let response = self.generate(request).await?;
-        Ok(ModelStream {
+        let mut stream = ModelStream {
             provider: response.provider,
             model: response.model,
             chunks: chunk_text(&response.content, 48),
             tool_calls: response.tool_calls,
             usage: response.usage,
             events: Vec::new(),
-        })
+        };
+        stream.events = stream.normalized_events();
+        Ok(stream)
     }
 }

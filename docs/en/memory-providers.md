@@ -4,7 +4,7 @@ The memory provider boundary keeps local memory as the default and gives local s
 
 The provider API is a lifecycle boundary, not just a database abstraction. Runtime
 turns can notify memory at specific points without knowing whether the active
-implementation is JSONL, SQLite, or an external provider declared in config.
+local implementation is JSONL or SQLite.
 
 ## Current State
 
@@ -13,18 +13,17 @@ Implemented providers:
 - local JSONL
 - local SQLite
 
-`LocalMemoryStore` implements `MemoryProvider`. External providers can be declared in config and inspected by doctor/registry commands, but remote append/search adapters are not enabled.
+`LocalMemoryStore` implements `MemoryProvider`. External provider records are descriptor metadata only. They can document a future integration, but they are not executable providers in the current runtime.
 
 Registry states:
 
 - `active`: usable provider.
-- `disabled`: configured but not selected.
-- `blocked`: configuration is invalid for use, for example when more than one
-  external provider is enabled.
+- `disabled`: descriptor metadata is present but not executable.
+- `blocked`: configuration is invalid for use.
 
 The built-in local provider is always active. External provider descriptors are
 metadata until a remote adapter exists; declaring one does not redirect local
-writes.
+writes. `ikaros config validate` rejects enabled external providers.
 
 Inspect provider state with:
 
@@ -90,18 +89,22 @@ memory:
       api_key: "replace-with-your-provider-key"
 ```
 
-Only one external provider may be enabled. If multiple are enabled, the registry reports a blocked state instead of splitting writes across systems.
+Keep `enabled: false`. Enabled external memory providers are rejected by
+`ikaros config validate` because remote append/search adapters are not
+implemented.
 
 ## Boundaries
 
 - Local memory and RAG remain the default path.
 - External provider config does not automatically replace local stores.
+- External provider descriptors are not a runtime capability until a real
+  adapter is implemented.
 - Secret-like memory content is rejected or redacted.
 - Relationship, task, project, and knowledge memory should not silently diverge across multiple providers.
 
 ## Failure Handling
 
-Unsupported local backends fail during store/provider construction. Multiple
-enabled external providers put the registry into a blocked state. Secret-like
-records are rejected before storage. Provider lifecycle failures should be
-reported to the caller instead of silently dropping writes.
+Unsupported local backends fail during store/provider construction. Enabled
+external providers are invalid in the current runtime. Secret-like records are
+rejected before storage. Provider lifecycle failures should be reported to the
+caller instead of silently dropping writes.

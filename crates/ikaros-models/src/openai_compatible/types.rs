@@ -109,6 +109,12 @@ pub(super) struct ChatChunkChoice {
 pub(super) struct ChatDelta {
     pub(super) content: Option<String>,
     #[serde(default)]
+    pub(super) reasoning: Option<String>,
+    #[serde(default)]
+    pub(super) reasoning_content: Option<String>,
+    #[serde(default)]
+    pub(super) refusal: Option<String>,
+    #[serde(default)]
     pub(super) tool_calls: Vec<OpenAiStreamToolCallDelta>,
 }
 
@@ -130,4 +136,5 @@ pub(super) struct OpenAiStreamToolCallAccumulator {
     pub(super) id: Option<String>,
     pub(super) name: String,
     pub(super) arguments: String,
+    pub(super) start_emitted: bool,
 }

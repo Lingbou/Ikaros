@@ -2,8 +2,8 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelToolCall,
-    ModelToolDefinition, TokenUsage,
+    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
+    ModelToolCall, ModelToolDefinition, TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{
@@ -115,16 +115,24 @@ impl ModelProvider for AnthropicProvider {
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let response = self.generate(request).await?;
+        let chunks = (!response.content.is_empty())
+            .then_some(response.content)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let events = model_stream_events_from_response(
+            &response.provider,
+            &response.model,
+            &chunks,
+            &response.tool_calls,
+            &response.usage,
+        );
         Ok(ModelStream {
             provider: response.provider,
             model: response.model,
-            chunks: (!response.content.is_empty())
-                .then_some(response.content)
-                .into_iter()
-                .collect(),
+            chunks,
             tool_calls: response.tool_calls,
             usage: response.usage,
-            events: Vec::new(),
+            events,
         })
     }
 }
@@ -375,6 +383,48 @@ fn anthropic_model_tool_call(block: AnthropicContentBlock) -> Option<ModelToolCa
         raw_arguments: Some(redact_secrets(&input.to_string())),
         input,
     })
+}
+
+fn model_stream_events_from_response(
+    provider: &str,
+    model: &str,
+    chunks: &[String],
+    tool_calls: &[ModelToolCall],
+    usage: &TokenUsage,
+) -> Vec<ModelStreamEvent> {
+    let mut events = vec![ModelStreamEvent::Start {
+        provider: provider.into(),
+        model: model.into(),
+    }];
+    events.extend(
+        chunks
+            .iter()
+            .filter(|chunk| !chunk.is_empty())
+            .cloned()
+            .map(ModelStreamEvent::TextDelta),
+    );
+    for (index, call) in tool_calls.iter().enumerate() {
+        let id = call
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("tool_call_{index}"));
+        events.push(ModelStreamEvent::ToolCallStart {
+            id: id.clone(),
+            name: call.name.clone(),
+        });
+        if let Some(arguments) = &call.raw_arguments {
+            events.push(ModelStreamEvent::ToolCallDelta {
+                id: id.clone(),
+                args_delta: arguments.clone(),
+            });
+        }
+        events.push(ModelStreamEvent::ToolCallEnd { id });
+    }
+    if usage.total_or_prompt_completion() > 0 {
+        events.push(ModelStreamEvent::Usage(usage.clone()));
+    }
+    events.push(ModelStreamEvent::Done);
+    events
 }
 
 impl From<AnthropicUsage> for TokenUsage {

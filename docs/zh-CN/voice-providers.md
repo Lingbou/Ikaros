@@ -9,7 +9,7 @@
 - `mock`：确定性的本地 TTS/ASR provider，用于显式离线测试。
 - `openai-compatible`：`/audio/speech` 和 `/audio/transcriptions` adapter。
 
-Cloud voice provider 名称支持 `openai-compatible`、`openai`、`moonshot` 和 `siliconflow`。
+Cloud voice provider 名称是 OpenAI-compatible adapter 的别名：`openai-compatible`、`openai`、`moonshot` 和 `siliconflow`。别名只选择 wire format；配置的远端服务必须实际提供对应的 TTS 或 ASR endpoint。
 
 示例：
 

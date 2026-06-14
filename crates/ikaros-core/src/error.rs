@@ -19,10 +19,6 @@ pub enum IkarosError {
         #[source]
         source: std::io::Error,
     },
-    #[error("toml parse error: {0}")]
-    Toml(#[from] toml::de::Error),
-    #[error("toml serialize error: {0}")]
-    TomlSer(#[from] toml::ser::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("yaml parse error: {0}")]

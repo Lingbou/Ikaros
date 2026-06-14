@@ -35,6 +35,16 @@ providers:
 
 Provider 设置只从这个区域读取。明文 key 只应存在于本机 runtime home，不应提交进仓库。生成配置直接使用这些本地明文字段。
 
+## 配置校验
+
+编辑本地 runtime 配置后运行：
+
+```bash
+ikaros config validate
+```
+
+校验器读取 `IKAROS_HOME/config.yaml`，检查 YAML 形状，拒绝未知字段，校验 provider/runtime/transport/backend 组合，并在远程调用前报告缺失的 key、URL 和模型名。输出只使用 `providers.model.api_key` 这类字段路径说明缺失或非法，不会打印 secret 值。
+
 ## Agent Profile
 
 Profile 选择 persona overlay 和普通策略行为：
@@ -219,6 +229,8 @@ rag:
 
 Cloud embedding 使用 OpenAI-compatible 形状，并在 provider 调用前通过 harness 审批。支持的 embedding provider 名称包括 `hash`、`sparse`、`mock`、`openai-compatible`/`openai`、`moonshot` 和 `siliconflow`。
 
+外部 memory provider 目前只是 descriptor 元数据。远程 append/search adapter 尚未实现，因此 `ikaros config validate` 会拒绝启用的外部 memory provider。
+
 ## 语音
 
 生成配置为远程 OpenAI-compatible TTS 和 ASR 预留空的凭证和模型名：
@@ -242,7 +254,7 @@ voice:
     model: ""
 ```
 
-离线测试可以显式选择 `mock`。Cloud voice provider 名称支持 `openai-compatible`、`openai`、`moonshot` 和 `siliconflow`。TTS 文本在 provider 调用前脱敏；输出文件视为 workspace 写入。
+离线测试可以显式选择 `mock`。Cloud voice provider 名称是 OpenAI-compatible adapter 的别名：`openai-compatible`、`openai`、`moonshot` 和 `siliconflow`。厂商别名不代表远端服务一定同时提供 TTS 和 ASR endpoint。TTS 文本在 provider 调用前脱敏；输出文件视为 workspace 写入。
 
 ## Self-Modify 检查
 

@@ -5,8 +5,10 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Before MVP Release
 
 - Keep formatting, clippy, tests, and generated docs passing through direct local commands.
-- Narrow agent-loop fallback parsing toward provider-native tool calls plus a strict documented JSON fallback.
+- Keep agent-loop fallback parsing limited to provider-native tool calls plus the strict documented JSON fallback.
+- Keep `config.yaml` validation current as provider, memory, voice, and runtime fields change.
 - Strengthen live smoke coverage for OpenAI-compatible model APIs, especially Moonshot and SiliconFlow.
+- Expand provider stream fixture tests for typed text, reasoning, refusal, tool-call, usage, error, and done events.
 - Expand policy and approval tests for path handling, secret-looking inputs, network calls, plugin execution, and approval replay.
 - Keep approval replay bound to workspace, exact approved input, and agent identity.
 - Keep command-backed plugin tests focused on malicious manifests, path traversal, stdin/output limits, timeout limits, and output redaction.
@@ -16,7 +18,8 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Runtime
 
 - Harden `AgentRuntime` so future runtimes can plug in without changing provider adapters.
-- Define stable stop reasons, tool continuation behavior, and report fields for automation users.
+- Persist typed turn events into the future session store and derive reports from the event stream.
+- Refine tool continuation behavior and report fields for automation users.
 - Continue separating provider transport concerns from turn-loop ownership.
 - Add stricter compatibility tests for provider-specific tool-call differences.
 

@@ -76,7 +76,13 @@ pub fn marketplace_path(skills_dir: &Path) -> PathBuf {
 
 pub(super) fn load_plugin_manifest(path: &Path) -> Result<PluginManifest> {
     let raw = fs::read_to_string(path).map_err(|source| IkarosError::io(path, source))?;
-    let manifest = toml::from_str::<PluginManifest>(&raw)?;
+    let manifest = toml::from_str::<PluginManifest>(&raw).map_err(|source| {
+        IkarosError::Message(format!(
+            "failed to parse plugin manifest at {}: {}",
+            path.display(),
+            redact_secrets(&source.to_string())
+        ))
+    })?;
     validate_plugin_manifest(&manifest)?;
     Ok(redact_plugin_manifest(manifest))
 }

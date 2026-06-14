@@ -259,14 +259,16 @@ pub trait ModelProvider: Send + Sync {
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse>;
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let response = self.generate(request).await?;
-        Ok(ModelStream {
+        let mut stream = ModelStream {
             provider: response.provider,
             model: response.model,
             chunks: vec![response.content],
             tool_calls: response.tool_calls,
             usage: response.usage,
             events: Vec::new(),
-        })
+        };
+        stream.events = stream.normalized_events();
+        Ok(stream)
     }
 }
 

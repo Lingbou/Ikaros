@@ -13,11 +13,14 @@ The default runtime is `harness-agent-loop`, and the default OpenAI-compatible t
 `ModelProvider` exposes two operations:
 
 - `generate(request)`: returns one `ModelResponse`.
-- `stream(request)`: returns a `ModelStream` of chunks and final metadata.
+- `stream(request)`: returns a `ModelStream` with text chunks, normalized tool
+  calls, final metadata, and typed `ModelStreamEvent` entries.
 
 `ModelRequest` carries model name, messages, optional max tokens, optional
 temperature, and optional tool definitions. `ModelResponse` carries provider,
-model, content, usage, and normalized tool calls.
+model, content, usage, and normalized tool calls. `ModelStreamEvent` is the
+stream protocol consumed by the runtime event layer; `chunks` and `tool_calls`
+remain as aggregate fields for existing callers.
 
 Providers must not:
 
@@ -112,9 +115,11 @@ adapter with provider-specific normalization. Kimi K2.6 temperature normalizatio
 is handled in the adapter path so runtime callers do not need provider-specific
 branches.
 
-Streaming parses SSE chunks incrementally. Text deltas become stream chunks.
+Streaming parses SSE chunks incrementally. Text, reasoning, refusal, native
+tool-call, usage, and done markers become typed `ModelStreamEvent` values.
 Tool-call deltas are accumulated until a complete normalized tool call can be
-reported back to the agent loop.
+reported back to the agent loop, while individual argument deltas are still
+emitted as stream events.
 
 ## Governance
 

@@ -86,7 +86,7 @@ JSONL remains the default local storage format because it is inspectable and eas
 
 State ownership:
 
-- `memory/`: local memory records and provider-backed memory state.
+- `memory/`: local memory records and memory provider registry metadata.
 - `chat/`: chat history and session summaries.
 - `rag/`: local RAG files, chunks, and embedding indexes.
 - `audit/`: policy decisions, approval records, usage logs, and migration backups.

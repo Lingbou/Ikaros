@@ -499,6 +499,20 @@ data: [DONE]
     assert!(stream.content().contains("Hello world"));
     assert!(!stream.content().contains("abc123"));
     assert!(stream.content().contains("[REDACTED_SECRET]"));
+    assert!(matches!(
+        stream.events.first(),
+        Some(ModelStreamEvent::Start {
+            provider,
+            model
+        }) if provider == "moonshot" && model == "stream-model"
+    ));
+    assert!(stream.events.iter().any(
+        |event| matches!(event, ModelStreamEvent::TextDelta(text) if text.contains("Hello "))
+    ));
+    assert!(stream.events.iter().any(
+        |event| matches!(event, ModelStreamEvent::Usage(usage) if usage.total_tokens == Some(5))
+    ));
+    assert!(matches!(stream.events.last(), Some(ModelStreamEvent::Done)));
 }
 
 #[test]
@@ -566,6 +580,49 @@ fn parses_openai_compatible_stream_tool_call_deltas() {
             .is_some_and(|id| id.contains("[REDACTED_SECRET]"))
     );
     assert_eq!(stream.usage.total_tokens, Some(6));
+    assert!(stream.events.iter().any(
+        |event| matches!(event, ModelStreamEvent::ToolCallStart { name, .. } if name == "memory_")
+    ));
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ToolCallDelta { args_delta, .. } if args_delta.contains("[REDACTED_SECRET]")))
+    );
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ToolCallEnd { id } if id.contains("[REDACTED_SECRET]")))
+    );
+}
+
+#[test]
+fn parses_openai_compatible_stream_reasoning_and_refusal_events() {
+    let first_chunk = serde_json::json!({
+        "model": "stream-reasoning-model",
+        "choices": [{
+            "delta": {
+                "reasoning_content": "thinking token=abc123",
+                "refusal": "cannot reveal token=abc123"
+            }
+        }]
+    });
+    let text = format!("data: {first_chunk}\n\ndata: [DONE]\n");
+    let stream = parse_stream_response(&text, "moonshot", "fallback").expect("stream");
+
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ReasoningDelta(text) if text.contains("[REDACTED_SECRET]")))
+    );
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::RefusalDelta(text) if text.contains("[REDACTED_SECRET]")))
+    );
 }
 
 #[test]

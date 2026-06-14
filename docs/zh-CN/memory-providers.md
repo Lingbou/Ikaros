@@ -2,7 +2,7 @@
 
 记忆 provider 边界用于保持本地记忆为默认，并统一本地 store、registry 和 provider lifecycle。MVP 里可执行的 append/search/update/delete 仍由本地 JSONL 或 SQLite store 完成。
 
-Provider API 是生命周期边界，不只是数据库抽象。Runtime turn 可以在固定阶段通知 memory，而不需要知道当前实现是 JSONL、SQLite，还是配置中声明的外部 provider。
+Provider API 是生命周期边界，不只是数据库抽象。Runtime turn 可以在固定阶段通知 memory，而不需要知道当前本地实现是 JSONL 还是 SQLite。
 
 ## 当前状态
 
@@ -11,15 +11,15 @@ Provider API 是生命周期边界，不只是数据库抽象。Runtime turn 可
 - 本地 JSONL
 - 本地 SQLite
 
-`LocalMemoryStore` 实现 `MemoryProvider`。外部 provider 可以在 config 中声明并被 doctor/registry 检查，但远程 append/search adapter 仍未启用。
+`LocalMemoryStore` 实现 `MemoryProvider`。外部 provider 记录目前只是 descriptor 元数据，可以描述后续集成，但不是当前 runtime 的可执行 provider。
 
 Registry state：
 
 - `active`：可用 provider。
-- `disabled`：已配置但未选择。
-- `blocked`：配置不可用，例如同时启用多个外部 provider。
+- `disabled`：存在 descriptor 元数据，但不可执行。
+- `blocked`：配置不可用。
 
-内置本地 provider 始终 active。外部 provider descriptor 在远程 adapter 启用前只是元数据；声明它不会重定向本地写入。
+内置本地 provider 始终 active。外部 provider descriptor 在远程 adapter 启用前只是元数据；声明它不会重定向本地写入。`ikaros config validate` 会拒绝启用的外部 provider。
 
 检查 provider 状态：
 
@@ -73,15 +73,16 @@ memory:
       api_key: "replace-with-your-provider-key"
 ```
 
-同一时间最多启用一个外部 provider。如果启用了多个，registry 会报告 blocked 状态，而不是把写入拆到多个系统。
+保持 `enabled: false`。远程 append/search adapter 尚未实现，因此启用外部 memory provider 会被 `ikaros config validate` 拒绝。
 
 ## 边界
 
 - 本地 memory 和 RAG 仍是默认路径。
 - 外部 provider 配置不会自动替代本地 store。
+- 在真实 adapter 实现前，外部 provider descriptor 不是 runtime 能力。
 - Secret-like memory 内容会被拒绝或脱敏。
 - Relationship、task、project 和 knowledge memory 不应静默分叉到多个 provider。
 
 ## 失败处理
 
-不支持的本地 backend 会在 store/provider 构造时失败。多个启用的外部 provider 会让 registry 进入 blocked 状态。疑似 secret 的记录会在存储前被拒绝。Provider lifecycle 失败应返回给调用方，不应静默丢弃写入。
+不支持的本地 backend 会在 store/provider 构造时失败。启用外部 provider 在当前 runtime 中是非法配置。疑似 secret 的记录会在存储前被拒绝。Provider lifecycle 失败应返回给调用方，不应静默丢弃写入。
