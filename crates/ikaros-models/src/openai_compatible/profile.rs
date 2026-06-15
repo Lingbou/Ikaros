@@ -391,8 +391,7 @@ fn deepseek_supports_thinking(model: &str) -> bool {
 
 fn openrouter_anthropic_reasoning_is_mandatory(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    if !(model.starts_with("anthropic/") || model.starts_with("claude"))
-        && !model.contains("claude")
+    if !(model.starts_with("anthropic/") || model.starts_with("claude") || model.contains("claude"))
     {
         return false;
     }
