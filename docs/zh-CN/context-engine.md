@@ -11,7 +11,7 @@ Context 边界控制哪些本地状态可以进入一次模型 turn。它不是 
 - `ContextReference`
 - `ContextBudget`
 - `ContextDiff`
-- 启发式 token 估算
+- provider-aware token estimator adapter
 - `PriorityContextEngine`
 - `TrajectoryCompressor`
 
@@ -44,7 +44,7 @@ Runtime 在组装本地 context 前，还会为 persona/system prompt 预留 tok
 
 在 runtime chat 中，请求的 context budget 为 `0` 时，如果当前有 provider profile，就表示“使用模型推导出来的可用本地 context 窗口”。直接调用底层库仍可构造 unbounded `ContextBudget`，但 CLI turn 不应把 `0` 理解成可以超过模型窗口。
 
-Estimator 仍然是本地确定性的。Provider profile 让 context-window 计量具备 provider awareness，但真正 provider-native tokenizer 仍是后续 provider registry 的工作。`tokenizer kind` 目前只是 profile metadata，不代表 native tokenizer adapter 已经启用。
+Estimator 会根据 provider profile 的 tokenizer kind 选择。当前 adapter 仍是本地确定性实现：OpenAI-compatible 模型使用偏 ChatML 的估算器，`mock` 使用稳定的 word-count 估算器方便测试，Anthropic/Ollama 在精确 native tokenizer 接入前使用显式 fallback heuristic adapter。持久化的 budget 会记录 adapter 名称，replay/debug 调用方可以知道本轮 context 是按哪条计量路径形成的。
 
 ## 配额和压缩
 

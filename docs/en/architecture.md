@@ -137,8 +137,10 @@ State ownership:
 - Context primitives live in `ikaros-context`. Runtime chat assembles
   relationship, explicit references, history, memory, and RAG into a
   provider-aware token-budgeted `ContextBundle`. Provider metadata caps the
-  usable context window, while token counting is still heuristic until native
-  tokenizer adapters exist.
+  usable context window and selects the token estimator. OpenAI-compatible and
+  mock providers have deterministic local adapters; Anthropic and Ollama still
+  use explicit fallback adapters until exact native tokenizer libraries are
+  wired in.
 - `ContextReference` currently parses and locally resolves safe references:
   `@file:path:line-line`, `@folder:path`, `@git:rev`, `@diff`, and `@staged`.
   Paths must stay under the workspace. `@url:` is parsed but not fetched until

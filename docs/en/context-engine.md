@@ -14,7 +14,7 @@ turn saw the context it saw.
 - `ContextReference`
 - `ContextBudget`
 - `ContextDiff`
-- heuristic token estimation
+- provider-aware token estimator adapters
 - `PriorityContextEngine`
 - `TrajectoryCompressor`
 
@@ -60,10 +60,12 @@ available local-context window" when a provider profile is available. Direct
 library callers can still construct an unbounded `ContextBudget`, but CLI turns
 should not treat `0` as permission to exceed the model window.
 
-The estimator is still local and deterministic. The provider profile now makes
-context-window accounting provider-aware, but tokenizer-native counting remains a
-future provider registry task. `tokenizer kind` is recorded as profile metadata;
-it does not mean native tokenizer adapters are already active.
+The estimator is selected from the provider profile's tokenizer kind. The
+current adapters are local and deterministic: OpenAI-compatible models use a
+ChatML-oriented estimator, `mock` uses a stable word-count estimator for tests,
+and Anthropic/Ollama use explicit fallback heuristic adapters until exact native
+tokenizers are added. The persisted budget stores the adapter name so replay and
+debug callers can see which accounting path shaped the turn.
 
 ## Quotas And Compression
 

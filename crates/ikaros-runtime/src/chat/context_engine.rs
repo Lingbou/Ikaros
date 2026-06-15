@@ -10,13 +10,13 @@ use super::{
 };
 use crate::{relationship_context_lines, relationship_snapshot_from_session};
 use ikaros_context::{
-    ContextBudget, ContextCompressedSection, ContextDiff, ContextReference,
-    HeuristicTokenEstimator, TokenEstimator, TrajectoryCompressor, parse_context_references,
+    ContextBudget, ContextCompressedSection, ContextDiff, ContextReference, ContextTokenEstimator,
+    ContextTokenizerKind, TokenEstimator, TrajectoryCompressor, parse_context_references,
     resolve_context_references,
 };
 use ikaros_core::{IkarosError, ResolvedAgentProfile, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
-use ikaros_models::ModelContextProfile;
+use ikaros_models::{ModelContextProfile, ModelTokenizerKind};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{future::Future, path::Path, pin::Pin};
@@ -49,6 +49,7 @@ pub struct ContextModelBudget<'a> {
 pub struct CompactInput {
     pub context: ChatContext,
     pub budget: ContextBudget,
+    pub tokenizer: ContextTokenizerKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,7 +90,7 @@ pub trait ContextEngine: Send + Sync {
         input: CompactInput,
     ) -> Pin<Box<dyn Future<Output = Result<CompactReport>> + 'a>> {
         Box::pin(async move {
-            let estimator = HeuristicTokenEstimator;
+            let estimator = input.tokenizer.estimator();
             let before = input.context;
             let compressed =
                 TrajectoryCompressor::default().compress(before.clone(), input.budget, &estimator);
@@ -123,14 +124,15 @@ impl ContextEngine for LocalChatContextEngine {
     ) -> Pin<Box<dyn Future<Output = Result<ContextBundle>> + 'a>> {
         Box::pin(async move {
             let options = input.options;
+            let estimator = context_estimator_for_input(&input);
             if options.no_context {
                 let context = ChatContext::default();
                 return Ok(ContextBundle::from_context(
                     context.clone(),
                     context,
-                    ContextBudget::unbounded(HeuristicTokenEstimator.name()),
+                    ContextBudget::unbounded(estimator.name()),
                     Vec::new(),
-                    &HeuristicTokenEstimator,
+                    &estimator,
                 ));
             }
 
@@ -164,7 +166,8 @@ impl ContextEngine for LocalChatContextEngine {
             let compacted = self
                 .compact(CompactInput {
                     context: context.clone(),
-                    budget: context_budget_for_input(&input, HeuristicTokenEstimator.name()),
+                    budget: context_budget_for_input(&input, estimator.name()),
+                    tokenizer: estimator.kind(),
                 })
                 .await?;
             let mut bundle = ContextBundle::from_context(
@@ -172,7 +175,7 @@ impl ContextEngine for LocalChatContextEngine {
                 compacted.context,
                 compacted.budget,
                 references,
-                &HeuristicTokenEstimator,
+                &estimator,
             );
             bundle.diff = compacted.diff;
             bundle.compressed_sections = compacted.compressed_sections;
@@ -282,6 +285,28 @@ fn context_budget_for_input(
         input.reserved_system_tokens,
         model_context.source.clone(),
     )
+}
+
+pub fn context_estimator_for_model(
+    model_context: Option<&ModelContextProfile>,
+) -> ContextTokenEstimator {
+    context_tokenizer_for_model(model_context).estimator()
+}
+
+pub fn context_tokenizer_for_model(
+    model_context: Option<&ModelContextProfile>,
+) -> ContextTokenizerKind {
+    match model_context.map(|context| context.tokenizer) {
+        Some(ModelTokenizerKind::OpenAiCompatible) => ContextTokenizerKind::OpenAiCompatible,
+        Some(ModelTokenizerKind::Anthropic) => ContextTokenizerKind::AnthropicFallback,
+        Some(ModelTokenizerKind::Ollama) => ContextTokenizerKind::OllamaFallback,
+        Some(ModelTokenizerKind::Mock) => ContextTokenizerKind::Mock,
+        Some(ModelTokenizerKind::Heuristic) | None => ContextTokenizerKind::Heuristic,
+    }
+}
+
+fn context_estimator_for_input(input: &ContextAssembleInput<'_>) -> ContextTokenEstimator {
+    context_estimator_for_model(input.model_context)
 }
 
 fn assemble_history_context(context: &mut ChatContext, options: &ChatRunOptions) -> Result<()> {

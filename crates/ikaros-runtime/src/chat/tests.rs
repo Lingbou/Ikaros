@@ -2,7 +2,9 @@
 
 use super::*;
 use async_trait::async_trait;
-use ikaros_context::{HeuristicTokenEstimator, apply_context_token_budget};
+use ikaros_context::{
+    HeuristicTokenEstimator, TokenEstimator, apply_context_token_budget, chat_context_token_count,
+};
 use ikaros_core::{
     AgentProfile, ContextBuilder, IkarosError, IkarosPaths, RagConfig, ResolvedAgentProfile, Result,
 };
@@ -151,7 +153,7 @@ fn chat_context_budget_preserves_priority_and_omits_low_sections() {
     assert_eq!(budgeted.history, vec!["hist"]);
     assert!(budgeted.memory.is_empty());
     assert!(budgeted.rag.is_empty());
-    assert!(super::context::chat_context_token_count_with_default(&budgeted) <= 12);
+    assert!(chat_context_token_count(&budgeted, &estimator) <= 12);
 }
 
 #[test]
@@ -172,6 +174,40 @@ fn chat_context_budget_zero_keeps_context_unbounded() {
         ),
         context
     );
+}
+
+#[test]
+fn model_tokenizer_kind_selects_context_estimator() {
+    use super::context_engine::context_estimator_for_model;
+
+    let openai = ModelContextProfile::new(
+        128_000,
+        4_096,
+        ModelTokenizerKind::OpenAiCompatible,
+        "openai-compatible",
+    );
+    let anthropic =
+        ModelContextProfile::new(200_000, 8_192, ModelTokenizerKind::Anthropic, "anthropic");
+    let ollama = ModelContextProfile::new(32_768, 2_048, ModelTokenizerKind::Ollama, "ollama");
+    let mock = ModelContextProfile::new(8_192, 1_024, ModelTokenizerKind::Mock, "mock");
+
+    assert_eq!(
+        context_estimator_for_model(Some(&openai)).name(),
+        "openai-compatible-chatml-v1"
+    );
+    assert_eq!(
+        context_estimator_for_model(Some(&anthropic)).name(),
+        "anthropic-fallback-heuristic-v1"
+    );
+    assert_eq!(
+        context_estimator_for_model(Some(&ollama)).name(),
+        "ollama-fallback-heuristic-v1"
+    );
+    assert_eq!(
+        context_estimator_for_model(Some(&mock)).name(),
+        "mock-tokenizer-v1"
+    );
+    assert_eq!(context_estimator_for_model(None).name(), "heuristic-v1");
 }
 
 #[tokio::test]
@@ -214,6 +250,7 @@ async fn provider_context_window_caps_chat_context_budget() {
     .expect("context bundle");
 
     assert_eq!(bundle.budget.max_tokens, 48);
+    assert_eq!(bundle.budget.estimator, "mock-tokenizer-v1");
     assert_eq!(bundle.budget.requested_tokens, Some(2_000));
     assert_eq!(bundle.budget.context_window, Some(96));
     assert_eq!(bundle.budget.reserved_output_tokens, Some(32));
@@ -778,6 +815,10 @@ async fn run_chat_message_resolves_file_reference_and_persists_context_diff() {
     assert_eq!(
         context_event.payload["budget"]["source"].as_str(),
         Some("mock")
+    );
+    assert_eq!(
+        context_event.payload["budget"]["estimator"].as_str(),
+        Some("mock-tokenizer-v1")
     );
     assert_eq!(
         context_event.payload["budget"]["context_window"].as_u64(),

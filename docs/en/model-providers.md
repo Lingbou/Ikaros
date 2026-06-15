@@ -29,9 +29,11 @@ callers.
 
 `ModelContextProfile` records the context window, default output-token
 reservation, tokenizer kind, and metadata source. Runtime uses it to cap
-`ContextBudget` before context assembly. This is not a full provider registry
-yet; cost, health, cooldown, fallback chain, and native tokenizer adapters are
-still future work.
+`ContextBudget` before context assembly and to choose a context token estimator.
+OpenAI-compatible and mock providers have deterministic local estimators;
+Anthropic and Ollama currently select explicit fallback estimators. This is not
+a full provider registry yet; cost, health, cooldown, fallback chains, and exact
+provider-native tokenizer libraries are still future work.
 
 Providers must not:
 

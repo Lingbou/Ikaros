@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    context::chat_context_token_count_with_default,
     context_engine::{
         ContextBundle, ContextEngine, ContextEvent, ContextModelBudget, LocalChatContextEngine,
-        TurnRecord, build_chat_context_bundle_with_model_context,
+        TurnRecord, build_chat_context_bundle_with_model_context, context_estimator_for_model,
     },
     history::{
         ChatHistoryAppend, ChatHistoryStore, build_chat_history_record_with_turn_id,
@@ -19,7 +18,7 @@ use crate::{
     run_agent_loop_with_events,
 };
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
-use ikaros_context::estimate_tokens_heuristic;
+use ikaros_context::TokenEstimator;
 use ikaros_core::{
     ContextBuilder, IkarosConfig, IkarosError, IkarosPaths, ResolvedAgentProfile, Result,
     redact_secrets,
@@ -295,7 +294,8 @@ pub async fn run_chat_turn_with_events(
     let context_engine = LocalChatContextEngine;
     let model_context = provider.context_profile();
     let persona_context = render_persona_agent_context(persona, agent);
-    let reserved_system_tokens = estimate_tokens_heuristic(&persona_context) as u32;
+    let context_estimator = context_estimator_for_model(Some(&model_context));
+    let reserved_system_tokens = context_estimator.estimate_tokens(&persona_context) as u32;
     if let Err(error) = context_engine
         .ingest(ContextEvent {
             kind: "user_input".into(),
@@ -342,7 +342,7 @@ pub async fn run_chat_turn_with_events(
         }
     };
     let chat_context = context_bundle.context.clone();
-    let context_tokens = chat_context_token_count_with_default(&chat_context);
+    let context_tokens = context_bundle.budget.used_tokens;
     emit_chat_event(
         &mut single_call_events,
         event_sink,

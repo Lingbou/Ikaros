@@ -7,6 +7,7 @@ mod diff;
 mod error;
 mod priority;
 mod references;
+mod tokenizer;
 mod types;
 
 pub use budget::{
@@ -23,6 +24,7 @@ pub use references::{
     ensure_workspace_child, parse_context_references, resolve_context_reference,
     resolve_context_references,
 };
+pub use tokenizer::{ContextTokenEstimator, ContextTokenizerKind};
 pub use types::{
     ChatContext, ContextBudget, ContextBundle, ContextDiff, ContextDiffItem, ContextReference,
     ContextReferenceKind, ContextSection, ContextSectionKind, ResolvedContextReference,

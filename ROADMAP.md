@@ -39,9 +39,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Keep local-first memory and RAG as the default behavior.
 - Keep `ikaros-context` as the shared boundary for context bundles, references,
   provider-aware token budgets, quota-based compaction, and context diffs.
-- Keep `ModelContextProfile` wired into context budgeting, but replace heuristic
-  token estimation with provider-native tokenizer adapters once the provider
-  registry exists.
+- Keep `ModelContextProfile` wired into context budgeting and estimator
+  selection. Extend the current deterministic adapters with exact
+  provider-native tokenizer libraries once the provider registry exists.
 - Harden quota-based context assembly with protected sections, feasibility
   checks, continuation prompts, and replay/debug commands before increasing
   long-running session scope.
