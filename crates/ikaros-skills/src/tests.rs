@@ -32,6 +32,19 @@ fn test_env(root: &Path, workspace: &Path) -> SkillEnvironment {
     }
 }
 
+fn write_plugin_runner(plugin_dir: &Path, unix_body: &str, windows_body: &str) -> &'static str {
+    let (file_name, body) = if cfg!(windows) {
+        ("runner.cmd", windows_body)
+    } else {
+        ("runner.sh", unix_body)
+    };
+    let runner = plugin_dir.join(file_name);
+    fs::write(&runner, body).expect("runner");
+    #[cfg(unix)]
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
+    file_name
+}
+
 #[test]
 fn builtin_registry_contains_core_skill_groups() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -353,14 +366,11 @@ async fn command_backed_plugin_skill_runs_through_harness() {
     let workspace = temp.path();
     let plugin_dir = temp.path().join("skills/hello");
     fs::create_dir_all(&plugin_dir).expect("plugin dir");
-    let runner = plugin_dir.join("runner.sh");
-    fs::write(
-        &runner,
+    let program = write_plugin_runner(
+        &plugin_dir,
         "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *abc123*) printf 'raw-ok token=abc123\\n' ;; *) printf 'missing raw input: %s\\n' \"$input\"; exit 2 ;; esac\n",
-    )
-    .expect("runner");
-    #[cfg(unix)]
-    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
+        "@echo off\r\nfindstr /C:\"abc123\" >nul\r\nif errorlevel 1 (\r\n  echo missing raw input\r\n  exit /b 2\r\n)\r\necho raw-ok token=abc123\r\n",
+    );
     fs::write(
         plugin_dir.join("plugin.toml"),
         r#"
@@ -375,9 +385,10 @@ risk = "safe_read"
 input_schema = { type = "object", properties = { message = { type = "string" } } }
 
 [skills.command]
-program = "runner.sh"
+program = "__PROGRAM__"
 timeout_ms = 1000
-"#,
+"#
+        .replace("__PROGRAM__", program),
     )
     .expect("manifest");
     let registry = builtin_registry(test_env(temp.path(), workspace));
@@ -408,10 +419,11 @@ async fn command_backed_plugin_rejects_oversized_stdin() {
     let workspace = temp.path();
     let plugin_dir = temp.path().join("skills/hello");
     fs::create_dir_all(&plugin_dir).expect("plugin dir");
-    let runner = plugin_dir.join("runner.sh");
-    fs::write(&runner, "#!/bin/sh\ncat >/dev/null\n").expect("runner");
-    #[cfg(unix)]
-    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let program = write_plugin_runner(
+        &plugin_dir,
+        "#!/bin/sh\ncat >/dev/null\n",
+        "@echo off\r\nmore >nul\r\n",
+    );
     fs::write(
         plugin_dir.join("plugin.toml"),
         r#"
@@ -425,9 +437,10 @@ description = "Echo redacted input."
 risk = "safe_read"
 
 [skills.command]
-program = "runner.sh"
+program = "__PROGRAM__"
 timeout_ms = 1000
-"#,
+"#
+        .replace("__PROGRAM__", program),
     )
     .expect("manifest");
     let registry = builtin_registry(test_env(temp.path(), workspace));
@@ -452,14 +465,11 @@ async fn command_backed_plugin_rejects_oversized_output() {
     let workspace = temp.path();
     let plugin_dir = temp.path().join("skills/hello");
     fs::create_dir_all(&plugin_dir).expect("plugin dir");
-    let runner = plugin_dir.join("runner.sh");
-    fs::write(
-        &runner,
+    let program = write_plugin_runner(
+        &plugin_dir,
         "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 70000 ]; do printf x; i=$((i + 1)); done\n",
-    )
-    .expect("runner");
-    #[cfg(unix)]
-    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
+        "@echo off\r\nfor /L %%i in (1,1,70000) do @echo x\r\n",
+    );
     fs::write(
         plugin_dir.join("plugin.toml"),
         r#"
@@ -473,9 +483,10 @@ description = "Emit too much output."
 risk = "safe_read"
 
 [skills.command]
-program = "runner.sh"
+program = "__PROGRAM__"
 timeout_ms = 1000
-"#,
+"#
+        .replace("__PROGRAM__", program),
     )
     .expect("manifest");
     let registry = builtin_registry(test_env(temp.path(), workspace));
@@ -504,10 +515,11 @@ async fn command_backed_plugin_timeout_is_enforced() {
     let workspace = temp.path();
     let plugin_dir = temp.path().join("skills/hello");
     fs::create_dir_all(&plugin_dir).expect("plugin dir");
-    let runner = plugin_dir.join("runner.sh");
-    fs::write(&runner, "#!/bin/sh\nsleep 1\n").expect("runner");
-    #[cfg(unix)]
-    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let program = write_plugin_runner(
+        &plugin_dir,
+        "#!/bin/sh\nsleep 1\n",
+        "@echo off\r\nping -n 2 127.0.0.1 >nul\r\n",
+    );
     fs::write(
         plugin_dir.join("plugin.toml"),
         r#"
@@ -521,9 +533,10 @@ description = "Sleep too long."
 risk = "safe_read"
 
 [skills.command]
-program = "runner.sh"
+program = "__PROGRAM__"
 timeout_ms = 1
-"#,
+"#
+        .replace("__PROGRAM__", program),
     )
     .expect("manifest");
     let registry = builtin_registry(test_env(temp.path(), workspace));

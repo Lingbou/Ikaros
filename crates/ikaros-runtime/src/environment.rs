@@ -143,6 +143,9 @@ mod tests {
         paths.ensure().expect("paths");
         let configured_workspace = temp.path().join("instance-workspace");
         fs::create_dir_all(&configured_workspace).expect("workspace");
+        let configured_workspace_yaml =
+            serde_json::to_string(&configured_workspace.display().to_string())
+                .expect("workspace yaml string");
         fs::write(
             &paths.config,
             format!(
@@ -152,9 +155,8 @@ agent:
   instances:
     repo-build:
       profile: build
-      workspace: "{}"
+      workspace: {configured_workspace_yaml}
 "#,
-                configured_workspace.display()
             ),
         )
         .expect("config");

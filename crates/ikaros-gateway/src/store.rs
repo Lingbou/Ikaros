@@ -2,16 +2,27 @@
 
 use crate::{GatewayDelivery, GatewayMessage, GatewayMessageStatus, GatewayRoute};
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
-use rustix::fs::{FlockOperation, flock};
 use std::{
     fs::{self, OpenOptions},
+    io::ErrorKind,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    thread,
+    time::{Duration as StdDuration, Instant, SystemTime},
 };
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 const PROCESSING_CLAIM_TIMEOUT: Duration = Duration::minutes(15);
+const LOCK_ACQUIRE_TIMEOUT: StdDuration = StdDuration::from_secs(30);
+const LOCK_RETRY_INTERVAL: StdDuration = StdDuration::from_millis(25);
+const LOCK_STALE_TIMEOUT: StdDuration = StdDuration::from_secs(60);
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct LockMetadata {
+    pid: u32,
+    acquired_at: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct LocalGatewayStore {
@@ -260,7 +271,7 @@ where
 }
 
 struct JsonlFileLock {
-    file: fs::File,
+    path: PathBuf,
 }
 
 impl JsonlFileLock {
@@ -269,32 +280,94 @@ impl JsonlFileLock {
         if let Some(parent) = lock_path.parent() {
             fs::create_dir_all(parent).map_err(|source| IkarosError::io(parent, source))?;
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|source| IkarosError::io(&lock_path, source))?;
-        flock(&file, FlockOperation::LockExclusive).map_err(|source| {
-            IkarosError::Message(format!(
-                "failed to lock gateway store {}: {source}",
-                lock_path.display()
-            ))
-        })?;
-        Ok(Self { file })
+        let started = Instant::now();
+        loop {
+            match OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&lock_path)
+            {
+                Ok(mut file) => {
+                    let meta = LockMetadata {
+                        pid: std::process::id(),
+                        acquired_at: now_rfc3339()?,
+                    };
+                    let payload = serde_json::to_vec(&meta).map_err(|source| {
+                        IkarosError::Message(format!(
+                            "failed to serialize gateway lock metadata: {source}"
+                        ))
+                    })?;
+                    let write_result = file
+                        .write_all(&payload)
+                        .and_then(|()| file.sync_all())
+                        .map_err(|source| IkarosError::io(&lock_path, source));
+                    if let Err(error) = write_result {
+                        drop(file);
+                        let _ = fs::remove_file(&lock_path);
+                        return Err(error);
+                    }
+                    drop(file);
+                    return Ok(Self { path: lock_path });
+                }
+                Err(source) if is_lock_contention(source.kind()) => {
+                    if source.kind() == ErrorKind::AlreadyExists && lock_is_stale(&lock_path)? {
+                        let stale_path = sibling_path_with_suffix(
+                            path,
+                            &format!(".lock.stale.{}", Uuid::new_v4()),
+                        );
+                        match fs::rename(&lock_path, &stale_path) {
+                            Ok(()) => continue,
+                            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                            Err(error) if is_lock_contention(error.kind()) => {
+                                // Another contender is renaming at the same time;
+                                // re-check on the next iteration whether the lock
+                                // is still stale after they finish.
+                            }
+                            Err(error) => return Err(IkarosError::io(&lock_path, error)),
+                        }
+                    }
+                    if started.elapsed() >= LOCK_ACQUIRE_TIMEOUT {
+                        return Err(IkarosError::Message(format!(
+                            "timed out locking gateway store {}",
+                            lock_path.display()
+                        )));
+                    }
+                    thread::sleep(LOCK_RETRY_INTERVAL);
+                }
+                Err(source) => return Err(IkarosError::io(&lock_path, source)),
+            }
+        }
     }
 }
 
 impl Drop for JsonlFileLock {
     fn drop(&mut self) {
-        let _ = flock(&self.file, FlockOperation::Unlock);
+        let _ = fs::remove_file(&self.path);
     }
 }
 
 fn with_jsonl_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let _lock = JsonlFileLock::acquire(path)?;
     f()
+}
+
+fn lock_is_stale(path: &Path) -> Result<bool> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) if is_lock_contention(error.kind()) => return Ok(false),
+        Err(error) => return Err(IkarosError::io(path, error)),
+    };
+    let Ok(modified) = metadata.modified() else {
+        return Ok(false);
+    };
+    Ok(SystemTime::now()
+        .duration_since(modified)
+        .is_ok_and(|age| age >= LOCK_STALE_TIMEOUT))
+}
+
+fn is_lock_contention(kind: ErrorKind) -> bool {
+    kind == ErrorKind::AlreadyExists || (cfg!(windows) && kind == ErrorKind::PermissionDenied)
 }
 
 fn temp_jsonl_path(path: &Path) -> PathBuf {

@@ -60,7 +60,10 @@ impl SelfModifyStore {
                 "self-modify store paths are protected".into(),
             ));
         }
-        let rendered = resolved.to_string_lossy().to_ascii_lowercase();
+        let rendered = resolved
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
         for protected in ["/audit/", "/approvals", "/secrets/", "/self-modify/"] {
             if rendered.contains(protected) {
                 return Err(IkarosError::Message(
@@ -147,8 +150,42 @@ pub(super) fn diff_matches_single_target(
     target_path: &Path,
     workspace_root: &Path,
 ) -> bool {
-    let relative_target = target_path
-        .strip_prefix(workspace_root)
-        .unwrap_or(target_path);
-    changed_files.len() == 1 && changed_files.iter().any(|path| path == relative_target)
+    let relative_target = workspace_relative_path(target_path, workspace_root);
+    changed_files.len() == 1
+        && changed_files
+            .iter()
+            .any(|path| normalized_components_match(path, &relative_target))
+}
+
+pub(super) fn workspace_relative_path(path: &Path, workspace_root: &Path) -> PathBuf {
+    if let Ok(canonical_root) = fs::canonicalize(workspace_root)
+        && let Ok(relative) = path.strip_prefix(&canonical_root)
+    {
+        return relative.to_path_buf();
+    }
+    path.strip_prefix(workspace_root)
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
+fn normalized_components_match(left: &Path, right: &Path) -> bool {
+    normalized_components(left) == normalized_components(right)
+}
+
+fn normalized_components(path: &Path) -> Option<Vec<String>> {
+    path.components()
+        .map(|component| match component {
+            Component::CurDir => Some(String::new()),
+            Component::Normal(name) => {
+                let value = name.to_string_lossy();
+                if cfg!(windows) {
+                    Some(value.to_ascii_lowercase())
+                } else {
+                    Some(value.into_owned())
+                }
+            }
+            _ => None,
+        })
+        .filter(|component| component.as_deref() != Some(""))
+        .collect()
 }

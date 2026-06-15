@@ -131,7 +131,10 @@ fn render_service(
 }
 
 fn output_path_under_home(paths: &IkarosPaths, output: PathBuf) -> Result<PathBuf> {
-    if output.is_absolute() {
+    if output
+        .components()
+        .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    {
         anyhow::bail!("service template output must be relative to IKAROS_HOME");
     }
     if output

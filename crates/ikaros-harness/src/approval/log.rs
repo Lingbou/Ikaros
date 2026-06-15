@@ -245,6 +245,8 @@ fn execution_path_for(path: &Path) -> PathBuf {
 }
 
 fn open_append_file(path: &Path, sensitive: bool) -> Result<File> {
+    #[cfg(not(unix))]
+    let _ = sensitive;
     let mut options = OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]

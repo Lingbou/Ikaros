@@ -292,7 +292,7 @@ fn command_backed_plugin_runs_only_through_approval_and_redacts_io() {
     let inspect = env.run(["skill", "inspect", "hello.echo"]);
     assert!(inspect.contains("kind: plugin-manifest"));
     assert!(inspect.contains("enabled: true"));
-    assert!(inspect.contains("command: bin/echo.sh"));
+    assert!(inspect.contains("command: bin/echo.sh") || inspect.contains("command: bin/echo.cmd"));
 
     let requested = env.run([
         "skill",

@@ -2,6 +2,7 @@
 
 use super::{
     SelfModifyChangeKind, SelfModifyHeartbeatReport, SelfModifyOperationRecord, SelfModifyProposal,
+    diff::workspace_relative_path,
 };
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
 use std::{
@@ -51,10 +52,7 @@ impl SelfModifyStore {
             created_at: now_rfc3339()?,
             proposer_task_id: proposer_task_id.map(|value| redact_secrets(&value)),
             change_kind,
-            target_path: target_path
-                .strip_prefix(&self.workspace_root)
-                .unwrap_or(&target_path)
-                .to_path_buf(),
+            target_path: workspace_relative_path(&target_path, &self.workspace_root),
             unified_diff: redact_secrets(unified_diff),
             dry_run_report,
             rollback_plan,

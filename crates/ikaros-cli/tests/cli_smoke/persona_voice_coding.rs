@@ -2,7 +2,9 @@
 
 use std::fs;
 
-use crate::support::{TestHome, install_smoke_rust_crate, parse_approval_id};
+use crate::support::{
+    TestHome, install_smoke_rust_crate, json_path_ends_with, parse_approval_id, skill_output_json,
+};
 
 #[test]
 fn persona_and_relationship_paths_are_local_audited_and_searchable() {
@@ -183,8 +185,18 @@ fn engineering_assistant_read_only_paths_run_on_temp_rust_crate() {
 
     let repo = env.run(["repo", "scan"]);
     assert!(repo.contains("summary: repo scanned"));
-    assert!(repo.contains("Cargo.toml"));
-    assert!(repo.contains("src/lib.rs"));
+    let repo_json = skill_output_json(&repo);
+    let files = repo_json["files"].as_array().expect("repo files");
+    assert!(files.iter().any(|file| {
+        file["path"]
+            .as_str()
+            .is_some_and(|path| json_path_ends_with(path, &["Cargo.toml"]))
+    }));
+    assert!(files.iter().any(|file| {
+        file["path"]
+            .as_str()
+            .is_some_and(|path| json_path_ends_with(path, &["src", "lib.rs"]))
+    }));
 
     let inferred = env.run(["test", "infer"]);
     assert!(inferred.contains("cargo test --workspace --all-features"));
@@ -241,8 +253,14 @@ diff --git a/src/lib.rs b/src/lib.rs
         .expect("proposal id");
 
     let proposals = env.run(["self-modify", "list"]);
-    assert!(proposals.contains("\"change_kind\": \"runtime_patch\""));
-    assert!(proposals.contains("\"target_path\": \"src/lib.rs\""));
+    let proposals_json = skill_output_json(&proposals);
+    let proposals = proposals_json.as_array().expect("self-modify proposals");
+    assert!(proposals.iter().any(|proposal| {
+        proposal["change_kind"] == "runtime_patch"
+            && proposal["target_path"]
+                .as_str()
+                .is_some_and(|path| json_path_ends_with(path, &["src", "lib.rs"]))
+    }));
 
     let heartbeat = env.run(["self-modify", "heartbeat"]);
     assert!(heartbeat.contains("\"status\": \"manual_apply_only\""));
