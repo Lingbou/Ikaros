@@ -231,9 +231,12 @@ pub fn install_echo_plugin(home: &Path) {
 pub fn write_echo_plugin(plugin_dir: &Path) {
     let bin_dir = plugin_dir.join("bin");
     fs::create_dir_all(&bin_dir).expect("plugin bin dir");
-    fs::write(
-        plugin_dir.join("plugin.toml"),
-        r#"name = "hello"
+    let program = if cfg!(windows) {
+        "bin/echo.cmd"
+    } else {
+        "bin/echo.sh"
+    };
+    let manifest = r#"name = "hello"
 version = "0.1.0"
 description = "Smoke plugin."
 
@@ -244,15 +247,20 @@ risk = "safe_read"
 input_schema = { type = "object", properties = { message = { type = "string" } } }
 
 [skills.command]
-program = "bin/echo.sh"
+program = "__PROGRAM__"
 timeout_ms = 1000
-"#,
-    )
-    .expect("plugin manifest");
-    let script_path = bin_dir.join("echo.sh");
+"#
+    .replace("__PROGRAM__", program);
+    fs::write(plugin_dir.join("plugin.toml"), manifest).expect("plugin manifest");
+    let script_path = bin_dir.join(if cfg!(windows) { "echo.cmd" } else { "echo.sh" });
     let mut script = fs::File::create(&script_path).expect("plugin script");
-    writeln!(script, "#!/usr/bin/env sh").expect("script shebang");
-    writeln!(script, "cat").expect("script body");
+    if cfg!(windows) {
+        writeln!(script, "@echo off").expect("script prelude");
+        writeln!(script, "more").expect("script body");
+    } else {
+        writeln!(script, "#!/usr/bin/env sh").expect("script shebang");
+        writeln!(script, "cat").expect("script body");
+    }
     make_executable(&script_path);
 }
 
@@ -315,4 +323,26 @@ pub fn parse_approval_id(output: &str) -> String {
                 .map(|id| id.trim_end_matches([',', '"']).to_owned())
         })
         .expect("approval id in CLI output")
+}
+
+pub fn skill_output_json(output: &str) -> serde_json::Value {
+    for (start, ch) in output.char_indices() {
+        if !matches!(ch, '{' | '[') {
+            continue;
+        }
+        let mut stream = serde_json::Deserializer::from_str(&output[start..]).into_iter();
+        if let Some(Ok(value)) = stream.next() {
+            return value;
+        }
+    }
+    panic!("valid skill output json");
+}
+
+pub fn json_path_ends_with(path: &str, expected: &[&str]) -> bool {
+    let normalized = path.replace('\\', "/");
+    let components = normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    components.ends_with(expected)
 }
