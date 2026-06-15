@@ -198,6 +198,12 @@ model:
     params:
       max_tokens: null
       temperature: null
+      top_p: null
+      n: null
+      presence_penalty: null
+      frequency_penalty: null
+      seed: null
+      stop: []
     reasoning:
       enabled: null
       effort: null
@@ -233,12 +239,37 @@ model-name hints, then falls back to `generic`. Supported explicit values are:
   `max_tokens` default so local servers that default to very short completions
   do not truncate normal agent turns.
 
-`params.* = null` means the adapter does not send that parameter unless the
-selected profile supplies a provider default. Runtime code may set per-call
-options for specific workflows, but strict profiles still remove or rewrite
-fields that the target provider rejects. `extra_body` is a JSON object merged
-into the final provider request body; logs and audit records must use redacted
-summaries rather than raw secret-like values.
+Provider-specific `compat_profile` values are valid only with
+`provider: openai-compatible`. Native `anthropic`, `ollama`, and `mock`
+providers accept only `auto` or `generic`.
+
+For optional numeric `params` fields, `null` means the adapter does not send
+that parameter unless the selected profile supplies a provider default.
+Supported fields are:
+
+- `max_tokens`: positive output-token cap.
+- `temperature`: sampling temperature, validated in the inclusive `0.0..2.0`
+  range.
+- `top_p`: nucleus sampling value, validated in the inclusive `0.0..1.0`
+  range.
+- `n`: positive completion count when the provider supports it.
+- `presence_penalty` and `frequency_penalty`: validated in the inclusive
+  `-2.0..2.0` range.
+- `seed`: deterministic seed for providers that support it.
+- `stop`: list of non-empty stop sequences.
+
+`reasoning.effort` accepts `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, or `max`. Runtime code may set per-call options for specific
+workflows, but strict profiles still remove or rewrite fields that the target
+provider rejects. `extra_body` is a JSON object merged into the provider
+request body after common parameters and before profile-specific shaping; logs
+and audit records must use redacted summaries rather than raw secret-like
+values.
+
+Daily token-budget preflight uses the configured or per-call `max_tokens` when
+present. If a selected OpenAI-compatible profile provides a missing
+`max_tokens` default, such as `moonshot-kimi`, `qwen`, or
+`local-openai-compatible`, that profile default is included in the estimate.
 
 If an OpenAI-compatible provider explicitly rejects `temperature` or an
 omittable `max_tokens` field as unsupported, the adapter removes that field and

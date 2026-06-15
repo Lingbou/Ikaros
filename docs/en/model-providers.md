@@ -80,6 +80,19 @@ model:
     runtime: harness-agent-loop
     transport: openai-compatible-chat-completions
     compat_profile: auto
+    params:
+      max_tokens: null
+      temperature: null
+      top_p: null
+      n: null
+      presence_penalty: null
+      frequency_penalty: null
+      seed: null
+      stop: []
+    reasoning:
+      enabled: null
+      effort: null
+    extra_body: {}
     rate_limit_per_minute: 60
     daily_token_budget: 100000
 ```
@@ -126,6 +139,11 @@ sampling fields for Claude 4.7+ families that reject them. Ollama maps
 `params.max_tokens` to `options.num_predict` and forwards explicitly set
 `temperature`, `top_p`, `seed`, and `stop` through `/api/chat` options.
 
+The same typed `ModelRequestOptions` shape is used by runtime workflows and
+provider adapters. Config defaults are merged with per-call options before the
+adapter builds a wire payload. Adapter profiles may still omit, rewrite, or add
+fields when the target provider requires a different shape.
+
 ## OpenAI-Compatible Adapter
 
 The OpenAI-compatible adapter owns Chat Completions requests and responses, HTTP client setup, normal completions, SSE stream parsing, tool-call conversion, request profile handling, and the stream tool-call accumulator. It does not own the agent loop.
@@ -134,6 +152,9 @@ The OpenAI-compatible provider name is vendor-neutral. Provider and model
 differences live in `model.default.compat_profile`, not in extra provider-name
 aliases. `auto` selects a profile from `providers.model.base_url` first, then
 model-name hints, then `generic`.
+
+Provider-specific profile names are valid only when `model.default.provider` is
+`openai-compatible`; native providers accept only `auto` or `generic`.
 
 Implemented profiles:
 
@@ -162,7 +183,9 @@ an actual top-level `extra_body.google.thinking_config` field.
 When a provider explicitly reports `temperature` or an omittable `max_tokens`
 as an unsupported parameter, the adapter removes that one field and retries the
 HTTP request once. Other provider errors are returned without automatic
-mutation.
+mutation. A successful retry records a `ModelRequestDiagnostic` with
+`kind: unsupported_parameter_retry`; responses, streams, audit payloads, and
+coding reports can surface that diagnostic without exposing prompts or secrets.
 
 The current adapter reads the provider response body and parses SSE `data:`
 lines into typed events. Text, reasoning, refusal, native tool-call, usage, and
@@ -189,6 +212,11 @@ Governance wraps provider adapters. It should see the request before the adapter
 does, but it should not understand provider-specific wire formats. Redaction,
 rate limiting, daily token budget checks, and usage recording therefore apply to
 all provider families.
+
+Daily token-budget checks include configured or per-call output caps. When an
+OpenAI-compatible profile supplies an implicit output cap, such as Kimi's
+`32000` or Qwen/local `65536`, the governance preflight uses that profile
+default so strict profiles are not underestimated.
 
 Failures:
 

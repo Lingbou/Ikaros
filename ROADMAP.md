@@ -7,8 +7,8 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Keep formatting, clippy, tests, and generated docs passing through direct local commands.
 - Keep agent-loop fallback parsing limited to provider-native tool calls plus the strict documented JSON fallback.
 - Keep `config.yaml` validation current as provider, memory, voice, and runtime fields change.
-- Strengthen live smoke coverage for OpenAI-compatible model APIs, especially Moonshot and SiliconFlow.
-- Expand provider stream fixture tests for typed text, reasoning, refusal, tool-call, usage, error, and done events.
+- Keep provider-profile compatibility covered with fixture tests and a live smoke matrix for Moonshot/Kimi, DeepSeek, Gemini OpenAI-compatible, OpenRouter, Qwen/DashScope, SiliconFlow, and local OpenAI-compatible servers.
+- Expand provider stream fixture tests for typed text, reasoning, refusal, tool-call, usage, error, done, and true network-incremental behavior.
 - Expand policy and approval tests for path handling, secret-looking inputs, network calls, plugin execution, and approval replay.
 - Keep approval replay bound to workspace, exact approved input, and agent identity.
 - Keep command-backed plugin tests focused on malicious manifests, path traversal, stdin/output limits, timeout limits, and output redaction.
@@ -30,6 +30,8 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   separate one-off summaries.
 - Refine tool continuation behavior and report fields for automation users.
 - Continue separating provider transport concerns from turn-loop ownership.
+- Keep provider request quirks inside model adapters and compatibility profiles,
+  not in the runtime turn loop.
 - Add stricter compatibility tests for provider-specific tool-call differences.
 
 ## Context And Memory

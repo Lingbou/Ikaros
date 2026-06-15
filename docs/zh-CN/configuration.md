@@ -171,6 +171,12 @@ model:
     params:
       max_tokens: null
       temperature: null
+      top_p: null
+      n: null
+      presence_penalty: null
+      frequency_penalty: null
+      seed: null
+      stop: []
     reasoning:
       enabled: null
       effort: null
@@ -191,7 +197,21 @@ Provider 名称表示 adapter family，不表示厂商。任何 Chat Completions
 - `qwen`：Qwen/DashScope 兼容请求形态。会把 message content 规范化为 text parts，给 system prompt 的最后一段加 ephemeral cache 标记，启用高分辨率图片字段，并在缺少 `max_tokens` 时默认使用 `65536`。
 - `local-openai-compatible`：用于 LM Studio、vLLM、SGLang 等本地 Chat Completions 服务，默认更保守；缺少 `max_tokens` 时使用 `65536`，避免本地服务默认输出过短。
 
-`params.* = null` 表示 adapter 不发送该参数，除非选中的 profile 提供 provider 默认值。Runtime 可以为特定 workflow 设置 per-call options，但 strict profile 仍会移除或改写目标 provider 会拒绝的字段。`extra_body` 是合并进最终 provider 请求体的 JSON object；日志和审计只能记录脱敏摘要，不能写入原始 secret-like 值。
+Provider-specific 的 `compat_profile` 只对 `provider: openai-compatible` 有效。原生 `anthropic`、`ollama` 和 `mock` provider 只接受 `auto` 或 `generic`。
+
+对可选数值型 `params` 字段，`null` 表示 adapter 不发送该参数，除非选中的 profile 提供 provider 默认值。当前支持：
+
+- `max_tokens`：正数输出 token 上限。
+- `temperature`：采样温度，校验范围是闭区间 `0.0..2.0`。
+- `top_p`：nucleus sampling，校验范围是闭区间 `0.0..1.0`。
+- `n`：provider 支持时请求的正数 completion 数量。
+- `presence_penalty` 和 `frequency_penalty`：校验范围是闭区间 `-2.0..2.0`。
+- `seed`：provider 支持时使用的确定性 seed。
+- `stop`：非空 stop sequence 列表，列表元素不能为空字符串。
+
+`reasoning.effort` 可取 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`。Runtime 可以为特定 workflow 设置 per-call options，但 strict profile 仍会移除或改写目标 provider 会拒绝的字段。`extra_body` 是 JSON object，会在 common params 之后、profile-specific shaping 之前合并进 provider 请求体；日志和审计只能记录脱敏摘要，不能写入原始 secret-like 值。
+
+每日 token 预算预检查会使用配置或 per-call 的 `max_tokens`。如果选中的 OpenAI-compatible profile 在缺少 `max_tokens` 时提供默认值，例如 `moonshot-kimi`、`qwen` 或 `local-openai-compatible`，这个 profile 默认输出上限也会进入预算估算。
 
 如果 OpenAI-compatible provider 明确返回 `temperature` 或可省略的 `max_tokens` 不支持，adapter 会删除该字段并只重试一次 HTTP 请求。鉴权、额度、网络和普通参数校验错误不会走这个重试路径。
 
