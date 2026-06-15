@@ -70,6 +70,7 @@ impl ModelProvider for NativeToolProvider {
                     raw_arguments: None,
                 }],
                 usage: TokenUsage::default(),
+                diagnostics: Vec::new(),
             });
         }
         Ok(ModelResponse {
@@ -78,6 +79,7 @@ impl ModelProvider for NativeToolProvider {
             content: r#"{"final_answer":"native done"}"#.into(),
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
         })
     }
 }
@@ -106,6 +108,7 @@ impl ModelProvider for ApprovalToolProvider {
                     raw_arguments: None,
                 }],
                 usage: TokenUsage::default(),
+                diagnostics: Vec::new(),
             });
         }
         Ok(ModelResponse {
@@ -114,6 +117,7 @@ impl ModelProvider for ApprovalToolProvider {
             content: r#"{"final_answer":"waiting for approval"}"#.into(),
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
         })
     }
 }
@@ -137,6 +141,7 @@ impl ModelProvider for SequenceProvider {
             content,
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
         })
     }
 }
@@ -187,6 +192,7 @@ impl ModelProvider for StreamingNativeToolProvider {
                     total_tokens: Some(3),
                 },
                 events: Vec::new(),
+                diagnostics: Vec::new(),
             });
         }
         Ok(ModelStream {
@@ -204,6 +210,7 @@ impl ModelProvider for StreamingNativeToolProvider {
                 total_tokens: Some(7),
             },
             events: Vec::new(),
+            diagnostics: Vec::new(),
         })
     }
 }

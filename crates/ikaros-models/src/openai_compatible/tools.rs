@@ -12,7 +12,8 @@ pub(super) fn openai_messages(messages: Vec<ModelMessage>) -> Vec<OpenAiChatMess
         .into_iter()
         .map(|message| {
             let role = message.role;
-            let content = (!message.content.is_empty()).then(|| redact_secrets(&message.content));
+            let content = (!message.content.is_empty())
+                .then(|| serde_json::Value::String(redact_secrets(&message.content)));
             if role == "assistant" && !message.tool_calls.is_empty() {
                 return OpenAiChatMessage {
                     role,
@@ -24,14 +25,14 @@ pub(super) fn openai_messages(messages: Vec<ModelMessage>) -> Vec<OpenAiChatMess
             if role == "tool" {
                 return OpenAiChatMessage {
                     role,
-                    content: Some(redact_secrets(&message.content)),
+                    content: Some(serde_json::Value::String(redact_secrets(&message.content))),
                     tool_calls: Vec::new(),
                     tool_call_id: message.tool_call_id.map(|id| redact_secrets(&id)),
                 };
             }
             OpenAiChatMessage {
                 role,
-                content: Some(redact_secrets(&message.content)),
+                content: Some(serde_json::Value::String(redact_secrets(&message.content))),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
             }

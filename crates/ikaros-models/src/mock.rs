@@ -74,6 +74,7 @@ impl ModelProvider for MockModelProvider {
                 completion_tokens: Some(estimate_tokens(&content)),
                 total_tokens: None,
             },
+            diagnostics: Vec::new(),
         })
     }
 
@@ -86,6 +87,7 @@ impl ModelProvider for MockModelProvider {
             tool_calls: response.tool_calls,
             usage: response.usage,
             events: Vec::new(),
+            diagnostics: response.diagnostics,
         };
         stream.events = stream.normalized_events();
         Ok(stream)

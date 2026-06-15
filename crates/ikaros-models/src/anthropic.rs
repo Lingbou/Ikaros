@@ -3,7 +3,7 @@
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
-    ModelToolCall, ModelToolDefinition, TokenUsage,
+    ModelToolCall, ModelToolDefinition, ReasoningEffort, TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{
@@ -15,6 +15,30 @@ use serde::{Deserialize, Serialize};
 use std::{mem, time::Duration};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const ANTHROPIC_DEFAULT_OUTPUT_LIMIT: u32 = 128_000;
+const LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS: &[&str] = &[
+    "claude-3",
+    "claude-opus-4-0",
+    "claude-opus-4.0",
+    "claude-opus-4-1",
+    "claude-opus-4.1",
+    "claude-sonnet-4-0",
+    "claude-sonnet-4.0",
+    "claude-opus-4-2025",
+    "claude-sonnet-4-2025",
+    "claude-opus-4-5",
+    "claude-opus-4.5",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4.5",
+    "claude-haiku-4-5",
+    "claude-haiku-4.5",
+];
+const NO_XHIGH_CLAUDE_SUBSTRINGS: &[&str] = &[
+    "claude-opus-4-6",
+    "claude-opus-4.6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4.6",
+];
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
@@ -137,6 +161,7 @@ impl ModelProvider for AnthropicProvider {
             tool_calls: response.tool_calls,
             usage: response.usage,
             events,
+            diagnostics: response.diagnostics,
         })
     }
 }
@@ -148,10 +173,16 @@ struct AnthropicMessagesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<AnthropicOutputConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,6 +218,21 @@ struct AnthropicToolDefinition {
     input_schema: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AnthropicThinking {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AnthropicOutputConfig {
+    effort: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct AnthropicMessagesResponse {
     model: Option<String>,
@@ -202,14 +248,79 @@ struct AnthropicUsage {
 
 fn anthropic_messages_request_body(model: &str, request: ModelRequest) -> AnthropicMessagesRequest {
     let (system, messages) = anthropic_system_and_messages(request.messages);
+    let mut max_tokens = request
+        .options
+        .max_tokens
+        .unwrap_or_else(|| anthropic_default_max_tokens(model));
+    let mut temperature = request.options.temperature;
+    let mut top_p = request.options.top_p;
+    let (thinking, output_config) = anthropic_thinking_fields(
+        model,
+        &request.options.reasoning,
+        &mut max_tokens,
+        &mut temperature,
+    );
+    if forbids_sampling_params(model) {
+        temperature = None;
+        top_p = None;
+    }
     AnthropicMessagesRequest {
         model: model.into(),
-        max_tokens: request.max_tokens.unwrap_or(512),
-        temperature: request.temperature,
+        max_tokens,
+        temperature,
+        top_p,
         system,
         messages,
         tools: anthropic_tools(request.tools),
+        thinking,
+        output_config,
     }
+}
+
+fn anthropic_thinking_fields(
+    model: &str,
+    reasoning: &crate::types::ReasoningConfig,
+    max_tokens: &mut u32,
+    temperature: &mut Option<f32>,
+) -> (Option<AnthropicThinking>, Option<AnthropicOutputConfig>) {
+    let configured = reasoning.enabled.is_some() || reasoning.effort.is_some();
+    if !configured
+        || reasoning.enabled == Some(false)
+        || matches!(reasoning.effort, Some(ReasoningEffort::None))
+        || model.to_ascii_lowercase().contains("haiku")
+    {
+        return (None, None);
+    }
+
+    let effort = reasoning.effort.unwrap_or(ReasoningEffort::Medium);
+    if supports_adaptive_thinking(model) {
+        let mut adaptive_effort = anthropic_adaptive_effort(effort);
+        if adaptive_effort == "xhigh" && !supports_xhigh_effort(model) {
+            adaptive_effort = "max";
+        }
+        return (
+            Some(AnthropicThinking {
+                kind: "adaptive".into(),
+                display: Some("summarized".into()),
+                budget_tokens: None,
+            }),
+            Some(AnthropicOutputConfig {
+                effort: adaptive_effort.into(),
+            }),
+        );
+    }
+
+    let budget = anthropic_manual_thinking_budget(effort);
+    *temperature = Some(1.0);
+    *max_tokens = (*max_tokens).max(budget.saturating_add(4096));
+    (
+        Some(AnthropicThinking {
+            kind: "enabled".into(),
+            display: None,
+            budget_tokens: Some(budget),
+        }),
+        None,
+    )
 }
 
 fn anthropic_system_and_messages(
@@ -372,6 +483,7 @@ pub(crate) fn parse_messages_response(
         content,
         tool_calls,
         usage: parsed.usage.unwrap_or_default().into(),
+        diagnostics: Vec::new(),
     })
 }
 
@@ -452,6 +564,92 @@ impl From<AnthropicUsage> for TokenUsage {
                 _ => None,
             },
         }
+    }
+}
+
+fn anthropic_default_max_tokens(model: &str) -> u32 {
+    let model = model.to_ascii_lowercase().replace('.', "-");
+    let limits = [
+        ("claude-fable", 128_000),
+        ("claude-opus-4-8", 128_000),
+        ("claude-opus-4-7", 128_000),
+        ("claude-opus-4-6", 128_000),
+        ("claude-sonnet-4-6", 64_000),
+        ("claude-opus-4-5", 64_000),
+        ("claude-sonnet-4-5", 64_000),
+        ("claude-haiku-4-5", 64_000),
+        ("claude-opus-4", 32_000),
+        ("claude-sonnet-4", 64_000),
+        ("claude-3-7-sonnet", 128_000),
+        ("claude-3-5-sonnet", 8_192),
+        ("claude-3-5-haiku", 8_192),
+        ("claude-3-opus", 4_096),
+        ("claude-3-sonnet", 4_096),
+        ("claude-3-haiku", 4_096),
+        ("minimax", 131_072),
+        ("qwen3", 65_536),
+    ];
+    limits
+        .iter()
+        .filter(|(needle, _)| model.contains(needle))
+        .max_by_key(|(needle, _)| needle.len())
+        .map(|(_, limit)| *limit)
+        .unwrap_or(ANTHROPIC_DEFAULT_OUTPUT_LIMIT)
+}
+
+fn supports_adaptive_thinking(model: &str) -> bool {
+    if !is_claude_model(model) {
+        return false;
+    }
+    !LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS
+        .iter()
+        .any(|needle| model.to_ascii_lowercase().contains(needle))
+}
+
+fn supports_xhigh_effort(model: &str) -> bool {
+    supports_adaptive_thinking(model)
+        && !NO_XHIGH_CLAUDE_SUBSTRINGS
+            .iter()
+            .any(|needle| model.to_ascii_lowercase().contains(needle))
+}
+
+fn forbids_sampling_params(model: &str) -> bool {
+    if !is_claude_model(model) {
+        return false;
+    }
+    let model = model.to_ascii_lowercase();
+    if NO_XHIGH_CLAUDE_SUBSTRINGS
+        .iter()
+        .any(|needle| model.contains(needle))
+    {
+        return false;
+    }
+    !LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS
+        .iter()
+        .any(|needle| model.contains(needle))
+}
+
+fn is_claude_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("claude")
+}
+
+fn anthropic_adaptive_effort(effort: ReasoningEffort) -> &'static str {
+    match effort {
+        ReasoningEffort::None => "medium",
+        ReasoningEffort::Minimal | ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
+        ReasoningEffort::Max => "max",
+    }
+}
+
+fn anthropic_manual_thinking_budget(effort: ReasoningEffort) -> u32 {
+    match effort {
+        ReasoningEffort::Low | ReasoningEffort::Minimal => 4_000,
+        ReasoningEffort::High => 16_000,
+        ReasoningEffort::XHigh | ReasoningEffort::Max => 32_000,
+        ReasoningEffort::None | ReasoningEffort::Medium => 8_000,
     }
 }
 

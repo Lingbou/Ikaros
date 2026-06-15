@@ -2,8 +2,8 @@
 
 use ikaros_core::{IkarosConfig, ModelConfig, RemoteProviderConfig};
 use ikaros_models::{
-    GovernedModelProvider, ModelProvider, ModelRequest, ModelRuntimeLimits, ModelUsageLedger,
-    OpenAiCompatibleProvider,
+    GovernedModelProvider, ModelProvider, ModelRequest, ModelRequestOptions, ModelRuntimeLimits,
+    ModelUsageLedger, OpenAiCompatibleProvider,
 };
 use std::{
     env,
@@ -25,6 +25,7 @@ async fn openai_compatible_live_generate_smoke() {
         max_retries: 1,
         rate_limit_per_minute: Some(10),
         daily_token_budget: Some(100_000),
+        ..ModelConfig::default()
     };
     live_generate_smoke(config, live.provider_settings).await;
 }
@@ -89,8 +90,11 @@ async fn live_generate_smoke(config: ModelConfig, provider_settings: RemoteProvi
         messages: vec![ikaros_models::ModelMessage::user(
             "Reply with IKAROS_OK only.",
         )],
-        max_tokens: Some(128),
-        temperature: Some(0.0),
+        options: ModelRequestOptions {
+            max_tokens: Some(128),
+            temperature: Some(0.0),
+            ..ModelRequestOptions::default()
+        },
         tools: Vec::new(),
     };
 

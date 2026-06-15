@@ -44,6 +44,7 @@ pub(crate) fn parse_stream_response(
             tool_calls,
             usage,
             events,
+            diagnostics: Vec::new(),
         });
     }
 
@@ -147,6 +148,7 @@ pub(crate) fn parse_stream_response(
         tool_calls,
         usage,
         events,
+        diagnostics: Vec::new(),
     })
 }
 

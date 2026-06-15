@@ -60,7 +60,7 @@ impl GovernedModelProvider {
         if let Some(budget) = self.limits.daily_token_budget {
             let day = now.get(..10).unwrap_or(&now);
             let used = self.ledger.total_for_day(day)?;
-            let estimate = request.estimated_tokens();
+            let estimate = self.inner.estimate_request_tokens(request);
             if used.saturating_add(estimate) > budget {
                 return Err(IkarosError::Message(format!(
                     "model daily token budget exceeded: used {used}, estimated request {estimate}, budget {budget}"
@@ -99,10 +99,14 @@ impl ModelProvider for GovernedModelProvider {
         self.inner.name()
     }
 
+    fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
+        self.inner.estimate_request_tokens(request)
+    }
+
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
         let request = request.redacted();
         let requested_at = self.enforce_preflight(&request)?;
-        let estimate = request.estimated_tokens();
+        let estimate = self.inner.estimate_request_tokens(&request);
         let response = self.inner.generate(request).await?;
         self.record_usage(
             requested_at,
@@ -117,7 +121,7 @@ impl ModelProvider for GovernedModelProvider {
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let request = request.redacted();
         let requested_at = self.enforce_preflight(&request)?;
-        let estimate = request.estimated_tokens();
+        let estimate = self.inner.estimate_request_tokens(&request);
         let stream = self.inner.stream(request).await?;
         self.record_usage(
             requested_at,

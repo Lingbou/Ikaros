@@ -4,26 +4,10 @@ use crate::types::TokenUsage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct ChatCompletionRequest {
-    pub(super) model: String,
-    pub(super) messages: Vec<OpenAiChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) tools: Option<Vec<OpenAiToolDefinition>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) tool_choice: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) stream: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub(super) struct OpenAiChatMessage {
     pub(super) role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) content: Option<String>,
+    pub(super) content: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) tool_calls: Vec<OpenAiOutboundToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]

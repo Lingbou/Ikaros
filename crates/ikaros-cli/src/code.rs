@@ -5,7 +5,10 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use ikaros_core::{IkarosPaths, ToolResult, redact_secrets};
 use ikaros_harness::{AuditEvent, ExecutionSession, SkillRegistry};
-use ikaros_models::{ModelMessage, ModelRequest, ModelUsageLedger, governed_provider_from_config};
+use ikaros_models::{
+    ModelMessage, ModelRequest, ModelRequestOptions, ModelUsageLedger,
+    governed_provider_from_config,
+};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -172,8 +175,11 @@ async fn append_model_code_review_notes(
                 ),
                 ModelMessage::user(prompt.clone()),
             ],
-            max_tokens: Some(700),
-            temperature: Some(0.2),
+            options: ModelRequestOptions {
+                max_tokens: Some(700),
+                temperature: Some(0.2),
+                ..ModelRequestOptions::default()
+            },
             tools: Vec::new(),
         })
         .await?;
@@ -185,6 +191,7 @@ async fn append_model_code_review_notes(
             "provider": response.provider,
             "model": response.model,
             "usage": response.usage,
+            "diagnostics": response.diagnostics,
             "prompt_chars": prompt.chars().count(),
         }),
     )?)?;
@@ -193,6 +200,7 @@ async fn append_model_code_review_notes(
         "model": response.model,
         "content": redact_secrets(&response.content),
         "usage": response.usage,
+        "diagnostics": response.diagnostics,
         "prompt_chars": prompt.chars().count(),
     });
     if let Some(output) = result.output.as_object_mut() {

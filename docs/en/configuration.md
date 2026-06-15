@@ -192,7 +192,16 @@ providers:
 model:
   default:
     provider: openai-compatible
+    transport: openai-compatible-chat-completions
     model: provider-model-id
+    compat_profile: auto
+    params:
+      max_tokens: null
+      temperature: null
+    reasoning:
+      enabled: null
+      effort: null
+    extra_body: {}
     rate_limit_per_minute: 60
     daily_token_budget: 100000
 ```
@@ -200,6 +209,41 @@ model:
 Provider names are adapter families, not vendor names. Use `openai-compatible`
 for any Chat Completions-compatible service and put the selected endpoint and
 model in `providers.model.base_url` and `model.default.model`.
+
+`compat_profile` controls provider/model request quirks inside the
+OpenAI-compatible adapter. `auto` first matches `providers.model.base_url`, then
+model-name hints, then falls back to `generic`. Supported explicit values are:
+
+- `generic`: standard Chat Completions fields only.
+- `moonshot-kimi`: Kimi/Moonshot. Omits `temperature`, defaults missing
+  `max_tokens` to `32000`, emits Kimi thinking fields, and sanitizes tool
+  schemas to Moonshot's stricter JSON Schema subset.
+- `deepseek`: emits DeepSeek thinking fields for `deepseek-reasoner` and
+  `deepseek-v4+` models, while leaving `deepseek-chat` V3 unchanged.
+- `gemini-openai`: maps reasoning config to Gemini OpenAI-compatible
+  `extra_body.google.thinking_config` only for Gemini-family models.
+- `openrouter`: keeps OpenRouter routing fields in the final request body and
+  avoids invalid reasoning fields for modern Claude routes.
+- `qwen`: Qwen/DashScope-compatible request shaping. It normalizes message
+  content to text parts, marks the system prompt part as ephemeral cache
+  content, enables high-resolution image handling, and uses `65536` as the
+  missing `max_tokens` default.
+- `local-openai-compatible`: conservative profile for LM Studio, vLLM, SGLang,
+  and similar local Chat Completions servers. It uses `65536` as the missing
+  `max_tokens` default so local servers that default to very short completions
+  do not truncate normal agent turns.
+
+`params.* = null` means the adapter does not send that parameter unless the
+selected profile supplies a provider default. Runtime code may set per-call
+options for specific workflows, but strict profiles still remove or rewrite
+fields that the target provider rejects. `extra_body` is a JSON object merged
+into the final provider request body; logs and audit records must use redacted
+summaries rather than raw secret-like values.
+
+If an OpenAI-compatible provider explicitly rejects `temperature` or an
+omittable `max_tokens` field as unsupported, the adapter removes that field and
+retries the HTTP request once. Authentication, quota, network, and general
+validation failures are not retried through this path.
 
 Anthropic example:
 
@@ -215,6 +259,12 @@ model:
     model: claude-sonnet-4-5
 ```
 
+The Anthropic adapter always sends a positive `max_tokens` value. When
+`model.default.reasoning` enables thinking, modern Claude models use adaptive
+thinking plus `output_config.effort`; legacy Claude models use budget-based
+thinking. Claude 4.7 and newer omit sampling fields such as `temperature` and
+`top_p`, even if a workflow supplies them.
+
 Ollama local example:
 
 ```yaml
@@ -229,6 +279,10 @@ model:
     provider: ollama
     model: llama3.2
 ```
+
+The Ollama adapter maps `params.max_tokens` to native `options.num_predict`.
+It also forwards explicitly configured `temperature`, `top_p`, `seed`, and
+`stop` values through the native `/api/chat` `options` object.
 
 Usage records are written under local audit state and do not include prompt text.
 

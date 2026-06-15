@@ -27,8 +27,8 @@ use ikaros_harness::GuardrailConfig;
 use ikaros_harness::{AuditEvent, ExecutionSession, SkillRegistry};
 use ikaros_memory::{LocalMemoryStore, MemoryProvider, MemoryTurnRecord, MemoryTurnStart};
 use ikaros_models::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelUsageLedger,
-    governed_provider_from_config,
+    ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse,
+    ModelStreamEvent, ModelUsageLedger, governed_provider_from_config,
 };
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSource, PersistingAgentTurnSink, SessionEntry,
@@ -414,8 +414,7 @@ pub async fn run_chat_turn_with_events(
             event_sink,
             AgentLoopOptions {
                 max_iterations: 4,
-                max_tokens: Some(512),
-                temperature: Some(0.4),
+                request_options: ModelRequestOptions::default(),
                 stream: options.stream,
                 guardrails: GuardrailConfig::default(),
             },
@@ -427,6 +426,7 @@ pub async fn run_chat_turn_with_events(
             content: loop_report.final_content,
             tool_calls: Vec::new(),
             usage: loop_report.usage,
+            diagnostics: Vec::new(),
         };
         (response, loop_report.streamed, loop_report.stream_chunks)
     } else if options.stream {
@@ -435,8 +435,7 @@ pub async fn run_chat_turn_with_events(
                 ModelMessage::system(system_prompt),
                 ModelMessage::user(redact_secrets(input)),
             ],
-            max_tokens: Some(512),
-            temperature: Some(0.4),
+            options: ModelRequestOptions::default(),
             tools: Vec::new(),
         };
         let stream = match provider.stream(request).await {
@@ -460,6 +459,7 @@ pub async fn run_chat_turn_with_events(
             content: stream.content(),
             tool_calls: Vec::new(),
             usage: stream.usage.clone(),
+            diagnostics: stream.diagnostics,
         };
         for event in model_response_stream_events(&response) {
             emit_chat_event(
@@ -479,8 +479,7 @@ pub async fn run_chat_turn_with_events(
                 ModelMessage::system(system_prompt),
                 ModelMessage::user(redact_secrets(input)),
             ],
-            max_tokens: Some(512),
-            temperature: Some(0.4),
+            options: ModelRequestOptions::default(),
             tools: Vec::new(),
         };
         let response = match provider.generate(request).await {
@@ -522,6 +521,7 @@ pub async fn run_chat_turn_with_events(
             "agent_loop": options.agent_loop,
             "chunk_count": stream_chunks.len(),
             "usage": response.usage,
+            "diagnostics": response.diagnostics,
         }),
     )?) {
         let _ = emit_chat_failure_events(

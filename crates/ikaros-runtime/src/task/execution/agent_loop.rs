@@ -10,7 +10,7 @@ use ikaros_core::{
 use ikaros_harness::{
     AuditEvent, ExecutionSession, GuardrailConfig, SkillRegistry, TaskExecutionReport,
 };
-use ikaros_models::governed_provider_from_config;
+use ikaros_models::{ModelRequestOptions, governed_provider_from_config};
 use ikaros_soul::{PersonaProfile, load_or_default};
 use serde_json::json;
 
@@ -76,8 +76,7 @@ pub(super) async fn execute_agent_loop_task(
         input.registry,
         AgentLoopOptions {
             max_iterations: input.options.loop_max_iterations.max(1),
-            max_tokens: Some(768),
-            temperature: Some(0.2),
+            request_options: ModelRequestOptions::default(),
             stream: false,
             guardrails: GuardrailConfig::default(),
         },

@@ -2,8 +2,8 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
-    ModelToolCall, ModelToolDefinition, TokenUsage,
+    ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse, ModelStream,
+    ModelStreamEvent, ModelToolCall, ModelToolDefinition, TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{
@@ -199,6 +199,12 @@ struct OllamaOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     num_predict: Option<u32>,
 }
 
@@ -216,7 +222,7 @@ fn ollama_chat_request_body(model: &str, request: ModelRequest, stream: bool) ->
         messages: ollama_messages(request.messages),
         stream,
         tools: ollama_tools(request.tools),
-        options: ollama_options(request.temperature, request.max_tokens),
+        options: ollama_options(request.options),
     }
 }
 
@@ -267,10 +273,18 @@ fn ollama_tools(tools: Vec<ModelToolDefinition>) -> Option<Vec<OllamaToolDefinit
     })
 }
 
-fn ollama_options(temperature: Option<f32>, max_tokens: Option<u32>) -> Option<OllamaOptions> {
-    (temperature.is_some() || max_tokens.is_some()).then_some(OllamaOptions {
-        temperature,
-        num_predict: max_tokens,
+fn ollama_options(options: ModelRequestOptions) -> Option<OllamaOptions> {
+    (options.temperature.is_some()
+        || options.top_p.is_some()
+        || options.seed.is_some()
+        || !options.stop.is_empty()
+        || options.max_tokens.is_some())
+    .then_some(OllamaOptions {
+        temperature: options.temperature,
+        top_p: options.top_p,
+        seed: options.seed,
+        stop: options.stop,
+        num_predict: options.max_tokens,
     })
 }
 
@@ -300,6 +314,7 @@ pub(crate) fn parse_chat_response(
             completion_tokens: parsed.eval_count,
             total_tokens: token_total(parsed.prompt_eval_count, parsed.eval_count),
         },
+        diagnostics: Vec::new(),
     })
 }
 
@@ -328,6 +343,7 @@ pub(crate) fn parse_stream_response(
             tool_calls: response.tool_calls,
             usage: response.usage,
             events,
+            diagnostics: response.diagnostics,
         });
     }
 
@@ -396,6 +412,7 @@ pub(crate) fn parse_stream_response(
         tool_calls,
         usage,
         events,
+        diagnostics: Vec::new(),
     })
 }
 

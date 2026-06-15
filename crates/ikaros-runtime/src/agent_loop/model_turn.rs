@@ -124,8 +124,7 @@ pub(super) async fn run_agent_loop_turn(
             provider,
             ModelRequest {
                 messages: messages.clone(),
-                max_tokens: options.max_tokens,
-                temperature: options.temperature,
+                options: options.request_options.clone(),
                 tools: model_tool_definitions(&tool_definitions),
             },
             options.stream,
@@ -208,6 +207,7 @@ pub(super) async fn run_agent_loop_turn(
                 "parse_strategy": diagnostic.strategy.as_str(),
                 "repaired": diagnostic.repaired,
                 "usage": &response.usage,
+                "diagnostics": &response.diagnostics,
             }),
         )?)?;
         tool_call_diagnostics.push(diagnostic);
@@ -418,6 +418,7 @@ async fn request_agent_loop_model_turn(
             content: stream.content(),
             tool_calls: stream.tool_calls,
             usage: stream.usage.clone(),
+            diagnostics: stream.diagnostics,
         };
         return Ok(AgentLoopModelTurn {
             response,

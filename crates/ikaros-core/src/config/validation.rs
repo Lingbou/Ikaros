@@ -86,6 +86,9 @@ impl IkarosConfig {
         let value: yaml_serde::Value = yaml_serde::from_str(raw)?;
         let mut report = ConfigValidationReport::default();
         validate_yaml_shape(&value, &mut report);
+        if !report.is_valid() {
+            return Ok(report);
+        }
 
         let config: Self = yaml_serde::from_str(raw)?;
         config.validate_into(&mut report);
@@ -294,7 +297,7 @@ fn validate_model_shape(value: &yaml_serde::Value, report: &mut ConfigValidation
         return;
     };
     if let Some(default) = mapping_get(map, "default") {
-        check_mapping_shape(
+        let Some(default_map) = check_mapping_shape(
             default,
             "model.default",
             &[
@@ -302,13 +305,47 @@ fn validate_model_shape(value: &yaml_serde::Value, report: &mut ConfigValidation
                 "runtime",
                 "transport",
                 "model",
+                "compat_profile",
+                "params",
+                "reasoning",
+                "extra_body",
                 "timeout_ms",
                 "max_retries",
                 "rate_limit_per_minute",
                 "daily_token_budget",
             ],
             report,
-        );
+        ) else {
+            return;
+        };
+        if let Some(params) = mapping_get(default_map, "params") {
+            check_mapping_shape(
+                params,
+                "model.default.params",
+                &[
+                    "max_tokens",
+                    "temperature",
+                    "top_p",
+                    "n",
+                    "presence_penalty",
+                    "frequency_penalty",
+                    "seed",
+                    "stop",
+                ],
+                report,
+            );
+        }
+        if let Some(reasoning) = mapping_get(default_map, "reasoning") {
+            check_mapping_shape(
+                reasoning,
+                "model.default.reasoning",
+                &["enabled", "effort"],
+                report,
+            );
+        }
+        if let Some(extra_body) = mapping_get(default_map, "extra_body") {
+            expect_mapping(extra_body, "model.default.extra_body", report);
+        }
     }
 }
 
@@ -539,6 +576,8 @@ fn validate_model_config(
         config.daily_token_budget,
         report,
     );
+    validate_model_profile(&provider, &config.compat_profile, report);
+    validate_model_params(config, report);
     if provider == "mock" {
         if config.model.trim().is_empty() {
             report.warning(
@@ -566,6 +605,95 @@ fn validate_model_config(
             &provider_settings.api_key,
             report,
         );
+    }
+}
+
+fn validate_model_profile(
+    provider: &str,
+    compat_profile: &str,
+    report: &mut ConfigValidationReport,
+) {
+    let profile = normalize(compat_profile);
+    let allowed = [
+        "auto",
+        "generic",
+        "moonshot-kimi",
+        "deepseek",
+        "gemini-openai",
+        "openrouter",
+        "qwen",
+        "local-openai-compatible",
+    ];
+    if !allowed.contains(&profile.as_str()) {
+        report.error(
+            "model.default.compat_profile",
+            "must be one of: auto, generic, moonshot-kimi, deepseek, gemini-openai, openrouter, qwen, local-openai-compatible",
+        );
+    }
+    if provider != "openai-compatible" && !matches!(profile.as_str(), "auto" | "generic") {
+        report.error(
+            "model.default.compat_profile",
+            "provider-specific compatibility profiles are only valid with `openai-compatible`",
+        );
+    }
+}
+
+fn validate_model_params(config: &ModelConfig, report: &mut ConfigValidationReport) {
+    validate_optional_positive(
+        "model.default.params.max_tokens",
+        config.params.max_tokens,
+        report,
+    );
+    validate_optional_positive("model.default.params.n", config.params.n, report);
+    if let Some(temperature) = config.params.temperature {
+        validate_float_range(
+            "model.default.params.temperature",
+            temperature,
+            0.0,
+            2.0,
+            report,
+        );
+    }
+    if let Some(top_p) = config.params.top_p {
+        validate_float_range("model.default.params.top_p", top_p, 0.0, 1.0, report);
+    }
+    if let Some(presence_penalty) = config.params.presence_penalty {
+        validate_float_range(
+            "model.default.params.presence_penalty",
+            presence_penalty,
+            -2.0,
+            2.0,
+            report,
+        );
+    }
+    if let Some(frequency_penalty) = config.params.frequency_penalty {
+        validate_float_range(
+            "model.default.params.frequency_penalty",
+            frequency_penalty,
+            -2.0,
+            2.0,
+            report,
+        );
+    }
+    for (index, stop) in config.params.stop.iter().enumerate() {
+        if stop.is_empty() {
+            report.error(
+                format!("model.default.params.stop[{index}]"),
+                "must not be empty",
+            );
+        }
+    }
+    if let Some(effort) = &config.reasoning.effort {
+        let effort = normalize(effort);
+        if !matches!(
+            effort.as_str(),
+            "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+        ) {
+            report.error(
+                "model.default.reasoning.effort",
+                "must be one of: none, minimal, low, medium, high, xhigh, max",
+            );
+        }
     }
 }
 
@@ -770,6 +898,23 @@ fn validate_optional_positive(
 ) {
     if value == Some(0) {
         report.error(path.into(), "must be greater than 0 when set");
+    }
+}
+
+fn validate_float_range(
+    path: impl Into<String>,
+    value: f32,
+    min: f32,
+    max: f32,
+    report: &mut ConfigValidationReport,
+) {
+    let path = path.into();
+    if !value.is_finite() {
+        report.error(path, "must be finite");
+        return;
+    }
+    if value < min || value > max {
+        report.error(path, format!("must be between {min} and {max}"));
     }
 }
 

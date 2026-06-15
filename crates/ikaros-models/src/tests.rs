@@ -9,10 +9,11 @@ use crate::ollama::{
     parse_stream_response as parse_ollama_stream_response, test_chat_request_body,
 };
 use crate::openai_compatible::{
-    parse_chat_completion_response, parse_stream_response, redacted_model_http_error,
+    OpenAiCompatProfile, parse_chat_completion_response, parse_stream_response,
+    redacted_model_http_error, unsupported_parameter_to_omit,
 };
 use async_trait::async_trait;
-use ikaros_core::{IkarosError, ModelConfig, RemoteProviderConfig, Result};
+use ikaros_core::{IkarosError, ModelConfig, ModelReasoningConfig, RemoteProviderConfig, Result};
 use std::{
     fs,
     sync::{Arc, Mutex},
@@ -61,6 +62,7 @@ impl ModelProvider for CapturingProvider {
                 completion_tokens: Some(1),
                 total_tokens: None,
             },
+            diagnostics: Vec::new(),
         })
     }
 }
@@ -221,7 +223,7 @@ fn anthropic_and_ollama_canonical_providers_are_supported() {
 }
 
 #[test]
-fn openai_compatible_temperature_is_passthrough() {
+fn openai_compatible_profile_auto_detects_moonshot_kimi() {
     let config = ModelConfig {
         provider: "openai-compatible".into(),
         model: "kimi-k2.6".into(),
@@ -234,9 +236,368 @@ fn openai_compatible_temperature_is_passthrough() {
     let provider =
         OpenAiCompatibleProvider::from_config("openai-compatible", &config, &provider_settings)
             .expect("provider");
-    assert_eq!(provider.compatible_temperature(Some(0.0)), Some(0.0));
-    assert_eq!(provider.compatible_temperature(Some(0.4)), Some(0.4));
-    assert_eq!(provider.compatible_temperature(None), None);
+    assert_eq!(provider.compat_profile_id(), "moonshot-kimi");
+}
+
+#[test]
+fn openai_compatible_generic_profile_keeps_standard_chat_payload() {
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "generic-chat".into(),
+            compat_profile: "generic".into(),
+            ..ModelConfig::default()
+        },
+        "https://api.example/v1",
+    );
+    let body = provider
+        .test_chat_completion_body(
+            ModelRequest {
+                messages: vec![ModelMessage::user("hello")],
+                options: ModelRequestOptions {
+                    max_tokens: Some(64),
+                    temperature: Some(0.4),
+                    ..ModelRequestOptions::default()
+                },
+                tools: Vec::new(),
+            },
+            false,
+        )
+        .expect("body");
+
+    assert_eq!(body["model"], "generic-chat");
+    assert_eq!(body["max_tokens"], 64);
+    assert!((body["temperature"].as_f64().expect("temperature") - 0.4).abs() < 1e-6);
+    assert!(body.get("thinking").is_none());
+    assert!(body.get("stream").is_none());
+}
+
+#[test]
+fn openai_compatible_kimi_profile_omits_temperature_and_enables_thinking() {
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "kimi-k2.6".into(),
+            ..ModelConfig::default()
+        },
+        "https://api.moonshot.cn/v1",
+    );
+    let body = provider
+        .test_chat_completion_body(
+            ModelRequest {
+                messages: vec![ModelMessage::user("hello")],
+                options: ModelRequestOptions {
+                    temperature: Some(0.4),
+                    ..ModelRequestOptions::default()
+                },
+                tools: Vec::new(),
+            },
+            false,
+        )
+        .expect("body");
+
+    assert_eq!(provider.compat_profile_id(), "moonshot-kimi");
+    assert_eq!(body["max_tokens"], 32_000);
+    assert!(body.get("temperature").is_none());
+    assert_eq!(body["thinking"], serde_json::json!({"type": "enabled"}));
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn openai_compatible_kimi_profile_uses_effort_xor_thinking() {
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "kimi-k2.6".into(),
+            reasoning: ModelReasoningConfig {
+                enabled: Some(true),
+                effort: Some("high".into()),
+            },
+            ..ModelConfig::default()
+        },
+        "https://api.moonshot.cn/v1",
+    );
+    let body = provider
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+
+    assert!(body.get("thinking").is_none());
+    assert_eq!(body["reasoning_effort"], "high");
+    assert!(body.get("temperature").is_none());
+}
+
+#[test]
+fn openai_compatible_deepseek_profile_emits_thinking_for_v4_only() {
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "deepseek-v4-flash".into(),
+            reasoning: ModelReasoningConfig {
+                enabled: Some(true),
+                effort: Some("xhigh".into()),
+            },
+            ..ModelConfig::default()
+        },
+        "https://api.deepseek.com/v1",
+    );
+    let body = provider
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+
+    assert_eq!(provider.compat_profile_id(), "deepseek");
+    assert_eq!(body["thinking"], serde_json::json!({"type": "enabled"}));
+    assert_eq!(body["reasoning_effort"], "max");
+
+    let chat_provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "deepseek-chat".into(),
+            ..ModelConfig::default()
+        },
+        "https://api.deepseek.com/v1",
+    );
+    let chat_body = chat_provider
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+    assert!(chat_body.get("thinking").is_none());
+    assert!(chat_body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn openai_compatible_gemini_profile_maps_reasoning_for_gemini_models_only() {
+    let mut extra_body = serde_json::Map::new();
+    extra_body.insert(
+        "extra_body".into(),
+        serde_json::json!({
+            "google": {"cached_content": "cache-1"},
+            "session_id": "session-1"
+        }),
+    );
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "gemini-3-flash".into(),
+            reasoning: ModelReasoningConfig {
+                enabled: Some(true),
+                effort: Some("high".into()),
+            },
+            extra_body,
+            ..ModelConfig::default()
+        },
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+    );
+    let body = provider
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+
+    assert_eq!(provider.compat_profile_id(), "gemini-openai");
+    assert_eq!(
+        body["extra_body"]["google"]["thinking_config"],
+        serde_json::json!({"include_thoughts": true, "thinking_level": "high"})
+    );
+    assert_eq!(
+        body["extra_body"]["google"]["cached_content"],
+        serde_json::json!("cache-1")
+    );
+    assert_eq!(
+        body["extra_body"]["session_id"],
+        serde_json::json!("session-1")
+    );
+
+    let gemma_provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "gemma-3".into(),
+            reasoning: ModelReasoningConfig {
+                enabled: Some(true),
+                effort: Some("high".into()),
+            },
+            ..ModelConfig::default()
+        },
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+    );
+    let gemma_body = gemma_provider
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+    assert!(gemma_body.get("extra_body").is_none());
+}
+
+#[test]
+fn openai_compatible_openrouter_profile_avoids_invalid_claude_reasoning() {
+    let mut extra_body = serde_json::Map::new();
+    extra_body.insert(
+        "reasoning".into(),
+        serde_json::json!({"enabled": true, "effort": "high"}),
+    );
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "anthropic/claude-fable-4.6".into(),
+            compat_profile: "openrouter".into(),
+            reasoning: ModelReasoningConfig {
+                enabled: Some(true),
+                effort: Some("high".into()),
+            },
+            extra_body,
+            ..ModelConfig::default()
+        },
+        "https://openrouter.ai/api/v1",
+    );
+    let body = provider
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+
+    assert_eq!(provider.compat_profile_id(), "openrouter");
+    assert!(body.get("reasoning").is_none());
+    assert_eq!(body["verbosity"], "high");
+}
+
+#[test]
+fn openai_compatible_qwen_and_local_profiles_are_detected() {
+    let qwen = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "qwen3-coder".into(),
+            ..ModelConfig::default()
+        },
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    );
+    let qwen_body = qwen
+        .test_chat_completion_body(
+            ModelRequest {
+                messages: vec![
+                    ModelMessage::system("follow policy"),
+                    ModelMessage::user("hello"),
+                ],
+                options: ModelRequestOptions::default(),
+                tools: Vec::new(),
+            },
+            false,
+        )
+        .expect("body");
+    assert_eq!(qwen.compat_profile_id(), "qwen");
+    assert_eq!(qwen_body["max_tokens"], 65_536);
+    assert_eq!(qwen_body["vl_high_resolution_images"], true);
+    assert_eq!(
+        qwen_body["messages"][0]["content"][0],
+        serde_json::json!({
+            "type": "text",
+            "text": "follow policy",
+            "cache_control": {"type": "ephemeral"}
+        })
+    );
+    assert_eq!(
+        qwen_body["messages"][1]["content"][0],
+        serde_json::json!({"type": "text", "text": "hello"})
+    );
+
+    let local = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "local-model".into(),
+            ..ModelConfig::default()
+        },
+        "http://127.0.0.1:1234/v1",
+    );
+    let local_body = local
+        .test_chat_completion_body(ModelRequest::from_user_text("hello"), false)
+        .expect("body");
+    assert_eq!(local.compat_profile_id(), "local-openai-compatible");
+    assert_eq!(local_body["max_tokens"], 65_536);
+}
+
+#[test]
+fn openai_compatible_unsupported_parameter_retry_is_narrow() {
+    let body = serde_json::json!({
+        "model": "example",
+        "messages": [],
+        "temperature": 0.4,
+        "max_tokens": 64
+    });
+    assert_eq!(
+        unsupported_parameter_to_omit(
+            OpenAiCompatProfile::Generic,
+            r#"{"error":{"code":"unsupported_parameter","message":"Unsupported parameter: 'temperature'"}}"#,
+            &body,
+        ),
+        Some("temperature")
+    );
+    assert_eq!(
+        unsupported_parameter_to_omit(
+            OpenAiCompatProfile::MoonshotKimi,
+            r#"{"error":{"code":"unsupported_parameter","message":"Unsupported parameter: 'max_tokens'"}}"#,
+            &body,
+        ),
+        None
+    );
+    assert_eq!(
+        unsupported_parameter_to_omit(
+            OpenAiCompatProfile::Generic,
+            r#"{"error":{"message":"temperature must be between 0 and 2"}}"#,
+            &body,
+        ),
+        None
+    );
+}
+
+#[test]
+fn openai_compatible_kimi_sanitizes_tool_schema_without_mutating_registry_shape() {
+    let provider = openai_provider_for_body(
+        ModelConfig {
+            provider: "openai-compatible".into(),
+            model: "kimi-k2.6".into(),
+            ..ModelConfig::default()
+        },
+        "https://api.moonshot.cn/v1",
+    );
+    let original_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "anyOf": [
+                    {"type": "string", "enum": ["news", null, ""]},
+                    {"type": "null"}
+                ],
+                "nullable": true
+            },
+            "limit": {"description": "missing type"}
+        }
+    });
+    let body = provider
+        .test_chat_completion_body(
+            ModelRequest {
+                messages: vec![ModelMessage::user("search")],
+                options: ModelRequestOptions::default(),
+                tools: vec![ModelToolDefinition {
+                    name: "memory_search".into(),
+                    description: "Search".into(),
+                    input_schema: original_schema.clone(),
+                }],
+            },
+            false,
+        )
+        .expect("body");
+    let params = &body["tools"][0]["function"]["parameters"];
+
+    assert_eq!(params["properties"]["query"]["type"], "string");
+    assert_eq!(
+        params["properties"]["query"]["enum"],
+        serde_json::json!(["news"])
+    );
+    assert_eq!(params["properties"]["limit"]["type"], "string");
+    assert!(original_schema["properties"]["limit"].get("type").is_none());
+}
+
+fn openai_provider_for_body(config: ModelConfig, base_url: &str) -> OpenAiCompatibleProvider {
+    OpenAiCompatibleProvider::from_config(
+        "openai-compatible",
+        &config,
+        &RemoteProviderConfig {
+            api_key: "test-key".into(),
+            base_url: base_url.into(),
+        },
+    )
+    .expect("provider")
 }
 
 #[test]
@@ -267,8 +628,11 @@ fn anthropic_request_body_uses_messages_api_tool_blocks() {
                     "Tool output token=abc123",
                 ),
             ],
-            max_tokens: Some(64),
-            temperature: Some(0.1),
+            options: ModelRequestOptions {
+                max_tokens: Some(64),
+                temperature: Some(0.1),
+                ..ModelRequestOptions::default()
+            },
             tools: vec![ModelToolDefinition {
                 name: "memory_search".into(),
                 description: "Search local memory".into(),
@@ -290,6 +654,73 @@ fn anthropic_request_body_uses_messages_api_tool_blocks() {
     let raw = serde_json::to_string(&body).expect("json");
     assert!(!raw.contains("abc123"));
     assert!(raw.contains("[REDACTED_SECRET]"));
+}
+
+#[test]
+fn anthropic_request_body_applies_modern_claude_policy() {
+    let config = ModelConfig {
+        provider: "anthropic".into(),
+        model: "claude-opus-4-7".into(),
+        ..ModelConfig::default()
+    };
+    let body = test_messages_request_body(
+        &config,
+        ModelRequest {
+            messages: vec![ModelMessage::user("hello")],
+            options: ModelRequestOptions {
+                temperature: Some(0.2),
+                top_p: Some(0.8),
+                reasoning: ReasoningConfig {
+                    enabled: Some(true),
+                    effort: Some(ReasoningEffort::XHigh),
+                },
+                ..ModelRequestOptions::default()
+            },
+            tools: Vec::new(),
+        },
+    );
+
+    assert_eq!(body["max_tokens"], 128_000);
+    assert!(body.get("temperature").is_none());
+    assert!(body.get("top_p").is_none());
+    assert_eq!(
+        body["thinking"],
+        serde_json::json!({"type": "adaptive", "display": "summarized"})
+    );
+    assert_eq!(body["output_config"]["effort"], "xhigh");
+}
+
+#[test]
+fn anthropic_request_body_uses_manual_thinking_for_legacy_claude() {
+    let config = ModelConfig {
+        provider: "anthropic".into(),
+        model: "claude-3-7-sonnet".into(),
+        ..ModelConfig::default()
+    };
+    let body = test_messages_request_body(
+        &config,
+        ModelRequest {
+            messages: vec![ModelMessage::user("hello")],
+            options: ModelRequestOptions {
+                max_tokens: Some(1024),
+                temperature: Some(0.2),
+                top_p: Some(0.8),
+                reasoning: ReasoningConfig {
+                    enabled: Some(true),
+                    effort: Some(ReasoningEffort::High),
+                },
+                ..ModelRequestOptions::default()
+            },
+            tools: Vec::new(),
+        },
+    );
+
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert_eq!(body["thinking"]["budget_tokens"], 16_000);
+    assert_eq!(body["temperature"], 1.0);
+    assert!((body["top_p"].as_f64().expect("top_p") - 0.8).abs() < 1e-6);
+    assert_eq!(body["max_tokens"], 20_096);
+    assert!(body.get("output_config").is_none());
 }
 
 #[test]
@@ -396,8 +827,14 @@ fn ollama_request_body_uses_local_chat_tool_history() {
                     "11 degrees token=abc123",
                 ),
             ],
-            max_tokens: Some(32),
-            temperature: Some(0.0),
+            options: ModelRequestOptions {
+                max_tokens: Some(32),
+                temperature: Some(0.0),
+                top_p: Some(0.8),
+                seed: Some(42),
+                stop: vec!["END".into()],
+                ..ModelRequestOptions::default()
+            },
             tools: vec![ModelToolDefinition {
                 name: "get_weather".into(),
                 description: "Get weather".into(),
@@ -416,6 +853,9 @@ fn ollama_request_body_uses_local_chat_tool_history() {
     assert_eq!(body["messages"][2]["role"], "tool");
     assert_eq!(body["messages"][2]["tool_name"], "get_weather");
     assert_eq!(body["options"]["num_predict"], 32);
+    assert!((body["options"]["top_p"].as_f64().expect("top_p") - 0.8).abs() < 1e-6);
+    assert_eq!(body["options"]["seed"], 42);
+    assert_eq!(body["options"]["stop"], serde_json::json!(["END"]));
     let raw = serde_json::to_string(&body).expect("json");
     assert!(!raw.contains("abc123"));
     assert!(raw.contains("[REDACTED_SECRET]"));
@@ -615,13 +1055,45 @@ async fn governed_provider_enforces_daily_budget() {
     let err = provider
         .generate(ModelRequest {
             messages: vec![ModelMessage::user("this request should exceed budget")],
-            max_tokens: Some(128),
-            temperature: None,
+            options: ModelRequestOptions {
+                max_tokens: Some(128),
+                ..ModelRequestOptions::default()
+            },
             tools: Vec::new(),
         })
         .await
         .expect_err("budget limited");
     assert!(err.to_string().contains("budget"));
+}
+
+#[tokio::test]
+async fn governed_provider_counts_openai_profile_default_max_tokens() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = ModelConfig {
+        provider: "openai-compatible".into(),
+        model: "kimi-k2.6".into(),
+        daily_token_budget: Some(100),
+        ..ModelConfig::default()
+    };
+    let provider = governed_provider_from_config(
+        &config,
+        &RemoteProviderConfig {
+            api_key: "test-key".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+        },
+        temp.path(),
+    )
+    .expect("governed provider");
+
+    let err = provider
+        .generate(ModelRequest::from_user_text("short"))
+        .await
+        .expect_err("profile default output tokens should exceed budget");
+    assert!(err.to_string().contains("budget"));
+    assert!(
+        err.to_string().contains("3200"),
+        "error should include a profile default max-token estimate: {err}"
+    );
 }
 
 #[test]

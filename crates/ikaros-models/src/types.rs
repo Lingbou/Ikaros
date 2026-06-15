@@ -78,8 +78,7 @@ impl ModelMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelRequest {
     pub messages: Vec<ModelMessage>,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
+    pub options: ModelRequestOptions,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ModelToolDefinition>,
 }
@@ -88,10 +87,14 @@ impl ModelRequest {
     pub fn from_user_text(text: impl Into<String>) -> Self {
         Self {
             messages: vec![ModelMessage::user(text)],
-            max_tokens: Some(512),
-            temperature: Some(0.2),
+            options: ModelRequestOptions::default(),
             tools: Vec::new(),
         }
+    }
+
+    pub fn with_options(mut self, options: ModelRequestOptions) -> Self {
+        self.options = options;
+        self
     }
 
     pub fn redacted(mut self) -> Self {
@@ -112,16 +115,82 @@ impl ModelRequest {
             tool.description = redact_secrets(&tool.description);
             tool.input_schema = redact_json(tool.input_schema.clone());
         }
+        self.options.stop = self
+            .options
+            .stop
+            .into_iter()
+            .map(|stop| redact_secrets(&stop))
+            .collect();
+        if !self.options.extra_body.is_empty() {
+            let redacted = redact_json(serde_json::Value::Object(self.options.extra_body));
+            self.options.extra_body = match redacted {
+                serde_json::Value::Object(map) => map,
+                _ => serde_json::Map::new(),
+            };
+        }
         self
     }
 
     pub fn estimated_tokens(&self) -> u32 {
+        self.estimated_tokens_with_output_limit(self.options.max_tokens)
+    }
+
+    pub fn estimated_tokens_with_output_limit(&self, output_tokens: Option<u32>) -> u32 {
         let prompt_tokens = self
             .messages
             .iter()
             .map(|message| estimate_tokens(&message.content))
             .sum::<u32>();
-        prompt_tokens.saturating_add(self.max_tokens.unwrap_or_default())
+        prompt_tokens.saturating_add(output_tokens.unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ModelRequestOptions {
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub n: Option<u32>,
+    pub presence_penalty: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+    pub reasoning: ReasoningConfig,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasoningConfig {
+    pub enabled: Option<bool>,
+    pub effort: Option<ReasoningEffort>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub fn as_wire_value(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
     }
 }
 
@@ -150,6 +219,8 @@ pub struct ModelResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ModelToolCall>,
     pub usage: TokenUsage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<ModelRequestDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -194,6 +265,8 @@ pub struct ModelStream {
     pub usage: TokenUsage,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ModelStreamEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<ModelRequestDiagnostic>,
 }
 
 impl ModelStream {
@@ -256,6 +329,9 @@ pub enum ModelStreamEvent {
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     fn name(&self) -> &str;
+    fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
+        request.estimated_tokens()
+    }
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse>;
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let response = self.generate(request).await?;
@@ -266,10 +342,19 @@ pub trait ModelProvider: Send + Sync {
             tool_calls: response.tool_calls,
             usage: response.usage,
             events: Vec::new(),
+            diagnostics: response.diagnostics,
         };
         stream.events = stream.normalized_events();
         Ok(stream)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRequestDiagnostic {
+    pub kind: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter: Option<String>,
 }
 
 pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {

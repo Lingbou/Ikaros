@@ -8,7 +8,7 @@ mod validation;
 
 pub use validation::{ConfigValidationIssue, ConfigValidationReport};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IkarosConfig {
     pub providers: ExternalProvidersConfig,
@@ -146,6 +146,36 @@ model:
     transport: openai-compatible-chat-completions
     # Model identifier sent to the provider.
     model: ""
+    # Provider compatibility profile: auto, generic, moonshot-kimi, deepseek,
+    # gemini-openai, openrouter, qwen, or local-openai-compatible.
+    # auto prefers base_url detection, then model-name hints, then generic.
+    compat_profile: auto
+    params:
+      # Maximum output tokens. null means the adapter/profile may choose a provider default.
+      max_tokens: null
+      # Sampling temperature. null means do not send temperature unless a profile requires it.
+      temperature: null
+      # Optional nucleus sampling value. null means do not send top_p.
+      top_p: null
+      # Number of completions to request when supported. null means provider default.
+      n: null
+      # OpenAI-compatible presence penalty. null means provider default.
+      presence_penalty: null
+      # OpenAI-compatible frequency penalty. null means provider default.
+      frequency_penalty: null
+      # Optional deterministic seed when the provider supports it.
+      seed: null
+      # Stop sequences sent to providers that support OpenAI-compatible stop.
+      stop: []
+    reasoning:
+      # true enables provider-native thinking/reasoning when the profile supports it.
+      # false asks the profile to disable it. null leaves the profile default.
+      enabled: null
+      # Reasoning effort: none, minimal, low, medium, high, xhigh, or max.
+      effort: null
+    # Extra JSON object merged into the final provider request body by the adapter.
+    # Put provider-specific non-secret knobs here; secret-like values are redacted in logs.
+    extra_body: {}
     # Request timeout in milliseconds.
     timeout_ms: 30000
     # Provider retry count after the first failed attempt.
@@ -342,6 +372,22 @@ model:
     runtime: harness-agent-loop
     transport: openai-compatible-chat-completions
     model: example-chat
+    compat_profile: moonshot-kimi
+    params:
+      max_tokens: 4096
+      temperature: 0.2
+      top_p: 0.9
+      n: 1
+      presence_penalty: 0.0
+      frequency_penalty: 0.0
+      seed: 42
+      stop:
+        - END
+    reasoning:
+      enabled: true
+      effort: high
+    extra_body:
+      service_tier: standard
     timeout_ms: 30000
 
 rag:
@@ -360,6 +406,83 @@ voice:
         .expect("validate");
 
         assert!(report.is_valid(), "{report:#?}");
+    }
+
+    #[test]
+    fn config_validation_rejects_invalid_model_profile_options() {
+        let report = IkarosConfig::validate_yaml(
+            r#"
+providers:
+  model:
+    api_key: model-secret
+    base_url: https://api.example/v1
+
+model:
+  default:
+    provider: openai-compatible
+    runtime: harness-agent-loop
+    transport: openai-compatible-chat-completions
+    model: example-chat
+    compat_profile: old-kimi-alias
+    params:
+      temperature: 4.0
+      top_p: 2.0
+      n: 0
+      stop:
+        - ""
+    reasoning:
+      effort: huge
+    extra_body: {}
+
+rag:
+  embedding_provider: hash
+
+voice:
+  tts:
+    provider: mock
+  asr:
+    provider: mock
+"#,
+        )
+        .expect("validate");
+
+        for path in [
+            "model.default.compat_profile",
+            "model.default.params.temperature",
+            "model.default.params.top_p",
+            "model.default.params.n",
+            "model.default.params.stop[0]",
+            "model.default.reasoning.effort",
+        ] {
+            assert!(
+                report.errors.iter().any(|issue| issue.path == path),
+                "{path} missing from {report:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_validation_rejects_non_object_model_extra_body_shape() {
+        let report = IkarosConfig::validate_yaml(
+            r#"
+model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
+    extra_body: not-an-object
+"#,
+        )
+        .expect("validate");
+
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|issue| issue.path == "model.default.extra_body"),
+            "{report:#?}"
+        );
     }
 
     #[test]
@@ -389,7 +512,7 @@ voice:
     }
 
     #[test]
-    fn config_validation_rejects_unknown_fields_and_missing_remote_settings() {
+    fn config_validation_rejects_unknown_fields() {
         let report = IkarosConfig::validate_yaml(
             r#"
 model:
@@ -407,6 +530,22 @@ model:
                 .iter()
                 .any(|issue| issue.path == "model.default.extra_field")
         );
+    }
+
+    #[test]
+    fn config_validation_rejects_missing_remote_settings() {
+        let report = IkarosConfig::validate_yaml(
+            r#"
+model:
+  default:
+    provider: openai-compatible
+    runtime: harness-agent-loop
+    transport: openai-compatible-chat-completions
+    model: example-chat
+"#,
+        )
+        .expect("validate");
+
         assert!(
             report
                 .errors
@@ -465,19 +604,23 @@ memory:
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ModelTable {
     pub default: ModelConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ModelConfig {
     pub provider: String,
     pub runtime: String,
     pub transport: String,
     pub model: String,
+    pub compat_profile: String,
+    pub params: ModelParamsConfig,
+    pub reasoning: ModelReasoningConfig,
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
     pub timeout_ms: u64,
     pub max_retries: u8,
     pub rate_limit_per_minute: Option<u32>,
@@ -491,12 +634,36 @@ impl Default for ModelConfig {
             runtime: "harness-agent-loop".into(),
             transport: "openai-compatible-chat-completions".into(),
             model: String::new(),
+            compat_profile: "auto".into(),
+            params: ModelParamsConfig::default(),
+            reasoning: ModelReasoningConfig::default(),
+            extra_body: serde_json::Map::new(),
             timeout_ms: 30_000,
             max_retries: 0,
             rate_limit_per_minute: None,
             daily_token_budget: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ModelParamsConfig {
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub n: Option<u32>,
+    pub presence_penalty: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    pub seed: Option<u64>,
+    pub stop: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelReasoningConfig {
+    pub enabled: Option<bool>,
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -15,7 +15,7 @@
 - `generate(request)`：返回一个 `ModelResponse`。
 - `stream(request)`：返回包含文本 chunk、标准化 tool call、最终元数据和 typed `ModelStreamEvent` 的 `ModelStream`。
 
-`ModelRequest` 携带 model name、messages、可选 max tokens、可选 temperature 和可选 tool definition。`ModelResponse` 携带 provider、model、content、usage 和标准化 tool call。`ModelStreamEvent` 是 runtime event 层消费的 stream 协议；`chunks` 和 `tool_calls` 仍作为聚合字段保留给现有调用方。
+`ModelRequest` 携带 messages、类型化 request options 和可选 tool definition。Request options 包括输出上限、sampling 字段、stop sequence、reasoning 控制，以及用于 provider-specific 请求字段的 `extra_body` object。实际模型名由已配置的 provider 持有。`ModelResponse` 携带 provider、model、content、usage 和标准化 tool call。`ModelStreamEvent` 是 runtime event 层消费的 stream 协议；`chunks` 和 `tool_calls` 仍作为聚合字段保留给现有调用方。
 
 Provider 不应：
 
@@ -66,6 +66,7 @@ model:
     model: provider-model-id
     runtime: harness-agent-loop
     transport: openai-compatible-chat-completions
+    compat_profile: auto
     rate_limit_per_minute: 60
     daily_token_budget: 100000
 ```
@@ -103,11 +104,27 @@ model:
     transport: ollama-chat
 ```
 
+Anthropic 和 Ollama 是 native adapter，不是 OpenAI-compatible profile。Anthropic 会在本地解析正数 Messages API `max_tokens`，把 reasoning 配置映射到 Claude adaptive 或 manual thinking，并为 Claude 4.7+ 这类会拒绝 sampling 参数的模型省略 `temperature`、`top_p` 等字段。Ollama 会把 `params.max_tokens` 映射为 `options.num_predict`，并把显式配置的 `temperature`、`top_p`、`seed` 和 `stop` 透传给 `/api/chat` options。
+
 ## OpenAI-Compatible Adapter
 
-OpenAI-compatible adapter 负责 Chat Completions 请求/响应、HTTP client、普通 completion、SSE stream parsing、tool-call 转换和 stream tool-call accumulator。它不拥有 agent loop。
+OpenAI-compatible adapter 负责 Chat Completions 请求/响应、HTTP client、普通 completion、SSE stream parsing、tool-call 转换、request profile handling 和 stream tool-call accumulator。它不拥有 agent loop。
 
-OpenAI-compatible provider 是厂商中立的。它不携带 provider alias，也不做模型名专用的请求修正；endpoint 差异应放在配置里，或后续通过显式 adapter option 表达，不应藏在 provider 名称里。
+OpenAI-compatible provider 名称保持厂商中立。Provider 和模型差异放在 `model.default.compat_profile`，不通过 provider name alias 表达。`auto` 会先按 `providers.model.base_url` 选择 profile，再按模型名 hint 选择，最后回退到 `generic`。
+
+已实现的 profile：
+
+- `generic`：当前标准 Chat Completions 行为。
+- `moonshot-kimi`：省略 `temperature`，缺少 `max_tokens` 时默认 `32000`，发送 Kimi/Moonshot thinking 控制，并把 tool schema 修正到 Moonshot JSON Schema 子集。
+- `deepseek`：对 `deepseek-reasoner` 和 DeepSeek V4+ 模型发送 thinking 控制；`deepseek-chat` V3 保持不变。
+- `gemini-openai`：只对 Gemini family 模型把 reasoning options 映射到 Gemini OpenAI-compatible thinking config。
+- `openrouter`：把 routing/session 字段保留在最终请求体中，并避免给现代 Claude route 发送无效 reasoning payload。
+- `qwen`：把 Qwen/DashScope message 规范化为 text parts，给 system prompt 片段加入 ephemeral cache 标记，启用高分辨率图片字段，并在缺少 `max_tokens` 时默认使用 `65536`。
+- `local-openai-compatible`：用于本地 Chat Completions server 的保守 profile；缺少 `max_tokens` 时默认使用 `65536`，避免本地服务输出过短。
+
+Request builder 输出最终 raw HTTP JSON body。不要机械复制 OpenAI SDK 参数名：SDK 的 `extra_body` 会被合并进 body，因此 Kimi 的 `thinking` 是顶层 wire 字段，而 Gemini OpenAI-compatible 才使用真实的顶层 `extra_body.google.thinking_config` 字段。
+
+当 provider 明确返回 `temperature` 或可省略的 `max_tokens` 是 unsupported parameter 时，adapter 会删除该字段并只重试一次 HTTP 请求。其它 provider error 不会被自动改写重试。
 
 当前 adapter 会读取 provider response body，再把 SSE `data:` 行解析成 typed event。文本、reasoning、refusal、native tool-call、usage 和 done marker 都会转换成 `ModelStreamEvent`。Tool-call fragment 会先累计到完整标准化 call；随后再发出 `ToolCallStart`、一次累计后脱敏的 `ToolCallDelta` 和 `ToolCallEnd`。这样可以避免半截 tool name，也避免 split secret-like 值通过 fragment-level redaction 泄漏。它还不是真正的 network-incremental streaming parser。
 

@@ -16,11 +16,14 @@ The default runtime is `harness-agent-loop`, and the default OpenAI-compatible t
 - `stream(request)`: returns a `ModelStream` with text chunks, normalized tool
   calls, final metadata, and typed `ModelStreamEvent` entries.
 
-`ModelRequest` carries model name, messages, optional max tokens, optional
-temperature, and optional tool definitions. `ModelResponse` carries provider,
-model, content, usage, and normalized tool calls. `ModelStreamEvent` is the
-stream protocol consumed by the runtime event layer; `chunks` and `tool_calls`
-remain as aggregate fields for existing callers.
+`ModelRequest` carries messages, typed request options, and optional tool
+definitions. Request options include output caps, sampling fields, stop
+sequences, reasoning controls, and an `extra_body` object for provider-specific
+request fields. The configured provider owns the actual model name.
+`ModelResponse` carries provider, model, content, usage, and normalized tool
+calls. `ModelStreamEvent` is the stream protocol consumed by the runtime event
+layer; `chunks` and `tool_calls` remain as aggregate fields for existing
+callers.
 
 Providers must not:
 
@@ -76,6 +79,7 @@ model:
     model: provider-model-id
     runtime: harness-agent-loop
     transport: openai-compatible-chat-completions
+    compat_profile: auto
     rate_limit_per_minute: 60
     daily_token_budget: 100000
 ```
@@ -115,14 +119,50 @@ model:
     transport: ollama-chat
 ```
 
+Anthropic and Ollama are native adapters, not OpenAI-compatible profiles.
+Anthropic resolves a positive Messages API `max_tokens` value locally, maps
+configured reasoning to Claude adaptive or manual thinking, and strips
+sampling fields for Claude 4.7+ families that reject them. Ollama maps
+`params.max_tokens` to `options.num_predict` and forwards explicitly set
+`temperature`, `top_p`, `seed`, and `stop` through `/api/chat` options.
+
 ## OpenAI-Compatible Adapter
 
-The OpenAI-compatible adapter owns Chat Completions requests and responses, HTTP client setup, normal completions, SSE stream parsing, tool-call conversion, and the stream tool-call accumulator. It does not own the agent loop.
+The OpenAI-compatible adapter owns Chat Completions requests and responses, HTTP client setup, normal completions, SSE stream parsing, tool-call conversion, request profile handling, and the stream tool-call accumulator. It does not own the agent loop.
 
-The OpenAI-compatible provider is vendor-neutral. It does not carry
-provider-specific aliases or model-specific request normalization; endpoint
-differences belong in configuration or a future explicit adapter option, not in
-the provider name.
+The OpenAI-compatible provider name is vendor-neutral. Provider and model
+differences live in `model.default.compat_profile`, not in extra provider-name
+aliases. `auto` selects a profile from `providers.model.base_url` first, then
+model-name hints, then `generic`.
+
+Implemented profiles:
+
+- `generic`: current standard Chat Completions behavior.
+- `moonshot-kimi`: omits `temperature`, uses `32000` as the missing
+  `max_tokens` default, emits Kimi/Moonshot thinking controls, and sanitizes
+  tool schemas to Moonshot's JSON Schema subset.
+- `deepseek`: emits thinking controls for `deepseek-reasoner` and DeepSeek V4+
+  models, while leaving `deepseek-chat` V3 unchanged.
+- `gemini-openai`: maps reasoning options to Gemini OpenAI-compatible thinking
+  config for Gemini-family models only.
+- `openrouter`: keeps routing/session fields in the final request body and
+  avoids invalid reasoning payloads for modern Claude routes.
+- `qwen`: normalizes Qwen/DashScope messages to text parts, adds the ephemeral
+  cache marker to the system prompt part, enables high-resolution image
+  handling, and uses a `65536` missing `max_tokens` default.
+- `local-openai-compatible`: conservative profile for local Chat Completions
+  servers, with a `65536` missing `max_tokens` default to avoid short local
+  completions.
+
+The request builder emits the final raw HTTP JSON body. Do not copy OpenAI SDK
+parameter names blindly: SDK `extra_body` entries are merged into the body, so
+Kimi `thinking` is a top-level wire field, while Gemini OpenAI-compatible uses
+an actual top-level `extra_body.google.thinking_config` field.
+
+When a provider explicitly reports `temperature` or an omittable `max_tokens`
+as an unsupported parameter, the adapter removes that one field and retries the
+HTTP request once. Other provider errors are returned without automatic
+mutation.
 
 The current adapter reads the provider response body and parses SSE `data:`
 lines into typed events. Text, reasoning, refusal, native tool-call, usage, and

@@ -17,9 +17,10 @@ pub use agent::{
 };
 pub use config::{
     ConfigValidationIssue, ConfigValidationReport, ExternalMemoryProviderConfig,
-    ExternalProvidersConfig, IkarosConfig, LocalStoreConfig, MemoryConfig, ModelConfig, ModelTable,
-    PolicyConfig, RagConfig, RemoteProviderConfig, SelfModifyCheckProfileConfig, SelfModifyConfig,
-    VoiceConfig, VoiceProviderConfig,
+    ExternalProvidersConfig, IkarosConfig, LocalStoreConfig, MemoryConfig, ModelConfig,
+    ModelParamsConfig, ModelReasoningConfig, ModelTable, PolicyConfig, RagConfig,
+    RemoteProviderConfig, SelfModifyCheckProfileConfig, SelfModifyConfig, VoiceConfig,
+    VoiceProviderConfig,
 };
 pub use context::{ContextBuilder, RuntimeContext};
 pub use error::{IkarosError, Result};

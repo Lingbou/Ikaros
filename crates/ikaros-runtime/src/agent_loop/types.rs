@@ -2,7 +2,7 @@
 
 use ikaros_core::RiskLevel;
 use ikaros_harness::GuardrailConfig;
-use ikaros_models::{ModelResponse, ModelStreamEvent, TokenUsage};
+use ikaros_models::{ModelRequestOptions, ModelResponse, ModelStreamEvent, TokenUsage};
 pub use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId, AgentTurnId,
     noop_agent_event_sink,
@@ -24,8 +24,7 @@ pub struct AgentLoopInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentLoopOptions {
     pub max_iterations: u32,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
+    pub request_options: ModelRequestOptions,
     pub stream: bool,
     pub guardrails: GuardrailConfig,
 }
@@ -34,8 +33,7 @@ impl Default for AgentLoopOptions {
     fn default() -> Self {
         Self {
             max_iterations: 4,
-            max_tokens: Some(512),
-            temperature: Some(0.2),
+            request_options: ModelRequestOptions::default(),
             stream: false,
             guardrails: GuardrailConfig::default(),
         }

@@ -165,12 +165,35 @@ providers:
 model:
   default:
     provider: openai-compatible
+    transport: openai-compatible-chat-completions
     model: provider-model-id
+    compat_profile: auto
+    params:
+      max_tokens: null
+      temperature: null
+    reasoning:
+      enabled: null
+      effort: null
+    extra_body: {}
     rate_limit_per_minute: 60
     daily_token_budget: 100000
 ```
 
 Provider 名称表示 adapter family，不表示厂商。任何 Chat Completions-compatible 服务都使用 `openai-compatible`，具体 endpoint 和模型写在 `providers.model.base_url` 和 `model.default.model`。
+
+`compat_profile` 控制 OpenAI-compatible adapter 内部的 provider/model 请求差异。`auto` 会先按 `providers.model.base_url` 匹配，再按模型名 hint 匹配，最后回退到 `generic`。支持显式指定：
+
+- `generic`：只发送标准 Chat Completions 字段。
+- `moonshot-kimi`：Kimi/Moonshot。省略 `temperature`，缺少 `max_tokens` 时默认 `32000`，发送 Kimi thinking 字段，并把 tool schema 修正到 Moonshot 更严格的 JSON Schema 子集。
+- `deepseek`：对 `deepseek-reasoner` 和 `deepseek-v4+` 模型发送 DeepSeek thinking 字段；`deepseek-chat` V3 保持普通 chat 形态。
+- `gemini-openai`：只对 Gemini family 模型把 reasoning 配置映射为 Gemini OpenAI-compatible 的 `extra_body.google.thinking_config`。
+- `openrouter`：保留 OpenRouter routing 字段，并避免给现代 Claude route 发送无效 reasoning 字段。
+- `qwen`：Qwen/DashScope 兼容请求形态。会把 message content 规范化为 text parts，给 system prompt 的最后一段加 ephemeral cache 标记，启用高分辨率图片字段，并在缺少 `max_tokens` 时默认使用 `65536`。
+- `local-openai-compatible`：用于 LM Studio、vLLM、SGLang 等本地 Chat Completions 服务，默认更保守；缺少 `max_tokens` 时使用 `65536`，避免本地服务默认输出过短。
+
+`params.* = null` 表示 adapter 不发送该参数，除非选中的 profile 提供 provider 默认值。Runtime 可以为特定 workflow 设置 per-call options，但 strict profile 仍会移除或改写目标 provider 会拒绝的字段。`extra_body` 是合并进最终 provider 请求体的 JSON object；日志和审计只能记录脱敏摘要，不能写入原始 secret-like 值。
+
+如果 OpenAI-compatible provider 明确返回 `temperature` 或可省略的 `max_tokens` 不支持，adapter 会删除该字段并只重试一次 HTTP 请求。鉴权、额度、网络和普通参数校验错误不会走这个重试路径。
 
 Anthropic 示例：
 
@@ -186,6 +209,12 @@ model:
     model: claude-sonnet-4-5
 ```
 
+Anthropic adapter 总会发送正数 `max_tokens`。当 `model.default.reasoning`
+启用 thinking 时，现代 Claude 模型使用 adaptive thinking 和
+`output_config.effort`；旧 Claude 模型使用 budget-based thinking。Claude
+4.7 及更新模型会省略 `temperature`、`top_p` 等 sampling 字段，即使某个 workflow
+显式传入了这些字段。
+
 Ollama 本地示例：
 
 ```yaml
@@ -200,6 +229,8 @@ model:
     provider: ollama
     model: llama3.2
 ```
+
+Ollama adapter 会把 `params.max_tokens` 映射为原生 `options.num_predict`，并把显式配置的 `temperature`、`top_p`、`seed` 和 `stop` 放入 `/api/chat` 的 native `options` object。
 
 用量记录写到本地 audit 状态中，不包含 prompt 文本。
 

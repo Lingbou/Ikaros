@@ -7,6 +7,7 @@ mod governance;
 mod mock;
 mod ollama;
 mod openai_compatible;
+mod params;
 mod transport;
 mod types;
 mod usage;
@@ -21,8 +22,9 @@ pub use transport::{
     ModelTransport, ModelTransportDescriptor, model_transport_descriptor_from_config,
 };
 pub use types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
-    ModelToolCall, ModelToolDefinition, TokenUsage,
+    ModelMessage, ModelProvider, ModelRequest, ModelRequestDiagnostic, ModelRequestOptions,
+    ModelResponse, ModelStream, ModelStreamEvent, ModelToolCall, ModelToolDefinition,
+    ReasoningConfig, ReasoningEffort, TokenUsage,
 };
 pub use usage::{ModelUsageLedger, ModelUsageRecord};
 
