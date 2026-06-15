@@ -11,7 +11,8 @@ mod types;
 pub use context::{context_lookup_is_safe_read, extract_memory_context, extract_rag_context};
 pub use context_engine::{
     CompactInput, CompactReport, ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent,
-    LocalChatContextEngine, TurnRecord, build_chat_context, build_chat_context_bundle_with_engine,
+    ContextModelBudget, LocalChatContextEngine, TurnRecord, build_chat_context,
+    build_chat_context_bundle_with_engine, build_chat_context_bundle_with_model_context,
     build_chat_context_with_engine,
 };
 pub use history::{

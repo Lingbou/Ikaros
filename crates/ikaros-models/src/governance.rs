@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    types::{ModelProvider, ModelRequest, ModelResponse, ModelStream, TokenUsage},
+    types::{
+        ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStream, TokenUsage,
+    },
     usage::{ModelUsageLedger, ModelUsageRecord},
 };
 use async_trait::async_trait;
@@ -101,6 +103,10 @@ impl ModelProvider for GovernedModelProvider {
 
     fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
         self.inner.estimate_request_tokens(request)
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        self.inner.context_profile()
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {

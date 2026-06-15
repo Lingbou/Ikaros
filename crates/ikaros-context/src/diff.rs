@@ -69,13 +69,17 @@ fn collect_section_diff(
     }
     for line in before {
         if !after.contains(line) {
-            if after.iter().any(|kept| kept.contains("[truncated]")) {
+            if after.iter().any(|kept| is_context_summary_line(kept)) {
                 diff.compressed.push(diff_item(section, line, estimator));
             } else {
                 diff.removed.push(diff_item(section, line, estimator));
             }
         }
     }
+}
+
+fn is_context_summary_line(line: &str) -> bool {
+    line.trim_start().starts_with("[context summary:")
 }
 
 fn diff_item(
@@ -97,4 +101,44 @@ fn preview(line: &str) -> String {
         preview.push_str("...");
     }
     preview
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ChatContext, HeuristicTokenEstimator};
+
+    #[test]
+    fn context_summary_marks_removed_lines_as_compressed() {
+        let before = ChatContext {
+            memory: vec!["older memory detail".into()],
+            ..ChatContext::default()
+        };
+        let after = ChatContext {
+            memory: vec!["[context summary: memory omitted 1 line(s)]".into()],
+            ..ChatContext::default()
+        };
+
+        let diff = diff_chat_context(&before, &after, &HeuristicTokenEstimator);
+
+        assert_eq!(diff.compressed.len(), 1);
+        assert!(diff.removed.is_empty());
+    }
+
+    #[test]
+    fn reference_truncation_marker_does_not_imply_context_compression() {
+        let before = ChatContext {
+            references: vec!["full reference detail".into()],
+            ..ChatContext::default()
+        };
+        let after = ChatContext {
+            references: vec!["reference preview\n... [truncated]".into()],
+            ..ChatContext::default()
+        };
+
+        let diff = diff_chat_context(&before, &after, &HeuristicTokenEstimator);
+
+        assert!(diff.compressed.is_empty());
+        assert_eq!(diff.removed.len(), 1);
+    }
 }

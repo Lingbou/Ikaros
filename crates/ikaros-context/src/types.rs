@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{TokenEstimator, diff_chat_context};
+use crate::{ContextCompressedSection, TokenEstimator, diff_chat_context};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
@@ -68,6 +68,10 @@ pub struct ContextBundle {
     pub budget: ContextBudget,
     pub diff: ContextDiff,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressed_sections: Vec<ContextCompressedSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<ContextReference>,
 }
 
@@ -86,6 +90,8 @@ impl ContextBundle {
             sections,
             budget,
             diff,
+            compressed_sections: Vec::new(),
+            compression_summary: None,
             references,
         }
     }
@@ -133,6 +139,16 @@ pub struct ContextBudget {
     pub max_tokens: usize,
     pub used_tokens: usize,
     pub estimator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_system_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl ContextBudget {
@@ -141,6 +157,11 @@ impl ContextBudget {
             max_tokens,
             used_tokens: 0,
             estimator: estimator.into(),
+            requested_tokens: None,
+            context_window: None,
+            reserved_output_tokens: None,
+            reserved_system_tokens: None,
+            source: None,
         }
     }
 
@@ -149,7 +170,28 @@ impl ContextBudget {
             max_tokens: 0,
             used_tokens: 0,
             estimator: estimator.into(),
+            requested_tokens: None,
+            context_window: None,
+            reserved_output_tokens: None,
+            reserved_system_tokens: None,
+            source: None,
         }
+    }
+
+    pub fn with_model_window(
+        mut self,
+        requested_tokens: usize,
+        context_window: u32,
+        reserved_output_tokens: u32,
+        reserved_system_tokens: u32,
+        source: impl Into<String>,
+    ) -> Self {
+        self.requested_tokens = Some(requested_tokens);
+        self.context_window = Some(context_window);
+        self.reserved_output_tokens = Some(reserved_output_tokens);
+        self.reserved_system_tokens = Some(reserved_system_tokens);
+        self.source = Some(source.into());
+        self
     }
 
     pub fn is_unbounded(&self) -> bool {

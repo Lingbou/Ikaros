@@ -2,6 +2,7 @@
 //! Local-first memory storage for Ikaros.
 
 mod common;
+mod journal;
 mod jsonl;
 mod local;
 mod provider;
@@ -9,6 +10,10 @@ mod relationship;
 mod sqlite;
 mod types;
 
+pub use journal::{
+    JsonlMemoryJournal, MemoryJournal, MemoryJournalAction, MemoryJournalEntry, MemoryPolicy,
+    MemoryScore,
+};
 pub use jsonl::JsonlMemoryStore;
 pub use local::LocalMemoryStore;
 pub use provider::{

@@ -36,13 +36,14 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
   session entries, `SessionStore`, `SessionWriter`, SQLite `state.db`, and
   replay/search/branch reads.
-- `ikaros-context`: context bundles, sections, references, token budgets,
-  heuristic token estimation, and context diffs.
+- `ikaros-context`: context bundles, sections, references, provider-aware
+  token budgets, quota-based compaction, and context diffs.
 - `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and context orchestration.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
-- `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
+- `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle,
+  memory policy/journal primitives, and provider registry metadata.
 - `ikaros-rag`: local file ingestion, chunk storage, retrieval, and embedding providers.
-- `ikaros-models`: `ModelProvider`, `ModelTransport`, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, usage logging, and request governance.
+- `ikaros-models`: `ModelProvider`, `ModelTransport`, model context profiles, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, usage logging, and request governance.
 - `ikaros-gateway`: local inbox/outbox store plus built-in `GatewayFrame` protocol types.
 - `ikaros-voice`: mock and OpenAI-compatible TTS/ASR providers.
 - `ikaros-skills`: built-in skills exposed through the harness.
@@ -107,7 +108,7 @@ State ownership:
   request/result/delivery evidence into the same store. Memory lifecycle and
   audit logs still keep their own stores, with selected session evidence rather
   than full prompt-bearing duplication.
-- `memory/`: local memory records and memory provider registry metadata.
+- `memory/`: local memory records, memory policy journal data, and memory provider registry metadata.
 - `chat/`: chat history and session summaries.
 - `rag/`: local RAG files, chunks, and embedding indexes.
 - `audit/`: policy decisions, approval records, usage logs, and migration backups.
@@ -135,7 +136,9 @@ State ownership:
   metadata and must not be used as an implicit session fallback.
 - Context primitives live in `ikaros-context`. Runtime chat assembles
   relationship, explicit references, history, memory, and RAG into a
-  token-budgeted `ContextBundle`.
+  provider-aware token-budgeted `ContextBundle`. Provider metadata caps the
+  usable context window, while token counting is still heuristic until native
+  tokenizer adapters exist.
 - `ContextReference` currently parses and locally resolves safe references:
   `@file:path:line-line`, `@folder:path`, `@git:rev`, `@diff`, and `@staged`.
   Paths must stay under the workspace. `@url:` is parsed but not fetched until
@@ -144,6 +147,9 @@ State ownership:
   includes the budget, sections, parsed references, and added/removed/compressed
   token estimates.
 - `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks. The trait does not hide default noop methods; callers that need no memory side effect must choose `NoopMemoryProvider` explicitly.
+- `MemoryScore`, `MemoryPolicy`, and `MemoryJournal` belong to `ikaros-memory`.
+  Runtime policy actions should be journaled there when promotion, demotion, or
+  forgetting becomes active behavior.
 - Relationship memory is `MemoryKind::Relationship` in `ikaros-memory`; the
   relationship CLI is a convenience façade over the memory store, not a second
   memory system.

@@ -22,6 +22,19 @@ note. Runtime memory lifecycle writes use it to link derived records back to
 the turn that produced them without making the session store the memory
 database.
 
+## Lifecycle And Policy
+
+`MemoryProvider` implementations must handle lifecycle hooks explicitly:
+`turn_start`, `prefetch`, `sync_turn`, `pre_compress`, `session_switch`, and
+`delegation_observation`. Callers that intentionally want no side effects should
+use `NoopMemoryProvider`.
+
+`MemoryScore`, `MemoryPolicy`, and `MemoryJournal` define the local boundary for
+promotion, demotion, forgetting, skipped writes, and quota decisions.
+`JsonlMemoryJournal` writes those decisions to `memory_journal.jsonl`. Runtime
+does not yet write every policy action automatically, so the journal is a
+lifecycle/audit primitive rather than a replacement for the memory store.
+
 ## Backends
 
 Default JSONL path:

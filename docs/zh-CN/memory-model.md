@@ -17,6 +17,12 @@ Record 包含 scope、content、timestamp、tag、source、结构化 `source_ref
 
 `source_ref` 可以指向 session turn、session entry、skill call 或 manual note。Runtime memory lifecycle 写入派生记忆时会用它关联来源 turn，但不会把 session store 变成 memory 数据库。
 
+## Lifecycle 和策略
+
+`MemoryProvider` 实现必须显式处理 lifecycle hook：`turn_start`、`prefetch`、`sync_turn`、`pre_compress`、`session_switch` 和 `delegation_observation`。确实不需要副作用的调用方应使用 `NoopMemoryProvider`。
+
+`MemoryScore`、`MemoryPolicy` 和 `MemoryJournal` 定义了 promotion、demotion、forget、skipped write 和 quota 决策的本地边界。`JsonlMemoryJournal` 会把这些决策写入 `memory_journal.jsonl`。Runtime 还没有自动写入所有 policy action，所以 journal 目前是 lifecycle/audit primitive，不是 memory store 的替代品。
+
 ## 后端
 
 默认 JSONL 路径：

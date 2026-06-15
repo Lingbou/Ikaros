@@ -12,6 +12,8 @@ Context 边界控制哪些本地状态可以进入一次模型 turn。它不是 
 - `ContextBudget`
 - `ContextDiff`
 - 启发式 token 估算
+- `PriorityContextEngine`
+- `TrajectoryCompressor`
 
 `ikaros-runtime` 负责围绕这些 primitive 编排。Runtime chat 仍会调用 harness safe-read skill 获取 memory 和 RAG，在 workspace 内解析本地 reference，渲染最终 system prompt，并发出 session event。
 
@@ -31,19 +33,30 @@ Context 边界控制哪些本地状态可以进入一次模型 turn。它不是 
 
 ## Token Budget
 
-Chat context 使用 `DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET` 和启发式 token estimator。Budget 为 `0` 表示不限制。
+Chat context 先使用 `DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET`，然后在有模型 provider 时用 provider metadata 收窄。`ModelContextProfile` 提供：
 
-这个 estimator 是本地确定性的，足够支撑 MVP context 计量，但它不是 provider-native tokenizer。后续 provider registry 应提供模型专属 context window 和 tokenizer adapter。
+- context window
+- 默认输出 token 预留
+- tokenizer kind
+- metadata source
 
-当前预算优先级：
+Runtime 在组装本地 context 前，还会为 persona/system prompt 预留 token。持久化的 `ContextBudget` 会记录 requested budget、effective max tokens、used tokens、provider window、output reservation、system reservation、estimator 和 metadata source。
 
-1. relationship
-2. 显式 references
-3. history
-4. memory
-5. RAG
+在 runtime chat 中，请求的 context budget 为 `0` 时，如果当前有 provider profile，就表示“使用模型推导出来的可用本地 context 窗口”。直接调用底层库仍可构造 unbounded `ContextBudget`，但 CLI turn 不应把 `0` 理解成可以超过模型窗口。
 
-当某一行超过剩余 budget 时，可能会用 `[truncated]` 标记截断。被省略和截断的内容会写入 context diff。
+Estimator 仍然是本地确定性的。Provider profile 让 context-window 计量具备 provider awareness，但真正 provider-native tokenizer 仍是后续 provider registry 的工作。`tokenizer kind` 目前只是 profile metadata，不代表 native tokenizer adapter 已经启用。
+
+## 配额和压缩
+
+`PriorityContextEngine` 按 section 分配 effective context budget：
+
+- relationship：10%
+- 显式 references：35%
+- history：20%
+- memory：20%
+- RAG：15%
+
+`TrajectoryCompressor` 应用这套 quota policy，并记录被压缩 section 的确定性省略摘要。这些摘要用于解释哪些内容没有进入本轮 context，还不是模型生成的语义总结。正常行为不再依赖单行 `[truncated]` 截断。持久化 chat turn 发生 context compaction 时，runtime 会同时写入 `ContextCompacted` event 和 `SessionEntryKind::Compaction` entry。Assistant message 会挂在 compaction entry 后面，保留 session tree 的事实链。
 
 ## Reference
 
@@ -76,6 +89,8 @@ Parser 识别：
 
 - budget
 - sections
+- compressed sections
+- compression summary
 - 已解析 references
 - before/after token 估算
 - 新增、删除、压缩的 context 预览

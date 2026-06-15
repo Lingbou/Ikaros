@@ -167,8 +167,10 @@ single-call chat selected with `--no-agent-loop` both write user/assistant
 `SessionEntry` records. Single-call chat also emits a minimal typed event
 timeline: session start, turn start, user message, normalized model stream
 events, context diff, and turn end. The context diff payload records the
-token budget, sections, explicit references, and added/removed/compressed
-context estimates for the turn. Post-turn evidence such as `MemoryLifecycle`
+provider-aware token budget, sections, explicit references, compressed sections,
+and added/removed/compressed context estimates for the turn. When context is
+compacted, chat also writes a `ContextCompacted` event and a compaction session
+entry before the assistant entry. Post-turn evidence such as `MemoryLifecycle`
 and `AuditAnchor` may appear after `TurnEnd`; consumers should use event kinds
 rather than assuming the last event is always the turn end.
 

@@ -6,7 +6,8 @@ use super::{
 };
 use crate::params::merge_request_options;
 use crate::types::{
-    ModelProvider, ModelRequest, ModelRequestDiagnostic, ModelResponse, ModelStream,
+    ModelContextProfile, ModelProvider, ModelRequest, ModelRequestDiagnostic, ModelResponse,
+    ModelStream,
 };
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, redact_secrets};
@@ -24,6 +25,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
             .max_tokens
             .or_else(|| self.profile.default_max_tokens(&self.model));
         request.estimated_tokens_with_output_limit(output_tokens)
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        self.profile.context_profile(&self.model)
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {

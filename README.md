@@ -21,11 +21,11 @@ The project is currently a pre-MVP local runtime for development and experimenta
 - `crates/ikaros-body`: replaceable body/status/frame contracts and dashboard rendering.
 - `crates/ikaros-cli`: the `ikaros` command-line application.
 - `crates/ikaros-coding`: repository scan, guarded patching, code review, self-modify records, and test-command validation.
-- `crates/ikaros-context`: context bundle, section, reference, token-budget, and diff primitives.
+- `crates/ikaros-context`: context bundle, section, reference, provider-aware token budget, quota-based compaction, and diff primitives.
 - `crates/ikaros-gateway`: local message inbox/outbox metadata and delivery routes.
 - `crates/ikaros-harness`: policy engine, approval queue, audit log, skill execution session, plugins, and task runner.
-- `crates/ikaros-memory`: local JSONL and SQLite memory stores.
-- `crates/ikaros-models`: mock, OpenAI-compatible, Anthropic, and Ollama model providers with governance and usage logging.
+- `crates/ikaros-memory`: local JSONL and SQLite memory stores, lifecycle hooks, and policy journal primitives.
+- `crates/ikaros-models`: mock, OpenAI-compatible, Anthropic, and Ollama model providers with context profiles, governance, and usage logging.
 - `crates/ikaros-rag`: local RAG ingestion, indexing, retrieval, and embedding providers.
 - `crates/ikaros-runtime`: runtime orchestration for chat, tasks, schedules, gateway drain, body status, diagnostics, and agent handoff.
 - `crates/ikaros-session`: session ids, turn ids, typed agent events, turn-scoped session writes, SQLite `state.db`, append-only session entries, and replay reads.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{ChatContext, ContextSectionKind};
+use crate::{ChatContext, ContextSectionKind, PriorityContextEngine};
 
 pub trait TokenEstimator: Send + Sync {
     fn name(&self) -> &'static str;
@@ -53,17 +53,9 @@ pub fn apply_context_token_budget(
     budget: usize,
     estimator: &dyn TokenEstimator,
 ) -> ChatContext {
-    if budget == 0 {
-        return context;
-    }
-    let mut remaining = budget;
-    ChatContext {
-        relationship: budget_lines(context.relationship, &mut remaining, estimator),
-        references: budget_lines(context.references, &mut remaining, estimator),
-        history: budget_lines(context.history, &mut remaining, estimator),
-        memory: budget_lines(context.memory, &mut remaining, estimator),
-        rag: budget_lines(context.rag, &mut remaining, estimator),
-    }
+    PriorityContextEngine::default()
+        .apply(context, budget, estimator)
+        .context
 }
 
 pub(crate) fn all_context_lines(context: &ChatContext) -> Vec<(ContextSectionKind, &str)> {
@@ -98,55 +90,6 @@ pub(crate) fn all_context_lines(context: &ChatContext) -> Vec<(ContextSectionKin
         .collect()
 }
 
-fn budget_lines(
-    lines: Vec<String>,
-    remaining: &mut usize,
-    estimator: &dyn TokenEstimator,
-) -> Vec<String> {
-    let mut kept = Vec::new();
-    for line in lines {
-        if *remaining == 0 {
-            break;
-        }
-        let line_tokens = estimator.estimate_tokens(&line);
-        if line_tokens <= *remaining {
-            *remaining -= line_tokens;
-            kept.push(line);
-            continue;
-        }
-        if let Some(truncated) = truncate_to_token_budget(&line, *remaining, estimator) {
-            kept.push(truncated);
-        }
-        *remaining = 0;
-        break;
-    }
-    kept
-}
-
-fn truncate_to_token_budget(
-    line: &str,
-    budget: usize,
-    estimator: &dyn TokenEstimator,
-) -> Option<String> {
-    if budget == 0 {
-        return None;
-    }
-    let suffix = "... [truncated]";
-    if estimator.estimate_tokens(suffix) >= budget {
-        return Some(line.chars().take(budget).collect());
-    }
-    let mut output = String::new();
-    for ch in line.chars() {
-        let candidate = format!("{output}{ch}{suffix}");
-        if estimator.estimate_tokens(&candidate) > budget {
-            break;
-        }
-        output.push(ch);
-    }
-    output.push_str(suffix);
-    Some(output)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,21 +98,20 @@ mod tests {
     fn token_budget_preserves_priority_and_truncates() {
         let estimator = HeuristicTokenEstimator;
         let context = ChatContext {
-            relationship: vec!["relationship".into()],
-            references: vec!["reference".into()],
-            history: vec!["history".into()],
+            relationship: vec!["rel".into()],
+            references: vec!["ref".into()],
+            history: vec!["hist".into()],
             memory: vec!["memory-context-is-long-enough-to-truncate".into()],
             rag: vec!["rag should be omitted".into()],
         };
 
-        let budgeted = apply_context_token_budget(context, 14, &estimator);
+        let budgeted = apply_context_token_budget(context, 12, &estimator);
 
-        assert_eq!(budgeted.relationship, vec!["relationship"]);
-        assert_eq!(budgeted.references, vec!["reference"]);
-        assert_eq!(budgeted.history, vec!["history"]);
-        assert_eq!(budgeted.memory.len(), 1);
-        assert!(budgeted.memory[0].contains("[truncated]"));
+        assert_eq!(budgeted.relationship, vec!["rel"]);
+        assert_eq!(budgeted.references, vec!["ref"]);
+        assert_eq!(budgeted.history, vec!["hist"]);
+        assert!(budgeted.memory.is_empty());
         assert!(budgeted.rag.is_empty());
-        assert!(chat_context_token_count(&budgeted, &estimator) <= 14);
+        assert!(chat_context_token_count(&budgeted, &estimator) <= 12);
     }
 }

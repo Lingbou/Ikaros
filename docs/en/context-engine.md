@@ -15,6 +15,8 @@ turn saw the context it saw.
 - `ContextBudget`
 - `ContextDiff`
 - heuristic token estimation
+- `PriorityContextEngine`
+- `TrajectoryCompressor`
 
 `ikaros-runtime` owns orchestration around those primitives. Runtime chat still
 calls harness safe-read skills for memory and RAG, resolves workspace-local
@@ -39,25 +41,47 @@ budgeted sections.
 
 ## Token Budget
 
-Chat context uses `DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET` and a heuristic token
-estimator. A budget of `0` means unbounded.
+Chat context starts with `DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET`, then caps it with
+provider metadata when a model provider is present. `ModelContextProfile`
+supplies:
 
-The estimator is intentionally local and deterministic. It is good enough for
-MVP context accounting, but it is not a provider-native tokenizer. Provider
-registry work should later supply model-specific context windows and tokenizer
-adapters.
+- context window
+- default output token reservation
+- tokenizer kind
+- metadata source
 
-The budget order currently prioritizes:
+Runtime also reserves tokens for the persona/system part of the prompt before it
+assembles local context. The persisted `ContextBudget` records the requested
+budget, the effective max tokens, used tokens, provider window, output
+reservation, system reservation, estimator, and metadata source.
 
-1. relationship
-2. explicit references
-3. history
-4. memory
-5. RAG
+In runtime chat, a requested context budget of `0` means "use the model-derived
+available local-context window" when a provider profile is available. Direct
+library callers can still construct an unbounded `ContextBudget`, but CLI turns
+should not treat `0` as permission to exceed the model window.
 
-When a line exceeds the remaining budget, it may be truncated with a
-`[truncated]` marker. Omitted and truncated content is reported in the context
-diff.
+The estimator is still local and deterministic. The provider profile now makes
+context-window accounting provider-aware, but tokenizer-native counting remains a
+future provider registry task. `tokenizer kind` is recorded as profile metadata;
+it does not mean native tokenizer adapters are already active.
+
+## Quotas And Compression
+
+`PriorityContextEngine` allocates the effective context budget by section:
+
+- relationship: 10%
+- explicit references: 35%
+- history: 20%
+- memory: 20%
+- RAG: 15%
+
+`TrajectoryCompressor` applies that quota policy and records deterministic
+omission summaries for compressed sections. These summaries explain what was
+left out; they are not model-generated semantic summaries yet. It does not rely
+on single-line truncation as the normal behavior. When context is compacted
+during a persisted chat turn, runtime writes both a `ContextCompacted` event and
+a `SessionEntryKind::Compaction` entry. The assistant message is attached after
+the compaction entry in the session tree.
 
 ## References
 
@@ -93,6 +117,8 @@ payload includes:
 
 - budget
 - sections
+- compressed sections
+- compression summary
 - parsed references
 - before/after token estimates
 - added, removed, and compressed context previews

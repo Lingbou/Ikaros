@@ -34,6 +34,9 @@ Chat messages may include local context references such as `@file:path:line-line
 resolved under the current workspace and recorded in the session context diff.
 `@url:` is parsed but not fetched.
 
+`--context-token-budget 0` asks runtime chat to use the provider-derived
+available context window. It does not bypass the model context window.
+
 Memory and relationship notes:
 
 ```bash

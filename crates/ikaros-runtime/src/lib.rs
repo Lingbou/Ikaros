@@ -33,12 +33,12 @@ pub use body::{
 pub use chat::{
     ChatContext, ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, ChatMessageResult,
     ChatRunOptions, ChatTurnEventOptions, ChatTurnReport, CompactInput, CompactReport,
-    ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent,
+    ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent, ContextModelBudget,
     DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, LocalChatContextEngine, TurnRecord, build_chat_context,
-    build_chat_context_bundle_with_engine, build_chat_context_with_engine,
-    context_lookup_is_safe_read, extract_memory_context, extract_rag_context, new_chat_session_id,
-    render_chat_system_prompt, render_persona_agent_context, run_chat_message, run_chat_turn,
-    run_chat_turn_with_events,
+    build_chat_context_bundle_with_engine, build_chat_context_bundle_with_model_context,
+    build_chat_context_with_engine, context_lookup_is_safe_read, extract_memory_context,
+    extract_rag_context, new_chat_session_id, render_chat_system_prompt,
+    render_persona_agent_context, run_chat_message, run_chat_turn, run_chat_turn_with_events,
 };
 pub use diagnostics::{
     AgentSummary, AutomationSummary, GatewaySummary, ModelSummary, PersonaSummary, PluginSummary,

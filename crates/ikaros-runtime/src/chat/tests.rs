@@ -2,10 +2,14 @@
 
 use super::*;
 use async_trait::async_trait;
+use ikaros_context::{HeuristicTokenEstimator, apply_context_token_budget};
 use ikaros_core::{
     AgentProfile, ContextBuilder, IkarosError, IkarosPaths, RagConfig, ResolvedAgentProfile, Result,
 };
-use ikaros_models::{ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent};
+use ikaros_models::{
+    ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent,
+    ModelTokenizerKind,
+};
 use ikaros_session::{
     AgentEventKind, PersistingAgentTurnSink, SessionEntryKind, SessionId, SessionSource,
     SessionStore, SqliteSessionStore,
@@ -26,6 +30,31 @@ impl ModelProvider for FailingProvider {
         Err(IkarosError::Message(
             "provider failed with token=abc123".into(),
         ))
+    }
+}
+
+#[derive(Debug)]
+struct TinyWindowProvider;
+
+#[async_trait]
+impl ModelProvider for TinyWindowProvider {
+    fn name(&self) -> &str {
+        "tiny-window"
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::new(96, 32, ModelTokenizerKind::Mock, "tiny-window")
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "tiny-window-model".into(),
+            content: "ok".into(),
+            tool_calls: Vec::new(),
+            usage: Default::default(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -104,7 +133,7 @@ fn persona_agent_context_includes_profile_overlay_and_redacts() {
 }
 
 #[test]
-fn chat_context_budget_preserves_priority_and_truncates() {
+fn chat_context_budget_preserves_priority_and_omits_low_sections() {
     let context = ChatContext {
         relationship: vec!["rel".into()],
         references: vec!["ref".into()],
@@ -113,13 +142,14 @@ fn chat_context_budget_preserves_priority_and_truncates() {
         rag: vec!["rag should be omitted".into()],
     };
 
-    let budgeted = super::context::apply_chat_context_token_budget(context, 12);
+    let estimator = HeuristicTokenEstimator;
+    let budgeted =
+        apply_context_token_budget(super::context::redact_chat_context(context), 12, &estimator);
 
     assert_eq!(budgeted.relationship, vec!["rel"]);
     assert_eq!(budgeted.references, vec!["ref"]);
     assert_eq!(budgeted.history, vec!["hist"]);
-    assert_eq!(budgeted.memory.len(), 1);
-    assert!(budgeted.memory[0].contains("[truncated]"));
+    assert!(budgeted.memory.is_empty());
     assert!(budgeted.rag.is_empty());
     assert!(super::context::chat_context_token_count_with_default(&budgeted) <= 12);
 }
@@ -135,9 +165,61 @@ fn chat_context_budget_zero_keeps_context_unbounded() {
     };
 
     assert_eq!(
-        super::context::apply_chat_context_token_budget(context.clone(), 0),
+        apply_context_token_budget(
+            super::context::redact_chat_context(context.clone()),
+            0,
+            &HeuristicTokenEstimator,
+        ),
         context
     );
+}
+
+#[tokio::test]
+async fn provider_context_window_caps_chat_context_budget() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("notes.md"),
+        "alpha reference line\nbeta reference line\ngamma reference line\n",
+    )
+    .expect("reference");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let model_context = ModelContextProfile::new(96, 32, ModelTokenizerKind::Mock, "tiny-test");
+    let bundle = build_chat_context_bundle_with_model_context(
+        &LocalChatContextEngine,
+        "use @file:notes.md",
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions {
+            context_token_budget: 2_000,
+            ..ChatRunOptions::default()
+        },
+        ContextModelBudget {
+            model_context: &model_context,
+            reserved_system_tokens: 16,
+        },
+    )
+    .await
+    .expect("context bundle");
+
+    assert_eq!(bundle.budget.max_tokens, 48);
+    assert_eq!(bundle.budget.requested_tokens, Some(2_000));
+    assert_eq!(bundle.budget.context_window, Some(96));
+    assert_eq!(bundle.budget.reserved_output_tokens, Some(32));
+    assert_eq!(bundle.budget.reserved_system_tokens, Some(16));
+    assert_eq!(bundle.budget.source.as_deref(), Some("tiny-test"));
+    assert!(bundle.budget.used_tokens <= bundle.budget.max_tokens);
 }
 
 #[test]
@@ -693,6 +775,14 @@ async fn run_chat_message_resolves_file_reference_and_persists_context_diff() {
         context_event.payload["references"][0]["raw"].as_str(),
         Some("@file:notes.md:1-2")
     );
+    assert_eq!(
+        context_event.payload["budget"]["source"].as_str(),
+        Some("mock")
+    );
+    assert_eq!(
+        context_event.payload["budget"]["context_window"].as_u64(),
+        Some(8_192)
+    );
     let sections = context_event.payload["sections"]
         .as_array()
         .expect("sections");
@@ -706,6 +796,78 @@ async fn run_chat_message_resolves_file_reference_and_persists_context_diff() {
         context_event.payload["diff"]["after_tokens"]
             .as_u64()
             .is_some_and(|tokens| tokens > 0)
+    );
+}
+
+#[tokio::test]
+async fn tiny_context_window_persists_compaction_entry_and_event() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("notes.md"),
+        (0..24)
+            .map(|index| format!("reference line {index} with enough words to exceed budget"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("reference");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let session_store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(temp.path()));
+    let sink = PersistingAgentTurnSink::new(session_store.clone())
+        .with_source(SessionSource::Cli)
+        .with_agent_id("plan")
+        .with_workspace(&workspace);
+
+    run_chat_turn_with_events(
+        "summarize @file:notes.md",
+        &persona,
+        &TinyWindowProvider,
+        &agent,
+        &execution,
+        &registry,
+        ChatTurnEventOptions {
+            options: &ChatRunOptions {
+                agent_loop: false,
+                relationship_learning: false,
+                session_id: Some("tiny-context-session".into()),
+                ..ChatRunOptions::default()
+            },
+            event_sink: &sink,
+            session_sink: Some(&sink),
+            parent_entry_id: None,
+            turn_id: None,
+        },
+    )
+    .await
+    .expect("chat turn");
+    sink.commit().expect("commit");
+
+    let replay = session_store
+        .replay_session(&SessionId::from("tiny-context-session"))
+        .expect("replay")
+        .expect("session");
+    assert!(
+        replay
+            .entries
+            .iter()
+            .any(|entry| entry.kind == SessionEntryKind::Compaction)
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ContextCompacted))
     );
 }
 

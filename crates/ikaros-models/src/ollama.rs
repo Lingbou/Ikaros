@@ -2,8 +2,9 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse, ModelStream,
-    ModelStreamEvent, ModelToolCall, ModelToolDefinition, TokenUsage,
+    ModelContextProfile, ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions,
+    ModelResponse, ModelStream, ModelStreamEvent, ModelTokenizerKind, ModelToolCall,
+    ModelToolDefinition, TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{
@@ -65,6 +66,15 @@ impl ModelTransport for OllamaProvider {
 impl ModelProvider for OllamaProvider {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::new(
+            ollama_context_window(&self.model),
+            2_048,
+            ModelTokenizerKind::Ollama,
+            "ollama",
+        )
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -482,6 +492,26 @@ fn token_total(prompt: Option<u32>, completion: Option<u32>) -> Option<u32> {
         (Some(prompt), Some(completion)) => Some(prompt.saturating_add(completion)),
         _ => None,
     }
+}
+
+fn ollama_context_window(model: &str) -> u32 {
+    let model = model.trim().to_ascii_lowercase();
+    if model.contains("128k") || model.contains("128-k") {
+        return 128_000;
+    }
+    if model.contains("64k") || model.contains("64-k") {
+        return 64_000;
+    }
+    if model.contains("32k") || model.contains("32-k") {
+        return 32_000;
+    }
+    if model.contains("16k") || model.contains("16-k") {
+        return 16_000;
+    }
+    if model.contains("8k") || model.contains("8-k") {
+        return 8_000;
+    }
+    8_192
 }
 
 fn provider_base_url(provider_settings: &RemoteProviderConfig) -> Result<String> {

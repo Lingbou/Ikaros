@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::types::{ModelRequestOptions, ReasoningEffort};
+use crate::types::{ModelContextProfile, ModelRequestOptions, ModelTokenizerKind, ReasoningEffort};
 use ikaros_core::{IkarosError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +54,26 @@ impl OpenAiCompatProfile {
             Self::DeepSeek if deepseek_supports_thinking(model) => None,
             _ => None,
         }
+    }
+
+    pub fn context_profile(self, model: &str) -> ModelContextProfile {
+        let context_window = match self {
+            Self::GeminiOpenAi => 1_048_576,
+            Self::LocalOpenAiCompatible => 131_072,
+            Self::MoonshotKimi | Self::DeepSeek | Self::OpenRouter | Self::Qwen => 128_000,
+            Self::Generic => infer_generic_context_window(model),
+        };
+        let default_output_tokens = self.default_max_tokens(model).unwrap_or(match self {
+            Self::DeepSeek | Self::GeminiOpenAi | Self::OpenRouter => 8_192,
+            Self::Generic => 4_096,
+            _ => 4_096,
+        });
+        ModelContextProfile::new(
+            context_window,
+            default_output_tokens,
+            ModelTokenizerKind::OpenAiCompatible,
+            format!("openai-compatible:{}", self.id()),
+        )
     }
 
     pub fn omits_temperature(self) -> bool {
@@ -148,6 +168,26 @@ fn apply_kimi_fields(
             body.remove("reasoning_effort");
         }
     }
+}
+
+fn infer_generic_context_window(model: &str) -> u32 {
+    let model = model.trim().to_ascii_lowercase();
+    if model.contains("128k") || model.contains("128-k") {
+        return 128_000;
+    }
+    if model.contains("64k") || model.contains("64-k") {
+        return 64_000;
+    }
+    if model.contains("32k") || model.contains("32-k") {
+        return 32_000;
+    }
+    if model.contains("16k") || model.contains("16-k") {
+        return 16_000;
+    }
+    if model.contains("8k") || model.contains("8-k") {
+        return 8_000;
+    }
+    128_000
 }
 
 fn apply_deepseek_fields(

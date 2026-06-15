@@ -3,8 +3,8 @@
 use super::{
     context::chat_context_token_count_with_default,
     context_engine::{
-        ContextEngine, ContextEvent, LocalChatContextEngine, TurnRecord,
-        build_chat_context_bundle_with_engine,
+        ContextBundle, ContextEngine, ContextEvent, ContextModelBudget, LocalChatContextEngine,
+        TurnRecord, build_chat_context_bundle_with_model_context,
     },
     history::{
         ChatHistoryAppend, ChatHistoryStore, build_chat_history_record_with_turn_id,
@@ -19,6 +19,7 @@ use crate::{
     run_agent_loop_with_events,
 };
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
+use ikaros_context::estimate_tokens_heuristic;
 use ikaros_core::{
     ContextBuilder, IkarosConfig, IkarosError, IkarosPaths, ResolvedAgentProfile, Result,
     redact_secrets,
@@ -292,6 +293,9 @@ pub async fn run_chat_turn_with_events(
         )?;
     }
     let context_engine = LocalChatContextEngine;
+    let model_context = provider.context_profile();
+    let persona_context = render_persona_agent_context(persona, agent);
+    let reserved_system_tokens = estimate_tokens_heuristic(&persona_context) as u32;
     if let Err(error) = context_engine
         .ingest(ContextEvent {
             kind: "user_input".into(),
@@ -310,13 +314,17 @@ pub async fn run_chat_turn_with_events(
         );
         return Err(error);
     }
-    let context_bundle = match build_chat_context_bundle_with_engine(
+    let context_bundle = match build_chat_context_bundle_with_model_context(
         &context_engine,
         input,
         agent,
         session,
         registry,
         options,
+        ContextModelBudget {
+            model_context: &model_context,
+            reserved_system_tokens,
+        },
     )
     .await
     {
@@ -345,12 +353,37 @@ pub async fn run_chat_turn_with_events(
         json!({
             "budget": &context_bundle.budget,
             "diff": &context_bundle.diff,
+            "compressed_sections": &context_bundle.compressed_sections,
+            "compression_summary": &context_bundle.compression_summary,
             "references": &context_bundle.references,
             "sections": &context_bundle.sections,
         }),
     )?;
+    let assistant_parent_entry_id = append_context_compaction_session_entry(
+        event_options.session_sink,
+        &session_id,
+        &turn_id,
+        user_entry_id.clone(),
+        &context_bundle,
+    )?
+    .or(user_entry_id);
+    if !context_bundle.compressed_sections.is_empty() {
+        emit_chat_event(
+            &mut single_call_events,
+            event_sink,
+            &session_id,
+            &turn_id,
+            AgentEventSource::Context,
+            AgentEventKind::ContextCompacted,
+            json!({
+                "summary": &context_bundle.compression_summary,
+                "compressed_sections": &context_bundle.compressed_sections,
+                "budget": &context_bundle.budget,
+            }),
+        )?;
+    }
     let runtime_context = ContextBuilder::new()
-        .persona_context(render_persona_agent_context(persona, agent))
+        .persona_context(persona_context)
         .relationship_context(chat_context.relationship.clone())
         .reference_context(chat_context.references.clone())
         .chat_history_context(chat_context.history.clone())
@@ -369,7 +402,7 @@ pub async fn run_chat_turn_with_events(
             "history_hits": chat_context.history.len(),
             "rag_hits": chat_context.rag.len(),
             "context_tokens": context_tokens,
-            "context_token_budget": options.context_token_budget,
+            "context_budget": &context_bundle.budget,
             "history_context_limit": options.history_context_limit,
             "history_summary_limit": options.history_summary_limit,
             "provider": provider.name(),
@@ -614,7 +647,7 @@ pub async fn run_chat_turn_with_events(
         session_sink: event_options.session_sink,
         session_id: &session_id,
         turn_id: &turn_id,
-        user_entry_id,
+        user_entry_id: assistant_parent_entry_id,
         agent: &agent.name,
         response: &response,
         streamed,
@@ -768,6 +801,42 @@ fn append_chat_user_session_entry(
     });
     let entry_id = user_entry.entry_id.clone();
     session_sink.append_entry(&user_entry)?;
+    Ok(Some(entry_id))
+}
+
+fn append_context_compaction_session_entry(
+    session_sink: Option<&PersistingAgentTurnSink>,
+    session_id: &SessionId,
+    turn_id: &TurnId,
+    parent_entry_id: Option<SessionEntryId>,
+    bundle: &ContextBundle,
+) -> Result<Option<SessionEntryId>> {
+    if bundle.compressed_sections.is_empty() {
+        return Ok(None);
+    }
+    let Some(session_sink) = session_sink else {
+        return Ok(None);
+    };
+    let Some(parent_entry_id) = parent_entry_id else {
+        return Ok(None);
+    };
+    let summary = bundle
+        .compression_summary
+        .clone()
+        .unwrap_or_else(|| "context compacted to fit model budget".into());
+    let mut entry = SessionEntry::new(session_id.clone(), SessionEntryKind::Compaction);
+    entry.parent_entry_id = Some(parent_entry_id);
+    entry.turn_id = Some(turn_id.clone());
+    entry.visible_text = Some(summary.clone());
+    entry.payload = json!({
+        "operation": "context_compaction",
+        "summary": summary,
+        "budget": &bundle.budget,
+        "diff": &bundle.diff,
+        "compressed_sections": &bundle.compressed_sections,
+    });
+    let entry_id = entry.entry_id.clone();
+    session_sink.append_entry(&entry)?;
     Ok(Some(entry_id))
 }
 

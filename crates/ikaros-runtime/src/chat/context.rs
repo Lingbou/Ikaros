@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use ikaros_context::{
-    ChatContext, HeuristicTokenEstimator, apply_context_token_budget, chat_context_token_count,
-};
+use ikaros_context::{ChatContext, HeuristicTokenEstimator, chat_context_token_count};
 use ikaros_core::{RiskLevel, redact_secrets};
 use ikaros_harness::SkillRegistry;
 
@@ -60,11 +58,6 @@ pub fn extract_rag_context(output: &serde_json::Value, limit: usize) -> Vec<Stri
             )))
         })
         .collect()
-}
-
-pub fn apply_chat_context_token_budget(context: ChatContext, budget: usize) -> ChatContext {
-    let estimator = HeuristicTokenEstimator;
-    apply_context_token_budget(redact_chat_context(context), budget, &estimator)
 }
 
 pub fn chat_context_token_count_with_default(context: &ChatContext) -> usize {

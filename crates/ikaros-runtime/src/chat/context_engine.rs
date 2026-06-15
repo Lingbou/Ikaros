@@ -2,19 +2,21 @@
 
 use super::{
     context::{
-        apply_chat_context_token_budget, chat_context_token_count_with_default,
         context_lookup_is_safe_read, extract_memory_context, extract_rag_context,
+        redact_chat_context,
     },
     history::ChatHistoryStore,
     types::{ChatContext, ChatRunOptions},
 };
 use crate::{relationship_context_lines, relationship_snapshot_from_session};
 use ikaros_context::{
-    ContextBudget, ContextDiff, ContextReference, HeuristicTokenEstimator, TokenEstimator,
-    diff_chat_context, parse_context_references, resolve_context_references,
+    ContextBudget, ContextCompressedSection, ContextDiff, ContextReference,
+    HeuristicTokenEstimator, TokenEstimator, TrajectoryCompressor, parse_context_references,
+    resolve_context_references,
 };
 use ikaros_core::{IkarosError, ResolvedAgentProfile, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_models::ModelContextProfile;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{future::Future, path::Path, pin::Pin};
@@ -34,6 +36,13 @@ pub struct ContextAssembleInput<'a> {
     pub session: &'a ExecutionSession,
     pub registry: &'a SkillRegistry,
     pub options: &'a ChatRunOptions,
+    pub model_context: Option<&'a ModelContextProfile>,
+    pub reserved_system_tokens: u32,
+}
+
+pub struct ContextModelBudget<'a> {
+    pub model_context: &'a ModelContextProfile,
+    pub reserved_system_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +58,10 @@ pub struct CompactReport {
     pub context: ChatContext,
     pub diff: ContextDiff,
     pub budget: ContextBudget,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressed_sections: Vec<ContextCompressedSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,18 +91,16 @@ pub trait ContextEngine: Send + Sync {
         Box::pin(async move {
             let estimator = HeuristicTokenEstimator;
             let before = input.context;
-            let before_tokens = chat_context_token_count_with_default(&before);
-            let context = apply_chat_context_token_budget(before.clone(), input.budget.max_tokens);
-            let after_tokens = chat_context_token_count_with_default(&context);
-            let mut budget = input.budget;
-            budget.used_tokens = after_tokens;
-            let diff = diff_chat_context(&before, &context, &estimator);
+            let compressed =
+                TrajectoryCompressor::default().compress(before.clone(), input.budget, &estimator);
             Ok(CompactReport {
-                before_tokens,
-                after_tokens,
-                context,
-                diff,
-                budget,
+                before_tokens: compressed.before_tokens,
+                after_tokens: compressed.after_tokens,
+                context: compressed.context,
+                diff: compressed.diff,
+                budget: compressed.budget,
+                compressed_sections: compressed.compressed_sections,
+                summary: compressed.summary,
             })
         })
     }
@@ -149,22 +160,24 @@ impl ContextEngine for LocalChatContextEngine {
                 &input.session.sandbox.workspace_root,
             )?;
 
+            let context = redact_chat_context(context);
             let compacted = self
                 .compact(CompactInput {
                     context: context.clone(),
-                    budget: ContextBudget::new(
-                        options.context_token_budget,
-                        HeuristicTokenEstimator.name(),
-                    ),
+                    budget: context_budget_for_input(&input, HeuristicTokenEstimator.name()),
                 })
                 .await?;
-            Ok(ContextBundle::from_context(
+            let mut bundle = ContextBundle::from_context(
                 context,
                 compacted.context,
                 compacted.budget,
                 references,
                 &HeuristicTokenEstimator,
-            ))
+            );
+            bundle.diff = compacted.diff;
+            bundle.compressed_sections = compacted.compressed_sections;
+            bundle.compression_summary = compacted.summary;
+            Ok(bundle)
         })
     }
 }
@@ -216,9 +229,59 @@ pub async fn build_chat_context_bundle_with_engine(
             session,
             registry,
             options,
+            model_context: None,
+            reserved_system_tokens: 0,
         })
         .await?;
     Ok(bundle)
+}
+
+pub async fn build_chat_context_bundle_with_model_context(
+    engine: &dyn ContextEngine,
+    input: &str,
+    agent: &ResolvedAgentProfile,
+    session: &ExecutionSession,
+    registry: &SkillRegistry,
+    options: &ChatRunOptions,
+    model_budget: ContextModelBudget<'_>,
+) -> Result<ContextBundle> {
+    let bundle = engine
+        .assemble(ContextAssembleInput {
+            input,
+            agent,
+            session,
+            registry,
+            options,
+            model_context: Some(model_budget.model_context),
+            reserved_system_tokens: model_budget.reserved_system_tokens,
+        })
+        .await?;
+    Ok(bundle)
+}
+
+fn context_budget_for_input(
+    input: &ContextAssembleInput<'_>,
+    estimator: impl Into<String>,
+) -> ContextBudget {
+    let requested = input.options.context_token_budget;
+    let Some(model_context) = input.model_context else {
+        return ContextBudget::new(requested, estimator);
+    };
+    let available = model_context
+        .available_context_tokens(input.reserved_system_tokens)
+        .max(1) as usize;
+    let max_tokens = if requested == 0 {
+        available
+    } else {
+        requested.min(available)
+    };
+    ContextBudget::new(max_tokens, estimator).with_model_window(
+        requested,
+        model_context.context_window,
+        model_context.default_output_tokens,
+        input.reserved_system_tokens,
+        model_context.source.clone(),
+    )
 }
 
 fn assemble_history_context(context: &mut ChatContext, options: &ChatRunOptions) -> Result<()> {

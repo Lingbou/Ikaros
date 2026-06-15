@@ -29,6 +29,16 @@ The built-in local provider is always active. External provider descriptors are
 metadata until a remote adapter exists; declaring one does not redirect local
 writes. `ikaros config validate` rejects enabled external providers.
 
+M2.5 also adds the first memory policy boundary:
+
+- `MemoryScore`: recency, relevance, frequency, and source-strength inputs.
+- `MemoryPolicy`: promote, demote, forget, and per-scope quota thresholds.
+- `MemoryJournal`: append-only policy/action records.
+- `JsonlMemoryJournal`: local `memory_journal.jsonl` implementation.
+
+The journal is an audit and replay aid for memory lifecycle decisions. It does
+not replace the memory store, and it does not enable external memory providers.
+
 Inspect provider state with:
 
 ```bash
@@ -114,6 +124,8 @@ implemented.
 - Secret-like memory content is rejected or redacted.
 - Memory records can carry a structured `MemoryRef` such as a session turn,
   session entry, skill call, or manual note.
+- Memory policy actions should be recorded in `MemoryJournal` when promotion,
+  demotion, forgetting, or skipped writes become part of runtime behavior.
 - Relationship, task, project, and knowledge memory should not silently diverge across multiple providers.
 
 ## Failure Handling

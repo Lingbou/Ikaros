@@ -59,6 +59,37 @@ fn rejects_secret_like_memory_entries() {
 }
 
 #[test]
+fn memory_journal_records_policy_actions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let journal = JsonlMemoryJournal::new(temp.path());
+    let score = MemoryScore {
+        recency: 0.8,
+        relevance: 0.9,
+        frequency: 0.8,
+        source_strength: 0.9,
+    };
+    assert!(score.combined() > MemoryPolicy::default().promote_threshold);
+
+    let entry = MemoryJournalEntry::new(MemoryJournalAction::Promote, "stable user preference")
+        .expect("entry")
+        .with_memory("memory-1", MemoryKind::User, "default")
+        .expect("memory")
+        .with_score(score)
+        .with_source_ref(MemoryRef::SessionTurn {
+            session_id: "session-1".into(),
+            turn_id: Some("turn-1".into()),
+        })
+        .expect("source ref");
+    journal.append(entry).expect("append");
+
+    let entries = journal.list().expect("list");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].action, MemoryJournalAction::Promote);
+    assert_eq!(entries[0].scope.as_deref(), Some("default"));
+    assert!(entries[0].score.expect("score").combined() > 0.0);
+}
+
+#[test]
 fn rejects_secret_like_memory_metadata() {
     let err = MemoryRecord::new(MemoryKind::User, "scope token=abc123", "plain content")
         .expect_err("secret scope rejected");

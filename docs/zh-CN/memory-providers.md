@@ -21,6 +21,15 @@ Registry state：
 
 内置本地 provider 始终 active。外部 provider descriptor 在远程 adapter 启用前只是元数据；声明它不会重定向本地写入。`ikaros config validate` 会拒绝启用的外部 provider。
 
+M2.5 也加入了第一层 memory policy 边界：
+
+- `MemoryScore`：recency、relevance、frequency 和 source-strength 输入。
+- `MemoryPolicy`：promote、demote、forget 和 per-scope quota 阈值。
+- `MemoryJournal`：append-only 的策略/action 记录。
+- `JsonlMemoryJournal`：本地 `memory_journal.jsonl` 实现。
+
+Journal 是 memory lifecycle 决策的审计和 replay 辅助。它不替代 memory store，也不代表外部 memory provider 已经可执行。
+
 检查 provider 状态：
 
 ```bash
@@ -82,6 +91,7 @@ memory:
 - 在真实 adapter 实现前，外部 provider descriptor 不是 runtime 能力。
 - Secret-like memory 内容会被拒绝或脱敏。
 - Memory record 可以携带结构化 `MemoryRef`，例如 session turn、session entry、skill call 或 manual note。
+- 当 promotion、demotion、forget 或 skipped write 成为 runtime 行为时，应把 memory policy action 写入 `MemoryJournal`。
 - Relationship、task、project 和 knowledge memory 不应静默分叉到多个 provider。
 
 ## 失败处理
