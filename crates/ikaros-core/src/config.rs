@@ -37,6 +37,7 @@ impl IkarosConfig {
     pub fn write_default_config(path: &Path) -> Result<()> {
         let raw = r#"# Ikaros local runtime configuration.
 # This file belongs under IKAROS_HOME and may contain plaintext local credentials.
+# Start by filling the three empty values below: api_key, base_url, and model.
 
 providers:
   model:
@@ -45,24 +46,55 @@ providers:
     # Base URL for the default chat/completion provider.
     # Example: https://api.example.com/v1.
     base_url: ""
-  embedding:
-    # API key for the remote embedding provider.
-    api_key: ""
-    # Base URL for the remote embedding provider.
-    # Use the same provider base URL as embeddings support, or a separate embedding service URL.
-    base_url: ""
-  tts:
-    # API key for the remote text-to-speech provider.
-    api_key: ""
-    # Base URL for the remote text-to-speech provider.
-    # Use the same provider base URL as TTS support, or a separate speech service URL.
-    base_url: ""
-  asr:
-    # API key for the remote speech-to-text provider.
-    api_key: ""
-    # Base URL for the remote speech-to-text provider.
-    # Use the same provider base URL as ASR support, or a separate speech service URL.
-    base_url: ""
+
+model:
+  default:
+    # Model identifier sent to the provider.
+    model: ""
+    # Provider family: openai-compatible, anthropic, ollama, or mock for tests only.
+    provider: openai-compatible
+    # Agent runtime implementation that owns the turn loop.
+    runtime: harness-agent-loop
+    # Wire protocol used by the provider adapter.
+    transport: openai-compatible-chat-completions
+    # Provider compatibility profile: auto, generic, moonshot-kimi, deepseek,
+    # gemini-openai, openrouter, qwen, or local-openai-compatible.
+    # auto prefers base_url detection, then model-name hints, then generic.
+    compat_profile: auto
+    params:
+      # Maximum output tokens. null means the adapter/profile may choose a provider default.
+      max_tokens: null
+      # Sampling temperature. null means do not send temperature unless a profile requires it.
+      temperature: null
+      # Optional nucleus sampling value. null means do not send top_p.
+      top_p: null
+      # Number of completions to request when supported. null means provider default.
+      n: null
+      # OpenAI-compatible presence penalty. null means provider default.
+      presence_penalty: null
+      # OpenAI-compatible frequency penalty. null means provider default.
+      frequency_penalty: null
+      # Optional deterministic seed when the provider supports it.
+      seed: null
+      # Stop sequences sent to providers that support OpenAI-compatible stop.
+      stop: []
+    reasoning:
+      # true enables provider-native thinking/reasoning when the profile supports it.
+      # false asks the profile to disable it. null leaves the profile default.
+      enabled: null
+      # Reasoning effort: none, minimal, low, medium, high, xhigh, or max.
+      effort: null
+    # Extra JSON object merged into the final provider request body by the adapter.
+    # Put provider-specific non-secret knobs here; secret-like values are redacted in logs.
+    extra_body: {}
+    # Request timeout in milliseconds.
+    timeout_ms: 30000
+    # Provider retry count after the first failed attempt.
+    max_retries: 0
+    # Optional per-minute request budget for model calls.
+    rate_limit_per_minute: 60
+    # Optional daily token budget recorded by the usage ledger.
+    daily_token_budget: 100000
 
 agent:
   # Default agent profile used when no agent or instance is selected explicitly.
@@ -136,55 +168,6 @@ agent:
   #     route_bindings:
   #       - channel: cli
 
-model:
-  default:
-    # Provider family: openai-compatible, anthropic, ollama, or mock for tests only.
-    provider: openai-compatible
-    # Agent runtime implementation that owns the turn loop.
-    runtime: harness-agent-loop
-    # Wire protocol used by the provider adapter.
-    transport: openai-compatible-chat-completions
-    # Model identifier sent to the provider.
-    model: ""
-    # Provider compatibility profile: auto, generic, moonshot-kimi, deepseek,
-    # gemini-openai, openrouter, qwen, or local-openai-compatible.
-    # auto prefers base_url detection, then model-name hints, then generic.
-    compat_profile: auto
-    params:
-      # Maximum output tokens. null means the adapter/profile may choose a provider default.
-      max_tokens: null
-      # Sampling temperature. null means do not send temperature unless a profile requires it.
-      temperature: null
-      # Optional nucleus sampling value. null means do not send top_p.
-      top_p: null
-      # Number of completions to request when supported. null means provider default.
-      n: null
-      # OpenAI-compatible presence penalty. null means provider default.
-      presence_penalty: null
-      # OpenAI-compatible frequency penalty. null means provider default.
-      frequency_penalty: null
-      # Optional deterministic seed when the provider supports it.
-      seed: null
-      # Stop sequences sent to providers that support OpenAI-compatible stop.
-      stop: []
-    reasoning:
-      # true enables provider-native thinking/reasoning when the profile supports it.
-      # false asks the profile to disable it. null leaves the profile default.
-      enabled: null
-      # Reasoning effort: none, minimal, low, medium, high, xhigh, or max.
-      effort: null
-    # Extra JSON object merged into the final provider request body by the adapter.
-    # Put provider-specific non-secret knobs here; secret-like values are redacted in logs.
-    extra_body: {}
-    # Request timeout in milliseconds.
-    timeout_ms: 30000
-    # Provider retry count after the first failed attempt.
-    max_retries: 0
-    # Optional per-minute request budget for model calls.
-    rate_limit_per_minute: 60
-    # Optional daily token budget recorded by the usage ledger.
-    daily_token_budget: 100000
-
 policy:
   # Default workspace write policy used when a profile does not override it.
   workspace_writes: ask
@@ -212,7 +195,7 @@ rag:
   # Local RAG index backend: jsonl or sqlite.
   backend: jsonl
   # Embedding provider: hash, sparse, mock, or openai-compatible.
-  embedding_provider: openai-compatible
+  embedding_provider: hash
   # Embedding model name sent to the provider.
   embedding_model: ""
   # Embedding request timeout in milliseconds.
@@ -223,9 +206,9 @@ rag:
 voice:
   tts:
     # Text-to-speech provider: mock or openai-compatible.
-    provider: openai-compatible
+    provider: mock
     # TTS model name sent to the provider.
-    model: ""
+    model: mock-tts
     # TTS request timeout in milliseconds.
     timeout_ms: 30000
     # Provider retry count for TTS calls.
@@ -234,9 +217,9 @@ voice:
     voice: default
   asr:
     # Speech-to-text provider: mock or openai-compatible.
-    provider: openai-compatible
+    provider: mock
     # ASR model name sent to the provider.
-    model: ""
+    model: mock-asr
     # ASR request timeout in milliseconds.
     timeout_ms: 30000
     # Provider retry count for ASR calls.
@@ -323,10 +306,27 @@ providers:
         assert_eq!(config.model.default.provider, "openai-compatible");
         assert!(config.providers.model.api_key.is_empty());
         assert!(config.providers.model.base_url.is_empty());
-        assert_eq!(config.rag.embedding_provider, "openai-compatible");
+        assert_eq!(config.rag.embedding_provider, "hash");
         assert!(config.providers.embedding.base_url.is_empty());
-        assert_eq!(config.voice.tts.provider, "openai-compatible");
+        assert_eq!(config.voice.tts.provider, "mock");
         assert!(config.providers.tts.base_url.is_empty());
+    }
+
+    #[test]
+    fn generated_default_config_keeps_initial_model_settings_near_top() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("config.yaml");
+        IkarosConfig::write_default_config(&path).expect("write");
+
+        let raw = fs::read_to_string(&path).expect("read generated config");
+        let lines = raw.lines().collect::<Vec<_>>();
+        let api_key_line = line_number(&lines, "    api_key: \"\"");
+        let base_url_line = line_number(&lines, "    base_url: \"\"");
+        let model_line = line_number(&lines, "    model: \"\"");
+
+        assert!(api_key_line <= 8, "api_key should be near top");
+        assert_eq!(base_url_line, api_key_line + 3);
+        assert_eq!(model_line, base_url_line + 5);
     }
 
     #[test]
@@ -602,6 +602,14 @@ memory:
                 .any(|issue| issue.path == "memory.external_providers[0].enabled")
         );
     }
+
+    fn line_number(lines: &[&str], needle: &str) -> usize {
+        lines
+            .iter()
+            .position(|line| *line == needle)
+            .map(|index| index + 1)
+            .unwrap_or_else(|| panic!("missing generated config line: {needle}"))
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -738,7 +746,7 @@ impl Default for RagConfig {
     fn default() -> Self {
         Self {
             backend: "jsonl".into(),
-            embedding_provider: "openai-compatible".into(),
+            embedding_provider: "hash".into(),
             embedding_model: String::new(),
             embedding_timeout_ms: 30_000,
             embedding_max_retries: 0,
@@ -756,8 +764,8 @@ pub struct VoiceConfig {
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
-            tts: VoiceProviderConfig::remote_tts(),
-            asr: VoiceProviderConfig::remote_asr(),
+            tts: VoiceProviderConfig::mock_tts(),
+            asr: VoiceProviderConfig::mock_asr(),
         }
     }
 }

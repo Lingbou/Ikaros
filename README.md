@@ -4,7 +4,7 @@
 
 Ikaros is an early-stage, local-first agent runtime written in Rust. It is built around a clear separation between persona, memory, RAG, model providers, tool execution, policy approvals, and audit logs.
 
-The project is currently a pre-MVP local runtime for development and experimentation. It is not yet a stable product or API surface. The generated configuration uses local storage and protocol-level provider settings; remote model, embedding, TTS, and ASR calls fail early until `api_key`, `base_url`, and `model` are filled in locally.
+The project is currently a pre-MVP local runtime for development and experimentation. It is not yet a stable product or API surface. The generated configuration uses local storage, a remote chat model provider stub, local hash embeddings, and mock voice providers; remote provider calls fail early until their `api_key`, `base_url`, and `model` are filled in locally.
 
 ## What It Does
 
@@ -75,20 +75,16 @@ rag:
   embedding_provider: hash
 ```
 
-Real API keys must not be written into this repository. Configure remote providers in `~/.ikaros/config.yaml` or another `IKAROS_HOME/config.yaml`. The generated file puts plaintext third-party provider settings at the top:
+Real API keys must not be written into this repository. Configure remote providers in `~/.ikaros/config.yaml` or another `IKAROS_HOME/config.yaml`. The generated file keeps the three initial chat model settings near the top:
 
 ```yaml
 providers:
   model:
     api_key: "replace-with-your-model-key"
     base_url: "https://api.example.com/v1"
-  embedding:
-    api_key: "replace-with-your-embedding-key"
-    base_url: "https://api.example.com/v1"
 
 model:
   default:
-    provider: openai-compatible
     model: provider-model-id
 ```
 

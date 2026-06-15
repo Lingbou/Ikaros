@@ -13,22 +13,17 @@ ikaros --ikaros-home /tmp/ikaros-dev doctor
 
 不要把真实 API key 放进文档、测试、示例或 tracked 文件。本地未跟踪的 `IKAROS_HOME/config.yaml` 可以直接保存第三方 API key，用于普通运行和 smoke test。
 
-`ikaros init` 生成的配置把外部资源设置放在文件最上方。每个远程 API provider 都有 `api_key` 和 `base_url`；模型名称放在真正发请求的功能段落里。
+`ikaros init` 生成的配置会把初期聊天模型设置放在文件顶部附近。普通远程模型使用先填这三个值：
 
 ```yaml
 providers:
   model:
     api_key: ""
     base_url: ""
-  embedding:
-    api_key: ""
-    base_url: ""
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
-    api_key: ""
-    base_url: ""
+
+model:
+  default:
+    model: ""
 ```
 
 `providers.*` 是 schema-only 的凭证和 endpoint 区域。它不会被合并进 `model.default`、`rag` 或 `voice` 结构；runtime 会把对应的 provider 设置和选择 provider family、transport、model、timeout、budget 的功能配置一起传给 model、embedding、TTS、ASR factory。

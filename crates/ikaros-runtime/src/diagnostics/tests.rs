@@ -38,7 +38,7 @@ fn doctor_report_uses_protocol_defaults_without_remote_credentials() {
     assert_eq!(report.memory.backend, "jsonl");
     assert_eq!(report.memory_providers.active_local.id, "local-jsonl");
     assert!(report.memory_providers.external.is_empty());
-    assert_eq!(report.rag.embedding_provider, "openai-compatible");
+    assert_eq!(report.rag.embedding_provider, "hash");
     assert_eq!(report.rag.embedding_model, "");
     assert!(!report.rag.embedding_api_key_configured);
     assert!(report.skills.iter().any(|name| name == "memory_search"));
