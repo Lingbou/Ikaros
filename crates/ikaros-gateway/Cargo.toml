@@ -8,6 +8,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fs2.workspace = true
 ikaros-core = { path = "../ikaros-core" }
 ring = "0.17.14"
 serde.workspace = true
