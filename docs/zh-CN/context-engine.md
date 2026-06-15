@@ -56,7 +56,11 @@ Estimator 会根据 provider profile 的 tokenizer kind 选择。当前 adapter 
 - memory：20%
 - RAG：15%
 
-`TrajectoryCompressor` 应用这套 quota policy，并记录被压缩 section 的确定性省略摘要。这些摘要用于解释哪些内容没有进入本轮 context，还不是模型生成的语义总结。正常行为不再依赖单行 `[truncated]` 截断。持久化 chat turn 发生 context compaction 时，runtime 会同时写入 `ContextCompacted` event 和 `SessionEntryKind::Compaction` entry。Assistant message 会挂在 compaction entry 后面，保留 session tree 的事实链。
+`TrajectoryCompressor` 应用这套 quota policy，并记录被压缩 section 的确定性省略摘要。这些摘要用于解释哪些内容没有进入本轮 context，还不是模型生成的语义总结。正常行为不再依赖单行 `[truncated]` 截断。
+
+Relationship 事实和显式本地 reference 是 protected boundary。普通 quota pass 可以围绕它们压缩 history、memory 和 RAG，但不能静默丢掉这些受保护 section。如果 protected context 本身已经超过 effective budget，assembly 会返回结构化 context-limit 错误，而不是发出一个看起来可用但实际缺上下文的 prompt。
+
+发生 context compaction 时，compressor 还会生成 continuation prompt，明确告诉模型哪些 section 被压缩，以及不能编造被省略的细节。持久化 chat turn 会同时写入 `ContextCompacted` event 和 `SessionEntryKind::Compaction` entry。Assistant message 会挂在 compaction entry 后面，保留 session tree 的事实链。
 
 ## Reference
 

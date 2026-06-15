@@ -32,6 +32,7 @@ ikaros chat --history-search "query"
 Chat message 可以包含本地 context reference，例如 `@file:path:line-line`、`@folder:path`、`@git:rev`、`@diff` 和 `@staged`。这些 reference 会在当前 workspace 下解析，并写入 session context diff。`@url:` 只解析，不抓取。
 
 `--context-token-budget 0` 表示让 runtime chat 使用 provider 推导出来的可用 context window，不表示可以绕过模型上下文窗口。
+持久化的 context diff 会记录本轮选择的 token estimator adapter，例如 OpenAI-compatible、mock，或 Anthropic/Ollama 的显式 fallback。
 
 记忆和关系笔记：
 

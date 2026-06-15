@@ -25,6 +25,21 @@ impl Default for ContextQuotaPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextProtectionPolicy {
+    pub relationship: bool,
+    pub references: bool,
+}
+
+impl Default for ContextProtectionPolicy {
+    fn default() -> Self {
+        Self {
+            relationship: true,
+            references: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextCompressedSection {
     pub section: ContextSectionKind,
     pub omitted_lines: usize,
@@ -42,11 +57,46 @@ pub struct PriorityContextReport {
 #[derive(Debug, Clone, Default)]
 pub struct PriorityContextEngine {
     policy: ContextQuotaPolicy,
+    protection: ContextProtectionPolicy,
 }
 
 impl PriorityContextEngine {
     pub fn new(policy: ContextQuotaPolicy) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            protection: ContextProtectionPolicy::default(),
+        }
+    }
+
+    pub fn with_protection(mut self, protection: ContextProtectionPolicy) -> Self {
+        self.protection = protection;
+        self
+    }
+
+    pub fn protected_sections(&self) -> Vec<ContextSectionKind> {
+        let mut sections = Vec::new();
+        if self.protection.relationship {
+            sections.push(ContextSectionKind::Relationship);
+        }
+        if self.protection.references {
+            sections.push(ContextSectionKind::References);
+        }
+        sections
+    }
+
+    pub fn protected_token_count(
+        &self,
+        context: &ChatContext,
+        estimator: &dyn TokenEstimator,
+    ) -> usize {
+        let mut tokens = 0usize;
+        if self.protection.relationship {
+            tokens += section_token_count(&context.relationship, estimator);
+        }
+        if self.protection.references {
+            tokens += section_token_count(&context.references, estimator);
+        }
+        tokens
     }
 
     pub fn apply(
@@ -62,39 +112,51 @@ impl PriorityContextEngine {
             };
         }
 
+        let protected_tokens = self.protected_token_count(&context, estimator);
+        let available = budget.saturating_sub(protected_tokens);
+        let allocations = ContextBudgetAllocation::new(available, &self.policy, &self.protection);
+
         let mut compressed_sections = Vec::new();
-        let relationship = budget_section(
-            ContextSectionKind::Relationship,
-            context.relationship,
-            quota_tokens(budget, self.policy.relationship),
-            estimator,
-            &mut compressed_sections,
-        );
-        let references = budget_section(
-            ContextSectionKind::References,
-            context.references,
-            quota_tokens(budget, self.policy.references),
-            estimator,
-            &mut compressed_sections,
-        );
+        let relationship = if self.protection.relationship {
+            context.relationship
+        } else {
+            budget_section(
+                ContextSectionKind::Relationship,
+                context.relationship,
+                allocations.relationship,
+                estimator,
+                &mut compressed_sections,
+            )
+        };
+        let references = if self.protection.references {
+            context.references
+        } else {
+            budget_section(
+                ContextSectionKind::References,
+                context.references,
+                allocations.references,
+                estimator,
+                &mut compressed_sections,
+            )
+        };
         let history = budget_section(
             ContextSectionKind::History,
             context.history,
-            quota_tokens(budget, self.policy.history),
+            allocations.history,
             estimator,
             &mut compressed_sections,
         );
         let memory = budget_section(
             ContextSectionKind::Memory,
             context.memory,
-            quota_tokens(budget, self.policy.memory),
+            allocations.memory,
             estimator,
             &mut compressed_sections,
         );
         let rag = budget_section(
             ContextSectionKind::Rag,
             context.rag,
-            quota_tokens(budget, self.policy.rag),
+            allocations.rag,
             estimator,
             &mut compressed_sections,
         );
@@ -106,7 +168,7 @@ impl PriorityContextEngine {
             memory,
             rag,
         };
-        enforce_total_budget(&mut context, budget, estimator);
+        enforce_total_budget(&mut context, budget, estimator, &self.protection);
 
         PriorityContextReport {
             context,
@@ -115,9 +177,61 @@ impl PriorityContextEngine {
     }
 }
 
-fn quota_tokens(budget: usize, percent: u8) -> usize {
-    let tokens = budget.saturating_mul(percent as usize) / 100;
-    tokens.max(1)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ContextBudgetAllocation {
+    relationship: usize,
+    references: usize,
+    history: usize,
+    memory: usize,
+    rag: usize,
+}
+
+impl ContextBudgetAllocation {
+    fn new(
+        available: usize,
+        policy: &ContextQuotaPolicy,
+        protection: &ContextProtectionPolicy,
+    ) -> Self {
+        let weights = [
+            (!protection.relationship).then_some(policy.relationship),
+            (!protection.references).then_some(policy.references),
+            Some(policy.history),
+            Some(policy.memory),
+            Some(policy.rag),
+        ];
+        let total_weight = weights
+            .into_iter()
+            .flatten()
+            .map(usize::from)
+            .sum::<usize>();
+        if available == 0 || total_weight == 0 {
+            return Self::default();
+        }
+
+        let mut remaining_budget = available;
+        let mut remaining_weight = total_weight;
+        let mut next = |weight: Option<u8>| {
+            let Some(weight) = weight else {
+                return 0;
+            };
+            if remaining_weight == 0 {
+                return 0;
+            }
+            let weight = usize::from(weight);
+            let tokens = remaining_budget.saturating_mul(weight) / remaining_weight;
+            remaining_budget = remaining_budget.saturating_sub(tokens);
+            remaining_weight = remaining_weight.saturating_sub(weight);
+            tokens
+        };
+
+        Self {
+            relationship: next((!protection.relationship).then_some(policy.relationship)),
+            references: next((!protection.references).then_some(policy.references)),
+            history: next(Some(policy.history)),
+            memory: next(Some(policy.memory)),
+            rag: next(Some(policy.rag)),
+        }
+    }
 }
 
 fn budget_section(
@@ -164,7 +278,12 @@ fn budget_section(
     kept
 }
 
-fn enforce_total_budget(context: &mut ChatContext, budget: usize, estimator: &dyn TokenEstimator) {
+fn enforce_total_budget(
+    context: &mut ChatContext,
+    budget: usize,
+    estimator: &dyn TokenEstimator,
+    protection: &ContextProtectionPolicy,
+) {
     if budget == 0 {
         return;
     }
@@ -178,14 +297,21 @@ fn enforce_total_budget(context: &mut ChatContext, budget: usize, estimator: &dy
         if context.history.pop().is_some() {
             continue;
         }
-        if context.references.pop().is_some() {
+        if !protection.references && context.references.pop().is_some() {
             continue;
         }
-        if context.relationship.pop().is_some() {
+        if !protection.relationship && context.relationship.pop().is_some() {
             continue;
         }
         break;
     }
+}
+
+fn section_token_count(lines: &[String], estimator: &dyn TokenEstimator) -> usize {
+    lines
+        .iter()
+        .map(|line| estimator.estimate_tokens(line))
+        .sum()
 }
 
 fn section_summary(

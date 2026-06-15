@@ -63,6 +63,8 @@ pub struct CompactReport {
     pub compressed_sections: Vec<ContextCompressedSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,8 +94,9 @@ pub trait ContextEngine: Send + Sync {
         Box::pin(async move {
             let estimator = input.tokenizer.estimator();
             let before = input.context;
-            let compressed =
-                TrajectoryCompressor::default().compress(before.clone(), input.budget, &estimator);
+            let compressed = TrajectoryCompressor::default()
+                .compress(before.clone(), input.budget, &estimator)
+                .map_err(|error| IkarosError::Message(error.to_string()))?;
             Ok(CompactReport {
                 before_tokens: compressed.before_tokens,
                 after_tokens: compressed.after_tokens,
@@ -102,6 +105,7 @@ pub trait ContextEngine: Send + Sync {
                 budget: compressed.budget,
                 compressed_sections: compressed.compressed_sections,
                 summary: compressed.summary,
+                continuation_prompt: compressed.continuation_prompt,
             })
         })
     }
@@ -180,6 +184,7 @@ impl ContextEngine for LocalChatContextEngine {
             bundle.diff = compacted.diff;
             bundle.compressed_sections = compacted.compressed_sections;
             bundle.compression_summary = compacted.summary;
+            bundle.continuation_prompt = compacted.continuation_prompt;
             Ok(bundle)
         })
     }

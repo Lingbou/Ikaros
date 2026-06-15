@@ -102,6 +102,9 @@ fn chat_system_prompt_uses_context_and_redacts() {
         .chat_history_context(vec!["Earlier user asked for a quiet status".into()])
         .memory_context(vec!["Memory sk-not-real".into()])
         .rag_context(vec!["RAG safe citation".into()])
+        .context_continuation_prompt(Some(
+            "Compacted sections: history. Do not invent omitted details.".into(),
+        ))
         .build();
     let prompt = render_chat_system_prompt(&context);
     assert!(prompt.contains("Local relationship context"));
@@ -113,6 +116,8 @@ fn chat_system_prompt_uses_context_and_redacts() {
     assert!(prompt.contains("Local memory context"));
     assert!(prompt.contains("Local RAG context"));
     assert!(prompt.contains("RAG safe citation"));
+    assert!(prompt.contains("Context compression notice"));
+    assert!(prompt.contains("Compacted sections: history"));
     assert!(!prompt.contains("abc123"));
     assert!(!prompt.contains("sk-not-real"));
     assert!(prompt.contains("[REDACTED_SECRET]"));
@@ -846,14 +851,17 @@ async fn tiny_context_window_persists_compaction_entry_and_event() {
     let workspace = temp.path().join("workspace");
     let audit = temp.path().join("audit");
     fs::create_dir_all(&workspace).expect("workspace");
-    fs::write(
-        workspace.join("notes.md"),
-        (0..24)
-            .map(|index| format!("reference line {index} with enough words to exceed budget"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .expect("reference");
+    let history_store = ChatHistoryStore::new_with_backend(temp.path(), "jsonl").expect("history");
+    for index in 0..18 {
+        history_store
+            .append(&chat_history_record(
+                "tiny-context-session",
+                &format!(
+                    "older turn {index} with enough repeated words to exceed the tiny context window"
+                ),
+            ))
+            .expect("append history");
+    }
     let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
     let registry = ikaros_harness::SkillRegistry::new();
     let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
@@ -871,7 +879,7 @@ async fn tiny_context_window_persists_compaction_entry_and_event() {
         .with_workspace(&workspace);
 
     run_chat_turn_with_events(
-        "summarize @file:notes.md",
+        "summarize the previous discussion",
         &persona,
         &TinyWindowProvider,
         &agent,
@@ -882,6 +890,10 @@ async fn tiny_context_window_persists_compaction_entry_and_event() {
                 agent_loop: false,
                 relationship_learning: false,
                 session_id: Some("tiny-context-session".into()),
+                chat_history_path: Some(history_store.path().to_path_buf()),
+                chat_history_backend: Some(history_store.backend_name().into()),
+                history_context_limit: 18,
+                history_summary_limit: 0,
                 ..ChatRunOptions::default()
             },
             event_sink: &sink,
@@ -904,12 +916,92 @@ async fn tiny_context_window_persists_compaction_entry_and_event() {
             .iter()
             .any(|entry| entry.kind == SessionEntryKind::Compaction)
     );
+    let compaction_entry = replay
+        .entries
+        .iter()
+        .find(|entry| entry.kind == SessionEntryKind::Compaction)
+        .expect("compaction entry");
+    assert!(
+        compaction_entry.payload["continuation_prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("do not invent omitted details"))
+    );
     assert!(
         replay
             .agent_events
             .iter()
             .any(|event| matches!(event.kind, AgentEventKind::ContextCompacted))
     );
+    let compaction_event = replay
+        .agent_events
+        .iter()
+        .find(|event| matches!(event.kind, AgentEventKind::ContextCompacted))
+        .expect("compaction event");
+    assert!(
+        compaction_event.payload["continuation_prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("Compacted sections"))
+    );
+}
+
+#[tokio::test]
+async fn oversized_explicit_reference_fails_context_assembly() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("huge.md"),
+        (0..48)
+            .map(|index| {
+                format!(
+                    "protected reference line {index} must not be silently removed from context"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("reference");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let session_store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(temp.path()));
+    let sink = PersistingAgentTurnSink::new(session_store)
+        .with_source(SessionSource::Cli)
+        .with_agent_id("plan")
+        .with_workspace(&workspace);
+
+    let error = run_chat_turn_with_events(
+        "summarize @file:huge.md",
+        &persona,
+        &TinyWindowProvider,
+        &agent,
+        &execution,
+        &registry,
+        ChatTurnEventOptions {
+            options: &ChatRunOptions {
+                agent_loop: false,
+                relationship_learning: false,
+                session_id: Some("huge-reference-session".into()),
+                ..ChatRunOptions::default()
+            },
+            event_sink: &sink,
+            session_sink: Some(&sink),
+            parent_entry_id: None,
+            turn_id: None,
+        },
+    )
+    .await
+    .expect_err("oversized protected reference should fail");
+
+    assert!(error.to_string().contains("context limit exceeded"));
 }
 
 #[tokio::test]

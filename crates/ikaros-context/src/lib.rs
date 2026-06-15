@@ -18,7 +18,8 @@ pub use compressor::{ContextCompressionReport, TrajectoryCompressor};
 pub use diff::diff_chat_context;
 pub use error::{ContextError, ContextResult};
 pub use priority::{
-    ContextCompressedSection, ContextQuotaPolicy, PriorityContextEngine, PriorityContextReport,
+    ContextCompressedSection, ContextProtectionPolicy, ContextQuotaPolicy, PriorityContextEngine,
+    PriorityContextReport,
 };
 pub use references::{
     ensure_workspace_child, parse_context_references, resolve_context_reference,
@@ -26,8 +27,9 @@ pub use references::{
 };
 pub use tokenizer::{ContextTokenEstimator, ContextTokenizerKind};
 pub use types::{
-    ChatContext, ContextBudget, ContextBundle, ContextDiff, ContextDiffItem, ContextReference,
-    ContextReferenceKind, ContextSection, ContextSectionKind, ResolvedContextReference,
+    ChatContext, ContextBudget, ContextBundle, ContextDiff, ContextDiffItem, ContextLimitReport,
+    ContextReference, ContextReferenceKind, ContextSection, ContextSectionKind,
+    ResolvedContextReference,
 };
 
 pub const DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET: usize = 2_000;

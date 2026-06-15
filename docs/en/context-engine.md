@@ -80,10 +80,19 @@ debug callers can see which accounting path shaped the turn.
 `TrajectoryCompressor` applies that quota policy and records deterministic
 omission summaries for compressed sections. These summaries explain what was
 left out; they are not model-generated semantic summaries yet. It does not rely
-on single-line truncation as the normal behavior. When context is compacted
-during a persisted chat turn, runtime writes both a `ContextCompacted` event and
-a `SessionEntryKind::Compaction` entry. The assistant message is attached after
-the compaction entry in the session tree.
+on single-line truncation as the normal behavior.
+
+Relationship facts and explicit local references are protected boundaries. The
+ordinary quota pass may compact history, memory, and RAG around them, but it
+does not silently drop those protected sections. If protected context alone
+cannot fit the effective budget, assembly fails with a structured context-limit
+error instead of sending a misleading partial prompt.
+
+When context is compacted, the compressor also emits a continuation prompt that
+tells the model which sections were compacted and that omitted details must not
+be invented. During a persisted chat turn, runtime writes both a
+`ContextCompacted` event and a `SessionEntryKind::Compaction` entry. The
+assistant message is attached after the compaction entry in the session tree.
 
 ## References
 

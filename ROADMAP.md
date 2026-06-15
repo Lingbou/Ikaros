@@ -42,9 +42,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Keep `ModelContextProfile` wired into context budgeting and estimator
   selection. Extend the current deterministic adapters with exact
   provider-native tokenizer libraries once the provider registry exists.
-- Harden quota-based context assembly with protected sections, feasibility
-  checks, continuation prompts, and replay/debug commands before increasing
-  long-running session scope.
+- Extend quota-based context assembly with dynamic priority, semantic
+  compression, replay/debug commands, and stricter long-running session
+  diagnostics.
 - Keep relationship data as `MemoryKind::Relationship`, not as a second memory
   database.
 - Keep `NoopMemoryProvider` explicit; memory lifecycle hooks should not hide

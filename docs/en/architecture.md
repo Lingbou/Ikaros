@@ -148,6 +148,9 @@ State ownership:
 - Context assembly emits a `ContextDiff` agent event for the turn. The payload
   includes the budget, sections, parsed references, and added/removed/compressed
   token estimates.
+- Context compaction protects relationship facts and explicit references. If
+  protected context cannot fit the model-derived budget, the turn fails with a
+  context-limit error instead of silently dropping the requested context.
 - `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks. The trait does not hide default noop methods; callers that need no memory side effect must choose `NoopMemoryProvider` explicitly.
 - `MemoryScore`, `MemoryPolicy`, and `MemoryJournal` belong to `ikaros-memory`.
   Runtime policy actions should be journaled there when promotion, demotion, or

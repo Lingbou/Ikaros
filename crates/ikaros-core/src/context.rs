@@ -12,6 +12,8 @@ pub struct RuntimeContext {
     pub chat_history_context: Vec<String>,
     pub memory_context: Vec<String>,
     pub rag_context: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_continuation_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -23,6 +25,7 @@ pub struct ContextBuilder {
     chat_history_context: Vec<String>,
     memory_context: Vec<String>,
     rag_context: Vec<String>,
+    context_continuation_prompt: Option<String>,
 }
 
 impl ContextBuilder {
@@ -65,6 +68,11 @@ impl ContextBuilder {
         self
     }
 
+    pub fn context_continuation_prompt(mut self, prompt: Option<String>) -> Self {
+        self.context_continuation_prompt = prompt;
+        self
+    }
+
     pub fn build(self) -> RuntimeContext {
         RuntimeContext {
             task: self.task,
@@ -74,6 +82,7 @@ impl ContextBuilder {
             chat_history_context: self.chat_history_context,
             memory_context: self.memory_context,
             rag_context: self.rag_context,
+            context_continuation_prompt: self.context_continuation_prompt,
         }
     }
 }

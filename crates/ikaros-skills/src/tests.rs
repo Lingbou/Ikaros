@@ -467,7 +467,7 @@ async fn command_backed_plugin_rejects_oversized_output() {
     fs::create_dir_all(&plugin_dir).expect("plugin dir");
     let program = write_plugin_runner(
         &plugin_dir,
-        "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 70000 ]; do printf x; i=$((i + 1)); done\n",
+        "#!/bin/sh\nprintf '%070000d' 0 | tr 0 x\n",
         "@echo off\r\nfor /L %%i in (1,1,70000) do @echo x\r\n",
     );
     fs::write(

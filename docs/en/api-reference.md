@@ -36,6 +36,8 @@ resolved under the current workspace and recorded in the session context diff.
 
 `--context-token-budget 0` asks runtime chat to use the provider-derived
 available context window. It does not bypass the model context window.
+The persisted context diff records the selected token estimator adapter, such as
+OpenAI-compatible, mock, or an explicit Anthropic/Ollama fallback.
 
 Memory and relationship notes:
 

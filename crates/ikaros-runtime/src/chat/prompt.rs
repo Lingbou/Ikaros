@@ -46,8 +46,13 @@ pub fn render_chat_system_prompt(context: &RuntimeContext) -> String {
     } else {
         context.rag_context.join("\n")
     };
+    let compression_notice = context
+        .context_continuation_prompt
+        .as_ref()
+        .map(|prompt| format!("\n\nContext compression notice:\n{prompt}"))
+        .unwrap_or_default();
     redact_secrets(&format!(
-        "{}\n\nLocal relationship context:\n{}\n\nLocal reference context:\n{}\n\nLocal chat history context:\n{}\n\nLocal memory context:\n{}\n\nLocal RAG context:\n{}\n\nUse local context when relevant. Do not reveal secrets. Tool use and writes must remain behind the harness.",
-        context.persona_context, relationship, references, history, memory, rag
+        "{}\n\nLocal relationship context:\n{}\n\nLocal reference context:\n{}\n\nLocal chat history context:\n{}\n\nLocal memory context:\n{}\n\nLocal RAG context:\n{}{}\n\nUse local context when relevant. Do not reveal secrets. Tool use and writes must remain behind the harness.",
+        context.persona_context, relationship, references, history, memory, rag, compression_notice
     ))
 }

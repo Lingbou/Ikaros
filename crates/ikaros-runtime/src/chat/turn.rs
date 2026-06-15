@@ -355,6 +355,7 @@ pub async fn run_chat_turn_with_events(
             "diff": &context_bundle.diff,
             "compressed_sections": &context_bundle.compressed_sections,
             "compression_summary": &context_bundle.compression_summary,
+            "continuation_prompt": &context_bundle.continuation_prompt,
             "references": &context_bundle.references,
             "sections": &context_bundle.sections,
         }),
@@ -377,6 +378,7 @@ pub async fn run_chat_turn_with_events(
             AgentEventKind::ContextCompacted,
             json!({
                 "summary": &context_bundle.compression_summary,
+                "continuation_prompt": &context_bundle.continuation_prompt,
                 "compressed_sections": &context_bundle.compressed_sections,
                 "budget": &context_bundle.budget,
             }),
@@ -389,6 +391,7 @@ pub async fn run_chat_turn_with_events(
         .chat_history_context(chat_context.history.clone())
         .memory_context(chat_context.memory.clone())
         .rag_context(chat_context.rag.clone())
+        .context_continuation_prompt(context_bundle.continuation_prompt.clone())
         .build();
     let system_prompt = render_chat_system_prompt(&runtime_context);
     if let Err(error) = session.audit.append(AuditEvent::new(
@@ -831,6 +834,7 @@ fn append_context_compaction_session_entry(
     entry.payload = json!({
         "operation": "context_compaction",
         "summary": summary,
+        "continuation_prompt": &bundle.continuation_prompt,
         "budget": &bundle.budget,
         "diff": &bundle.diff,
         "compressed_sections": &bundle.compressed_sections,

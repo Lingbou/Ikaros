@@ -71,6 +71,8 @@ pub struct ContextBundle {
     pub compressed_sections: Vec<ContextCompressedSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<ContextReference>,
 }
@@ -92,6 +94,7 @@ impl ContextBundle {
             diff,
             compressed_sections: Vec::new(),
             compression_summary: None,
+            continuation_prompt: None,
             references,
         }
     }
@@ -216,6 +219,16 @@ pub struct ContextDiffItem {
     pub section: ContextSectionKind,
     pub tokens: usize,
     pub preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextLimitReport {
+    pub max_tokens: usize,
+    pub required_tokens: usize,
+    pub protected_tokens: usize,
+    pub estimator: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected_sections: Vec<ContextSectionKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
