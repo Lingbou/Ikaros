@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::types::ChatContext;
+use ikaros_context::{
+    ChatContext, HeuristicTokenEstimator, apply_context_token_budget, chat_context_token_count,
+};
 use ikaros_core::{RiskLevel, redact_secrets};
 use ikaros_harness::SkillRegistry;
 
@@ -60,65 +62,29 @@ pub fn extract_rag_context(output: &serde_json::Value, limit: usize) -> Vec<Stri
         .collect()
 }
 
-pub fn apply_context_char_budget(context: ChatContext, budget: usize) -> ChatContext {
-    if budget == 0 {
-        return context;
-    }
-    let mut remaining = budget;
+pub fn apply_chat_context_token_budget(context: ChatContext, budget: usize) -> ChatContext {
+    let estimator = HeuristicTokenEstimator;
+    apply_context_token_budget(redact_chat_context(context), budget, &estimator)
+}
+
+pub fn chat_context_token_count_with_default(context: &ChatContext) -> usize {
+    let estimator = HeuristicTokenEstimator;
+    chat_context_token_count(context, &estimator)
+}
+
+pub fn redact_chat_context(context: ChatContext) -> ChatContext {
     ChatContext {
-        relationship: budget_lines(context.relationship, &mut remaining),
-        history: budget_lines(context.history, &mut remaining),
-        memory: budget_lines(context.memory, &mut remaining),
-        rag: budget_lines(context.rag, &mut remaining),
+        relationship: redact_lines(context.relationship),
+        references: redact_lines(context.references),
+        history: redact_lines(context.history),
+        memory: redact_lines(context.memory),
+        rag: redact_lines(context.rag),
     }
 }
 
-pub fn chat_context_char_count(context: &ChatContext) -> usize {
-    context
-        .relationship
-        .iter()
-        .chain(context.history.iter())
-        .chain(context.memory.iter())
-        .chain(context.rag.iter())
-        .map(|line| line.chars().count())
-        .sum()
-}
-
-fn budget_lines(lines: Vec<String>, remaining: &mut usize) -> Vec<String> {
-    let mut kept = Vec::new();
-    for line in lines {
-        if *remaining == 0 {
-            break;
-        }
-        let line = redact_secrets(&line);
-        let line_chars = line.chars().count();
-        if line_chars <= *remaining {
-            *remaining -= line_chars;
-            kept.push(line);
-            continue;
-        }
-        if let Some(truncated) = truncate_to_budget(&line, *remaining) {
-            kept.push(truncated);
-        }
-        *remaining = 0;
-        break;
-    }
-    kept
-}
-
-fn truncate_to_budget(line: &str, budget: usize) -> Option<String> {
-    if budget == 0 {
-        return None;
-    }
-    let suffix = "... [truncated]";
-    let suffix_len = suffix.chars().count();
-    if budget <= suffix_len {
-        return Some(line.chars().take(budget).collect());
-    }
-    let mut output = line
-        .chars()
-        .take(budget.saturating_sub(suffix_len))
-        .collect::<String>();
-    output.push_str(suffix);
-    Some(output)
+fn redact_lines(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|line| redact_secrets(&line))
+        .collect()
 }

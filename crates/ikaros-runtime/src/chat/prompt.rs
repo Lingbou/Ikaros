@@ -26,6 +26,11 @@ pub fn render_chat_system_prompt(context: &RuntimeContext) -> String {
     } else {
         context.relationship_context.join("\n")
     };
+    let references = if context.reference_context.is_empty() {
+        "none".into()
+    } else {
+        context.reference_context.join("\n")
+    };
     let history = if context.chat_history_context.is_empty() {
         "none".into()
     } else {
@@ -42,7 +47,7 @@ pub fn render_chat_system_prompt(context: &RuntimeContext) -> String {
         context.rag_context.join("\n")
     };
     redact_secrets(&format!(
-        "{}\n\nLocal relationship context:\n{}\n\nLocal chat history context:\n{}\n\nLocal memory context:\n{}\n\nLocal RAG context:\n{}\n\nUse local context when relevant. Do not reveal secrets. Tool use and writes must remain behind the harness.",
-        context.persona_context, relationship, history, memory, rag
+        "{}\n\nLocal relationship context:\n{}\n\nLocal reference context:\n{}\n\nLocal chat history context:\n{}\n\nLocal memory context:\n{}\n\nLocal RAG context:\n{}\n\nUse local context when relevant. Do not reveal secrets. Tool use and writes must remain behind the harness.",
+        context.persona_context, relationship, references, history, memory, rag
     ))
 }

@@ -21,11 +21,14 @@ calling context, persistent state, or user-visible behavior changes.
 - Session store: the append-only session, turn, event, approval, and replay
   persistence boundary. The current implementation is local SQLite with FTS5
   and trigram indexes for session entry search.
+- Context bundle: the token-budgeted set of context sections used for a turn,
+  plus parsed references and a diff explaining what was added, removed, or
+  compressed.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
   session policy, auth scope, and route bindings.
-- Context source: history, memory, RAG, relationship, or persona data that may be
-  assembled into a model turn.
+- Context source: references, history, memory, RAG, relationship, or persona
+  data that may be assembled into a model turn.
 
 ## Crates
 
@@ -33,7 +36,9 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
   session entries, `SessionStore`, `SessionWriter`, SQLite `state.db`, and
   replay/search/branch reads.
-- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and `ContextEngine`.
+- `ikaros-context`: context bundles, sections, references, token budgets,
+  heuristic token estimation, and context diffs.
+- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and context orchestration.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
 - `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
 - `ikaros-rag`: local file ingestion, chunk storage, retrieval, and embedding providers.
@@ -128,8 +133,20 @@ State ownership:
   event, and a failed turn-end event for replay/debug callers.
 - `session_id` identifies persisted timelines. `task_id` is task/report
   metadata and must not be used as an implicit session fallback.
-- `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.
-- `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks.
+- Context primitives live in `ikaros-context`. Runtime chat assembles
+  relationship, explicit references, history, memory, and RAG into a
+  token-budgeted `ContextBundle`.
+- `ContextReference` currently parses and locally resolves safe references:
+  `@file:path:line-line`, `@folder:path`, `@git:rev`, `@diff`, and `@staged`.
+  Paths must stay under the workspace. `@url:` is parsed but not fetched until
+  network policy is wired into context assembly.
+- Context assembly emits a `ContextDiff` agent event for the turn. The payload
+  includes the budget, sections, parsed references, and added/removed/compressed
+  token estimates.
+- `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks. The trait does not hide default noop methods; callers that need no memory side effect must choose `NoopMemoryProvider` explicitly.
+- Relationship memory is `MemoryKind::Relationship` in `ikaros-memory`; the
+  relationship CLI is a convenience façade over the memory store, not a second
+  memory system.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.

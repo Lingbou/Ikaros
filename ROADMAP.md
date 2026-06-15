@@ -37,6 +37,16 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Context And Memory
 
 - Keep local-first memory and RAG as the default behavior.
+- Keep `ikaros-context` as the shared boundary for context bundles, references,
+  token budgets, and context diffs.
+- Replace heuristic token estimation with provider-aware tokenizer/context
+  window metadata once the provider registry exists.
+- Add quota-based context assembly and real compaction before increasing
+  long-running session scope.
+- Keep relationship data as `MemoryKind::Relationship`, not as a second memory
+  database.
+- Keep `NoopMemoryProvider` explicit; memory lifecycle hooks should not hide
+  default no-op behavior in the trait.
 - Define governed remote memory adapters behind the provider registry.
 - Require remote memory behavior to match local approval, audit, promotion, demotion, sync, and secret-handling rules.
 - Add dry-run reports for memory migration or synchronization.

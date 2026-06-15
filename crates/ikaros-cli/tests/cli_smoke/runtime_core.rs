@@ -24,7 +24,7 @@ fn init_doctor_chat_and_task_dry_run_work_with_explicit_offline_mock_config() {
         "--message",
         "hello smoke token=abc123",
         "--no-context",
-        "--context-char-budget",
+        "--context-token-budget",
         "64",
     ]);
     assert!(chat.contains("ok: true"));
@@ -49,7 +49,7 @@ fn init_doctor_chat_and_task_dry_run_work_with_explicit_offline_mock_config() {
         "--history-summary-limit",
         "2",
     ]);
-    assert!(chat_next.contains("context: relationship=0 history=1 memory=0 rag=0"));
+    assert!(chat_next.contains("context: relationship=0 references=0 history=1 memory=0 rag=0"));
 
     let history = env.run(["chat", "--history", "--history-limit", "2"]);
     assert!(history.contains("records: 2"));

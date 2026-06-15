@@ -11,7 +11,7 @@ Provider API 是生命周期边界，不只是数据库抽象。Runtime turn 可
 - 本地 JSONL
 - 本地 SQLite
 
-`LocalMemoryStore` 实现 `MemoryProvider`。外部 provider 记录目前只是 descriptor 元数据，可以描述后续集成，但不是当前 runtime 的可执行 provider。
+`LocalMemoryStore` 实现 `MemoryProvider`。`NoopMemoryProvider` 是显式 disabled 实现，供调用方明确表示不需要 memory side effect。外部 provider 记录目前只是 descriptor 元数据，可以描述后续集成，但不是当前 runtime 的可执行 provider。
 
 Registry state：
 
@@ -41,22 +41,22 @@ ikaros doctor
 - `session_switch`
 - `delegation_observation`
 
-本地 provider 当前对大多数 lifecycle hook 返回 noop report，`prefetch` 会走本地 search。Runtime chat turn 会在 turn start 和 turn end 触发 memory lifecycle。
+Trait 不再提供隐藏的默认 noop 方法。每个 provider 都必须实现全部 hook；确实不需要副作用时，调用方必须显式选择 `NoopMemoryProvider`。Runtime chat turn 会在 turn start 和 turn end 触发 memory lifecycle。
 
 Lifecycle context：
 
 - `turn_start`：在 context assembly 前接收 session id、agent id 和 user input。
 - `prefetch`：接收 `MemoryQuery` 以及可选 session/agent id；本地 provider 会映射为 search。
-- `sync_turn`：turn 结束后接收 session id、agent id、user input 和 assistant output。
+- `sync_turn`：turn 结束后接收 session id、agent id、user input 和 assistant output。本地 provider 会在内容可安全存储时写入脱敏后的 `Task` turn-summary record，并带上 `MemoryRef::SessionTurn`；如果发现脱敏 secret 标记，则报告 skipped write，而不是让 chat turn 失败。
 - `pre_compress`：接收 session id、agent id 和目标 context budget。
 - `session_switch`：接收 old/new session id 和 agent id。
 - `delegation_observation`：记录 parent/child agent id 和 delegated work summary。
 
-每个 lifecycle hook 返回 `MemoryLifecycleReport`，包含 phase、records-read、records-written 和 notes。Noop report 是合法结果，表示该 provider 在该阶段没有工作。
+每个 lifecycle hook 返回 `MemoryLifecycleReport`，包含 phase、records-read、records-written 和 notes。Noop report 只来自显式 provider 实现，不再是 trait fallback。
 
 ## Runtime Context
 
-Chat context assembly 通过 harness safe-read skill 使用 memory。Skill 用真实本地 query 执行，但写入脱敏 audit input，因此 audit log 不保存完整 prompt。Relationship memory 和普通 memory search 都是 context source，二者都不能绕过 policy。
+Chat context assembly 通过 harness safe-read skill 使用 memory。Skill 用真实本地 query 执行，但写入脱敏 audit input，因此 audit log 不保存完整 prompt。Relationship memory 是 `MemoryKind::Relationship`；普通 memory section 会排除这种 kind，因为它会单独渲染进 relationship section。两条路径都不能绕过 policy。
 
 `ContextEngine` 负责什么时候组装和压缩 memory；`MemoryProvider` 负责 provider-specific lifecycle side effect。两者职责应保持分离：context assembly 不应直接实现远程 memory sync，memory provider 也不应构造模型 prompt。
 
@@ -81,6 +81,7 @@ memory:
 - 外部 provider 配置不会自动替代本地 store。
 - 在真实 adapter 实现前，外部 provider descriptor 不是 runtime 能力。
 - Secret-like memory 内容会被拒绝或脱敏。
+- Memory record 可以携带结构化 `MemoryRef`，例如 session turn、session entry、skill call 或 manual note。
 - Relationship、task、project 和 knowledge memory 不应静默分叉到多个 provider。
 
 ## 失败处理

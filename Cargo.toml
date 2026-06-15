@@ -4,6 +4,7 @@ members = [
   "crates/ikaros-automation",
   "crates/ikaros-cli",
   "crates/ikaros-coding",
+  "crates/ikaros-context",
   "crates/ikaros-core",
   "crates/ikaros-gateway",
   "crates/ikaros-harness",

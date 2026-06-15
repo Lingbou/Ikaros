@@ -5,6 +5,7 @@ mod common;
 mod jsonl;
 mod local;
 mod provider;
+mod relationship;
 mod sqlite;
 mod types;
 
@@ -14,10 +15,13 @@ pub use provider::{
     MemoryDelegationObservation, MemoryLifecycleReport, MemoryPreCompressInput,
     MemoryPrefetchInput, MemoryProvider, MemoryProviderDescriptor, MemoryProviderKind,
     MemoryProviderRegistry, MemoryProviderState, MemorySessionSwitch, MemoryTurnRecord,
-    MemoryTurnStart,
+    MemoryTurnStart, NoopMemoryProvider,
+};
+pub use relationship::{
+    RelationshipMemoryNote, relationship_context_lines, relationship_notes_from_output,
 };
 pub use sqlite::SqliteMemoryStore;
-pub use types::{MemoryKind, MemoryQuery, MemoryRecord, MemoryStore};
+pub use types::{MemoryKind, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore};
 
 #[cfg(test)]
 mod tests;

@@ -214,6 +214,43 @@ fn local_memory_provider_exposes_lifecycle_hooks() {
 }
 
 #[test]
+fn local_memory_provider_sync_turn_writes_source_ref_record() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = LocalMemoryStore::new(temp.path(), "jsonl").expect("store");
+
+    let report = store
+        .sync_turn(MemoryTurnRecord {
+            session_id: Some("chat-session".into()),
+            turn_id: Some("turn-1".into()),
+            agent_id: Some("build".into()),
+            user_input: "remember this decision".into(),
+            assistant_output: "we chose the session store path".into(),
+        })
+        .expect("sync turn");
+
+    assert_eq!(report.phase, "sync_turn");
+    assert_eq!(report.records_written, 1);
+    let records = MemoryStore::search(
+        &store,
+        MemoryQuery {
+            kind: Some(MemoryKind::Task),
+            scope: Some("chat-session".into()),
+            text: Some("session store".into()),
+            limit: Some(10),
+        },
+    )
+    .expect("records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].source_ref,
+        Some(MemoryRef::SessionTurn {
+            session_id: "chat-session".into(),
+            turn_id: Some("turn-1".into()),
+        })
+    );
+}
+
+#[test]
 fn provider_registry_blocks_multiple_active_external_providers() {
     let temp = tempfile::tempdir().expect("tempdir");
     let providers = vec![

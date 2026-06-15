@@ -23,10 +23,13 @@ ikaros doctor
 ikaros chat
 ikaros chat --message "hello"
 ikaros chat --stream --message "hello"
+ikaros chat --context-token-budget 4000 --message "summarize @file:docs/zh-CN/architecture.md:1-80"
 ikaros chat --sessions
 ikaros chat --history
 ikaros chat --history-search "query"
 ```
+
+Chat message 可以包含本地 context reference，例如 `@file:path:line-line`、`@folder:path`、`@git:rev`、`@diff` 和 `@staged`。这些 reference 会在当前 workspace 下解析，并写入 session context diff。`@url:` 只解析，不抓取。
 
 记忆和关系笔记：
 

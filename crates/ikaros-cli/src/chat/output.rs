@@ -7,8 +7,9 @@ use std::io::{self, Write};
 pub(super) fn print_chat_message_result(result: &ChatMessageResult) -> Result<()> {
     println!("ok: true");
     println!(
-        "context: relationship={} history={} memory={} rag={} learned={}",
+        "context: relationship={} references={} history={} memory={} rag={} learned={}",
         result.relationship_hits,
+        result.reference_hits,
         result.history_hits,
         result.memory_hits,
         result.rag_hits,

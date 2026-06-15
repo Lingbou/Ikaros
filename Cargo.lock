@@ -664,6 +664,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ikaros-context"
+version = "0.1.0"
+dependencies = [
+ "ikaros-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "ikaros-core"
 version = "0.1.0"
 dependencies = [
@@ -758,6 +769,7 @@ dependencies = [
  "async-trait",
  "ikaros-automation",
  "ikaros-body",
+ "ikaros-context",
  "ikaros-core",
  "ikaros-gateway",
  "ikaros-harness",

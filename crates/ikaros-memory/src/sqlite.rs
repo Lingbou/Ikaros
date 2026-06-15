@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    MemoryKind, MemoryQuery, MemoryRecord, MemoryStore,
+    MemoryKind, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
     common::{filter_records, memory_kind_from_str, memory_kind_to_str},
 };
 use ikaros_core::{IkarosError, Result, contains_secret_like, now_rfc3339, reject_secret_like};
@@ -51,6 +51,7 @@ impl SqliteMemoryStore {
                 content TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
                 source TEXT,
+                source_ref_json TEXT,
                 confidence REAL,
                 sensitive INTEGER NOT NULL DEFAULT 0
             );
@@ -58,7 +59,9 @@ impl SqliteMemoryStore {
             CREATE INDEX IF NOT EXISTS memories_created_at_idx ON memories(created_at);
             "#,
         )
-        .map_err(|source| sqlite_error(&self.path, source))
+        .map_err(|source| sqlite_error(&self.path, source))?;
+        add_column_if_missing(conn, &self.path, "memories", "source_ref_json", "TEXT")?;
+        Ok(())
     }
 
     fn read_all(&self) -> Result<Vec<MemoryRecord>> {
@@ -68,7 +71,7 @@ impl SqliteMemoryStore {
         let conn = self.open()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, created_at, updated_at, kind, scope, content, tags_json, source, confidence, sensitive FROM memories",
+                "SELECT id, created_at, updated_at, kind, scope, content, tags_json, source, source_ref_json, confidence, sensitive FROM memories",
             )
             .map_err(|source| sqlite_error(&self.path, source))?;
         let rows = stmt
@@ -85,8 +88,9 @@ impl SqliteMemoryStore {
                     content: row.get(5)?,
                     tags,
                     source: row.get(7)?,
-                    confidence: row.get::<_, Option<f64>>(8)?.map(|value| value as f32),
-                    sensitive: row.get::<_, i64>(9)? != 0,
+                    source_ref: source_ref_from_json(row.get::<_, Option<String>>(8)?),
+                    confidence: row.get::<_, Option<f64>>(9)?.map(|value| value as f32),
+                    sensitive: row.get::<_, i64>(10)? != 0,
                 })
             })
             .map_err(|source| sqlite_error(&self.path, source))?;
@@ -108,9 +112,14 @@ impl MemoryStore for SqliteMemoryStore {
         record.updated_at = None;
         let conn = self.open()?;
         let tags_json = serde_json::to_string(&record.tags)?;
+        let source_ref_json = record
+            .source_ref
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         conn.execute(
-            "INSERT INTO memories (id, created_at, updated_at, kind, scope, content, tags_json, source, confidence, sensitive)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO memories (id, created_at, updated_at, kind, scope, content, tags_json, source, source_ref_json, confidence, sensitive)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 record.id,
                 record.created_at,
@@ -120,6 +129,7 @@ impl MemoryStore for SqliteMemoryStore {
                 record.content,
                 tags_json,
                 record.source,
+                source_ref_json,
                 record.confidence.map(f64::from),
                 i64::from(record.sensitive),
             ],
@@ -209,4 +219,33 @@ impl MemoryStore for SqliteMemoryStore {
 
 fn sqlite_error(path: &Path, source: rusqlite::Error) -> IkarosError {
     IkarosError::Message(format!("sqlite error at {}: {source}", path.display()))
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    path: &Path,
+    table: &str,
+    column: &str,
+    column_type: &str,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|source| sqlite_error(path, source))?;
+    let existing = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|source| sqlite_error(path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| sqlite_error(path, source))?;
+    if !existing.iter().any(|name| name == column) {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"),
+            [],
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    }
+    Ok(())
+}
+
+fn source_ref_from_json(value: Option<String>) -> Option<MemoryRef> {
+    value.and_then(|value| serde_json::from_str(&value).ok())
 }

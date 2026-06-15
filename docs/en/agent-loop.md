@@ -166,13 +166,17 @@ The built-in chat path uses `PersistingAgentTurnSink`. Agent-loop chat and
 single-call chat selected with `--no-agent-loop` both write user/assistant
 `SessionEntry` records. Single-call chat also emits a minimal typed event
 timeline: session start, turn start, user message, normalized model stream
-events, and turn end. Post-turn evidence such as `MemoryLifecycle` and
-`AuditAnchor` may appear after `TurnEnd`; consumers should use event kinds
+events, context diff, and turn end. The context diff payload records the
+token budget, sections, explicit references, and added/removed/compressed
+context estimates for the turn. Post-turn evidence such as `MemoryLifecycle`
+and `AuditAnchor` may appear after `TurnEnd`; consumers should use event kinds
 rather than assuming the last event is always the turn end.
 
 Those session entries and chat agent events for one turn commit or roll back
-together. Chat history, memory sync, relationship learning, and audit writes
-are still separate stores for now. Approval requests created by a persisting
+together. Chat history, memory records, relationship learning, and audit writes
+are still separate stores for now. Memory sync can write a redacted turn-summary
+record with `MemoryRef::SessionTurn`; the session timeline only stores the
+high-level lifecycle evidence. Approval requests created by a persisting
 agent-loop turn are double-written into the session approval table with
 redacted request data; later approve, deny, or execute decisions update the
 same session approval record and emit `ApprovalResolved`.

@@ -13,7 +13,14 @@ Supported memory kinds:
 - `Relationship`
 - `Knowledge`
 
-Records include scope, content, timestamps, tags, source, confidence, and sensitivity flags. Secret-like content is rejected before append or update.
+Records include scope, content, timestamps, tags, source, structured
+`source_ref`, confidence, and sensitivity flags. Secret-like content is
+rejected before append or update.
+
+`source_ref` can point at a session turn, session entry, skill call, or manual
+note. Runtime memory lifecycle writes use it to link derived records back to
+the turn that produced them without making the session store the memory
+database.
 
 ## Backends
 
@@ -47,6 +54,9 @@ ikaros relationship forget --id <id>
 ```
 
 Chat can learn clear preference, preferred-name, and "remember this" statements after redaction and de-duplication. Use `--no-relationship-learning` to disable that write for a turn.
+
+The relationship CLI is a façade over `MemoryKind::Relationship`; it is not a
+second memory database.
 
 ## Harness Boundary
 

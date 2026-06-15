@@ -67,6 +67,7 @@ fn chat_system_prompt_uses_context_and_redacts() {
     let context = ContextBuilder::new()
         .persona_context("Persona token=abc123")
         .relationship_context(vec!["Relationship prefers concise updates".into()])
+        .reference_context(vec!["Reference src/lib.rs".into()])
         .chat_history_context(vec!["Earlier user asked for a quiet status".into()])
         .memory_context(vec!["Memory sk-not-real".into()])
         .rag_context(vec!["RAG safe citation".into()])
@@ -74,6 +75,8 @@ fn chat_system_prompt_uses_context_and_redacts() {
     let prompt = render_chat_system_prompt(&context);
     assert!(prompt.contains("Local relationship context"));
     assert!(prompt.contains("Relationship prefers concise updates"));
+    assert!(prompt.contains("Local reference context"));
+    assert!(prompt.contains("Reference src/lib.rs"));
     assert!(prompt.contains("Local chat history context"));
     assert!(prompt.contains("Earlier user asked for a quiet status"));
     assert!(prompt.contains("Local memory context"));
@@ -104,32 +107,35 @@ fn persona_agent_context_includes_profile_overlay_and_redacts() {
 fn chat_context_budget_preserves_priority_and_truncates() {
     let context = ChatContext {
         relationship: vec!["rel".into()],
+        references: vec!["ref".into()],
         history: vec!["hist".into()],
         memory: vec!["memory-context-is-long-enough-to-truncate".into()],
         rag: vec!["rag should be omitted".into()],
     };
 
-    let budgeted = super::context::apply_context_char_budget(context, 32);
+    let budgeted = super::context::apply_chat_context_token_budget(context, 12);
 
     assert_eq!(budgeted.relationship, vec!["rel"]);
+    assert_eq!(budgeted.references, vec!["ref"]);
     assert_eq!(budgeted.history, vec!["hist"]);
     assert_eq!(budgeted.memory.len(), 1);
     assert!(budgeted.memory[0].contains("[truncated]"));
     assert!(budgeted.rag.is_empty());
-    assert!(super::context::chat_context_char_count(&budgeted) <= 32);
+    assert!(super::context::chat_context_token_count_with_default(&budgeted) <= 12);
 }
 
 #[test]
 fn chat_context_budget_zero_keeps_context_unbounded() {
     let context = ChatContext {
         relationship: vec!["rel".into()],
+        references: vec!["ref".into()],
         history: vec!["hist".into()],
         memory: vec!["memory".into()],
         rag: vec!["rag".into()],
     };
 
     assert_eq!(
-        super::context::apply_context_char_budget(context.clone(), 0),
+        super::context::apply_chat_context_token_budget(context.clone(), 0),
         context
     );
 }
@@ -642,6 +648,65 @@ async fn run_chat_message_persists_single_call_chat_timeline() {
     let replay_json = serde_json::to_string(&replay).expect("replay json");
     assert!(!replay_json.contains("abc123"));
     assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn run_chat_message_resolves_file_reference_and_persists_context_diff() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("notes.md"),
+        "alpha reference line\nbeta reference line\ngamma omitted\n",
+    )
+    .expect("write reference");
+    let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
+
+    let result = run_chat_message(
+        "answer using @file:notes.md:1-2",
+        &paths,
+        &workspace,
+        Some("build"),
+        ChatRunOptions {
+            agent_loop: false,
+            relationship_learning: false,
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect("chat with reference");
+
+    assert_eq!(result.reference_hits, 1);
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let replay = session_store
+        .replay_session(&SessionId::from(result.chat_session_id))
+        .expect("session replay")
+        .expect("persisted chat session");
+    let context_event = replay
+        .agent_events
+        .iter()
+        .find(|event| matches!(event.kind, AgentEventKind::ContextDiff))
+        .expect("context diff event");
+    assert_eq!(
+        context_event.payload["references"][0]["raw"].as_str(),
+        Some("@file:notes.md:1-2")
+    );
+    let sections = context_event.payload["sections"]
+        .as_array()
+        .expect("sections");
+    assert!(sections.iter().any(|section| {
+        section["kind"].as_str() == Some("references")
+            && section["lines"][0]
+                .as_str()
+                .is_some_and(|line| line.contains("alpha reference line"))
+    }));
+    assert!(
+        context_event.payload["diff"]["after_tokens"]
+            .as_u64()
+            .is_some_and(|tokens| tokens > 0)
+    );
 }
 
 #[tokio::test]

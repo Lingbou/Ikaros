@@ -25,6 +25,8 @@ pub struct MemoryRecord {
     pub content: String,
     pub tags: Vec<String>,
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<MemoryRef>,
     pub confidence: Option<f32>,
     pub sensitive: bool,
 }
@@ -48,6 +50,7 @@ impl MemoryRecord {
             content,
             tags: Vec::new(),
             source: None,
+            source_ref: None,
             confidence: None,
             sensitive: false,
         })
@@ -63,6 +66,11 @@ impl MemoryRecord {
         self
     }
 
+    pub fn with_source_ref(mut self, source_ref: MemoryRef) -> Self {
+        self.source_ref = Some(source_ref);
+        self
+    }
+
     pub fn validate_metadata(&self) -> Result<()> {
         reject_secret_like(&self.scope, "memory scope")?;
         for tag in &self.tags {
@@ -70,6 +78,58 @@ impl MemoryRecord {
         }
         if let Some(source) = &self.source {
             reject_secret_like(source, "memory source")?;
+        }
+        if let Some(source_ref) = &self.source_ref {
+            source_ref.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum MemoryRef {
+    SessionTurn {
+        session_id: String,
+        turn_id: Option<String>,
+    },
+    SessionEntry {
+        session_id: String,
+        entry_id: String,
+    },
+    SkillCall {
+        call_id: String,
+    },
+    Manual {
+        note: String,
+    },
+}
+
+impl MemoryRef {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            MemoryRef::SessionTurn {
+                session_id,
+                turn_id,
+            } => {
+                reject_secret_like(session_id, "memory source session id")?;
+                if let Some(turn_id) = turn_id {
+                    reject_secret_like(turn_id, "memory source turn id")?;
+                }
+            }
+            MemoryRef::SessionEntry {
+                session_id,
+                entry_id,
+            } => {
+                reject_secret_like(session_id, "memory source session id")?;
+                reject_secret_like(entry_id, "memory source entry id")?;
+            }
+            MemoryRef::SkillCall { call_id } => {
+                reject_secret_like(call_id, "memory source skill call id")?;
+            }
+            MemoryRef::Manual { note } => {
+                reject_secret_like(note, "memory source note")?;
+            }
         }
         Ok(())
     }

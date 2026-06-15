@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 ikaros-automation = { path = "../ikaros-automation" }
 ikaros-body = { path = "../ikaros-body" }
+ikaros-context = { path = "../ikaros-context" }
 ikaros-core = { path = "../ikaros-core" }
 ikaros-gateway = { path = "../ikaros-gateway" }
 ikaros-harness = { path = "../ikaros-harness" }

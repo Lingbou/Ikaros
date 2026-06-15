@@ -2,18 +2,24 @@
 
 use super::{
     context::{
-        apply_context_char_budget, chat_context_char_count, context_lookup_is_safe_read,
-        extract_memory_context, extract_rag_context,
+        apply_chat_context_token_budget, chat_context_token_count_with_default,
+        context_lookup_is_safe_read, extract_memory_context, extract_rag_context,
     },
     history::ChatHistoryStore,
     types::{ChatContext, ChatRunOptions},
 };
 use crate::{relationship_context_lines, relationship_snapshot_from_session};
-use ikaros_core::{ResolvedAgentProfile, Result};
+use ikaros_context::{
+    ContextBudget, ContextDiff, ContextReference, HeuristicTokenEstimator, TokenEstimator,
+    diff_chat_context, parse_context_references, resolve_context_references,
+};
+use ikaros_core::{IkarosError, ResolvedAgentProfile, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{future::Future, pin::Pin};
+use std::{future::Future, path::Path, pin::Pin};
+
+pub use ikaros_context::ContextBundle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextEvent {
@@ -31,21 +37,18 @@ pub struct ContextAssembleInput<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextBundle {
-    pub context: ChatContext,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompactInput {
     pub context: ChatContext,
-    pub budget: usize,
+    pub budget: ContextBudget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompactReport {
-    pub before_chars: usize,
-    pub after_chars: usize,
+    pub before_tokens: usize,
+    pub after_tokens: usize,
     pub context: ChatContext,
+    pub diff: ContextDiff,
+    pub budget: ContextBudget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,13 +76,20 @@ pub trait ContextEngine: Send + Sync {
         input: CompactInput,
     ) -> Pin<Box<dyn Future<Output = Result<CompactReport>> + 'a>> {
         Box::pin(async move {
-            let before_chars = chat_context_char_count(&input.context);
-            let context = apply_context_char_budget(input.context, input.budget);
-            let after_chars = chat_context_char_count(&context);
+            let estimator = HeuristicTokenEstimator;
+            let before = input.context;
+            let before_tokens = chat_context_token_count_with_default(&before);
+            let context = apply_chat_context_token_budget(before.clone(), input.budget.max_tokens);
+            let after_tokens = chat_context_token_count_with_default(&context);
+            let mut budget = input.budget;
+            budget.used_tokens = after_tokens;
+            let diff = diff_chat_context(&before, &context, &estimator);
             Ok(CompactReport {
-                before_chars,
-                after_chars,
+                before_tokens,
+                after_tokens,
                 context,
+                diff,
+                budget,
             })
         })
     }
@@ -103,9 +113,14 @@ impl ContextEngine for LocalChatContextEngine {
         Box::pin(async move {
             let options = input.options;
             if options.no_context {
-                return Ok(ContextBundle {
-                    context: ChatContext::default(),
-                });
+                let context = ChatContext::default();
+                return Ok(ContextBundle::from_context(
+                    context.clone(),
+                    context,
+                    ContextBudget::unbounded(HeuristicTokenEstimator.name()),
+                    Vec::new(),
+                    &HeuristicTokenEstimator,
+                ));
             }
 
             let mut context = ChatContext::default();
@@ -128,16 +143,28 @@ impl ContextEngine for LocalChatContextEngine {
                 options,
             )
             .await?;
+            let references = assemble_reference_context(
+                &mut context,
+                input.input,
+                &input.session.sandbox.workspace_root,
+            )?;
 
             let compacted = self
                 .compact(CompactInput {
-                    context,
-                    budget: options.context_char_budget,
+                    context: context.clone(),
+                    budget: ContextBudget::new(
+                        options.context_token_budget,
+                        HeuristicTokenEstimator.name(),
+                    ),
                 })
                 .await?;
-            Ok(ContextBundle {
-                context: compacted.context,
-            })
+            Ok(ContextBundle::from_context(
+                context,
+                compacted.context,
+                compacted.budget,
+                references,
+                &HeuristicTokenEstimator,
+            ))
         })
     }
 }
@@ -168,6 +195,20 @@ pub async fn build_chat_context_with_engine(
     registry: &SkillRegistry,
     options: &ChatRunOptions,
 ) -> Result<ChatContext> {
+    let bundle =
+        build_chat_context_bundle_with_engine(engine, input, agent, session, registry, options)
+            .await?;
+    Ok(bundle.context)
+}
+
+pub async fn build_chat_context_bundle_with_engine(
+    engine: &dyn ContextEngine,
+    input: &str,
+    agent: &ResolvedAgentProfile,
+    session: &ExecutionSession,
+    registry: &SkillRegistry,
+    options: &ChatRunOptions,
+) -> Result<ContextBundle> {
     let bundle = engine
         .assemble(ContextAssembleInput {
             input,
@@ -177,7 +218,7 @@ pub async fn build_chat_context_with_engine(
             options,
         })
         .await?;
-    Ok(bundle.context)
+    Ok(bundle)
 }
 
 fn assemble_history_context(context: &mut ChatContext, options: &ChatRunOptions) -> Result<()> {
@@ -245,6 +286,17 @@ async fn assemble_memory_context(
         context.memory = extract_memory_context(&result.output, options.memory_limit);
     }
     Ok(())
+}
+
+fn assemble_reference_context(
+    context: &mut ChatContext,
+    input: &str,
+    workspace_root: &Path,
+) -> Result<Vec<ContextReference>> {
+    let references = parse_context_references(input);
+    context.references = resolve_context_references(&references, workspace_root)
+        .map_err(|error| IkarosError::Message(error.to_string()))?;
+    Ok(references)
 }
 
 async fn assemble_rag_context(

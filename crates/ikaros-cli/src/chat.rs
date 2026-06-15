@@ -10,7 +10,7 @@ use ikaros_core::{IkarosConfig, IkarosPaths, ResolvedAgentProfile, redact_secret
 use ikaros_models::{ModelUsageLedger, governed_provider_from_config};
 use ikaros_runtime::{
     ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, ChatRunOptions,
-    DEFAULT_CHAT_CONTEXT_CHAR_BUDGET, new_chat_session_id, run_chat_message, run_chat_turn,
+    DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, new_chat_session_id, run_chat_message, run_chat_turn,
 };
 use ikaros_soul::load_or_default;
 use std::{
@@ -39,8 +39,8 @@ pub(crate) struct ChatArgs {
     history_context_limit: usize,
     #[arg(long, default_value_t = 12)]
     history_summary_limit: usize,
-    #[arg(long, default_value_t = DEFAULT_CHAT_CONTEXT_CHAR_BUDGET)]
-    context_char_budget: usize,
+    #[arg(long = "context-token-budget", default_value_t = DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET)]
+    context_token_budget: usize,
     #[arg(long = "no-relationship-learning")]
     no_relationship_learning: bool,
     #[arg(long)]
@@ -180,8 +180,9 @@ pub(crate) async fn chat_command(
         )
         .await?;
         println!(
-            "context: relationship={} history={} memory={} rag={} learned={}",
+            "context: relationship={} references={} history={} memory={} rag={} learned={}",
             report.relationship_hits,
+            report.reference_hits,
             report.history_hits,
             report.memory_hits,
             report.rag_hits,
@@ -354,7 +355,7 @@ impl From<&ChatArgs> for ChatRunOptions {
             rag_top_k: args.rag_top_k,
             history_context_limit: args.history_context_limit,
             history_summary_limit: args.history_summary_limit,
-            context_char_budget: args.context_char_budget,
+            context_token_budget: args.context_token_budget,
             relationship_learning: !args.no_relationship_learning,
             scope: args.scope.clone(),
             no_context: args.no_context,

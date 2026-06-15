@@ -243,6 +243,7 @@ pub enum AgentEventKind {
     ToolStart,
     ToolUpdate,
     ToolEnd,
+    ContextDiff,
     ContextCompacted,
     MemoryLifecycle,
     AuditAnchor,

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    context::chat_context_char_count,
+    context::chat_context_token_count_with_default,
     context_engine::{
         ContextEngine, ContextEvent, LocalChatContextEngine, TurnRecord,
-        build_chat_context_with_engine,
+        build_chat_context_bundle_with_engine,
     },
     history::{
         ChatHistoryAppend, ChatHistoryStore, build_chat_history_record_with_turn_id,
@@ -117,6 +117,7 @@ pub async fn run_chat_message(
     };
     if let Err(error) = memory_provider.sync_turn(MemoryTurnRecord {
         session_id: report.chat_session_id.clone(),
+        turn_id: Some(turn_id.to_string()),
         agent_id: Some(agent_instance.agent_id.clone()),
         user_input: redact_secrets(message),
         assistant_output: report.response.content.clone(),
@@ -180,6 +181,7 @@ pub async fn run_chat_message(
         stream_chunks: report.stream_chunks,
         relationship_hits: report.relationship_hits,
         relationship_learned: report.relationship_learned,
+        reference_hits: report.reference_hits,
         history_hits: report.history_hits,
         memory_hits: report.memory_hits,
         rag_hits: report.rag_hits,
@@ -308,7 +310,7 @@ pub async fn run_chat_turn_with_events(
         );
         return Err(error);
     }
-    let chat_context = match build_chat_context_with_engine(
+    let context_bundle = match build_chat_context_bundle_with_engine(
         &context_engine,
         input,
         agent,
@@ -331,10 +333,26 @@ pub async fn run_chat_turn_with_events(
             return Err(error);
         }
     };
-    let context_chars = chat_context_char_count(&chat_context);
+    let chat_context = context_bundle.context.clone();
+    let context_tokens = chat_context_token_count_with_default(&chat_context);
+    emit_chat_event(
+        &mut single_call_events,
+        event_sink,
+        &session_id,
+        &turn_id,
+        AgentEventSource::Context,
+        AgentEventKind::ContextDiff,
+        json!({
+            "budget": &context_bundle.budget,
+            "diff": &context_bundle.diff,
+            "references": &context_bundle.references,
+            "sections": &context_bundle.sections,
+        }),
+    )?;
     let runtime_context = ContextBuilder::new()
         .persona_context(render_persona_agent_context(persona, agent))
         .relationship_context(chat_context.relationship.clone())
+        .reference_context(chat_context.references.clone())
         .chat_history_context(chat_context.history.clone())
         .memory_context(chat_context.memory.clone())
         .rag_context(chat_context.rag.clone())
@@ -347,10 +365,11 @@ pub async fn run_chat_turn_with_events(
         json!({
             "memory_hits": chat_context.memory.len(),
             "relationship_hits": chat_context.relationship.len(),
+            "reference_hits": chat_context.references.len(),
             "history_hits": chat_context.history.len(),
             "rag_hits": chat_context.rag.len(),
-            "context_chars": context_chars,
-            "context_char_budget": options.context_char_budget,
+            "context_tokens": context_tokens,
+            "context_token_budget": options.context_token_budget,
             "history_context_limit": options.history_context_limit,
             "history_summary_limit": options.history_summary_limit,
             "provider": provider.name(),
@@ -384,6 +403,7 @@ pub async fn run_chat_turn_with_events(
         json!({
             "memory_hits": chat_context.memory.len(),
             "relationship_hits": chat_context.relationship.len(),
+            "reference_hits": chat_context.references.len(),
             "history_hits": chat_context.history.len(),
             "rag_hits": chat_context.rag.len(),
             "agent": &agent.name,
@@ -600,6 +620,7 @@ pub async fn run_chat_turn_with_events(
         streamed,
         stats: ChatSessionEntryStats {
             relationship_hits: chat_context.relationship.len(),
+            reference_hits: chat_context.references.len(),
             memory_hits: chat_context.memory.len(),
             rag_hits: chat_context.rag.len(),
         },
@@ -627,6 +648,7 @@ pub async fn run_chat_turn_with_events(
                 "model": &response.model,
                 "streamed": streamed,
                 "relationship_hits": chat_context.relationship.len(),
+                "reference_hits": chat_context.references.len(),
                 "memory_hits": chat_context.memory.len(),
                 "rag_hits": chat_context.rag.len(),
             }),
@@ -696,6 +718,7 @@ pub async fn run_chat_turn_with_events(
         stream_chunks,
         relationship_hits: chat_context.relationship.len(),
         relationship_learned,
+        reference_hits: chat_context.references.len(),
         history_hits: chat_context.history.len(),
         memory_hits: chat_context.memory.len(),
         rag_hits: chat_context.rag.len(),
@@ -706,6 +729,7 @@ pub async fn run_chat_turn_with_events(
 
 struct ChatSessionEntryStats {
     relationship_hits: usize,
+    reference_hits: usize,
     memory_hits: usize,
     rag_hits: usize,
 }
@@ -765,6 +789,7 @@ fn append_chat_assistant_session_entry(input: ChatAssistantEntryInput<'_>) -> Re
         "streamed": input.streamed,
         "content": redacted_assistant,
         "relationship_hits": input.stats.relationship_hits,
+        "reference_hits": input.stats.reference_hits,
         "memory_hits": input.stats.memory_hits,
         "rag_hits": input.stats.rag_hits,
         "usage": &input.response.usage,

@@ -23,10 +23,16 @@ Chat:
 ikaros chat
 ikaros chat --message "hello"
 ikaros chat --stream --message "hello"
+ikaros chat --context-token-budget 4000 --message "summarize @file:docs/en/architecture.md:1-80"
 ikaros chat --sessions
 ikaros chat --history
 ikaros chat --history-search "query"
 ```
+
+Chat messages may include local context references such as `@file:path:line-line`,
+`@folder:path`, `@git:rev`, `@diff`, and `@staged`. These references are
+resolved under the current workspace and recorded in the session context diff.
+`@url:` is parsed but not fetched.
 
 Memory and relationship notes:
 

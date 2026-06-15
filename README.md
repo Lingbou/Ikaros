@@ -21,6 +21,7 @@ The project is currently a pre-MVP local runtime for development and experimenta
 - `crates/ikaros-body`: replaceable body/status/frame contracts and dashboard rendering.
 - `crates/ikaros-cli`: the `ikaros` command-line application.
 - `crates/ikaros-coding`: repository scan, guarded patching, code review, self-modify records, and test-command validation.
+- `crates/ikaros-context`: context bundle, section, reference, token-budget, and diff primitives.
 - `crates/ikaros-gateway`: local message inbox/outbox metadata and delivery routes.
 - `crates/ikaros-harness`: policy engine, approval queue, audit log, skill execution session, plugins, and task runner.
 - `crates/ikaros-memory`: local JSONL and SQLite memory stores.
@@ -128,6 +129,7 @@ Do not commit, tag, publish, or push from automated tooling unless the maintaine
 - [Agent loop design](docs/en/agent-loop.md)
 - [Safety model](docs/en/safety-model.md)
 - [Memory model](docs/en/memory-model.md)
+- [Context engine](docs/en/context-engine.md)
 - [RAG model](docs/en/rag-model.md)
 - [Model providers](docs/en/model-providers.md)
 - [Voice providers](docs/en/voice-providers.md)

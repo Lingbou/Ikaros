@@ -8,6 +8,7 @@ pub struct RuntimeContext {
     pub task: Option<Task>,
     pub persona_context: String,
     pub relationship_context: Vec<String>,
+    pub reference_context: Vec<String>,
     pub chat_history_context: Vec<String>,
     pub memory_context: Vec<String>,
     pub rag_context: Vec<String>,
@@ -18,6 +19,7 @@ pub struct ContextBuilder {
     task: Option<Task>,
     persona_context: Option<String>,
     relationship_context: Vec<String>,
+    reference_context: Vec<String>,
     chat_history_context: Vec<String>,
     memory_context: Vec<String>,
     rag_context: Vec<String>,
@@ -43,6 +45,11 @@ impl ContextBuilder {
         self
     }
 
+    pub fn reference_context(mut self, context: Vec<String>) -> Self {
+        self.reference_context = context;
+        self
+    }
+
     pub fn chat_history_context(mut self, context: Vec<String>) -> Self {
         self.chat_history_context = context;
         self
@@ -63,6 +70,7 @@ impl ContextBuilder {
             task: self.task,
             persona_context: self.persona_context.unwrap_or_default(),
             relationship_context: self.relationship_context,
+            reference_context: self.reference_context,
             chat_history_context: self.chat_history_context,
             memory_context: self.memory_context,
             rag_context: self.rag_context,
