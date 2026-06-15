@@ -59,6 +59,8 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Gateway And Automation
 
 - Evolve the local gateway worker into a long-running daemon with device pairing, capabilities, multi-channel routing, and session continuity across channel threads.
+- Keep gateway JSONL queue mutations behind portable file locks so local workers
+  and external adapters do not corrupt inbox/outbox state.
 - Add external message adapters that only write into the governed local gateway inbox.
 - Broaden schedule delivery targets after external adapters have clear routing, audit behavior, and replay evidence.
 - Keep schedules as work requests; execution should continue to pass through runtime and harness boundaries.

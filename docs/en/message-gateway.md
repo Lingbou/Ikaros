@@ -11,12 +11,20 @@ to run models or tools.
 ```text
 IKAROS_HOME/gateway/inbox.jsonl
 IKAROS_HOME/gateway/outbox.jsonl
+IKAROS_HOME/gateway/inbox.jsonl.lock
+IKAROS_HOME/gateway/outbox.jsonl.lock
 ```
 
 Gateway processing also writes high-level evidence into the resolved agent
 `state.db` session store. The gateway JSONL files remain the queue and delivery
 state; `state.db` is the replay timeline that links the external message to the
 runtime turn.
+
+The inbox and outbox JSONL files are protected by portable sibling lock files.
+Gateway writes take an exclusive filesystem lock and an in-process guard before
+reading and rewriting JSONL state. The lock files may remain on disk after use;
+they are coordination files, not stale queue records, and should not be used as
+message state.
 
 Inbox records include:
 
@@ -43,6 +51,8 @@ Message statuses:
 
 Workers may reclaim stale processing messages. This makes local retry possible
 without treating every adapter retry as a new task.
+This stale-processing reclaim is based on message timestamps, not on deleting
+lock files.
 
 ## Protocol Types
 
@@ -144,6 +154,8 @@ The webhook only enqueues a redacted message. It does not call models, tools, pl
 
 - Ingestion is non-executing.
 - Gateway records are local state under `IKAROS_HOME/gateway`.
+- Inbox and outbox mutation must hold the gateway JSONL lock; adapters should
+  not edit the JSONL files directly.
 - The protocol lives inside `ikaros-gateway`; adapters should depend on the
   frame shape, not on runtime internals.
 - Session source identifies the external conversation; `agent` selects runtime

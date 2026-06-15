@@ -113,7 +113,7 @@ State ownership:
 - `rag/`: local RAG files, chunks, and embedding indexes.
 - `audit/`: policy decisions, approval records, usage logs, and migration backups.
 - `automation/`: schedule metadata and delivery reports.
-- `gateway/`: inbox/outbox records for local message routing.
+- `gateway/`: inbox/outbox records and sibling lock files for local message routing.
 - `skills/`: locally installed plugins and marketplace metadata.
 - `agents/`: per-agent state directories when instances use the default state root.
 
