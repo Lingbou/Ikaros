@@ -43,14 +43,15 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   selection. Extend the current deterministic adapters with exact
   provider-native tokenizer libraries once the provider registry exists.
 - Extend quota-based context assembly with dynamic priority, semantic
-  compression, replay/debug commands, and stricter long-running session
-  diagnostics.
+  compression, and stricter long-running session diagnostics beyond the current
+  `context-diff` debug query.
 - Keep relationship data as `MemoryKind::Relationship`, not as a second memory
   database.
 - Keep `NoopMemoryProvider` explicit; memory lifecycle hooks should not hide
   default no-op behavior in the trait.
-- Record real memory policy decisions in `MemoryJournal` before treating
-  promotion, demotion, forgetting, or skipped writes as product behavior.
+- Extend `MemoryJournal` beyond current runtime append/skipped-write decisions
+  before treating promotion, demotion, forgetting, or quota decisions as product
+  behavior.
 - Define governed remote memory adapters behind the provider registry.
 - Require remote memory behavior to match local approval, audit, promotion, demotion, sync, and secret-handling rules.
 - Add dry-run reports for memory migration or synchronization.

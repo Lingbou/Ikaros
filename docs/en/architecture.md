@@ -153,8 +153,9 @@ State ownership:
   context-limit error instead of silently dropping the requested context.
 - `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks. The trait does not hide default noop methods; callers that need no memory side effect must choose `NoopMemoryProvider` explicitly.
 - `MemoryScore`, `MemoryPolicy`, and `MemoryJournal` belong to `ikaros-memory`.
-  Runtime policy actions should be journaled there when promotion, demotion, or
-  forgetting becomes active behavior.
+  Runtime chat records `sync_turn` append and skipped-write decisions there.
+  Promotion, demotion, forgetting, and quota decisions should use the same
+  boundary when they become active behavior.
 - Relationship memory is `MemoryKind::Relationship` in `ikaros-memory`; the
   relationship CLI is a convenience façade over the memory store, not a second
   memory system.

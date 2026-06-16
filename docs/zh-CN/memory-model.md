@@ -21,7 +21,7 @@ Record 包含 scope、content、timestamp、tag、source、结构化 `source_ref
 
 `MemoryProvider` 实现必须显式处理 lifecycle hook：`turn_start`、`prefetch`、`sync_turn`、`pre_compress`、`session_switch` 和 `delegation_observation`。确实不需要副作用的调用方应使用 `NoopMemoryProvider`。
 
-`MemoryScore`、`MemoryPolicy` 和 `MemoryJournal` 定义了 promotion、demotion、forget、skipped write 和 quota 决策的本地边界。`JsonlMemoryJournal` 会把这些决策写入 `memory_journal.jsonl`。Runtime 还没有自动写入所有 policy action，所以 journal 目前是 lifecycle/audit primitive，不是 memory store 的替代品。
+`MemoryScore`、`MemoryPolicy` 和 `MemoryJournal` 定义了 promotion、demotion、forget、skipped write 和 quota 决策的本地边界。`JsonlMemoryJournal` 会把这些决策写入 `memory_journal.jsonl`。Runtime chat 会自动记录 `sync_turn` append 和 skipped-write 决策。Promotion、demotion、forget 和 quota decision 成为 runtime 行为时，也应使用同一 journal。Journal 是 lifecycle/audit primitive，不是 memory store 的替代品。
 
 ## 后端
 

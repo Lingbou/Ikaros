@@ -67,6 +67,8 @@ pub struct MemoryLifecycleReport {
     pub phase: String,
     pub records_read: usize,
     pub records_written: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<MemoryRef>,
     pub notes: Vec<String>,
 }
 
@@ -76,6 +78,7 @@ impl MemoryLifecycleReport {
             phase: phase.into(),
             records_read: 0,
             records_written: 0,
+            source_ref: None,
             notes: Vec::new(),
         }
     }
@@ -316,6 +319,7 @@ impl MemoryProvider for LocalMemoryStore {
             phase: "turn_start".into(),
             records_read: 0,
             records_written: 0,
+            source_ref: None,
             notes: vec![format!(
                 "session={} agent={}",
                 input.session_id.as_deref().unwrap_or("none"),
@@ -334,8 +338,13 @@ impl MemoryProvider for LocalMemoryStore {
                 phase: "sync_turn".into(),
                 records_read: 0,
                 records_written: 0,
+                source_ref: None,
                 notes: vec!["skipped: missing session id".into()],
             });
+        };
+        let source_ref = MemoryRef::SessionTurn {
+            session_id: session_id.clone(),
+            turn_id: turn.turn_id.clone(),
         };
         let content = turn_summary_content(&turn);
         if content.trim().is_empty() {
@@ -343,6 +352,7 @@ impl MemoryProvider for LocalMemoryStore {
                 phase: "sync_turn".into(),
                 records_read: 0,
                 records_written: 0,
+                source_ref: Some(source_ref),
                 notes: vec!["skipped: empty turn".into()],
             });
         }
@@ -351,21 +361,20 @@ impl MemoryProvider for LocalMemoryStore {
                 phase: "sync_turn".into(),
                 records_read: 0,
                 records_written: 0,
+                source_ref: Some(source_ref),
                 notes: vec!["skipped: redacted secret marker present".into()],
             });
         }
         let record = MemoryRecord::new(MemoryKind::Task, session_id.clone(), content)?
             .with_tags(vec!["turn-summary".into(), "memory-lifecycle".into()])
             .with_source("memory_lifecycle")
-            .with_source_ref(MemoryRef::SessionTurn {
-                session_id,
-                turn_id: turn.turn_id.clone(),
-            });
+            .with_source_ref(source_ref.clone());
         MemoryStore::append(self, record)?;
         Ok(MemoryLifecycleReport {
             phase: "sync_turn".into(),
             records_read: 0,
             records_written: 1,
+            source_ref: Some(source_ref),
             notes: Vec::new(),
         })
     }
@@ -375,6 +384,7 @@ impl MemoryProvider for LocalMemoryStore {
             phase: "pre_compress".into(),
             records_read: 0,
             records_written: 0,
+            source_ref: None,
             notes: vec![format!("budget_tokens={}", input.budget_tokens)],
         })
     }
@@ -384,6 +394,7 @@ impl MemoryProvider for LocalMemoryStore {
             phase: "session_switch".into(),
             records_read: 0,
             records_written: 0,
+            source_ref: None,
             notes: vec![format!(
                 "from={} to={}",
                 input.from_session_id.as_deref().unwrap_or("none"),
@@ -401,6 +412,7 @@ impl MemoryProvider for LocalMemoryStore {
                 phase: "delegation_observation".into(),
                 records_read: 0,
                 records_written: 0,
+                source_ref: None,
                 notes: vec!["skipped: empty summary".into()],
             });
         }
@@ -427,6 +439,7 @@ impl MemoryProvider for LocalMemoryStore {
             phase: "delegation_observation".into(),
             records_read: 0,
             records_written: 1,
+            source_ref: None,
             notes: Vec::new(),
         })
     }

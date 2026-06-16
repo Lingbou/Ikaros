@@ -7,6 +7,7 @@ use crate::{
     chat::{ChatArgs, chat_command},
     code::{CodeCommand, code_command},
     config::{ConfigCommand, config_command},
+    debug::{DebugCommand, debug_command},
     diagnostics::{DoctorArgs, doctor, init},
     fs::{FsCommand, fs_command},
     git::{GitCommand, git_command},
@@ -49,6 +50,10 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
     },
     Doctor(DoctorArgs),
     Persona {
@@ -155,6 +160,9 @@ pub(crate) async fn run() -> Result<()> {
     match cli.command {
         Commands::Init => init(&paths)?,
         Commands::Config { command } => config_command(command, &paths)?,
+        Commands::Debug { command } => {
+            debug_command(command, &paths, &workspace, cli.agent.as_deref())?
+        }
         Commands::Doctor(args) => doctor(args, &paths, &workspace, cli.agent.as_deref())?,
         Commands::Persona { command } => persona_command(command, &paths)?,
         Commands::Memory { command } => {

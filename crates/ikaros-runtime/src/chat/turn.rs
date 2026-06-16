@@ -25,7 +25,10 @@ use ikaros_core::{
 };
 use ikaros_harness::GuardrailConfig;
 use ikaros_harness::{AuditEvent, ExecutionSession, SkillRegistry};
-use ikaros_memory::{LocalMemoryStore, MemoryProvider, MemoryTurnRecord, MemoryTurnStart};
+use ikaros_memory::{
+    JsonlMemoryJournal, LocalMemoryStore, MemoryJournal, MemoryJournalAction, MemoryJournalEntry,
+    MemoryLifecycleReport, MemoryProvider, MemoryTurnRecord, MemoryTurnStart,
+};
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse,
     ModelStreamEvent, ModelUsageLedger, governed_provider_from_config,
@@ -80,7 +83,8 @@ pub async fn run_chat_message(
         .with_source(session_source)
         .with_agent_id(agent_instance.agent_id.clone())
         .with_workspace(agent_instance.workspace.clone());
-    memory_provider.turn_start(MemoryTurnStart {
+    let memory_journal = JsonlMemoryJournal::new(&paths.memory_dir);
+    let turn_start_report = memory_provider.turn_start(MemoryTurnStart {
         session_id: options.session_id.clone(),
         agent_id: Some(agent_instance.agent_id.clone()),
         user_input: redact_secrets(message),
@@ -115,38 +119,45 @@ pub async fn run_chat_message(
             return Err(error);
         }
     };
-    if let Err(error) = memory_provider.sync_turn(MemoryTurnRecord {
+    emit_memory_lifecycle_report(
+        &event_sink,
+        &SessionId::from(chat_session_id.clone()),
+        &turn_id,
+        &agent_instance.agent_id,
+        &chat_session_id,
+        &turn_start_report,
+    )?;
+    let sync_report = match memory_provider.sync_turn(MemoryTurnRecord {
         session_id: report.chat_session_id.clone(),
         turn_id: Some(turn_id.to_string()),
         agent_id: Some(agent_instance.agent_id.clone()),
         user_input: redact_secrets(message),
         assistant_output: report.response.content.clone(),
     }) {
-        let _ = emit_chat_failure_event(
-            &event_sink,
-            &SessionId::from(chat_session_id.clone()),
-            &turn_id,
-            "memory_sync",
-            &error,
-        );
-        if event_sink.commit().is_err() {
-            let _ = event_sink.rollback();
+        Ok(report) => report,
+        Err(error) => {
+            let _ = emit_chat_failure_event(
+                &event_sink,
+                &SessionId::from(chat_session_id.clone()),
+                &turn_id,
+                "memory_sync",
+                &error,
+            );
+            if event_sink.commit().is_err() {
+                let _ = event_sink.rollback();
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
-    emit_chat_lifecycle_event(
+    };
+    emit_memory_lifecycle_report(
         &event_sink,
         &SessionId::from(chat_session_id.clone()),
         &turn_id,
-        AgentEventSource::Memory,
-        AgentEventKind::MemoryLifecycle,
-        json!({
-            "phase": "sync_turn",
-            "status": "ok",
-            "agent_id": &agent_instance.agent_id,
-            "session_id": &chat_session_id,
-        }),
+        &agent_instance.agent_id,
+        &chat_session_id,
+        &sync_report,
     )?;
+    append_memory_policy_journal(&memory_journal, &sync_report)?;
     emit_chat_lifecycle_event(
         &event_sink,
         &SessionId::from(chat_session_id.clone()),
@@ -909,6 +920,70 @@ fn emit_chat_lifecycle_event(
         kind,
         payload,
     ))
+}
+
+fn emit_memory_lifecycle_report(
+    sink: &dyn AgentEventSink,
+    session_id: &SessionId,
+    turn_id: &TurnId,
+    agent_id: &str,
+    chat_session_id: &str,
+    report: &MemoryLifecycleReport,
+) -> Result<()> {
+    emit_chat_lifecycle_event(
+        sink,
+        session_id,
+        turn_id,
+        AgentEventSource::Memory,
+        AgentEventKind::MemoryLifecycle,
+        json!({
+            "phase": &report.phase,
+            "status": "ok",
+            "agent_id": agent_id,
+            "session_id": chat_session_id,
+            "records_read": report.records_read,
+            "records_written": report.records_written,
+            "source_ref": &report.source_ref,
+            "notes": &report.notes,
+            "report": report,
+        }),
+    )
+}
+
+fn append_memory_policy_journal(
+    journal: &dyn MemoryJournal,
+    report: &MemoryLifecycleReport,
+) -> Result<Option<MemoryJournalEntry>> {
+    if report.phase != "sync_turn" {
+        return Ok(None);
+    }
+    let skipped_note = report
+        .notes
+        .iter()
+        .find(|note| note.to_ascii_lowercase().contains("skipped"));
+    let (action, reason) = if report.records_written > 0 {
+        (
+            MemoryJournalAction::Append,
+            "sync_turn wrote turn summary".to_owned(),
+        )
+    } else if let Some(note) = skipped_note {
+        let reason = if note.to_ascii_lowercase().contains("redacted")
+            || note.to_ascii_lowercase().contains("secret")
+        {
+            "sync_turn skipped because redaction marker was present".to_owned()
+        } else {
+            format!("sync_turn {note}")
+        };
+        (MemoryJournalAction::Skip, reason)
+    } else {
+        return Ok(None);
+    };
+
+    let mut entry = MemoryJournalEntry::new(action, reason)?;
+    if let Some(source_ref) = report.source_ref.clone() {
+        entry = entry.with_source_ref(source_ref)?;
+    }
+    journal.append(entry).map(Some)
 }
 
 fn redacted_chat_error(error: IkarosError) -> IkarosError {

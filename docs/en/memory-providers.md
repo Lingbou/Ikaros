@@ -29,15 +29,17 @@ The built-in local provider is always active. External provider descriptors are
 metadata until a remote adapter exists; declaring one does not redirect local
 writes. `ikaros config validate` rejects enabled external providers.
 
-M2.5 also adds the first memory policy boundary:
+The memory policy boundary includes:
 
 - `MemoryScore`: recency, relevance, frequency, and source-strength inputs.
 - `MemoryPolicy`: promote, demote, forget, and per-scope quota thresholds.
 - `MemoryJournal`: append-only policy/action records.
 - `JsonlMemoryJournal`: local `memory_journal.jsonl` implementation.
 
-The journal is an audit and replay aid for memory lifecycle decisions. It does
-not replace the memory store, and it does not enable external memory providers.
+The journal is an audit and replay aid for memory lifecycle decisions. Runtime
+chat writes `sync_turn` append or skipped-write decisions to the journal. It
+does not replace the memory store, and it does not enable external memory
+providers.
 
 Inspect provider state with:
 
@@ -84,6 +86,23 @@ Every lifecycle hook returns a `MemoryLifecycleReport` with phase,
 records-read, records-written, and notes. A noop report is only produced by an
 explicit provider implementation; it is not a trait fallback.
 
+Runtime chat persists `turn_start` and `sync_turn` reports as
+`MemoryLifecycle` session events. `sync_turn` reports include
+`MemoryRef::SessionTurn` when they can be tied to a turn. If the local provider
+sees a redaction marker in the derived turn summary, it records a skipped write
+instead of storing the summary.
+
+Inspect persisted lifecycle evidence with:
+
+```bash
+ikaros debug memory-lifecycle <session-id>
+ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
+```
+
+The command reads `state.db` plus `memory_journal.jsonl` and reports lifecycle
+phases, records read/written, `MemoryRef::SessionTurn`, skipped-write reasons,
+and redaction-related notes.
+
 ## Runtime Context
 
 Chat context assembly uses memory through harness safe-read skills. The skill
@@ -124,8 +143,9 @@ implemented.
 - Secret-like memory content is rejected or redacted.
 - Memory records can carry a structured `MemoryRef` such as a session turn,
   session entry, skill call, or manual note.
-- Memory policy actions should be recorded in `MemoryJournal` when promotion,
-  demotion, forgetting, or skipped writes become part of runtime behavior.
+- Runtime `sync_turn` append and skipped-write decisions are recorded in
+  `MemoryJournal`; promotion, demotion, forgetting, and quota decisions should
+  use the same journal boundary when those behaviors are enabled.
 - Relationship, task, project, and knowledge memory should not silently diverge across multiple providers.
 
 ## Failure Handling

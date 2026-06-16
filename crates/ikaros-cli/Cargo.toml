@@ -25,6 +25,7 @@ ikaros-models = { path = "../ikaros-models" }
 ikaros-rag = { path = "../ikaros-rag" }
 ikaros-runtime = { path = "../ikaros-runtime" }
 ikaros-service = { path = "../ikaros-service" }
+ikaros-session = { path = "../ikaros-session" }
 ikaros-skills = { path = "../ikaros-skills" }
 ikaros-soul = { path = "../ikaros-soul" }
 ikaros-voice = { path = "../ikaros-voice" }

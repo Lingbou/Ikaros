@@ -101,6 +101,15 @@ Parser 识别：
 
 Replay/debug/UI 应使用这个 event 检查 context，而不是解析已经渲染好的 prompt。
 
+使用 debug CLI 可以直接查看持久化 event payload，不需要反推 prompt：
+
+```bash
+ikaros debug context-diff <session-id>
+ikaros debug context-diff <session-id> --turn-id <turn-id>
+```
+
+如果 session 或指定 turn 不存在，命令会失败。JSON 输出会脱敏，并包含 estimator、模型推导的 budget、section token 计数、已解析 reference、compressed/protected context evidence、compaction summary、continuation prompt，以及本轮的 context-limit error event。
+
 ## 安全
 
 Context assembly 可以用真实本地输入调用 safe-read skill，但审计输入会脱敏。Reference content 在进入 prompt 或 session event payload 前会脱敏。

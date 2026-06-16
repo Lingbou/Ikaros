@@ -34,6 +34,17 @@ Chat message 可以包含本地 context reference，例如 `@file:path:line-line
 `--context-token-budget 0` 表示让 runtime chat 使用 provider 推导出来的可用 context window，不表示可以绕过模型上下文窗口。
 持久化的 context diff 会记录本轮选择的 token estimator adapter，例如 OpenAI-compatible、mock，或 Anthropic/Ollama 的显式 fallback。
 
+调试持久化 session evidence：
+
+```bash
+ikaros debug context-diff <session-id>
+ikaros debug context-diff <session-id> --turn-id <turn-id>
+ikaros debug memory-lifecycle <session-id>
+ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
+```
+
+`context-diff` 读取 `state.db`，报告 estimator、budget、context window、section token 估算、added/removed/compressed context、已解析 reference、compaction summary、continuation prompt、`ContextCompacted` 和 context-limit error。`memory-lifecycle` 读取 session timeline 和 `memory_journal.jsonl`，查询匹配的 `MemoryLifecycle` event、`MemoryRef::SessionTurn` 关联、skipped write 和 redaction 相关 note。
+
 记忆和关系笔记：
 
 ```bash

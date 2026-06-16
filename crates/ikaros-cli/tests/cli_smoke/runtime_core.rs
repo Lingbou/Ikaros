@@ -3,6 +3,11 @@
 use std::fs;
 
 use crate::support::TestHome;
+use ikaros_session::{
+    AgentEvent, AgentEventKind, AgentEventSource, SessionId, SessionRecord, SessionSource,
+    SessionStore, SqliteSessionStore, TurnId,
+};
+use serde_json::json;
 
 #[test]
 fn init_doctor_chat_and_task_dry_run_work_with_explicit_offline_mock_config() {
@@ -186,6 +191,209 @@ fn local_memory_and_message_gateway_smoke_paths_run_offline() {
     assert!(drained.contains("\"status\": \"Pending\""));
     assert!(drained.contains("gateway_inbox:"));
     assert!(drained.contains("gateway_outbox:"));
+}
+
+#[test]
+fn debug_context_and_memory_lifecycle_queries_session_timeline() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    fs::write(
+        env.workspace.join("notes.md"),
+        "alpha reference line\nbeta reference line\n",
+    )
+    .expect("write reference");
+
+    let chat = env.run([
+        "chat",
+        "--message",
+        "answer using @file:notes.md token=abc123",
+        "--no-agent-loop",
+    ]);
+    let session_id = chat
+        .lines()
+        .find_map(|line| line.strip_prefix("chat_session: "))
+        .expect("chat session id");
+
+    let context = env.run(["debug", "context-diff", session_id]);
+    let context_json: serde_json::Value = serde_json::from_str(&context).expect("context json");
+    let turn_id = context_json["turns"]
+        .as_array()
+        .and_then(|turns| turns.first())
+        .and_then(|turn| turn.as_str())
+        .expect("context turn id")
+        .to_owned();
+    assert!(context.contains("\"estimator\": \"mock-tokenizer-v1\""));
+    assert!(context.contains("\"context_window\": 8192"));
+    assert!(context.contains("\"context_compacted\": false"));
+    assert!(context.contains("\"references\""));
+    assert!(context.contains("@file:notes.md"));
+    assert!(context.contains("\"sections\""));
+    assert!(!context.contains("abc123"));
+
+    let memory = env.run(["debug", "memory-lifecycle", session_id]);
+    assert!(memory.contains("\"phase\": \"turn_start\""));
+    assert!(memory.contains("\"phase\": \"sync_turn\""));
+    assert!(memory.contains("\"skipped\": true"));
+    assert!(memory.contains("\"redaction_related\": true"));
+    assert!(memory.contains("\"type\": \"session_turn\""));
+    assert!(memory.contains("\"action\": \"skip\""));
+    assert!(memory.contains("memory_journal.jsonl"));
+    assert!(!memory.contains("abc123"));
+
+    let missing = env.run_failure(["debug", "context-diff", "missing-session"]);
+    assert!(missing.contains("session not found"));
+    let missing_turn = env.run_failure([
+        "debug",
+        "context-diff",
+        session_id,
+        "--turn-id",
+        "missing-turn",
+    ]);
+    assert!(missing_turn.contains("turn not found"));
+
+    let memory_turn = env.run([
+        "debug",
+        "memory-lifecycle",
+        session_id,
+        "--turn-id",
+        &turn_id,
+    ]);
+    assert!(memory_turn.contains("\"phase\": \"sync_turn\""));
+    assert!(!memory_turn.contains("abc123"));
+}
+
+#[test]
+fn debug_context_diff_explains_compacted_protected_reference_context() {
+    let env = TestHome::new();
+    env.init();
+    let state_dir = env.home.join("agents/debug");
+    let store = SqliteSessionStore::new(&state_dir);
+    let session_id = SessionId::from("debug-context-session");
+    let turn_id = TurnId::from("debug-turn");
+    store
+        .upsert_session(&SessionRecord::new(session_id.clone(), SessionSource::Cli))
+        .expect("session");
+    store
+        .append_agent_event(&AgentEvent::new(
+            session_id.clone(),
+            turn_id.clone(),
+            None,
+            AgentEventSource::Context,
+            AgentEventKind::ContextDiff,
+            json!({
+                "budget": {
+                    "estimator": "fixture-estimator-v1",
+                    "context_window": 128,
+                    "max_tokens": 64,
+                    "used_tokens": 50
+                },
+                "sections": [
+                    {
+                        "kind": "references",
+                        "label": "References",
+                        "estimated_tokens": 10,
+                        "protected": true,
+                        "lines": ["@file:src/lib.rs:1-2"]
+                    },
+                    {
+                        "kind": "history",
+                        "label": "History",
+                        "estimated_tokens": 40,
+                        "protected": false
+                    }
+                ],
+                "diff": {
+                    "added": [
+                        {
+                            "section": "references",
+                            "tokens": 10,
+                            "preview": "@file:src/lib.rs:1-2"
+                        }
+                    ],
+                    "removed": [
+                        {
+                            "section": "rag",
+                            "tokens": 5,
+                            "preview": "stale retrieval"
+                        }
+                    ],
+                    "compressed": [
+                        {
+                            "section": "history",
+                            "tokens": 20,
+                            "preview": "older history detail"
+                        }
+                    ]
+                },
+                "references": [
+                    {
+                        "reference": {
+                            "raw": "@file:src/lib.rs:1-2",
+                            "kind": {
+                                "type": "file",
+                                "data": {
+                                    "path": "src/lib.rs",
+                                    "start_line": 1,
+                                    "end_line": 2
+                                }
+                            }
+                        },
+                        "line": "fn example()"
+                    }
+                ],
+                "compressed_sections": [
+                    {
+                        "section": "history",
+                        "original_tokens": 40,
+                        "kept_tokens": 20,
+                        "omitted_tokens": 20,
+                        "omitted_lines": 3
+                    }
+                ],
+                "compression_summary": "history: omitted 3 line(s), about 20 tokens",
+                "continuation_prompt": "Some local context was compacted; do not invent omitted details.",
+                "protected_sections": ["references"]
+            }),
+        ))
+        .expect("context diff event");
+    store
+        .append_agent_event(&AgentEvent::new(
+            session_id.clone(),
+            turn_id.clone(),
+            None,
+            AgentEventSource::Context,
+            AgentEventKind::ContextCompacted,
+            json!({
+                "summary": "history: omitted 3 line(s), about 20 tokens",
+                "continuation_prompt": "Some local context was compacted; do not invent omitted details.",
+                "compressed_sections": [
+                    {
+                        "section": "history",
+                        "omitted_tokens": 20,
+                        "omitted_lines": 3
+                    }
+                ]
+            }),
+        ))
+        .expect("compaction event");
+
+    let output = env.run([
+        "debug",
+        "context-diff",
+        "debug-context-session",
+        "--turn-id",
+        "debug-turn",
+    ]);
+    assert!(output.contains("\"estimator\": \"fixture-estimator-v1\""));
+    assert!(output.contains("\"context_window\": 128"));
+    assert!(output.contains("\"context_compacted\": true"));
+    assert!(output.contains("\"compressed\""));
+    assert!(output.contains("\"protected\": true"));
+    assert!(output.contains("\"protected_sections\""));
+    assert!(output.contains("@file:src/lib.rs:1-2"));
+    assert!(output.contains("history: omitted 3 line(s), about 20 tokens"));
+    assert!(output.contains("do not invent omitted details"));
 }
 
 #[test]

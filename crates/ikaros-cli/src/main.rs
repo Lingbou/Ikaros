@@ -7,6 +7,7 @@ mod body;
 mod chat;
 mod code;
 mod config;
+mod debug;
 mod diagnostics;
 mod fs;
 mod git;

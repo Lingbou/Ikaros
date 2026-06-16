@@ -137,6 +137,19 @@ payload includes:
 Consumers should use this event for replay/debug/UI context inspection instead
 of parsing the rendered prompt.
 
+Use the debug CLI to inspect the persisted event payload without reconstructing
+the prompt:
+
+```bash
+ikaros debug context-diff <session-id>
+ikaros debug context-diff <session-id> --turn-id <turn-id>
+```
+
+The command fails if the session or requested turn is missing. JSON output is
+redacted and includes the estimator, model-derived budget, section token
+counts, parsed references, compressed/protected context evidence, compaction
+summary, continuation prompt, and any context-limit error event for the turn.
+
 ## Safety
 
 Context assembly may call safe-read skills with real local inputs, but those

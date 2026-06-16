@@ -21,14 +21,14 @@ Registry state：
 
 内置本地 provider 始终 active。外部 provider descriptor 在远程 adapter 启用前只是元数据；声明它不会重定向本地写入。`ikaros config validate` 会拒绝启用的外部 provider。
 
-M2.5 也加入了第一层 memory policy 边界：
+Memory policy 边界包括：
 
 - `MemoryScore`：recency、relevance、frequency 和 source-strength 输入。
 - `MemoryPolicy`：promote、demote、forget 和 per-scope quota 阈值。
 - `MemoryJournal`：append-only 的策略/action 记录。
 - `JsonlMemoryJournal`：本地 `memory_journal.jsonl` 实现。
 
-Journal 是 memory lifecycle 决策的审计和 replay 辅助。它不替代 memory store，也不代表外部 memory provider 已经可执行。
+Journal 是 memory lifecycle 决策的审计和 replay 辅助。Runtime chat 会把 `sync_turn` append 或 skipped-write 决策写入 journal。它不替代 memory store，也不代表外部 memory provider 已经可执行。
 
 检查 provider 状态：
 
@@ -63,6 +63,17 @@ Lifecycle context：
 
 每个 lifecycle hook 返回 `MemoryLifecycleReport`，包含 phase、records-read、records-written 和 notes。Noop report 只来自显式 provider 实现，不再是 trait fallback。
 
+Runtime chat 会把 `turn_start` 和 `sync_turn` report 持久化为 `MemoryLifecycle` session event。可以关联具体 turn 的 `sync_turn` report 会带上 `MemoryRef::SessionTurn`。如果本地 provider 在派生 turn summary 中发现 redaction marker，它会记录 skipped write，而不是存储 summary。
+
+查看持久化 lifecycle evidence：
+
+```bash
+ikaros debug memory-lifecycle <session-id>
+ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
+```
+
+命令会读取 `state.db` 和 `memory_journal.jsonl`，报告 lifecycle phase、records read/written、`MemoryRef::SessionTurn`、skipped-write 原因和 redaction 相关 note。
+
 ## Runtime Context
 
 Chat context assembly 通过 harness safe-read skill 使用 memory。Skill 用真实本地 query 执行，但写入脱敏 audit input，因此 audit log 不保存完整 prompt。Relationship memory 是 `MemoryKind::Relationship`；普通 memory section 会排除这种 kind，因为它会单独渲染进 relationship section。两条路径都不能绕过 policy。
@@ -91,7 +102,7 @@ memory:
 - 在真实 adapter 实现前，外部 provider descriptor 不是 runtime 能力。
 - Secret-like memory 内容会被拒绝或脱敏。
 - Memory record 可以携带结构化 `MemoryRef`，例如 session turn、session entry、skill call 或 manual note。
-- 当 promotion、demotion、forget 或 skipped write 成为 runtime 行为时，应把 memory policy action 写入 `MemoryJournal`。
+- Runtime `sync_turn` append 和 skipped-write 决策会写入 `MemoryJournal`；promotion、demotion、forget 和 quota decision 启用时也应使用同一 journal 边界。
 - Relationship、task、project 和 knowledge memory 不应静默分叉到多个 provider。
 
 ## 失败处理

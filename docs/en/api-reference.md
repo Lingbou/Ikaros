@@ -39,6 +39,22 @@ available context window. It does not bypass the model context window.
 The persisted context diff records the selected token estimator adapter, such as
 OpenAI-compatible, mock, or an explicit Anthropic/Ollama fallback.
 
+Debug persisted session evidence:
+
+```bash
+ikaros debug context-diff <session-id>
+ikaros debug context-diff <session-id> --turn-id <turn-id>
+ikaros debug memory-lifecycle <session-id>
+ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
+```
+
+`context-diff` reads `state.db` and reports the estimator, budget, context
+window, section token estimates, added/removed/compressed context, parsed
+references, compaction summary, continuation prompt, `ContextCompacted`, and
+context-limit errors. `memory-lifecycle` reads the session timeline and
+`memory_journal.jsonl` for matching `MemoryLifecycle` events,
+`MemoryRef::SessionTurn` links, skipped writes, and redaction-related notes.
+
 Memory and relationship notes:
 
 ```bash

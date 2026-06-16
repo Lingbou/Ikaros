@@ -178,10 +178,12 @@ Those session entries and chat agent events for one turn commit or roll back
 together. Chat history, memory records, relationship learning, and audit writes
 are still separate stores for now. Memory sync can write a redacted turn-summary
 record with `MemoryRef::SessionTurn`; the session timeline only stores the
-high-level lifecycle evidence. Approval requests created by a persisting
-agent-loop turn are double-written into the session approval table with
-redacted request data; later approve, deny, or execute decisions update the
-same session approval record and emit `ApprovalResolved`.
+high-level lifecycle evidence. The local memory journal records the matching
+`sync_turn` append or skipped-write decision so debug callers can query the
+policy action without reading the memory store directly. Approval requests
+created by a persisting agent-loop turn are double-written into the session
+approval table with redacted request data; later approve, deny, or execute
+decisions update the same session approval record and emit `ApprovalResolved`.
 
 Provider failures and local post-processing failures are recorded before the
 turn is reported as failed. A failed chat turn keeps the user `SessionEntry`,
