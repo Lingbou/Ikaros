@@ -41,7 +41,10 @@ pub struct AudioOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AsrRequest {
-    pub audio_path: PathBuf,
+    #[serde(skip)]
+    pub audio: Vec<u8>,
+    #[serde(skip)]
+    pub file_name: Option<String>,
     pub format: Option<AudioFormat>,
     pub sample_rate_hz: Option<u32>,
     pub language: Option<String>,

@@ -9,10 +9,7 @@ use ikaros_voice::{
     tts_provider_from_config,
 };
 use serde_json::json;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct VoiceTtsSkill {
@@ -117,10 +114,10 @@ impl Skill for VoiceTtsSkill {
 
         if let Some(path) = optional_input_path(&input, "path", &ctx.session.sandbox.workspace_root)
         {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|source| IkarosError::io(parent, source))?;
-            }
-            fs::write(&path, &output.bytes).map_err(|source| IkarosError::io(&path, source))?;
+            ctx.session
+                .env
+                .write_bytes(&path, output.bytes.clone())
+                .await?;
             output.path = Some(path);
         }
 
@@ -208,13 +205,10 @@ impl Skill for VoiceAsrSkill {
 
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
         let path = input_path(&input, &ctx.session.sandbox.workspace_root)?;
-        let metadata = fs::metadata(&path).map_err(|source| IkarosError::io(&path, source))?;
-        if !metadata.is_file() {
-            return Err(IkarosError::Message(format!(
-                "audio path is not a file: {}",
-                path.display()
-            )));
-        }
+        let audio = ctx.session.env.read_bytes(&path).await?;
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
         let language = input
             .get("language")
             .and_then(serde_json::Value::as_str)
@@ -228,7 +222,8 @@ impl Skill for VoiceAsrSkill {
         let provider = asr_provider_from_config(&self.config, &self.provider_settings)?;
         let transcript = provider
             .transcribe(AsrRequest {
-                audio_path: path,
+                audio,
+                file_name,
                 format: format.clone(),
                 sample_rate_hz,
                 language: language.clone(),

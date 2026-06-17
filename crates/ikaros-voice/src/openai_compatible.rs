@@ -12,7 +12,7 @@ use reqwest::{
     multipart,
 };
 use serde::{Deserialize, Serialize};
-use std::{fs, time::Duration};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleVoiceProvider {
@@ -131,21 +131,21 @@ impl AsrProvider for OpenAiCompatibleVoiceProvider {
 
     async fn transcribe(&self, request: AsrRequest) -> Result<Transcript> {
         let key = self.api_key()?;
-        let bytes = fs::read(&request.audio_path)
-            .map_err(|source| IkarosError::io(&request.audio_path, source))?;
         let url = format!("{}/audio/transcriptions", self.base_url);
         let mut last_error = None;
         for attempt in 0..=self.max_retries {
-            let file_name = request
-                .format
-                .as_ref()
-                .map(|format| format!("audio.{}", format.as_str()))
-                .unwrap_or_else(|| "audio".into());
+            let file_name = request.file_name.clone().unwrap_or_else(|| {
+                request
+                    .format
+                    .as_ref()
+                    .map(|format| format!("audio.{}", format.as_str()))
+                    .unwrap_or_else(|| "audio".into())
+            });
             let mut form = multipart::Form::new()
                 .text("model", self.model.clone())
                 .part(
                     "file",
-                    multipart::Part::bytes(bytes.clone()).file_name(file_name),
+                    multipart::Part::bytes(request.audio.clone()).file_name(file_name),
                 );
             if let Some(language) = &request.language {
                 form = form.text("language", language.clone());

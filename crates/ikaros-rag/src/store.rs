@@ -4,7 +4,9 @@ use crate::{
     factory::{with_embedding_provider, with_embedding_provider_config},
     jsonl::LocalRagIndex,
     sqlite::SqliteRagIndex,
-    types::{IngestOptions, IngestReport, RagHit, RagQuery, RagStore},
+    types::{
+        IngestOptions, IngestReport, IngestSourceFile, RagHit, RagIndexedFile, RagQuery, RagStore,
+    },
 };
 use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result};
 use std::path::{Path, PathBuf};
@@ -59,6 +61,27 @@ impl LocalRagStore {
             Self::Sqlite(store) => {
                 with_embedding_provider_config(config, provider_settings, |provider| {
                     store.ingest_path_with_embedding(path, options, provider)
+                })
+            }
+        }
+    }
+
+    pub fn ingest_sources_with_embedding_config(
+        &self,
+        sources: Vec<IngestSourceFile>,
+        options: IngestOptions,
+        config: &RagConfig,
+        provider_settings: &RemoteProviderConfig,
+    ) -> Result<IngestReport> {
+        match self {
+            Self::Jsonl(store) => {
+                with_embedding_provider_config(config, provider_settings, |provider| {
+                    store.ingest_sources_with_embedding(sources, options, provider)
+                })
+            }
+            Self::Sqlite(store) => {
+                with_embedding_provider_config(config, provider_settings, |provider| {
+                    store.ingest_sources_with_embedding(sources, options, provider)
                 })
             }
         }
@@ -126,6 +149,13 @@ impl RagStore for LocalRagStore {
         match self {
             Self::Jsonl(store) => store.delete_path(path),
             Self::Sqlite(store) => store.delete_path(path),
+        }
+    }
+
+    fn indexed_files(&self) -> Result<Vec<RagIndexedFile>> {
+        match self {
+            Self::Jsonl(store) => store.indexed_files(),
+            Self::Sqlite(store) => store.indexed_files(),
         }
     }
 

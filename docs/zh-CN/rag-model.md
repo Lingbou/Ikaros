@@ -52,6 +52,12 @@ RAG ingestion 会：
 - 检测 stale file
 - 按 scope 或 source path 删除
 
+面向模型的 `rag_ingest` 和 `rag_reindex` skill 会通过 session `ExecutionEnv`
+filesystem interface 遍历 workspace path 并读取文件文本。RAG backend 接收已经读取的
+source text 和 metadata，负责 index 存储、embedding、search、stale 检测和删除。
+`rag_stale` 会先从 backend 读取已索引 source metadata，再通过 `ExecutionEnv`
+检查当前 workspace metadata；tool 路径不能绕过 harness 边界直接检查 host 文件。
+
 常用命令：
 
 ```bash

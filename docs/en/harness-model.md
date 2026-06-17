@@ -91,11 +91,25 @@ workspace, skill, risk, input, and agent identity that were approved.
 
 `ExecutionEnv` narrows host operations into three interfaces:
 
-- `FileSystem`: read/write files, create directories, list directories.
+- `FileSystem`: read path metadata, read/write text and bytes, create directories, list directories.
 - `ProcessRunner`: run structured process requests.
 - `NetworkEgress`: network egress requests.
 
-The MVP default implementation is `LocalExecutionEnv`. Filesystem skills, shell commands, coding helpers, RAG maintenance, voice output, and command-backed plugins should use session/env instead of calling host APIs directly.
+The default session environment is `WorkspaceExecutionEnv`, a scoped wrapper
+around the local backend. `LocalExecutionEnv` remains the raw host backend used
+by tests and future environment implementations; normal runtime sessions should
+not attach it directly unless they intentionally want to bypass workspace
+scoping.
+
+`WorkspaceExecutionEnv` resolves relative paths against the session workspace.
+Filesystem writes, byte writes, directory creation, file removal, and process
+working directories must stay under the workspace root. The scope check uses both
+lexical normalization and canonical existing-path anchors, so `..` paths and
+symlink escapes cannot turn an approved workspace operation into an external
+host write. Filesystem skills, shell commands, coding helpers, RAG maintenance,
+voice output, voice ASR audio reads, self-modify workspace reads/writes/checks,
+and command-backed plugins should use session/env instead of calling host APIs
+directly.
 
 `ProcessRequest` has two modes:
 
@@ -118,7 +132,7 @@ code.
 - `shell_guarded` no longer executes arbitrary shell strings; it accepts only allowlisted test/check commands and runs them as program + args.
 - `git_status` and `git_diff` are fixed structured commands.
 - `run_tests` reuses the same test/check allowlist.
-- Command-backed plugins do not execute through a shell; manifest `program` must be relative and must canonicalize under the plugin directory.
+- Command-backed plugins do not execute through a shell; manifest `program` must be relative and must canonicalize under the plugin directory. The resolved program is executed with the session workspace as cwd, not the plugin installation directory.
 - Plugin manifests reject abnormal timeouts, too many args, oversized args, and control characters.
 - Plugin runtime limits stdin, stdout/stderr, and timeout, then redacts output before audit/reporting.
 

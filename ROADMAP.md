@@ -32,9 +32,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Derive more runtime reports from persisted event streams rather than carrying
   separate one-off summaries.
 - Refine tool continuation behavior and report fields for automation users.
-- Extend the current cancellation checkpoints and descriptor-driven
-  parallel/sequential scheduling toward external abort propagation,
-  in-flight tool cancellation, and richer timeout reporting.
+- Extend cancellation beyond the current provider/tool checkpoints and
+  in-flight tool future cancellation toward external abort propagation and
+  richer timeout reporting.
 - Continue separating provider transport concerns from turn-loop ownership.
 - Keep provider request quirks inside model adapters and compatibility profiles,
   not in the runtime turn loop.
@@ -75,6 +75,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 
 ## Execution Environment
 
+- Preserve the workspace-scoped local environment as the baseline contract:
+  writes, removals, directory creation, and process cwd stay under the session
+  workspace, including symlink escape checks.
 - Define isolation levels, mount rules, and network-egress behavior before adding non-local execution backends.
 - Add Docker, ssh, and dry-run `ExecutionEnv` backends after the isolation contract is testable.
 - Route file, process, network, plugin, shell, test, and coding helpers through the environment abstraction.

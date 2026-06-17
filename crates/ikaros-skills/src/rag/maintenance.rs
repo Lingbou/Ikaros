@@ -36,8 +36,22 @@ impl Skill for RagStaleSkill {
         RiskLevel::SafeRead
     }
 
-    async fn execute(&self, _input: serde_json::Value, _ctx: SkillContext) -> Result<SkillOutput> {
-        let stale = self.index.stale_files()?;
+    async fn execute(&self, _input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
+        let mut stale = Vec::new();
+        for indexed in self.index.indexed_files()? {
+            let current = ctx
+                .session
+                .env
+                .path_metadata(&indexed.source_path)
+                .await
+                .ok()
+                .and_then(|metadata| metadata.modified_at);
+            if current != indexed.modified_at {
+                stale.push(indexed.source_path);
+            }
+        }
+        stale.sort();
+        stale.dedup();
         Ok(SkillOutput::new(
             format!("{} stale RAG file(s)", stale.len()),
             json!({"stale_files": stale}),

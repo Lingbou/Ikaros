@@ -3,9 +3,9 @@
 use super::*;
 use ikaros_core::Result;
 use ikaros_harness::{
-    ApprovalStatus, ExecutionEnv, ExecutionSession, FileSystem, LocalExecutionEnv, NetworkEgress,
-    NetworkEgressRequest, NetworkEgressResponse, ProcessOutput, ProcessRequest, ProcessRunner,
-    Skill, SkillContext, SkillOutput,
+    ApprovalStatus, ExecutionEnv, ExecutionSession, FileMetadata, FileSystem, LocalExecutionEnv,
+    NetworkEgress, NetworkEgressRequest, NetworkEgressResponse, ProcessOutput, ProcessRequest,
+    ProcessRunner, Skill, SkillContext, SkillOutput,
 };
 use ikaros_memory::{LocalMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryStore};
 use ikaros_rag::{LocalRagStore, RagQuery, RagStore};
@@ -25,15 +25,33 @@ use std::{
 };
 
 struct TrackingEnv {
+    reads: Arc<AtomicUsize>,
     writes: Arc<AtomicUsize>,
 }
 
 impl FileSystem for TrackingEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.path_metadata(path)
+    }
+
     fn read_to_string<'a>(
         &'a self,
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         LocalExecutionEnv.read_to_string(path)
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.read_bytes(path)
     }
 
     fn write_string<'a>(
@@ -43,6 +61,15 @@ impl FileSystem for TrackingEnv {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         LocalExecutionEnv.write_string(path, content)
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.write_bytes(path, content)
     }
 
     fn create_dir_all<'a>(
@@ -379,6 +406,102 @@ async fn rag_maintenance_skills_run_through_harness() {
         })
         .expect("search after delete")
         .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn rag_ingest_reads_workspace_files_through_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("doc.md"), "env routed index entry").expect("doc");
+    let rag = LocalRagStore::new(temp.path().join("rag"), "jsonl").expect("rag");
+    let registry = builtin_registry(SkillEnvironment {
+        rag_index: rag.clone(),
+        ..test_env(temp.path(), &workspace)
+    });
+    let reads = Arc::new(AtomicUsize::new(0));
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
+        Arc::new(TrackingEnv {
+            reads: reads.clone(),
+            writes: Arc::new(AtomicUsize::new(0)),
+        }),
+    );
+
+    let ingest = session
+        .execute_skill(
+            &registry,
+            "rag_ingest",
+            json!({"path": "doc.md", "scope": "env"}),
+        )
+        .await
+        .expect("ingest");
+    let search = session
+        .execute_skill(
+            &registry,
+            "rag_search",
+            json!({"query": "routed", "scope": "env"}),
+        )
+        .await
+        .expect("search");
+
+    assert!(ingest.ok);
+    assert!(search.ok);
+    assert_eq!(search.output.as_array().expect("hits").len(), 1);
+    assert!(
+        reads.load(Ordering::SeqCst) > 0,
+        "rag ingest workspace reads must go through ExecutionEnv"
+    );
+}
+
+#[tokio::test]
+async fn rag_stale_checks_workspace_metadata_through_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    let doc = workspace.join("doc.md");
+    fs::write(&doc, "env stale candidate").expect("doc");
+    let rag = LocalRagStore::new(temp.path().join("rag"), "jsonl").expect("rag");
+    let registry = builtin_registry(SkillEnvironment {
+        rag_index: rag.clone(),
+        ..test_env(temp.path(), &workspace)
+    });
+    let reads = Arc::new(AtomicUsize::new(0));
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
+        Arc::new(TrackingEnv {
+            reads: reads.clone(),
+            writes: Arc::new(AtomicUsize::new(0)),
+        }),
+    );
+    session
+        .execute_skill(
+            &registry,
+            "rag_ingest",
+            json!({"path": "doc.md", "scope": "env"}),
+        )
+        .await
+        .expect("ingest");
+    let reads_before_stale = reads.load(Ordering::SeqCst);
+    fs::remove_file(&doc).expect("remove");
+
+    let stale = session
+        .execute_skill(&registry, "rag_stale", json!({}))
+        .await
+        .expect("stale");
+
+    assert!(stale.ok);
+    assert_eq!(
+        stale
+            .output
+            .get("stale_files")
+            .and_then(serde_json::Value::as_array)
+            .expect("stale files")
+            .len(),
+        1
+    );
+    assert!(
+        reads.load(Ordering::SeqCst) > reads_before_stale,
+        "rag stale metadata checks must go through ExecutionEnv"
     );
 }
 
@@ -811,6 +934,7 @@ async fn guarded_code_edit_applies_patch_through_execution_env() {
     let writes = Arc::new(AtomicUsize::new(0));
     let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
         Arc::new(TrackingEnv {
+            reads: Arc::new(AtomicUsize::new(0)),
             writes: writes.clone(),
         }),
     );
@@ -917,6 +1041,46 @@ async fn voice_tts_output_path_requires_approval_then_writes() {
     let audio = fs::read_to_string(workspace.join("voice/out.mock.wav")).expect("audio");
     assert!(audio.contains("IKAROS_MOCK_TTS"));
     assert!(audio.contains("hello voice"));
+}
+
+#[tokio::test]
+async fn voice_tts_output_path_writes_through_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    let registry = builtin_registry(test_env(temp.path(), &workspace));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
+        Arc::new(TrackingEnv {
+            reads: Arc::new(AtomicUsize::new(0)),
+            writes: writes.clone(),
+        }),
+    );
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "voice_tts",
+            json!({"text": "hello voice", "format": "wav", "path": "voice/out.mock.wav"}),
+        )
+        .await
+        .expect("approval request");
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("approval id");
+    session
+        .decide_approval(approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+    let executed = session
+        .execute_approved_skill(&registry, approval_id)
+        .await
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    assert!(
+        writes.load(Ordering::SeqCst) > 0,
+        "voice output writes must go through ExecutionEnv"
+    );
 }
 
 #[tokio::test]
@@ -1028,6 +1192,42 @@ async fn voice_asr_reads_workspace_audio_without_path_transcript() {
             .as_str()
             .expect("transcript")
             .contains("sample.wav")
+    );
+}
+
+#[tokio::test]
+async fn voice_asr_reads_audio_through_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("sample.wav"), b"mock audio").expect("audio");
+    let registry = builtin_registry(test_env(temp.path(), &workspace));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
+        Arc::new(TrackingEnv {
+            reads: reads.clone(),
+            writes: Arc::new(AtomicUsize::new(0)),
+        }),
+    );
+
+    let result = session
+        .execute_skill(
+            &registry,
+            "voice_asr",
+            json!({
+                "path": "sample.wav",
+                "format": "wav",
+                "sample_rate_hz": 16000,
+                "language": "en"
+            }),
+        )
+        .await
+        .expect("asr");
+
+    assert!(result.ok);
+    assert!(
+        reads.load(Ordering::SeqCst) > 0,
+        "voice ASR audio reads must go through ExecutionEnv"
     );
 }
 

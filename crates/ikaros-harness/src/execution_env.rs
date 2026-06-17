@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     future::Future,
+    path::Component,
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
@@ -17,15 +18,31 @@ use tokio::{
 };
 
 pub trait FileSystem: Send + Sync {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>>;
+
     fn read_to_string<'a>(
         &'a self,
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
+
     fn write_string<'a>(
         &'a self,
         path: &'a Path,
         content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
     fn create_dir_all<'a>(
@@ -69,6 +86,231 @@ pub trait ExecutionEnv: FileSystem + ProcessRunner + NetworkEgress + Send + Sync
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LocalExecutionEnv;
+
+#[derive(Clone)]
+pub struct WorkspaceExecutionEnv {
+    workspace_root: PathBuf,
+    inner: Arc<dyn ExecutionEnv>,
+}
+
+impl WorkspaceExecutionEnv {
+    pub fn new(workspace_root: impl Into<PathBuf>, inner: Arc<dyn ExecutionEnv>) -> Self {
+        Self {
+            workspace_root: normalize_path(&absolute_path(workspace_root.into())),
+            inner,
+        }
+    }
+
+    pub fn local(workspace_root: impl Into<PathBuf>) -> Self {
+        Self::new(workspace_root, Arc::new(LocalExecutionEnv))
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    fn resolve_path(&self, path: &Path) -> PathBuf {
+        normalize_path(&if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.workspace_root.join(path)
+        })
+    }
+
+    fn ensure_lexically_in_workspace(&self, path: &Path) -> Result<PathBuf> {
+        let resolved = self.resolve_path(path);
+        if !resolved.starts_with(&self.workspace_root) {
+            return Err(IkarosError::OutOfScope(resolved));
+        }
+        Ok(resolved)
+    }
+
+    fn ensure_write_path(&self, path: &Path) -> Result<PathBuf> {
+        let resolved = self.ensure_lexically_in_workspace(path)?;
+        if let Ok(canonical) = fs::canonicalize(&resolved) {
+            self.ensure_canonical_in_workspace(&resolved, &canonical)?;
+            return Ok(resolved);
+        }
+        let parent = resolved
+            .parent()
+            .ok_or_else(|| IkarosError::OutOfScope(resolved.clone()))?;
+        self.ensure_existing_anchor_in_workspace(parent)?;
+        Ok(resolved)
+    }
+
+    fn ensure_create_dir_path(&self, path: &Path) -> Result<PathBuf> {
+        let resolved = self.ensure_lexically_in_workspace(path)?;
+        if let Ok(canonical) = fs::canonicalize(&resolved) {
+            self.ensure_canonical_in_workspace(&resolved, &canonical)?;
+            return Ok(resolved);
+        }
+        self.ensure_existing_anchor_in_workspace(&resolved)?;
+        Ok(resolved)
+    }
+
+    fn ensure_existing_workspace_path(&self, path: &Path) -> Result<PathBuf> {
+        let resolved = self.ensure_lexically_in_workspace(path)?;
+        let canonical =
+            fs::canonicalize(&resolved).map_err(|source| IkarosError::io(&resolved, source))?;
+        self.ensure_canonical_in_workspace(&resolved, &canonical)?;
+        Ok(resolved)
+    }
+
+    fn ensure_existing_anchor_in_workspace(&self, path: &Path) -> Result<()> {
+        if let Ok(canonical) = fs::canonicalize(path) {
+            self.ensure_canonical_in_workspace(path, &canonical)?;
+            return Ok(());
+        }
+        let mut ancestor = path;
+        while let Some(parent) = ancestor.parent() {
+            if parent == self.workspace_root {
+                return Ok(());
+            }
+            if parent.starts_with(&self.workspace_root)
+                && let Ok(canonical) = fs::canonicalize(parent)
+            {
+                self.ensure_canonical_in_workspace(parent, &canonical)?;
+                return Ok(());
+            }
+            ancestor = parent;
+        }
+        Err(IkarosError::OutOfScope(path.to_path_buf()))
+    }
+
+    fn ensure_canonical_in_workspace(&self, requested: &Path, canonical: &Path) -> Result<()> {
+        let canonical_workspace =
+            fs::canonicalize(&self.workspace_root).unwrap_or_else(|_| self.workspace_root.clone());
+        if !canonical.starts_with(&canonical_workspace) {
+            return Err(IkarosError::OutOfScope(requested.to_path_buf()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMetadata {
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+}
+
+impl FileSystem for WorkspaceExecutionEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.resolve_path(path);
+            self.inner.path_metadata(&resolved).await
+        })
+    }
+
+    fn read_to_string<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.resolve_path(path);
+            self.inner.read_to_string(&resolved).await
+        })
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.resolve_path(path);
+            self.inner.read_bytes(&resolved).await
+        })
+    }
+
+    fn write_string<'a>(
+        &'a self,
+        path: &'a Path,
+        content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.ensure_write_path(path)?;
+            self.inner.write_string(&resolved, content).await
+        })
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.ensure_write_path(path)?;
+            self.inner.write_bytes(&resolved, content).await
+        })
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.ensure_create_dir_path(path)?;
+            self.inner.create_dir_all(&resolved).await
+        })
+    }
+
+    fn read_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.resolve_path(path);
+            self.inner.read_dir(&resolved).await
+        })
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let resolved = self.ensure_existing_workspace_path(path)?;
+            self.inner.remove_file(&resolved).await
+        })
+    }
+}
+
+impl ProcessRunner for WorkspaceExecutionEnv {
+    fn run_process<'a>(
+        &'a self,
+        mut request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            request.cwd = self.ensure_existing_workspace_path(&request.cwd)?;
+            self.inner.run_process(request).await
+        })
+    }
+}
+
+impl NetworkEgress for WorkspaceExecutionEnv {
+    fn send_network_request<'a>(
+        &'a self,
+        request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        self.inner.send_network_request(request)
+    }
+}
+
+impl ExecutionEnv for WorkspaceExecutionEnv {
+    fn execute_skill<'a>(
+        &'a self,
+        skill: Arc<dyn Skill>,
+        input: serde_json::Value,
+        session: &'a ExecutionSession,
+    ) -> Pin<Box<dyn Future<Output = Result<SkillOutput>> + Send + 'a>> {
+        self.inner.execute_skill(skill, input, session)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessRequest {
@@ -148,6 +390,23 @@ pub struct NetworkEgressResponse {
 }
 
 impl FileSystem for LocalExecutionEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        Box::pin(async move {
+            let metadata =
+                fs::symlink_metadata(path).map_err(|source| IkarosError::io(path, source))?;
+            let file_type = metadata.file_type();
+            Ok(FileMetadata {
+                is_file: metadata.is_file(),
+                is_dir: metadata.is_dir(),
+                is_symlink: file_type.is_symlink(),
+                modified_at: metadata.modified().ok().and_then(system_time_to_rfc3339),
+            })
+        })
+    }
+
     fn read_to_string<'a>(
         &'a self,
         path: &'a Path,
@@ -157,10 +416,30 @@ impl FileSystem for LocalExecutionEnv {
         )
     }
 
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move { fs::read(path).map_err(|source| IkarosError::io(path, source)) })
+    }
+
     fn write_string<'a>(
         &'a self,
         path: &'a Path,
         content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|source| IkarosError::io(parent, source))?;
+            }
+            fs::write(path, content).map_err(|source| IkarosError::io(path, source))
+        })
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             if let Some(parent) = path.parent() {
@@ -346,6 +625,32 @@ fn configure_process_stdio(cmd: &mut Command, request: &ProcessRequest) {
         .stderr(std::process::Stdio::piped());
 }
 
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 impl NetworkEgress for LocalExecutionEnv {
     fn send_network_request<'a>(
         &'a self,
@@ -378,4 +683,12 @@ impl ExecutionEnv for LocalExecutionEnv {
                 .await
         })
     }
+}
+
+fn system_time_to_rfc3339(time: std::time::SystemTime) -> Option<String> {
+    let duration = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let datetime = ::time::OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64).ok()?;
+    datetime
+        .format(&::time::format_description::well_known::Rfc3339)
+        .ok()
 }

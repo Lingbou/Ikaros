@@ -2,7 +2,8 @@
 
 use super::{
     AgentEventKind, AgentLoopInput, AgentLoopOptions, AgentLoopStopReason,
-    AgentLoopToolCallParseStrategy, run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
+    AgentLoopToolCallParseStrategy, AgentRuntime, HarnessAgentRuntime, RecordingAgentRuntime,
+    run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
 };
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, IkarosPaths, Result, RiskLevel};
@@ -439,6 +440,12 @@ struct ProbeSkill {
     probe: Arc<ConcurrencyProbe>,
 }
 
+#[derive(Debug)]
+struct SlowCancellableSkill {
+    started: Arc<AtomicUsize>,
+    finished: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 impl Skill for WriteSkill {
     fn name(&self) -> &'static str {
@@ -494,6 +501,32 @@ impl Skill for ProbeSkill {
         sleep(Duration::from_millis(self.delay_ms)).await;
         self.probe.exit();
         Ok(SkillOutput::new("probe ok", json!({"input": input})))
+    }
+}
+
+#[async_trait]
+impl Skill for SlowCancellableSkill {
+    fn name(&self) -> &'static str {
+        "slow_cancellable_probe"
+    }
+
+    fn description(&self) -> &'static str {
+        "simulates in-flight tool work that should be cancellable"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::SafeRead
+    }
+
+    async fn execute(&self, _input: serde_json::Value, _ctx: SkillContext) -> Result<SkillOutput> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        sleep(Duration::from_secs(5)).await;
+        self.finished.fetch_add(1, Ordering::SeqCst);
+        Ok(SkillOutput::new("slow done", json!({"done": true})))
     }
 }
 
@@ -910,6 +943,74 @@ async fn agent_loop_cancelled_after_tool_plan_emits_cancelled_tool_event() {
 }
 
 #[tokio::test]
+async fn agent_loop_cancels_in_flight_tool_call() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let started = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let mut registry = SkillRegistry::new();
+    registry.register(SlowCancellableSkill {
+        started: started.clone(),
+        finished: finished.clone(),
+    });
+    let provider = MultiToolProvider {
+        calls: AtomicUsize::new(0),
+        tool_names: vec!["slow_cancellable_probe"],
+    };
+    let cancellation = CancellationToken::new();
+    let canceller = cancellation.clone();
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(20)).await;
+        canceller.cancel();
+    });
+
+    let report = tokio::time::timeout(
+        Duration::from_secs(1),
+        run_agent_loop(
+            AgentLoopInput {
+                session_id: Some("cancel-in-flight-session".into()),
+                turn_id: Some("cancel-in-flight-turn".into()),
+                task_id: Some("cancel-in-flight-task".into()),
+                system_prompt: "Call the slow tool.".into(),
+                user_input: "start slow tool".into(),
+            },
+            &provider,
+            &session,
+            &registry,
+            AgentLoopOptions {
+                cancellation,
+                ..AgentLoopOptions::default()
+            },
+        ),
+    )
+    .await
+    .expect("runtime should return promptly after in-flight cancellation")
+    .expect("cancelled report");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::Cancelled);
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(finished.load(Ordering::SeqCst), 0);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallStarted))
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallCancelled))
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallCompleted))
+    );
+}
+
+#[tokio::test]
 async fn agent_loop_halts_on_guardrail_no_progress() {
     let temp = tempfile::tempdir().expect("tempdir");
     let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
@@ -1136,6 +1237,49 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
                 .and_then(serde_json::Value::as_u64)
                 == Some(1)
     }));
+}
+
+#[tokio::test]
+async fn recording_agent_runtime_captures_event_stream_for_replay() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let registry = SkillRegistry::new();
+    let provider = SequenceProvider {
+        calls: AtomicUsize::new(0),
+        responses: vec![r#"{"final_answer":"recorded token=abc123"}"#.into()],
+    };
+    let runtime = RecordingAgentRuntime::new(HarnessAgentRuntime);
+
+    let report = runtime
+        .run_turn(
+            AgentLoopInput {
+                session_id: Some("recording-runtime-session".into()),
+                turn_id: Some("recording-runtime-turn".into()),
+                task_id: Some("recording-runtime-task".into()),
+                system_prompt: "answer directly".into(),
+                user_input: "hello token=abc123".into(),
+            },
+            &provider,
+            &session,
+            &registry,
+            AgentLoopOptions::default(),
+        )
+        .await
+        .expect("recorded turn");
+
+    let recorded = runtime.recorded_events();
+    assert_eq!(recorded, report.events);
+    assert!(matches!(
+        recorded.first().map(|event| &event.kind),
+        Some(AgentEventKind::SessionStart)
+    ));
+    assert!(matches!(
+        recorded.last().map(|event| &event.kind),
+        Some(AgentEventKind::TurnEnd)
+    ));
+    let rendered = serde_json::to_string(&recorded).expect("events json");
+    assert!(rendered.contains("[REDACTED_SECRET]"));
+    assert!(!rendered.contains("abc123"));
 }
 
 #[tokio::test]

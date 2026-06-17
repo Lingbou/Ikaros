@@ -3,9 +3,9 @@
 use super::policy::{rag_path_policy_request, rag_risk_level};
 use crate::support::input_path;
 use async_trait::async_trait;
-use ikaros_core::{RagConfig, RemoteProviderConfig, Result, RiskLevel};
-use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
-use ikaros_rag::{IngestOptions, LocalRagStore};
+use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result, RiskLevel};
+use ikaros_harness::{FileSystem, PolicyRequest, Skill, SkillContext, SkillOutput};
+use ikaros_rag::{IngestOptions, IngestSourceFile, LocalRagStore};
 use serde_json::json;
 use std::path::Path;
 
@@ -59,8 +59,9 @@ impl Skill for RagIngestSkill {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("project")
             .to_string();
-        let report = self.index.ingest_path_with_embedding_config(
-            &path,
+        let sources = collect_ingest_sources(ctx.session.env.as_ref(), &path).await?;
+        let report = self.index.ingest_sources_with_embedding_config(
+            sources,
             IngestOptions {
                 scope,
                 ..IngestOptions::default()
@@ -122,8 +123,9 @@ impl Skill for RagReindexSkill {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("project")
             .to_string();
-        let report = self.index.ingest_path_with_embedding_config(
-            &path,
+        let sources = collect_ingest_sources(ctx.session.env.as_ref(), &path).await?;
+        let report = self.index.ingest_sources_with_embedding_config(
+            sources,
             IngestOptions {
                 scope,
                 ..IngestOptions::default()
@@ -133,4 +135,81 @@ impl Skill for RagReindexSkill {
         )?;
         Ok(SkillOutput::new("rag reindex complete", json!(report)))
     }
+}
+
+async fn collect_ingest_sources(
+    file_system: &dyn FileSystem,
+    root: &Path,
+) -> Result<Vec<IngestSourceFile>> {
+    let mut pending = vec![(root.to_path_buf(), true)];
+    let mut files = Vec::new();
+    while let Some((path, is_root)) = pending.pop() {
+        let metadata = file_system.path_metadata(&path).await?;
+        if metadata.is_symlink {
+            if is_root {
+                return Err(IkarosError::Message(format!(
+                    "RAG ingest rejects symlink path: {}",
+                    path.display()
+                )));
+            }
+            continue;
+        }
+        if metadata.is_file {
+            if is_indexable(&path) {
+                let content = file_system.read_to_string(&path).await?;
+                files.push(IngestSourceFile {
+                    source_path: path,
+                    content,
+                    modified_at: metadata.modified_at,
+                });
+            }
+            continue;
+        }
+        if !metadata.is_dir {
+            return Err(IkarosError::Message(format!(
+                "RAG ingest path does not exist: {}",
+                path.display()
+            )));
+        }
+        for name in file_system.read_dir(&path).await? {
+            let child = path.join(name);
+            if should_skip(&child) {
+                continue;
+            }
+            pending.push((child, false));
+        }
+    }
+    files.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    Ok(files)
+}
+
+fn should_skip(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name == ".git"
+                || name == "target"
+                || name == "node_modules"
+                || name == ".temp"
+                || name.starts_with('.')
+        })
+}
+
+fn is_indexable(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some(
+            "md" | "txt"
+                | "rs"
+                | "toml"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "py"
+        )
+    )
 }

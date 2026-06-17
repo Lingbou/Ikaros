@@ -30,6 +30,10 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 
 默认实现是 `HarnessAgentRuntime`。如果调用方需要不同 loop 实现，应替换 runtime 层，而不是污染 provider adapter。
 
+`RecordingAgentRuntime` 可以包装任意 `AgentRuntime`，并记录它转发给调用方 sink
+的同一套 typed event stream。它是 replay/test adapter，用于需要完整内存事件轨迹
+的调用方，避免把 `AgentLoopReport` 当成事实来源。
+
 `AgentHarness` 是 `AgentRuntime` 上层的 stateful wrapper，面向需要稳定
 session id、每轮 turn id、phase 跟踪和 continuation queue 的调用方。它负责
 harness phase，以及 steer、follow-up、next-turn 三类队列，然后把真正的 turn
@@ -46,7 +50,7 @@ agent-loop 入口已经使用这个 wrapper；直接的 `run_agent_loop*` helper
 record、append-only session entry 和 agent event 落在同一轮 turn 上。Task agent-loop
 会让 harness 在 task session 内创建新的 turn id。调用方可以 clone harness 的
 cancellation token，或直接调用 `AgentHarness::cancel()`，以取消下一次 provider
-request 或尚未启动的已规划 tool call。
+request、尚未启动的已规划 tool call，或仍在 await 的运行中 tool future。
 
 默认选项：
 
@@ -72,7 +76,8 @@ request 或尚未启动的已规划 tool call。
 9. 发出 tool lifecycle event：`ToolCallStarted`、`ToolCallOutputDelta`、
    `ToolCallCompleted` 或 `ToolCallFailed`。如果模型已经返回 tool plan，但
    dispatch 前收到取消请求，runtime 会为每个已规划调用发出 `ToolCallCancelled`，
-   并且不会调用对应 skill。
+   并且不会调用对应 skill。如果 tool future 已经启动但还没完成，runtime 会 drop
+   该 future，发出 `ToolCallCancelled`，并以 `Cancelled` 结束本轮。
 10. 把 tool result 追加到下一次 model turn。
 11. 继续前检查 guardrail 和 iteration budget。
 
@@ -168,7 +173,8 @@ timeout，以及 approval event 可引用的稳定 tool-event anchor。进入 re
 session event 前必须先脱敏。Descriptor timeout 会把该 tool call 记录成 failed tool
 lifecycle result；它不能绕过 `ExecutionSession` 或 `ExecutionEnv`。已规划调用启动
 前收到 cancellation 时，会产生 `ToolCallCancelled` payload，并以 `Cancelled` 停止
-turn；runtime 不能先启动工具再试图隐藏结果。
+turn；运行中的 tool future 被取消时也会产生同样的 lifecycle event，并 drop 掉该
+future。进程型本地工具依赖 `ExecutionEnv` process runner 的 `kill_on_drop` 清理子进程。
 
 `AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。Replay、gateway、schedule 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
 

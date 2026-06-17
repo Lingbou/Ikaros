@@ -7,7 +7,8 @@ use crate::{
     },
     files::{canonical_or_self, chunk_text, collect_files, system_time_to_rfc3339},
     types::{
-        Citation, IngestOptions, IngestReport, RagChunk, RagDocument, RagHit, RagQuery, RagStore,
+        Citation, IngestOptions, IngestReport, IngestSourceFile, RagChunk, RagDocument, RagHit,
+        RagIndexedFile, RagQuery, RagStore,
     },
 };
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
@@ -51,10 +52,32 @@ impl LocalRagIndex {
     ) -> Result<IngestReport> {
         let mut files = Vec::new();
         collect_files(path, &mut files)?;
+        let mut sources = Vec::new();
+        for file in files {
+            let text = match fs::read_to_string(&file) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+            let metadata = fs::metadata(&file).map_err(|source| IkarosError::io(&file, source))?;
+            sources.push(IngestSourceFile {
+                source_path: file,
+                content: text,
+                modified_at: metadata.modified().ok().and_then(system_time_to_rfc3339),
+            });
+        }
+        self.ingest_sources_with_embedding(sources, options, embedding_provider)
+    }
+
+    pub fn ingest_sources_with_embedding(
+        &self,
+        sources: Vec<IngestSourceFile>,
+        options: IngestOptions,
+        embedding_provider: &dyn EmbeddingProvider,
+    ) -> Result<IngestReport> {
         let mut chunks = self.read_all()?;
-        let canonical_targets = files
+        let canonical_targets = sources
             .iter()
-            .map(|file| canonical_or_self(file))
+            .map(|source| canonical_or_self(&source.source_path))
             .collect::<BTreeSet<_>>();
         chunks.retain(|chunk| {
             chunk.scope != options.scope
@@ -63,24 +86,21 @@ impl LocalRagIndex {
 
         let mut indexed_files = 0;
         let mut chunks_indexed = 0;
-        for file in &files {
-            let text = match fs::read_to_string(file) {
-                Ok(text) => text,
-                Err(_) => continue,
-            };
-            let metadata = fs::metadata(file).map_err(|source| IkarosError::io(file, source))?;
-            let modified_at = metadata.modified().ok().and_then(system_time_to_rfc3339);
+        let files_seen = sources.len();
+        for source in sources {
             let document_id = Uuid::new_v4().to_string();
             let indexed_at = now_rfc3339()?;
             let document = RagDocument {
                 id: document_id.clone(),
-                source_path: file.to_path_buf(),
+                source_path: source.source_path,
                 scope: options.scope.clone(),
                 indexed_at: indexed_at.clone(),
-                modified_at: modified_at.clone(),
+                modified_at: source.modified_at,
             };
             let mut file_chunks = Vec::new();
-            for (line_start, line_end, content) in chunk_text(&text, options.max_chunk_lines) {
+            for (line_start, line_end, content) in
+                chunk_text(&source.content, options.max_chunk_lines)
+            {
                 let content = redact_secrets(&content);
                 file_chunks.push(RagChunk {
                     id: Uuid::new_v4().to_string(),
@@ -105,7 +125,7 @@ impl LocalRagIndex {
 
         self.write_all(&chunks)?;
         Ok(IngestReport {
-            files_seen: files.len(),
+            files_seen,
             files_indexed: indexed_files,
             chunks_indexed,
         })
@@ -144,6 +164,24 @@ impl LocalRagIndex {
             .collect::<Vec<_>>();
         self.write_all(&retained)?;
         Ok(before.saturating_sub(retained.len()))
+    }
+
+    pub fn indexed_files(&self) -> Result<Vec<RagIndexedFile>> {
+        let mut files = self
+            .read_all()?
+            .into_iter()
+            .map(|chunk| RagIndexedFile {
+                source_path: chunk.source_path,
+                modified_at: chunk.modified_at,
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| {
+            left.source_path
+                .cmp(&right.source_path)
+                .then_with(|| left.modified_at.cmp(&right.modified_at))
+        });
+        files.dedup();
+        Ok(files)
     }
 
     pub fn stale_files(&self) -> Result<Vec<PathBuf>> {
@@ -221,6 +259,10 @@ impl RagStore for LocalRagIndex {
 
     fn delete_path(&self, path: &Path) -> Result<usize> {
         LocalRagIndex::delete_path(self, path)
+    }
+
+    fn indexed_files(&self) -> Result<Vec<RagIndexedFile>> {
+        LocalRagIndex::indexed_files(self)
     }
 
     fn stale_files(&self) -> Result<Vec<PathBuf>> {

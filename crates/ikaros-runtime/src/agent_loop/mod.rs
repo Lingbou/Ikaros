@@ -10,7 +10,10 @@ mod tool_parse;
 mod types;
 
 pub use prompt::agent_loop_tool_definitions;
-pub use runtime::{AgentRuntime, HarnessAgentRuntime, run_agent_loop, run_agent_loop_with_events};
+pub use runtime::{
+    AgentRuntime, HarnessAgentRuntime, RecordingAgentRuntime, run_agent_loop,
+    run_agent_loop_with_events,
+};
 pub use types::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,
     AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolCallDiagnostic,

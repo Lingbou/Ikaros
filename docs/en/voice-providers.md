@@ -40,11 +40,12 @@ voice:
 - Cloud providers read plaintext keys and base URLs from the local `IKAROS_HOME/config.yaml`.
 - TTS text is redacted before provider calls.
 - Cloud voice calls are network actions and return approval requests when the active policy gates network access.
-- `voice tts --output <path>` is a workspace write and requires approval when policy asks.
+- `voice tts --output <path>` is a workspace write and requires approval when policy asks. Approved audio writes go through the session `ExecutionEnv` byte filesystem interface.
+- `voice asr <path>` reads workspace audio through the session `ExecutionEnv` before calling the provider. ASR providers receive bytes and do not read host paths directly.
 - ASR transcript output should not echo the source path.
 
 TTS success output reports provider, format, optional output path, byte length,
 and redacted text preview; it does not print raw audio bytes. ASR sends the audio
-file as multipart form data and renders only transcript metadata.
+bytes as multipart form data and renders only transcript metadata.
 
 Voice schemas carry audio path, format, sample rate, and language metadata. Adapters use provider-supported fields and keep unsupported fields as Ikaros-side metadata.

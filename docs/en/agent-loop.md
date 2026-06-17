@@ -35,6 +35,11 @@ The default implementation is `HarnessAgentRuntime`. Callers that need a
 different loop implementation should swap the runtime layer, not the provider
 adapter.
 
+`RecordingAgentRuntime` wraps any `AgentRuntime` and records the same typed
+event stream it forwards to the caller's sink. It is the replay/test adapter for
+callers that need a complete in-memory event trace without making
+`AgentLoopReport` the source of truth.
+
 `AgentHarness` is the stateful wrapper above `AgentRuntime` for callers that
 need a stable session id, per-turn ids, phase tracking, and continuation queues.
 It owns the harness phase and the steer, follow-up, and next-turn queues, then
@@ -61,7 +66,8 @@ to keep the chat history record, append-only session entries, and agent events
 on the same turn. Task agent-loop runs let the harness create a fresh turn id
 inside the task session. Callers can clone the harness cancellation token or
 call `AgentHarness::cancel()` to abort the next provider request or any planned
-tool calls that have not started yet.
+tool calls that have not started yet, or to drop an in-flight tool future that
+is still awaiting completion.
 
 Default options:
 
@@ -89,7 +95,9 @@ Each iteration follows the same order:
    `ToolCallStarted`, `ToolCallOutputDelta`, `ToolCallCompleted`, or
    `ToolCallFailed`. If cancellation is requested after the model returns a
    tool plan but before dispatch begins, the runtime emits `ToolCallCancelled`
-   for each planned call and does not invoke the skill.
+   for each planned call and does not invoke the skill. If cancellation is
+   requested while a tool future is already in flight, the runtime drops that
+   future, emits `ToolCallCancelled`, and stops the turn with `Cancelled`.
 10. Append tool results to the next model turn.
 11. Observe guardrails and iteration budget before continuing.
 
@@ -197,8 +205,10 @@ Secrets must be redacted before those payloads enter reports or persisted
 session events. A descriptor timeout turns that tool call into a failed tool
 lifecycle result; it does not let the runtime bypass `ExecutionSession` or
 `ExecutionEnv`. Cancellation requested before a planned call starts produces a
-`ToolCallCancelled` payload and stops the turn with `Cancelled`; it must not
-start the tool and then try to hide the result.
+`ToolCallCancelled` payload and stops the turn with `Cancelled`; cancellation
+while a tool future is in flight produces the same lifecycle event and drops the
+future. Process-backed local tools rely on `kill_on_drop` in the local
+`ExecutionEnv` process runner.
 
 `AgentLoopReport.events` is a compatibility summary for current callers. The
 durable fact source is the `ikaros-session` event stream when a persisting sink

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_core::{IkarosError, Result};
-use ikaros_harness::FileSystem as ExecutionFileSystem;
+use ikaros_harness::{FileMetadata, FileSystem as ExecutionFileSystem};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -23,6 +23,7 @@ pub struct PatchApplyReport {
 pub struct GuardedPatchApplier;
 
 impl GuardedPatchApplier {
+    #[cfg(test)]
     pub fn apply_unified_diff(root: &Path, diff: &str) -> Result<PatchApplyReport> {
         let patches = parse_unified_diff(diff)?;
         if patches.is_empty() {
@@ -122,7 +123,7 @@ async fn stage_unified_diff_with_env(
 
     let mut staged = Vec::<StagedFilePatch>::new();
     for patch in patches {
-        let target = resolve_patch_path(root, &patch.new_path)?;
+        let target = resolve_patch_path_with_env(root, &patch.new_path, file_system).await?;
         if staged
             .iter()
             .any(|staged_patch| staged_patch.target == target)
@@ -132,7 +133,9 @@ async fn stage_unified_diff_with_env(
                 patch.new_path.display()
             )));
         }
-        let existed = target.exists();
+        let existed = path_metadata_with_env(file_system, &target)
+            .await?
+            .is_some();
         let original = if existed {
             file_system.read_to_string(&target).await?
         } else {
@@ -192,6 +195,7 @@ fn build_patch_report(staged: &[StagedFilePatch]) -> PatchApplyReport {
     report
 }
 
+#[cfg(test)]
 fn rollback_staged_writes(written: &[StagedFilePatch]) {
     for staged_patch in written.iter().rev() {
         if staged_patch.existed {
@@ -352,6 +356,7 @@ fn parse_hunk_old_start(header: &str) -> Result<usize> {
         .map_err(|source| IkarosError::Message(format!("invalid hunk old start: {source}")))
 }
 
+#[cfg(test)]
 fn resolve_patch_path(root: &Path, relative: &Path) -> Result<PathBuf> {
     validate_relative_patch_path(relative)?;
     let root = fs::canonicalize(root).map_err(|source| IkarosError::io(root, source))?;
@@ -399,6 +404,62 @@ fn resolve_patch_path(root: &Path, relative: &Path) -> Result<PathBuf> {
     }
 
     Ok(target)
+}
+
+async fn resolve_patch_path_with_env(
+    root: &Path,
+    relative: &Path,
+    file_system: &dyn ExecutionFileSystem,
+) -> Result<PathBuf> {
+    validate_relative_patch_path(relative)?;
+    let root = fs::canonicalize(root).map_err(|source| IkarosError::io(root, source))?;
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name.to_os_string()),
+            _ => Err(IkarosError::Message(format!(
+                "patch path contains unsupported component: {}",
+                relative.display()
+            ))),
+        })
+        .collect::<Result<Vec<OsString>>>()?;
+
+    let mut target = root.clone();
+    for (index, component) in components.iter().enumerate() {
+        target.push(component);
+        let is_leaf = index + 1 == components.len();
+        if let Some(metadata) = path_metadata_with_env(file_system, &target).await? {
+            if metadata.is_symlink {
+                return Err(IkarosError::Message(format!(
+                    "guarded edit rejects symlink patch target: {}",
+                    target.display()
+                )));
+            }
+            if !is_leaf && !metadata.is_dir {
+                return Err(IkarosError::Message(format!(
+                    "patch path parent is not a directory: {}",
+                    target.display()
+                )));
+            }
+        }
+    }
+
+    Ok(target)
+}
+
+async fn path_metadata_with_env(
+    file_system: &dyn ExecutionFileSystem,
+    path: &Path,
+) -> Result<Option<FileMetadata>> {
+    match file_system.path_metadata(path).await {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if is_not_found(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_not_found(error: &IkarosError) -> bool {
+    matches!(error, IkarosError::Io { source, .. } if source.kind() == ErrorKind::NotFound)
 }
 
 fn validate_relative_patch_path(path: &Path) -> Result<()> {

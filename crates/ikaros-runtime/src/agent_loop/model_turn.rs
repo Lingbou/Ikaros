@@ -3,7 +3,7 @@
 use super::{
     dispatch::{
         dispatch_agent_loop_tool_call, model_message_for_tool_result,
-        observe_agent_loop_tool_result, stop_reason_from_tool_result,
+        observe_agent_loop_tool_result, stop_reason_from_tool_result, tool_result_cancelled,
     },
     prompt::{
         agent_loop_tool_definitions, model_tool_definitions, render_agent_loop_system_prompt,
@@ -20,7 +20,8 @@ use super::{
 };
 use ikaros_core::{IkarosError, Result, redact_json, redact_secrets};
 use ikaros_harness::{
-    AuditEvent, ExecutionSession, GuardrailState, SkillRegistry, ToolExecutionMode,
+    AuditEvent, CancellationToken, ExecutionSession, GuardrailState, SkillRegistry,
+    ToolExecutionMode,
 };
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall,
@@ -306,6 +307,7 @@ pub(super) async fn run_agent_loop_turn(
                     ToolBatchDispatchContext {
                         session,
                         registry,
+                        cancellation: &options.cancellation,
                         session_id: &session_id,
                         turn_id: &turn_id,
                         events: &mut events,
@@ -344,6 +346,7 @@ pub(super) async fn run_agent_loop_turn(
                     ToolBatchDispatchContext {
                         session,
                         registry,
+                        cancellation: &options.cancellation,
                         session_id: &session_id,
                         turn_id: &turn_id,
                         events: &mut events,
@@ -624,6 +627,7 @@ struct DispatchedAgentLoopToolCall {
 struct ToolBatchDispatchContext<'a> {
     session: &'a ExecutionSession,
     registry: &'a SkillRegistry,
+    cancellation: &'a CancellationToken,
     session_id: &'a AgentSessionId,
     turn_id: &'a AgentTurnId,
     events: &'a mut Vec<AgentEvent>,
@@ -700,12 +704,10 @@ async fn dispatch_scheduled_tool_batch(
     {
         let mut dispatched = Vec::with_capacity(started.len());
         for (scheduled, started_event_id) in started {
-            let result = dispatch_agent_loop_tool_call(
-                context.session,
-                context.registry,
+            let result = dispatch_scheduled_tool_call_with_cancellation(
+                &context,
                 iteration,
-                scheduled.call,
-                scheduled.timeout_ms,
+                scheduled.clone(),
             )
             .await;
             dispatched.push(DispatchedAgentLoopToolCall {
@@ -718,47 +720,134 @@ async fn dispatch_scheduled_tool_batch(
         return Ok(dispatched);
     }
 
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(started.len());
     let mut handles = Vec::with_capacity(started.len());
+    let mut pending = Vec::with_capacity(started.len());
     for (scheduled, started_event_id) in started {
         let session = context.session.clone();
         let registry = context.registry.clone();
-        let tool_call_id = scheduled.tool_call_id.clone();
-        let tool_call_name = scheduled.tool_call_name.clone();
         let timeout_ms = scheduled.timeout_ms;
-        handles.push((
-            tool_call_id,
-            tool_call_name,
+        let pending_call = PendingAgentLoopToolCall {
+            tool_call_id: scheduled.tool_call_id.clone(),
+            tool_call_name: scheduled.tool_call_name.clone(),
             started_event_id,
-            tokio::spawn(async move {
-                dispatch_agent_loop_tool_call(
-                    &session,
-                    &registry,
-                    iteration,
-                    scheduled.call,
-                    timeout_ms,
-                )
-                .await
-            }),
-        ));
+        };
+        pending.push(pending_call.clone());
+        let sender = sender.clone();
+        handles.push(tokio::spawn(async move {
+            let result = dispatch_agent_loop_tool_call(
+                &session,
+                &registry,
+                iteration,
+                scheduled.call,
+                timeout_ms,
+            )
+            .await;
+            let _ = sender.send((pending_call, result)).await;
+        }));
     }
+    drop(sender);
 
     let mut dispatched = Vec::with_capacity(handles.len());
-    for (tool_call_id, tool_call_name, started_event_id, handle) in handles {
-        let result = handle.await.unwrap_or_else(|error| AgentLoopToolResult {
-            iteration,
-            name: redact_secrets(&tool_call_name),
-            ok: false,
-            summary: redact_secrets(&format!("tool task failed: {error}")),
-            output: json!({"error": redact_secrets(&format!("tool task failed: {error}"))}),
-        });
-        dispatched.push(DispatchedAgentLoopToolCall {
-            tool_call_id,
-            tool_call_name,
-            started_event_id,
-            result,
-        });
+    while !pending.is_empty() {
+        tokio::select! {
+            received = receiver.recv() => {
+                match received {
+                    Some((pending_call, result)) => {
+                        pending.retain(|call| call.started_event_id != pending_call.started_event_id);
+                        dispatched.push(DispatchedAgentLoopToolCall {
+                            tool_call_id: pending_call.tool_call_id,
+                            tool_call_name: pending_call.tool_call_name,
+                            started_event_id: pending_call.started_event_id,
+                            result,
+                        });
+                    }
+                    None => {
+                        for pending_call in pending.drain(..) {
+                            dispatched.push(DispatchedAgentLoopToolCall {
+                                tool_call_id: pending_call.tool_call_id,
+                                tool_call_name: pending_call.tool_call_name.clone(),
+                                started_event_id: pending_call.started_event_id,
+                                result: AgentLoopToolResult {
+                                    iteration,
+                                    name: redact_secrets(&pending_call.tool_call_name),
+                                    ok: false,
+                                    summary: "tool task ended without reporting a result".into(),
+                                    output: json!({"error": "tool task ended without reporting a result"}),
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            _ = context.cancellation.cancelled() => {
+                for handle in &handles {
+                    handle.abort();
+                }
+                for pending_call in pending.drain(..) {
+                    dispatched.push(DispatchedAgentLoopToolCall {
+                        tool_call_id: pending_call.tool_call_id,
+                        tool_call_name: pending_call.tool_call_name.clone(),
+                        started_event_id: pending_call.started_event_id,
+                        result: cancelled_agent_loop_tool_result(
+                            iteration,
+                            &pending_call.tool_call_name,
+                            "tool call cancelled during execution",
+                        ),
+                    });
+                }
+                return Ok(dispatched);
+            }
+        }
     }
     Ok(dispatched)
+}
+
+#[derive(Clone)]
+struct PendingAgentLoopToolCall {
+    tool_call_id: Option<String>,
+    tool_call_name: String,
+    started_event_id: AgentEventId,
+}
+
+async fn dispatch_scheduled_tool_call_with_cancellation(
+    context: &ToolBatchDispatchContext<'_>,
+    iteration: u32,
+    scheduled: ScheduledAgentLoopToolCall,
+) -> AgentLoopToolResult {
+    tokio::select! {
+        result = dispatch_agent_loop_tool_call(
+            context.session,
+            context.registry,
+            iteration,
+            scheduled.call,
+            scheduled.timeout_ms,
+        ) => result,
+        _ = context.cancellation.cancelled() => {
+            cancelled_agent_loop_tool_result(
+                iteration,
+                &scheduled.tool_call_name,
+                "tool call cancelled during execution",
+            )
+        }
+    }
+}
+
+fn cancelled_agent_loop_tool_result(
+    iteration: u32,
+    tool_call_name: &str,
+    summary: &str,
+) -> AgentLoopToolResult {
+    AgentLoopToolResult {
+        iteration,
+        name: redact_secrets(tool_call_name),
+        ok: false,
+        summary: summary.into(),
+        output: json!({
+            "cancelled": true,
+            "reason": "agent loop cancellation requested",
+        }),
+    }
 }
 
 fn emit_cancelled_tool_call_events(
@@ -873,7 +962,9 @@ fn redacted_json_value(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn tool_lifecycle_end_kind(result: &AgentLoopToolResult) -> AgentEventKind {
-    if result.ok || tool_result_waiting_for_approval(result) {
+    if tool_result_cancelled(result) {
+        AgentEventKind::ToolCallCancelled
+    } else if result.ok || tool_result_waiting_for_approval(result) {
         AgentEventKind::ToolCallCompleted
     } else {
         AgentEventKind::ToolCallFailed
@@ -881,7 +972,9 @@ fn tool_lifecycle_end_kind(result: &AgentLoopToolResult) -> AgentEventKind {
 }
 
 fn tool_lifecycle_status(result: &AgentLoopToolResult) -> &'static str {
-    if result.ok {
+    if tool_result_cancelled(result) {
+        "cancelled"
+    } else if result.ok {
         "completed"
     } else if tool_result_waiting_for_approval(result) {
         "waiting_for_approval"

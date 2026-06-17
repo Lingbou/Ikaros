@@ -19,7 +19,8 @@ pub use openai_compatible::OpenAiCompatibleEmbeddingProvider;
 pub use sqlite::SqliteRagIndex;
 pub use store::LocalRagStore;
 pub use types::{
-    Citation, IngestOptions, IngestReport, RagChunk, RagDocument, RagHit, RagQuery, RagStore,
+    Citation, IngestOptions, IngestReport, IngestSourceFile, RagChunk, RagDocument, RagHit,
+    RagIndexedFile, RagQuery, RagStore,
 };
 
 #[cfg(test)]

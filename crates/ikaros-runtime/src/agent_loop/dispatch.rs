@@ -83,8 +83,17 @@ pub(super) fn stop_reason_from_tool_result(
         _ if result.output.get("approval_id").is_some() => {
             Some(AgentLoopStopReason::WaitingForApproval)
         }
+        _ if tool_result_cancelled(result) => Some(AgentLoopStopReason::Cancelled),
         _ => None,
     }
+}
+
+pub(super) fn tool_result_cancelled(result: &AgentLoopToolResult) -> bool {
+    result
+        .output
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 pub(super) fn model_message_for_tool_result(
@@ -139,8 +148,10 @@ fn audit_agent_loop_guardrail(
 }
 
 fn should_observe_agent_loop_result(result: &AgentLoopToolResult) -> bool {
-    result.ok
-        || (result.output.get("approval_id").is_none() && result.output.get("decision").is_none())
+    !tool_result_cancelled(result)
+        && (result.ok
+            || (result.output.get("approval_id").is_none()
+                && result.output.get("decision").is_none()))
 }
 
 fn render_tool_result_message(result: &AgentLoopToolResult) -> String {

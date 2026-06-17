@@ -2,10 +2,138 @@
 
 use super::*;
 use ikaros_core::{SelfModifyCheckProfileConfig, SelfModifyConfig};
+use ikaros_harness::{
+    FileMetadata, FileSystem as ExecutionFileSystem, LocalExecutionEnv, ProcessOutput,
+    ProcessRequest, ProcessRunner,
+};
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+#[derive(Debug, Default)]
+struct SelfModifyTrackingEnv {
+    read_to_string_calls: Arc<AtomicUsize>,
+    read_bytes_calls: Arc<AtomicUsize>,
+    write_string_calls: Arc<AtomicUsize>,
+    write_bytes_calls: Arc<AtomicUsize>,
+    remove_file_calls: Arc<AtomicUsize>,
+    process_calls: Arc<AtomicUsize>,
+}
+
+impl SelfModifyTrackingEnv {
+    fn read_bytes_count(&self) -> usize {
+        self.read_bytes_calls.load(Ordering::SeqCst)
+    }
+
+    fn write_string_count(&self) -> usize {
+        self.write_string_calls.load(Ordering::SeqCst)
+    }
+
+    fn write_bytes_count(&self) -> usize {
+        self.write_bytes_calls.load(Ordering::SeqCst)
+    }
+
+    fn remove_file_count(&self) -> usize {
+        self.remove_file_calls.load(Ordering::SeqCst)
+    }
+
+    fn process_count(&self) -> usize {
+        self.process_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl ExecutionFileSystem for SelfModifyTrackingEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<FileMetadata>> + Send + 'a>> {
+        LocalExecutionEnv.path_metadata(path)
+    }
+
+    fn read_to_string<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<String>> + Send + 'a>> {
+        self.read_to_string_calls.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.read_to_string(path)
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<Vec<u8>>> + Send + 'a>> {
+        self.read_bytes_calls.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.read_bytes(path)
+    }
+
+    fn write_string<'a>(
+        &'a self,
+        path: &'a Path,
+        content: String,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<()>> + Send + 'a>> {
+        self.write_string_calls.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.write_string(path, content)
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<()>> + Send + 'a>> {
+        self.write_bytes_calls.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.write_bytes(path, content)
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.create_dir_all(path)
+    }
+
+    fn read_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<Vec<String>>> + Send + 'a>> {
+        LocalExecutionEnv.read_dir(path)
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<()>> + Send + 'a>> {
+        self.remove_file_calls.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.remove_file(path)
+    }
+}
+
+impl ProcessRunner for SelfModifyTrackingEnv {
+    fn run_process<'a>(
+        &'a self,
+        request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<ProcessOutput>> + Send + 'a>> {
+        self.process_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            assert_eq!(request.command, "cargo");
+            assert_eq!(request.args, vec!["check"]);
+            Ok(ProcessOutput {
+                status: 0,
+                stdout: "checked through execution env".into(),
+                stderr: String::new(),
+            })
+        })
+    }
+}
 
 #[test]
 fn scans_rust_repo_without_temp() {
@@ -439,6 +567,62 @@ fn self_modify_apply_and_rollback_use_snapshot_gate() {
     assert_eq!(operations[0].proposal_id, proposal.id);
     assert_eq!(operations[0].post_checks_passed, Some(true));
     assert_eq!(operations[1].kind, SelfModifyOperationKind::Rollback);
+}
+
+#[tokio::test]
+async fn self_modify_propose_apply_and_rollback_use_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let store_dir = temp.path().join("self-modify");
+    fs::create_dir_all(workspace.join("src")).expect("workspace");
+    fs::write(workspace.join("src/lib.rs"), "pub fn old() {}\n").expect("source");
+    let diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn old() {}\n+pub fn new() {}\n";
+    let store = SelfModifyStore::new(&workspace, &store_dir);
+    let env = SelfModifyTrackingEnv::default();
+
+    let proposal = store
+        .propose_with_env(
+            SelfModifyChangeKind::RuntimePatch,
+            "src/lib.rs",
+            diff,
+            None,
+            &env,
+        )
+        .await
+        .expect("proposal");
+    assert!(env.read_bytes_count() > 0);
+
+    let report = store
+        .apply_approved_with_checks_and_env(
+            &proposal.id,
+            "approval-1",
+            &["cargo check".into()],
+            &env,
+            &env,
+        )
+        .await
+        .expect("apply through env");
+
+    assert!(report.post_checks_passed);
+    assert_eq!(env.process_count(), 2);
+    assert!(env.write_string_count() > 0);
+    assert_eq!(
+        fs::read_to_string(workspace.join("src/lib.rs")).expect("updated"),
+        "pub fn new() {}\n"
+    );
+
+    let rollback = store
+        .rollback_with_env(&proposal.id, &env)
+        .await
+        .expect("rollback through env");
+
+    assert!(rollback.restored_snapshot);
+    assert!(env.write_bytes_count() > 0);
+    assert_eq!(env.remove_file_count(), 0);
+    assert_eq!(
+        fs::read_to_string(workspace.join("src/lib.rs")).expect("restored"),
+        "pub fn old() {}\n"
+    );
 }
 
 #[test]
