@@ -67,6 +67,8 @@ fn memory_journal_records_policy_actions() {
         relevance: 0.9,
         frequency: 0.8,
         source_strength: 0.9,
+        confidence: 0.9,
+        sensitivity: 0.0,
     };
     assert!(score.combined() > MemoryPolicy::default().promote_threshold);
 
@@ -87,6 +89,46 @@ fn memory_journal_records_policy_actions() {
     assert_eq!(entries[0].action, MemoryJournalAction::Promote);
     assert_eq!(entries[0].scope.as_deref(), Some("default"));
     assert!(entries[0].score.expect("score").combined() > 0.0);
+}
+
+#[test]
+fn memory_policy_engine_scores_promotes_demotes_and_selects_quota_victims() {
+    let policy = MemoryPolicy {
+        promote_threshold: 0.55,
+        demote_threshold: 0.45,
+        forget_threshold: 0.10,
+        max_records_per_scope: 2,
+    };
+    let engine = MemoryPolicyEngine::new(policy);
+    let promoted = MemoryRecord::new(
+        MemoryKind::Relationship,
+        "user",
+        "User preference: concise updates",
+    )
+    .expect("promoted")
+    .with_tags(vec!["relationship".into(), "chat-learned".into()])
+    .with_source("manual");
+    let demoted = MemoryRecord::new(MemoryKind::Task, "user", "old")
+        .expect("demoted")
+        .with_tags(Vec::new());
+    let quota_victim = MemoryRecord::new(MemoryKind::Task, "user", "stale")
+        .expect("quota")
+        .with_tags(Vec::new());
+    let scope_records = vec![promoted.clone(), demoted.clone(), quota_victim.clone()];
+
+    let promote = engine
+        .classify_record(&promoted, &scope_records)
+        .expect("promote decision");
+    assert_eq!(promote.action, MemoryJournalAction::Promote);
+
+    let demote = engine
+        .classify_record(&demoted, &scope_records)
+        .expect("demote decision");
+    assert_eq!(demote.action, MemoryJournalAction::Demote);
+
+    let victims = engine.quota_victims(&scope_records);
+    assert_eq!(victims.len(), 1);
+    assert!(victims[0].1.combined() <= promote.score.combined());
 }
 
 #[test]

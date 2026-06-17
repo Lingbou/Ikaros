@@ -16,14 +16,20 @@ pub struct MemoryScore {
     pub relevance: f32,
     pub frequency: f32,
     pub source_strength: f32,
+    #[serde(default = "default_score_component")]
+    pub confidence: f32,
+    #[serde(default)]
+    pub sensitivity: f32,
 }
 
 impl MemoryScore {
     pub fn combined(self) -> f32 {
-        ((self.recency * 0.25)
-            + (self.relevance * 0.40)
-            + (self.frequency * 0.20)
-            + (self.source_strength * 0.15))
+        ((self.recency * 0.20)
+            + (self.relevance * 0.30)
+            + (self.frequency * 0.15)
+            + (self.source_strength * 0.15)
+            + (self.confidence * 0.15)
+            + ((1.0 - self.sensitivity).clamp(0.0, 1.0) * 0.05))
             .clamp(0.0, 1.0)
     }
 }
@@ -35,8 +41,14 @@ impl Default for MemoryScore {
             relevance: 0.5,
             frequency: 0.0,
             source_strength: 0.5,
+            confidence: 0.5,
+            sensitivity: 0.0,
         }
     }
+}
+
+fn default_score_component() -> f32 {
+    0.5
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

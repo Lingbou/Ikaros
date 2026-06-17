@@ -10,7 +10,7 @@ use ikaros_session::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -137,7 +137,7 @@ fn debug_memory_lifecycle(
         .map(memory_event_summary)
         .collect::<Vec<_>>();
     let journal = JsonlMemoryJournal::new(&paths.memory_dir);
-    let journal_entries = journal
+    let matching_journal_entries = journal
         .list()?
         .into_iter()
         .filter(|entry| {
@@ -147,6 +147,15 @@ fn debug_memory_lifecycle(
                 args.turn_id.as_deref(),
             )
         })
+        .collect::<Vec<_>>();
+    let mut action_counts = BTreeMap::<String, usize>::new();
+    for entry in &matching_journal_entries {
+        *action_counts
+            .entry(memory_journal_action_name(&entry.action).to_owned())
+            .or_default() += 1;
+    }
+    let journal_entries = matching_journal_entries
+        .into_iter()
         .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let output = json!({
@@ -155,10 +164,22 @@ fn debug_memory_lifecycle(
         "state_db": state_db.display().to_string(),
         "memory_lifecycle_events": memory_events,
         "memory_journal_path": journal.path().display().to_string(),
+        "memory_journal_action_counts": action_counts,
         "memory_journal_entries": journal_entries,
     });
     println!("{}", serde_json::to_string_pretty(&redact_json(output))?);
     Ok(())
+}
+
+fn memory_journal_action_name(action: &ikaros_memory::MemoryJournalAction) -> &'static str {
+    match action {
+        ikaros_memory::MemoryJournalAction::Append => "append",
+        ikaros_memory::MemoryJournalAction::Update => "update",
+        ikaros_memory::MemoryJournalAction::Promote => "promote",
+        ikaros_memory::MemoryJournalAction::Demote => "demote",
+        ikaros_memory::MemoryJournalAction::Forget => "forget",
+        ikaros_memory::MemoryJournalAction::Skip => "skip",
+    }
 }
 
 fn replay_session(

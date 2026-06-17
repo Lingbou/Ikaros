@@ -3,6 +3,7 @@
 use std::fs;
 
 use crate::support::TestHome;
+use ikaros_memory::{JsonlMemoryStore, MemoryKind, MemoryRecord, MemoryStore};
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSource, SessionId, SessionRecord, SessionSource,
     SessionStore, SqliteSessionStore, TurnId,
@@ -394,6 +395,62 @@ fn debug_context_diff_explains_compacted_protected_reference_context() {
     assert!(output.contains("@file:src/lib.rs:1-2"));
     assert!(output.contains("history: omitted 3 line(s), about 20 tokens"));
     assert!(output.contains("do not invent omitted details"));
+}
+
+#[test]
+fn debug_memory_lifecycle_reports_runtime_policy_actions() {
+    let env = TestHome::new();
+    env.init();
+    fs::write(
+        env.home.join("config.yaml"),
+        r#"model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
+
+memory:
+  backend: jsonl
+  policy:
+    promote_threshold: 0.70
+    demote_threshold: 0.45
+    forget_threshold: 0.10
+    max_records_per_scope: 2
+
+rag:
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
+"#,
+    )
+    .expect("policy config");
+    let store = JsonlMemoryStore::new(env.home.join("memory"));
+    store
+        .append(MemoryRecord::new(MemoryKind::Task, "policy-session", "old").expect("old"))
+        .expect("append old");
+    store
+        .append(MemoryRecord::new(MemoryKind::Task, "policy-session", "stale").expect("stale"))
+        .expect("append stale");
+
+    let chat = env.run([
+        "chat",
+        "--chat-session",
+        "policy-session",
+        "--message",
+        "remember that I prefer concise updates",
+        "--no-agent-loop",
+    ]);
+    assert!(chat.contains("chat_session: policy-session"));
+
+    let memory = env.run(["debug", "memory-lifecycle", "policy-session"]);
+    assert!(memory.contains("\"action\": \"append\""));
+    assert!(memory.contains("\"action\": \"promote\""));
+    assert!(memory.contains("\"action\": \"demote\""));
+    assert!(memory.contains("\"action\": \"forget\""));
+    assert!(memory.contains("quota removed lower score memory"));
+    assert!(memory.contains("\"memory_journal_action_counts\""));
+    assert!(memory.contains("\"source_ref\""));
+    assert!(!memory.contains("abc123"));
 }
 
 #[test]

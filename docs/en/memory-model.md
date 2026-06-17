@@ -32,10 +32,16 @@ use `NoopMemoryProvider`.
 `MemoryScore`, `MemoryPolicy`, and `MemoryJournal` define the local boundary for
 promotion, demotion, forgetting, skipped writes, and quota decisions.
 `JsonlMemoryJournal` writes those decisions to `memory_journal.jsonl`. Runtime
-chat records `sync_turn` append and skipped-write decisions automatically.
-Promotion, demotion, forgetting, and quota decisions should use the same journal
-when those policies become runtime behavior. The journal is a lifecycle/audit
-primitive rather than a replacement for the memory store.
+chat records `sync_turn` append and skipped-write decisions automatically, then
+applies the configured policy to affected memory scopes. Promote and demote
+actions tag records as `policy-promoted` or `policy-demoted`; forget actions
+delete records below the forget threshold or records evicted by
+`max_records_per_scope`. The journal is a lifecycle/audit primitive rather than
+a replacement for the memory store. The policy pass is scoped to records
+touched by the current turn and the related relationship scope; it is not a
+global memory compactor. Store mutations and journal writes are still separate
+local writes, so cross-store transaction and replay consistency remains a
+hardening item.
 
 ## Backends
 

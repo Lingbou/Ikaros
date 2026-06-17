@@ -53,7 +53,8 @@ window, section token estimates, added/removed/compressed context, parsed
 references, compaction summary, continuation prompt, `ContextCompacted`, and
 context-limit errors. `memory-lifecycle` reads the session timeline and
 `memory_journal.jsonl` for matching `MemoryLifecycle` events,
-`MemoryRef::SessionTurn` links, skipped writes, and redaction-related notes.
+`MemoryRef::SessionTurn` links, skipped writes, redaction-related notes, action
+counts, and runtime memory policy actions.
 
 Memory and relationship notes:
 

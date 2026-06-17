@@ -62,13 +62,15 @@ pub trait MemoryProvider: Send + Sync {
     fn delete_scope(&self, query_kind: Option<MemoryKind>, scope: &str) -> Result<usize>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryLifecycleReport {
     pub phase: String,
     pub records_read: usize,
     pub records_written: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<MemoryRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<MemoryLifecycleRecordRef>,
     pub notes: Vec<String>,
 }
 
@@ -79,7 +81,31 @@ impl MemoryLifecycleReport {
             records_read: 0,
             records_written: 0,
             source_ref: None,
+            records: Vec::new(),
             notes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryLifecycleRecordRef {
+    pub id: String,
+    pub kind: MemoryKind,
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<MemoryRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+impl From<&MemoryRecord> for MemoryLifecycleRecordRef {
+    fn from(record: &MemoryRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            kind: record.kind.clone(),
+            scope: record.scope.clone(),
+            source_ref: record.source_ref.clone(),
+            confidence: record.confidence,
         }
     }
 }
@@ -320,6 +346,7 @@ impl MemoryProvider for LocalMemoryStore {
             records_read: 0,
             records_written: 0,
             source_ref: None,
+            records: Vec::new(),
             notes: vec![format!(
                 "session={} agent={}",
                 input.session_id.as_deref().unwrap_or("none"),
@@ -339,6 +366,7 @@ impl MemoryProvider for LocalMemoryStore {
                 records_read: 0,
                 records_written: 0,
                 source_ref: None,
+                records: Vec::new(),
                 notes: vec!["skipped: missing session id".into()],
             });
         };
@@ -353,6 +381,7 @@ impl MemoryProvider for LocalMemoryStore {
                 records_read: 0,
                 records_written: 0,
                 source_ref: Some(source_ref),
+                records: Vec::new(),
                 notes: vec!["skipped: empty turn".into()],
             });
         }
@@ -362,6 +391,7 @@ impl MemoryProvider for LocalMemoryStore {
                 records_read: 0,
                 records_written: 0,
                 source_ref: Some(source_ref),
+                records: Vec::new(),
                 notes: vec!["skipped: redacted secret marker present".into()],
             });
         }
@@ -369,12 +399,13 @@ impl MemoryProvider for LocalMemoryStore {
             .with_tags(vec!["turn-summary".into(), "memory-lifecycle".into()])
             .with_source("memory_lifecycle")
             .with_source_ref(source_ref.clone());
-        MemoryStore::append(self, record)?;
+        let record = MemoryStore::append(self, record)?;
         Ok(MemoryLifecycleReport {
             phase: "sync_turn".into(),
             records_read: 0,
             records_written: 1,
             source_ref: Some(source_ref),
+            records: vec![MemoryLifecycleRecordRef::from(&record)],
             notes: Vec::new(),
         })
     }
@@ -385,6 +416,7 @@ impl MemoryProvider for LocalMemoryStore {
             records_read: 0,
             records_written: 0,
             source_ref: None,
+            records: Vec::new(),
             notes: vec![format!("budget_tokens={}", input.budget_tokens)],
         })
     }
@@ -395,6 +427,7 @@ impl MemoryProvider for LocalMemoryStore {
             records_read: 0,
             records_written: 0,
             source_ref: None,
+            records: Vec::new(),
             notes: vec![format!(
                 "from={} to={}",
                 input.from_session_id.as_deref().unwrap_or("none"),
@@ -413,6 +446,7 @@ impl MemoryProvider for LocalMemoryStore {
                 records_read: 0,
                 records_written: 0,
                 source_ref: None,
+                records: Vec::new(),
                 notes: vec!["skipped: empty summary".into()],
             });
         }
@@ -434,12 +468,13 @@ impl MemoryProvider for LocalMemoryStore {
             "memory-lifecycle".into(),
         ])
         .with_source("memory_lifecycle");
-        MemoryStore::append(self, record)?;
+        let record = MemoryStore::append(self, record)?;
         Ok(MemoryLifecycleReport {
             phase: "delegation_observation".into(),
             records_read: 0,
             records_written: 1,
             source_ref: None,
+            records: vec![MemoryLifecycleRecordRef::from(&record)],
             notes: Vec::new(),
         })
     }

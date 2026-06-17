@@ -49,9 +49,10 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   database.
 - Keep `NoopMemoryProvider` explicit; memory lifecycle hooks should not hide
   default no-op behavior in the trait.
-- Extend `MemoryJournal` beyond current runtime append/skipped-write decisions
-  before treating promotion, demotion, forgetting, or quota decisions as product
-  behavior.
+- Keep runtime memory policy journaling covered for append, skipped-write,
+  promote, demote, forget, and quota decisions as memory extraction grows.
+- Treat the current memory policy pass as turn-scoped; add cross-store
+  transaction and replay consistency before enabling remote or vector writes.
 - Define governed remote memory adapters behind the provider registry.
 - Require remote memory behavior to match local approval, audit, promotion, demotion, sync, and secret-handling rules.
 - Add dry-run reports for memory migration or synchronization.

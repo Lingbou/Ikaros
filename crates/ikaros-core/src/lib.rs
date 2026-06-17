@@ -17,8 +17,8 @@ pub use agent::{
 };
 pub use config::{
     ConfigValidationIssue, ConfigValidationReport, ExternalMemoryProviderConfig,
-    ExternalProvidersConfig, IkarosConfig, LocalStoreConfig, MemoryConfig, ModelConfig,
-    ModelParamsConfig, ModelReasoningConfig, ModelTable, PolicyConfig, RagConfig,
+    ExternalProvidersConfig, IkarosConfig, LocalStoreConfig, MemoryConfig, MemoryPolicyConfig,
+    ModelConfig, ModelParamsConfig, ModelReasoningConfig, ModelTable, PolicyConfig, RagConfig,
     RemoteProviderConfig, SelfModifyCheckProfileConfig, SelfModifyConfig, VoiceConfig,
     VoiceProviderConfig,
 };

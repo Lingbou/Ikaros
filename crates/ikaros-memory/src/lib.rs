@@ -5,6 +5,7 @@ mod common;
 mod journal;
 mod jsonl;
 mod local;
+mod policy;
 mod provider;
 mod relationship;
 mod sqlite;
@@ -16,11 +17,12 @@ pub use journal::{
 };
 pub use jsonl::JsonlMemoryStore;
 pub use local::LocalMemoryStore;
+pub use policy::{MemoryPolicyDecision, MemoryPolicyEngine, add_policy_tag, has_policy_tag};
 pub use provider::{
-    MemoryDelegationObservation, MemoryLifecycleReport, MemoryPreCompressInput,
-    MemoryPrefetchInput, MemoryProvider, MemoryProviderDescriptor, MemoryProviderKind,
-    MemoryProviderRegistry, MemoryProviderState, MemorySessionSwitch, MemoryTurnRecord,
-    MemoryTurnStart, NoopMemoryProvider,
+    MemoryDelegationObservation, MemoryLifecycleRecordRef, MemoryLifecycleReport,
+    MemoryPreCompressInput, MemoryPrefetchInput, MemoryProvider, MemoryProviderDescriptor,
+    MemoryProviderKind, MemoryProviderRegistry, MemoryProviderState, MemorySessionSwitch,
+    MemoryTurnRecord, MemoryTurnStart, NoopMemoryProvider,
 };
 pub use relationship::{
     RelationshipMemoryNote, relationship_context_lines, relationship_notes_from_output,

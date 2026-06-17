@@ -23,12 +23,12 @@ Registry state：
 
 Memory policy 边界包括：
 
-- `MemoryScore`：recency、relevance、frequency 和 source-strength 输入。
+- `MemoryScore`：recency、relevance、frequency、source-strength、confidence 和 sensitivity 输入。
 - `MemoryPolicy`：promote、demote、forget 和 per-scope quota 阈值。
 - `MemoryJournal`：append-only 的策略/action 记录。
 - `JsonlMemoryJournal`：本地 `memory_journal.jsonl` 实现。
 
-Journal 是 memory lifecycle 决策的审计和 replay 辅助。Runtime chat 会把 `sync_turn` append 或 skipped-write 决策写入 journal。它不替代 memory store，也不代表外部 memory provider 已经可执行。
+Journal 是 memory lifecycle 决策的审计和 replay 辅助。Runtime chat 会把 `sync_turn` append 或 skipped-write 决策写入 journal，然后记录受影响 scope 的 promote、demote、forget 和 quota eviction 决策。Quota eviction 会以带 quota reason 的 `forget` action 写入 journal。它不替代 memory store，也不代表外部 memory provider 已经可执行。当前 policy pass 是 turn-scoped，不是全库 compactor。
 
 检查 provider 状态：
 
@@ -65,6 +65,8 @@ Lifecycle context：
 
 Runtime chat 会把 `turn_start` 和 `sync_turn` report 持久化为 `MemoryLifecycle` session event。可以关联具体 turn 的 `sync_turn` report 会带上 `MemoryRef::SessionTurn`。如果本地 provider 在派生 turn summary 中发现 redaction marker，它会记录 skipped write，而不是存储 summary。
 
+成功 `sync_turn` 后，runtime 会对写入的 turn-summary record 和本轮学习到的 relationship record 应用 `MemoryPolicy`。同一轮也会检查受影响的 kind/scope 是否超过 `max_records_per_scope`。Promote/demote 决策会更新本地 tag；forget 决策会删除低分或 quota 淘汰的 record。每个 action 都会带 score 写入 `JsonlMemoryJournal`，可关联 turn 时会带上 `MemoryRef::SessionTurn`。Memory store update/delete 和 journal append 目前仍是分开的本地操作，跨 store 事务语义还要后续补齐。
+
 查看持久化 lifecycle evidence：
 
 ```bash
@@ -72,7 +74,7 @@ ikaros debug memory-lifecycle <session-id>
 ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
 ```
 
-命令会读取 `state.db` 和 `memory_journal.jsonl`，报告 lifecycle phase、records read/written、`MemoryRef::SessionTurn`、skipped-write 原因和 redaction 相关 note。
+命令会读取 `state.db` 和 `memory_journal.jsonl`，报告 lifecycle phase、records read/written、`MemoryRef::SessionTurn`、skipped-write 原因、redaction 相关 note、action count 和 runtime memory policy action。
 
 ## Runtime Context
 
@@ -102,7 +104,7 @@ memory:
 - 在真实 adapter 实现前，外部 provider descriptor 不是 runtime 能力。
 - Secret-like memory 内容会被拒绝或脱敏。
 - Memory record 可以携带结构化 `MemoryRef`，例如 session turn、session entry、skill call 或 manual note。
-- Runtime `sync_turn` append 和 skipped-write 决策会写入 `MemoryJournal`；promotion、demotion、forget 和 quota decision 启用时也应使用同一 journal 边界。
+- Runtime `sync_turn` append、skipped-write、promote、demote、forget 和 quota decision 都会写入 `MemoryJournal`。
 - Relationship、task、project 和 knowledge memory 不应静默分叉到多个 provider。
 
 ## 失败处理

@@ -52,6 +52,8 @@ cargo run -p ikaros-cli -- memory search "RAG"
 cargo run -p ikaros-cli -- rag ingest docs --scope project
 cargo run -p ikaros-cli -- rag search "harness policy"
 cargo run -p ikaros-cli -- task run "summarize this repository" --dry-run
+cargo run -p ikaros-cli -- debug context-diff <session-id>
+cargo run -p ikaros-cli -- debug memory-lifecycle <session-id>
 cargo run -p ikaros-cli -- approval list
 cargo run -p ikaros-cli -- skill list
 ```

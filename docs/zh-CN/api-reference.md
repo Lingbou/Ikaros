@@ -43,7 +43,7 @@ ikaros debug memory-lifecycle <session-id>
 ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
 ```
 
-`context-diff` 读取 `state.db`，报告 estimator、budget、context window、section token 估算、added/removed/compressed context、已解析 reference、compaction summary、continuation prompt、`ContextCompacted` 和 context-limit error。`memory-lifecycle` 读取 session timeline 和 `memory_journal.jsonl`，查询匹配的 `MemoryLifecycle` event、`MemoryRef::SessionTurn` 关联、skipped write 和 redaction 相关 note。
+`context-diff` 读取 `state.db`，报告 estimator、budget、context window、section token 估算、added/removed/compressed context、已解析 reference、compaction summary、continuation prompt、`ContextCompacted` 和 context-limit error。`memory-lifecycle` 读取 session timeline 和 `memory_journal.jsonl`，查询匹配的 `MemoryLifecycle` event、`MemoryRef::SessionTurn` 关联、skipped write、redaction 相关 note、action count 和 runtime memory policy action。
 
 记忆和关系笔记：
 

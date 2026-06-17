@@ -20,14 +20,16 @@ use crate::{
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
 use ikaros_context::TokenEstimator;
 use ikaros_core::{
-    ContextBuilder, IkarosConfig, IkarosError, IkarosPaths, ResolvedAgentProfile, Result,
-    redact_secrets,
+    ContextBuilder, IkarosConfig, IkarosError, IkarosPaths, MemoryPolicyConfig,
+    ResolvedAgentProfile, Result, redact_secrets,
 };
 use ikaros_harness::GuardrailConfig;
 use ikaros_harness::{AuditEvent, ExecutionSession, SkillRegistry};
 use ikaros_memory::{
     JsonlMemoryJournal, LocalMemoryStore, MemoryJournal, MemoryJournalAction, MemoryJournalEntry,
-    MemoryLifecycleReport, MemoryProvider, MemoryTurnRecord, MemoryTurnStart,
+    MemoryKind, MemoryLifecycleRecordRef, MemoryLifecycleReport, MemoryPolicy,
+    MemoryPolicyDecision, MemoryPolicyEngine, MemoryProvider, MemoryQuery, MemoryRecord,
+    MemoryTurnRecord, MemoryTurnStart, add_policy_tag,
 };
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse,
@@ -84,6 +86,7 @@ pub async fn run_chat_message(
         .with_agent_id(agent_instance.agent_id.clone())
         .with_workspace(agent_instance.workspace.clone());
     let memory_journal = JsonlMemoryJournal::new(&paths.memory_dir);
+    let memory_policy = memory_policy_from_config(&config.memory.policy);
     let turn_start_report = memory_provider.turn_start(MemoryTurnStart {
         session_id: options.session_id.clone(),
         agent_id: Some(agent_instance.agent_id.clone()),
@@ -157,7 +160,14 @@ pub async fn run_chat_message(
         &chat_session_id,
         &sync_report,
     )?;
-    append_memory_policy_journal(&memory_journal, &sync_report)?;
+    apply_runtime_memory_policy(
+        &memory_provider,
+        &memory_journal,
+        &memory_policy,
+        &sync_report,
+        report.relationship_learned,
+        options.scope.as_deref().unwrap_or("default"),
+    )?;
     emit_chat_lifecycle_event(
         &event_sink,
         &SessionId::from(chat_session_id.clone()),
@@ -950,23 +960,127 @@ fn emit_memory_lifecycle_report(
     )
 }
 
-fn append_memory_policy_journal(
+fn memory_policy_from_config(config: &MemoryPolicyConfig) -> MemoryPolicy {
+    MemoryPolicy {
+        promote_threshold: config.promote_threshold,
+        demote_threshold: config.demote_threshold,
+        forget_threshold: config.forget_threshold,
+        max_records_per_scope: config.max_records_per_scope,
+    }
+}
+
+fn apply_runtime_memory_policy(
+    provider: &dyn MemoryProvider,
     journal: &dyn MemoryJournal,
+    policy: &MemoryPolicy,
     report: &MemoryLifecycleReport,
-) -> Result<Option<MemoryJournalEntry>> {
+    relationship_learned: usize,
+    relationship_scope: &str,
+) -> Result<Vec<MemoryJournalEntry>> {
+    let mut entries = append_memory_sync_journal(provider, journal, policy, report)?;
     if report.phase != "sync_turn" {
-        return Ok(None);
+        return Ok(entries);
+    }
+    let engine = MemoryPolicyEngine::new(policy.clone());
+    let trigger_ref = report.source_ref.clone();
+    let mut affected_scopes = Vec::<(MemoryKind, String)>::new();
+
+    for record_ref in &report.records {
+        push_affected_scope(
+            &mut affected_scopes,
+            record_ref.kind.clone(),
+            &record_ref.scope,
+        );
+    }
+    if relationship_learned > 0 {
+        push_affected_scope(
+            &mut affected_scopes,
+            MemoryKind::Relationship,
+            relationship_scope,
+        );
+    }
+
+    for (kind, scope) in affected_scopes {
+        let mut records_in_scope = scope_records(provider, kind.clone(), &scope)?;
+        for record in records_in_scope.clone() {
+            if let Some(decision) = engine.classify_record(&record, &records_in_scope) {
+                if decision.action == MemoryJournalAction::Promote
+                    || decision.action == MemoryJournalAction::Demote
+                {
+                    let tag = match decision.action {
+                        MemoryJournalAction::Promote => "policy-promoted",
+                        MemoryJournalAction::Demote => "policy-demoted",
+                        _ => unreachable!(),
+                    };
+                    provider.update(&record.id, None, Some(add_policy_tag(&record.tags, tag)))?;
+                } else if decision.action == MemoryJournalAction::Forget {
+                    provider.delete_by_id(&record.id)?;
+                }
+                entries.push(append_memory_decision_journal(
+                    journal,
+                    &record,
+                    decision,
+                    trigger_ref.clone().or_else(|| record.source_ref.clone()),
+                )?);
+            }
+        }
+
+        records_in_scope = scope_records(provider, kind, &scope)?;
+        for (record, score) in engine.quota_victims(&records_in_scope) {
+            provider.delete_by_id(&record.id)?;
+            entries.push(append_memory_decision_journal(
+                journal,
+                &record,
+                MemoryPolicyDecision {
+                    action: MemoryJournalAction::Forget,
+                    score,
+                    reason: "quota removed lower score memory".into(),
+                },
+                trigger_ref.clone().or_else(|| record.source_ref.clone()),
+            )?);
+        }
+    }
+
+    Ok(entries)
+}
+
+fn append_memory_sync_journal(
+    provider: &dyn MemoryProvider,
+    journal: &dyn MemoryJournal,
+    policy: &MemoryPolicy,
+    report: &MemoryLifecycleReport,
+) -> Result<Vec<MemoryJournalEntry>> {
+    if report.phase != "sync_turn" {
+        return Ok(Vec::new());
     }
     let skipped_note = report
         .notes
         .iter()
         .find(|note| note.to_ascii_lowercase().contains("skipped"));
-    let (action, reason) = if report.records_written > 0 {
-        (
-            MemoryJournalAction::Append,
-            "sync_turn wrote turn summary".to_owned(),
-        )
-    } else if let Some(note) = skipped_note {
+    if report.records_written > 0 {
+        let mut entries = Vec::new();
+        for record_ref in &report.records {
+            let Some(record) = find_memory_record(provider, record_ref)? else {
+                continue;
+            };
+            let scope_records = scope_records(provider, record.kind.clone(), &record.scope)?;
+            let score =
+                MemoryPolicyEngine::new(policy.clone()).score_record(&record, &scope_records);
+            entries.push(append_memory_entry_journal(
+                journal,
+                MemoryJournalAction::Append,
+                "sync_turn wrote turn summary",
+                &record,
+                Some(score),
+                record
+                    .source_ref
+                    .clone()
+                    .or_else(|| report.source_ref.clone()),
+            )?);
+        }
+        return Ok(entries);
+    }
+    if let Some(note) = skipped_note {
         let reason = if note.to_ascii_lowercase().contains("redacted")
             || note.to_ascii_lowercase().contains("secret")
         {
@@ -974,16 +1088,82 @@ fn append_memory_policy_journal(
         } else {
             format!("sync_turn {note}")
         };
-        (MemoryJournalAction::Skip, reason)
-    } else {
-        return Ok(None);
-    };
+        let mut entry = MemoryJournalEntry::new(MemoryJournalAction::Skip, reason)?;
+        if let Some(source_ref) = report.source_ref.clone() {
+            entry = entry.with_source_ref(source_ref)?;
+        }
+        return journal.append(entry).map(|entry| vec![entry]);
+    }
+    Ok(Vec::new())
+}
 
-    let mut entry = MemoryJournalEntry::new(action, reason)?;
-    if let Some(source_ref) = report.source_ref.clone() {
+fn append_memory_decision_journal(
+    journal: &dyn MemoryJournal,
+    record: &MemoryRecord,
+    decision: MemoryPolicyDecision,
+    source_ref: Option<ikaros_memory::MemoryRef>,
+) -> Result<MemoryJournalEntry> {
+    append_memory_entry_journal(
+        journal,
+        decision.action,
+        decision.reason,
+        record,
+        Some(decision.score),
+        source_ref,
+    )
+}
+
+fn append_memory_entry_journal(
+    journal: &dyn MemoryJournal,
+    action: MemoryJournalAction,
+    reason: impl Into<String>,
+    record: &MemoryRecord,
+    score: Option<ikaros_memory::MemoryScore>,
+    source_ref: Option<ikaros_memory::MemoryRef>,
+) -> Result<MemoryJournalEntry> {
+    let mut entry = MemoryJournalEntry::new(action, reason)?.with_memory(
+        &record.id,
+        record.kind.clone(),
+        &record.scope,
+    )?;
+    if let Some(score) = score {
+        entry = entry.with_score(score);
+    }
+    if let Some(source_ref) = source_ref {
         entry = entry.with_source_ref(source_ref)?;
     }
-    journal.append(entry).map(Some)
+    journal.append(entry)
+}
+
+fn find_memory_record(
+    provider: &dyn MemoryProvider,
+    record_ref: &MemoryLifecycleRecordRef,
+) -> Result<Option<MemoryRecord>> {
+    Ok(
+        scope_records(provider, record_ref.kind.clone(), &record_ref.scope)?
+            .into_iter()
+            .find(|record| record.id == record_ref.id),
+    )
+}
+
+fn scope_records(
+    provider: &dyn MemoryProvider,
+    kind: MemoryKind,
+    scope: &str,
+) -> Result<Vec<MemoryRecord>> {
+    provider.search(MemoryQuery {
+        kind: Some(kind),
+        scope: Some(scope.to_owned()),
+        text: None,
+        limit: Some(usize::MAX),
+    })
+}
+
+fn push_affected_scope(scopes: &mut Vec<(MemoryKind, String)>, kind: MemoryKind, scope: &str) {
+    let item = (kind, scope.to_owned());
+    if !scopes.contains(&item) {
+        scopes.push(item);
+    }
 }
 
 fn redacted_chat_error(error: IkarosError) -> IkarosError {

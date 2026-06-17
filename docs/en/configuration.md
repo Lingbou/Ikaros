@@ -154,6 +154,11 @@ JSONL is the default. SQLite is available for larger local stores:
 ```yaml
 memory:
   backend: sqlite
+  policy:
+    promote_threshold: 0.75
+    demote_threshold: 0.35
+    forget_threshold: 0.15
+    max_records_per_scope: 2000
 
 chat_history:
   backend: sqlite
@@ -162,6 +167,18 @@ rag:
   backend: sqlite
   embedding_provider: hash
 ```
+
+Memory policy fields:
+
+- `promote_threshold`: combined score at or above this value records a
+  `promote` action and tags the record as policy-promoted.
+- `demote_threshold`: combined score at or below this value records a `demote`
+  action and tags the record as policy-demoted.
+- `forget_threshold`: combined score at or below this value records a `forget`
+  action and deletes the low-score record.
+- `max_records_per_scope`: per kind/scope quota. When a turn pushes a scope
+  over quota, the lowest-score records are deleted and journaled as `forget`
+  actions with a quota reason.
 
 The main local paths are:
 

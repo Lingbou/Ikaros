@@ -31,15 +31,19 @@ writes. `ikaros config validate` rejects enabled external providers.
 
 The memory policy boundary includes:
 
-- `MemoryScore`: recency, relevance, frequency, and source-strength inputs.
+- `MemoryScore`: recency, relevance, frequency, source-strength, confidence,
+  and sensitivity inputs.
 - `MemoryPolicy`: promote, demote, forget, and per-scope quota thresholds.
 - `MemoryJournal`: append-only policy/action records.
 - `JsonlMemoryJournal`: local `memory_journal.jsonl` implementation.
 
 The journal is an audit and replay aid for memory lifecycle decisions. Runtime
-chat writes `sync_turn` append or skipped-write decisions to the journal. It
-does not replace the memory store, and it does not enable external memory
-providers.
+chat writes `sync_turn` append or skipped-write decisions to the journal, then
+records promote, demote, forget, and quota-eviction decisions for affected
+scopes. Quota evictions are journaled as `forget` actions with a quota reason.
+It does not replace the memory store, and it does not enable external memory
+providers. The current policy pass is turn-scoped rather than a full-store
+compactor.
 
 Inspect provider state with:
 
@@ -92,6 +96,15 @@ Runtime chat persists `turn_start` and `sync_turn` reports as
 sees a redaction marker in the derived turn summary, it records a skipped write
 instead of storing the summary.
 
+After a successful `sync_turn`, runtime applies `MemoryPolicy` to the written
+turn-summary record and any relationship records learned during the turn. The
+same pass also checks the affected kind/scope groups against
+`max_records_per_scope`. Promote/demote decisions update local tags; forget
+decisions delete low-score or quota-evicted records. Every action is written to
+`JsonlMemoryJournal` with a score and `MemoryRef::SessionTurn` when available.
+Memory store updates/deletes and journal appends are still separate local
+operations until cross-store transaction semantics are introduced.
+
 Inspect persisted lifecycle evidence with:
 
 ```bash
@@ -101,7 +114,7 @@ ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
 
 The command reads `state.db` plus `memory_journal.jsonl` and reports lifecycle
 phases, records read/written, `MemoryRef::SessionTurn`, skipped-write reasons,
-and redaction-related notes.
+redaction-related notes, action counts, and runtime memory policy actions.
 
 ## Runtime Context
 
@@ -143,9 +156,8 @@ implemented.
 - Secret-like memory content is rejected or redacted.
 - Memory records can carry a structured `MemoryRef` such as a session turn,
   session entry, skill call, or manual note.
-- Runtime `sync_turn` append and skipped-write decisions are recorded in
-  `MemoryJournal`; promotion, demotion, forgetting, and quota decisions should
-  use the same journal boundary when those behaviors are enabled.
+- Runtime `sync_turn` append, skipped-write, promote, demote, forget, and quota
+  decisions are recorded in `MemoryJournal`.
 - Relationship, task, project, and knowledge memory should not silently diverge across multiple providers.
 
 ## Failure Handling
