@@ -41,6 +41,7 @@ pub(crate) async fn task_command(
                     dry_run,
                     agent_loop,
                     loop_max_iterations,
+                    ..TaskRunOptions::default()
                 },
                 paths,
                 workspace,

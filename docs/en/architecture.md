@@ -19,8 +19,9 @@ calling context, persistent state, or user-visible behavior changes.
   tool, approval, memory lifecycle, audit anchor, context, error, and turn-end
   milestones.
 - Session store: the append-only session, turn, event, approval, and replay
-  persistence boundary. The current implementation is local SQLite with FTS5
-  and trigram indexes for session entry search.
+  persistence boundary, including durable continuation queue records. The
+  current implementation is local SQLite with FTS5 and trigram indexes for
+  session entry search.
 - Context bundle: the token-budgeted set of context sections used for a turn,
   plus parsed references and a diff explaining what was added, removed, or
   compressed.
@@ -35,7 +36,7 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-core`: shared config, paths, task types, redaction, errors, agent profiles, and the `AgentInstance` identity model.
 - `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
   session entries, `SessionStore`, `SessionWriter`, SQLite `state.db`, and
-  replay/search/branch reads.
+  replay/search/branch/continuation reads.
 - `ikaros-context`: context bundles, sections, references, provider-aware
   token budgets, quota-based compaction, and context diffs.
 - `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, `AgentHarness`, and context orchestration.
@@ -58,21 +59,28 @@ Most entry points follow the same path:
 1. CLI or workers resolve `IKAROS_HOME`, workspace, config, and agent id/profile.
 2. Runtime resolves an `AgentInstance` with `agent_id`, profile overlay, workspace, state dir, session policy, auth scope, and route bindings.
 3. Runtime builds stores, provider adapters, the skill registry, context engine, and harness session.
-4. Model turns run through `AgentRuntime`; the default implementation is `HarnessAgentRuntime`.
-   Chat and task agent-loop entry points wrap it in `AgentHarness`, which owns
-   phase, caller-provided turn ids, and steer, follow-up, and next-turn queues.
-   Runtime emits typed `AgentEvent` records. Callers may attach an
-   `AgentEventSink` to persist those records in `ikaros-session`, while existing
-   CLI and worker callers can still use the final report.
+4. Model turns run through `AgentRuntime`; the default implementation is
+   `HarnessAgentRuntime`. Chat and task agent-loop entry points wrap it in
+   `AgentHarness`, which owns phase, caller-provided turn ids, and durable
+   continuation queue handling when a `SessionStore` is available. Gateway task
+   drains, scheduled task execution, and agent-loop handoff now call the
+   session-aware task agent-loop path with explicit session id, turn id, and
+   source metadata. Runtime emits typed `AgentEvent` records. Callers may attach
+   an `AgentEventSink` to persist those records in `ikaros-session`, while
+   existing CLI and worker callers can still use the final report.
 5. Tool dispatch must go through `ExecutionSession` and `ExecutionEnv`; runtime code should not touch host APIs directly.
 6. The harness evaluates policy, records audit events, and either executes, asks for approval, or denies.
 7. Runtime reduces the same turn path into stable reports for CLI, body,
    schedule, gateway, chat, or agent callers.
 
-Chat and task agent-loop execution now use the stateful harness path. Scheduled
-jobs, gateway drains, and agent handoffs still reuse the same lower-level
-runtime/harness/session boundary and should move behind `AgentHarness` as their
-turn-continuation needs grow.
+Chat and task agent-loop execution now use the stateful harness path. Gateway
+task drain, scheduled task execution, and agent-loop handoff also enter that path
+with explicit session source metadata, so their agent-loop events and
+continuation state can land in the same `state.db` timeline as their
+gateway/schedule evidence.
+The durable continuation queue is a recovery and replay boundary, not yet a
+full scheduler; lease reclaim, cancellation propagation, cross-process abort,
+and user-facing debug queries are still runtime hardening work.
 
 ## Agent Identity
 
@@ -107,7 +115,8 @@ State ownership:
 
 - `state.db`: session metadata, append-only session entries, persisted
   chat/agent-loop events, gateway and schedule evidence, approval records,
-  FTS5/trigram search indexes, branch/compact/retry markers, and replay data.
+  durable continuation queue records, FTS5/trigram search indexes,
+  branch/compact/retry markers, and replay data.
   Built-in chat turns write user/assistant entries through a turn-scoped
   `SessionWriter` transaction. Gateway and schedule workers also map their
   request/result/delivery evidence into the same store. Memory lifecycle and

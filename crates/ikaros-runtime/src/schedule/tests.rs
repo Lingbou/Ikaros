@@ -3,7 +3,7 @@
 use super::*;
 use ikaros_automation::{LocalScheduleStore, ScheduleDeliveryTarget};
 use ikaros_core::{IkarosPaths, TaskState};
-use ikaros_session::{SessionSource, SessionStore, SqliteSessionStore};
+use ikaros_session::{AgentEventKind, SessionSource, SessionStore, SqliteSessionStore};
 
 #[tokio::test]
 async fn run_schedule_worker_tick_executes_due_job_and_records_update() {
@@ -79,7 +79,25 @@ async fn run_schedule_worker_tick_executes_due_job_and_records_update() {
     );
     assert_eq!(replay.entries[1].payload["kind"], "schedule_run");
     assert_eq!(replay.entries[1].payload["status"], "completed");
-    assert_eq!(replay.agent_events.len(), 4);
+    assert!(replay.agent_events.len() >= 4);
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnStart))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ModelStream(_)))
+    );
 }
 
 #[tokio::test]

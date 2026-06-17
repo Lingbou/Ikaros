@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    AgentHarness, AgentHarnessConfig, AgentHarnessMessage, AgentHarnessPendingCounts,
-    AgentHarnessPhase,
+    AgentHarness, AgentHarnessConfig, AgentHarnessContinuation, AgentHarnessMessage,
+    AgentHarnessPendingCounts, AgentHarnessPhase,
 };
 use crate::agent_loop::{
     AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason, AgentRuntime,
@@ -13,8 +13,9 @@ use ikaros_core::{IkarosError, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
 use ikaros_models::{MockModelProvider, ModelProvider, ModelRequest, ModelResponse, TokenUsage};
 use ikaros_session::{
-    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, SessionEntry, SessionEntryKind,
-    SessionId, SessionStore, SqliteSessionStore, TurnId, noop_agent_event_sink,
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, PersistingAgentTurnSink,
+    SessionContinuationStatus, SessionEntry, SessionEntryKind, SessionId, SessionSource,
+    SessionStore, SqliteSessionStore, TurnId, noop_agent_event_sink,
 };
 use serde_json::json;
 use std::{
@@ -273,9 +274,15 @@ async fn agent_harness_continue_drains_queued_messages_by_priority() {
         noop_agent_event_sink(),
     );
 
-    harness.enqueue_next_turn(AgentHarnessMessage::user("next"));
-    harness.enqueue_follow_up(AgentHarnessMessage::user("follow-up"));
-    harness.enqueue_steer(AgentHarnessMessage::user("steer"));
+    harness
+        .enqueue_next_turn(AgentHarnessMessage::user("next"))
+        .expect("next");
+    harness
+        .enqueue_follow_up(AgentHarnessMessage::user("follow-up"))
+        .expect("follow-up");
+    harness
+        .enqueue_steer(AgentHarnessMessage::user("steer"))
+        .expect("steer");
 
     assert_eq!(
         harness.pending_counts(),
@@ -353,7 +360,9 @@ async fn agent_harness_uses_caller_supplied_turn_id_once() {
     );
 
     let first = harness.run_turn("first").await.expect("first turn");
-    harness.enqueue_follow_up(AgentHarnessMessage::user("second"));
+    harness
+        .enqueue_follow_up(AgentHarnessMessage::user("second"))
+        .expect("follow-up");
     let second = harness.run_continue().await.expect("second turn");
 
     assert_eq!(first.turn_id.as_str(), "fixed-turn");
@@ -363,6 +372,104 @@ async fn agent_harness_uses_caller_supplied_turn_id_once() {
     let inputs = runtime.inputs();
     assert_eq!(inputs[0].turn_id.as_deref(), Some("fixed-turn"));
     assert_eq!(inputs[1].turn_id.as_deref(), Some(second.turn_id.as_str()));
+}
+
+#[tokio::test]
+async fn agent_harness_persists_continuations_across_harness_instances() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let runtime = RecordingRuntime::default();
+    let provider = MockModelProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+
+    {
+        let mut harness = AgentHarness::new(
+            harness_config(),
+            &runtime,
+            &provider,
+            &session,
+            &registry,
+            noop_agent_event_sink(),
+        )
+        .with_continuation_store(&store);
+        harness
+            .enqueue_follow_up(AgentHarnessMessage::user("persisted follow-up"))
+            .expect("enqueue");
+    }
+
+    let mut restarted = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        noop_agent_event_sink(),
+    )
+    .with_continuation_store(&store);
+    let turn = restarted.run_continue().await.expect("run persisted");
+
+    assert_eq!(turn.report.final_content, "answer: persisted follow-up");
+    assert_eq!(runtime.inputs()[0].user_input, "persisted follow-up");
+    let continuations = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations");
+    assert_eq!(continuations.len(), 1);
+    assert_eq!(
+        continuations[0].status,
+        SessionContinuationStatus::Completed
+    );
+    assert_eq!(
+        continuations[0].payload["completed_turn_id"],
+        json!(turn.turn_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn agent_harness_runs_persisted_continuation_with_turn_sink_without_locking() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let sink_store: std::sync::Arc<dyn SessionStore> = std::sync::Arc::new(store.clone());
+    let event_sink = PersistingAgentTurnSink::new(sink_store)
+        .with_source(SessionSource::Test)
+        .with_agent_id("build");
+    let runtime = RecordingRuntime::default();
+    let provider = MockModelProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+    let mut harness = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &event_sink,
+    )
+    .with_continuation_store(&store);
+
+    harness
+        .enqueue_follow_up(AgentHarnessMessage::user("persisted sink follow-up"))
+        .expect("enqueue");
+    let turn = harness.run_continue().await.expect("run continuation");
+    event_sink.commit().expect("commit turn events");
+
+    let continuations = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations");
+    assert_eq!(
+        continuations[0].status,
+        SessionContinuationStatus::Completed
+    );
+    let replay = store
+        .replay_session(&SessionId::from("session-a"))
+        .expect("replay")
+        .expect("session");
+    assert!(replay.agent_events.iter().any(|event| {
+        event.turn_id == turn.turn_id && matches!(event.kind, AgentEventKind::ContinuationStarted)
+    }));
+    assert!(replay.agent_events.iter().any(|event| {
+        event.turn_id == turn.turn_id && matches!(event.kind, AgentEventKind::ContinuationCompleted)
+    }));
 }
 
 #[tokio::test]
@@ -487,6 +594,110 @@ fn agent_harness_phase_operations_append_session_tree_entries() {
             SessionEntryKind::BranchSummary,
             SessionEntryKind::Compaction,
             SessionEntryKind::Leaf,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn agent_harness_runs_retry_and_compaction_as_durable_continuations() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let runtime = RecordingRuntime::default();
+    let provider = MockModelProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+    let sink = RecordingSink::default();
+    let mut root = SessionEntry::new(SessionId::from("session-a"), SessionEntryKind::UserMessage);
+    root.turn_id = Some(TurnId::from("root-turn"));
+    root.visible_text = Some("original user request".into());
+    store.append_entry(&root).expect("root entry");
+
+    let mut harness = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &sink,
+    )
+    .with_continuation_store(&store);
+    let compacted = harness
+        .enqueue_compaction(
+            root.entry_id.clone(),
+            "compressed old branch",
+            vec![root.entry_id.clone()],
+            json!({"tokens_saved": 64}),
+        )
+        .expect("enqueue compaction");
+    let compaction_result = harness
+        .run_next_continuation()
+        .await
+        .expect("run compaction");
+    let AgentHarnessContinuation::Entry {
+        continuation: completed_compaction,
+        entry: compaction_entry,
+    } = compaction_result
+    else {
+        panic!("expected compaction entry continuation");
+    };
+    assert_eq!(
+        completed_compaction.continuation_id,
+        compacted.continuation_id
+    );
+    assert_eq!(
+        completed_compaction.status,
+        SessionContinuationStatus::Completed
+    );
+    assert_eq!(compaction_entry.kind, SessionEntryKind::Compaction);
+
+    let retry = harness
+        .enqueue_retry_marker(
+            compaction_entry.entry_id.clone(),
+            Some("retry after evidence".into()),
+            json!({"attempt": 2}),
+        )
+        .expect("enqueue retry");
+
+    let retry_result = harness.run_next_continuation().await.expect("run retry");
+    let AgentHarnessContinuation::Entry {
+        continuation: completed_retry,
+        entry: retry_entry,
+    } = retry_result
+    else {
+        panic!("expected retry entry continuation");
+    };
+    assert_eq!(completed_retry.continuation_id, retry.continuation_id);
+    assert_eq!(completed_retry.status, SessionContinuationStatus::Completed);
+    assert_eq!(retry_entry.kind, SessionEntryKind::Leaf);
+
+    let branch = store
+        .active_branch(&SessionId::from("session-a"))
+        .expect("active branch")
+        .expect("session exists");
+    assert_eq!(
+        branch
+            .entries
+            .iter()
+            .map(|entry| entry.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            SessionEntryKind::UserMessage,
+            SessionEntryKind::Compaction,
+            SessionEntryKind::Leaf,
+        ]
+    );
+    let event_kinds = sink
+        .events()
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_kinds,
+        vec![
+            AgentEventKind::ContinuationStarted,
+            AgentEventKind::ContinuationCompleted,
+            AgentEventKind::ContinuationStarted,
+            AgentEventKind::ContinuationCompleted,
         ]
     );
 }

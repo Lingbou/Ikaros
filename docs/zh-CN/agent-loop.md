@@ -36,11 +36,14 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 
 `AgentHarness` 是 `AgentRuntime` 上层的 stateful wrapper，面向需要稳定
 session id、每轮 turn id、phase 跟踪和 continuation queue 的调用方。它负责
-harness phase，以及 steer、follow-up、next-turn 三类队列，然后把真正的 turn
-交给 `AgentRuntime::run_turn_with_events()`。返回的 `AgentHarnessTurn` 以 typed
+harness phase，并能运行 steer、follow-up、next-turn、resume、compact 和 retry
+continuation；其中模型 turn 会交给 `AgentRuntime::run_turn_with_events()`。返回的 `AgentHarnessTurn` 以 typed
 events 为主。Harness 会收集同一条已经转发给调用方 sink 的 emitted event stream，
 并用这条 stream 回填 `AgentLoopReport.events` 作为兼容摘要。内置 chat 和 task
-agent-loop 入口已经使用这个 wrapper；直接的 `run_agent_loop*` helper 保留为测试和
+agent-loop 入口已经使用这个 wrapper。Agent-loop handoff 也使用这条路径，并在调用方
+没有提供 source 时补上 subagent session source。Gateway task drain 和 schedule task
+execution 也使用 session-aware task agent-loop path，并携带 gateway/schedule 派生的
+session id、turn id 和 source metadata。直接的 `run_agent_loop*` helper 保留为测试和
 特殊 runtime 的底层 API。
 
 Harness phase 不只是展示用枚举。`AgentHarnessPhase` 现在已经有公开的 branch
@@ -50,10 +53,16 @@ summary、compaction marker 和 retry marker 操作，分别通过
 append-only session tree。Branch、compaction、retry 和 active-leaf 操作是追加或选择
 entry，不会改写已经发生的 turn。
 
-当前 continuation queue 仍是内存中的 harness state。它让单个 runtime instance
-具备 stateful 行为，但还不是 durable 的跨入口队列、scheduler 或 planner。
-Gateway drain、schedule worker 和 agent handoff 仍使用较底层的
-runtime/harness/session 边界，直到它们的 continuation 语义明确后再迁入 harness。
+如果 harness 配置了 `SessionStore`，continuation queue 就是 durable 的。
+`ikaros-session` 会把 queued、running、completed、failed 和 cancelled continuation
+写入 `state.db`。Harness 可以 claim 并完成 message continuation（`steer`、
+`follow_up`、`next_turn`、`resume`）和 maintenance continuation（`compact`、
+`retry`）。Message continuation 会运行真实 turn；maintenance continuation 会追加
+session entry，并发出 `ContinuationStarted` / `ContinuationCompleted` /
+`ContinuationFailed` 事件，不会伪造模型响应。没有 continuation store 时，harness
+仍保留内存队列，用于测试和特殊 one-shot caller。
+这仍然只是 continuation queue，不是完整 scheduler。Lease 过期回收、取消事件传播、
+跨进程 abort 处理，以及面向用户的 debug/query 控制面仍是后续 hardening。
 
 `AgentLoopOptions::with_hooks()` 可以安装 observer-only `AgentLoopHooks`，覆盖
 provider request/response 和 tool call 边界。Hook payload 只携带已脱敏元数据和

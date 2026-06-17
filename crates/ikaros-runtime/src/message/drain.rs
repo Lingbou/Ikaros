@@ -2,8 +2,8 @@
 
 use super::types::{GatewayDrainContext, GatewayDrainReport};
 use crate::{
-    ChatRunOptions, execute_task_for_automation, run_chat_message, task_report_succeeded,
-    task_report_summary,
+    ChatRunOptions, TaskRunOptions, execute_task_text_with_options, run_chat_message,
+    task_report_succeeded, task_report_summary,
 };
 use ikaros_core::{IkarosPaths, Result, redact_secrets};
 use ikaros_gateway::{GatewayMessage, GatewayMessageKind, GatewayMessageStatus, LocalGatewayStore};
@@ -133,8 +133,24 @@ async fn drain_task_message(
     workspace: &Path,
     agent: Option<&str>,
 ) -> Result<GatewayDrainReport> {
-    match execute_task_for_automation(message.content.clone(), paths, workspace, agent).await {
-        Ok(task_report) => {
+    let session_id = gateway_session_id(message);
+    let turn_id = gateway_turn_id(&message.id);
+    let task_options = TaskRunOptions::agent_loop(false).with_session(
+        session_id.to_string(),
+        turn_id.to_string(),
+        gateway_session_source(message),
+    );
+    match execute_task_text_with_options(
+        message.content.clone(),
+        task_options,
+        paths,
+        workspace,
+        agent,
+    )
+    .await
+    {
+        Ok(task_execution) => {
+            let task_report = task_execution.report;
             let succeeded = task_report_succeeded(&task_report);
             let status = if succeeded {
                 GatewayMessageStatus::Processed

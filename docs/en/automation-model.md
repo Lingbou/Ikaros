@@ -41,7 +41,11 @@ ikaros schedule delete <id>
 
 ## Execution
 
-Due jobs are converted into runtime task reports and executed through the deterministic harness task runner. Policy, approvals, audit logging, memory writes, and agent profile overlays still apply.
+Due jobs are converted into runtime task executions through the session-aware
+task agent-loop path. The scheduler supplies a schedule-derived session id, turn
+id, and session source, so typed events can share the same `state.db` timeline
+as schedule request/result/delivery evidence. Policy, approvals, audit logging,
+memory writes, and agent profile overlays still apply.
 
 Default delivery writes a redacted local Markdown report. `--delivery local-file` and `--delivery gateway-outbox` can be repeated to choose one or both delivery targets.
 

@@ -42,13 +42,18 @@ callers that need a complete in-memory event trace without making
 
 `AgentHarness` is the stateful wrapper above `AgentRuntime` for callers that
 need a stable session id, per-turn ids, phase tracking, and continuation queues.
-It owns the harness phase and the steer, follow-up, and next-turn queues, then
-delegates the actual turn to `AgentRuntime::run_turn_with_events()`. The
+It owns the harness phase and can run steer, follow-up, next-turn, resume,
+compact, and retry continuations, then delegates model turns to
+`AgentRuntime::run_turn_with_events()`. The
 returned `AgentHarnessTurn` keeps typed events first. The harness collects the
 same emitted event stream it forwards to the caller's sink and uses that stream
 to backfill `AgentLoopReport.events` as a compatibility summary. Built-in chat
-and task agent-loop entry points use this wrapper; direct `run_agent_loop*`
-helpers remain the low-level API for tests and specialized runtimes.
+and task agent-loop entry points use this wrapper. Agent-loop handoff also uses
+this path and supplies a subagent session source when the caller did not provide
+one. Gateway task drains and scheduled task execution also use the session-aware
+task agent-loop path with gateway/schedule session ids, turn ids, and source
+metadata. Direct `run_agent_loop*` helpers remain the low-level API for tests
+and specialized runtimes.
 
 The harness phase is not just a display enum. `AgentHarnessPhase` now has
 concrete public operations for branch summaries, compaction markers, and retry
@@ -58,11 +63,18 @@ through `SessionStore`. The session tree remains append-only; branch,
 compaction, retry, and active-leaf operations add or select entries instead of
 rewriting previous turns.
 
-The current continuation queues are in-memory harness state. They make one
-runtime instance stateful, but they are not yet durable cross-entry-point
-queues, a scheduler, or a planner. Gateway drains, schedule workers, and agent
-handoffs still use the lower-level runtime/harness/session boundary until their
-continuation semantics are explicit.
+Continuation queues are durable when the harness is configured with a
+`SessionStore`. `ikaros-session` stores queued, running, completed, failed, and
+cancelled continuations in `state.db`. The harness can claim and complete
+message continuations (`steer`, `follow_up`, `next_turn`, `resume`) and
+maintenance continuations (`compact`, `retry`). Message continuations run a real
+turn. Maintenance continuations append session entries and emit
+`ContinuationStarted` / `ContinuationCompleted` / `ContinuationFailed` events
+without inventing a model response. Without a continuation store, the harness
+keeps the old in-memory queues for tests and specialized one-shot callers.
+This is still a continuation queue, not a complete scheduler. Lease
+expiry/reclaim, cancellation event propagation, cross-process abort handling,
+and a user-facing debug/query surface are still hardening work.
 
 `AgentLoopOptions::with_hooks()` installs observer-only `AgentLoopHooks` for
 provider request/response and tool call boundaries. Hook payloads carry

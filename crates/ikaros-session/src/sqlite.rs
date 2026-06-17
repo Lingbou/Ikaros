@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    AgentEvent, AgentEventKind, ApprovalRecord, ApprovalStatus, SessionBranch,
-    SessionBranchSummaryInput, SessionCompactionInput, SessionEntry, SessionEntryId,
-    SessionEntryKind, SessionId, SessionRecord, SessionRetryInput, SessionSearchHit,
-    SessionSearchIndex, SessionSearchQuery, SessionSource, SessionStore, SessionWriter, TurnId,
+    AgentEvent, AgentEventKind, ApprovalRecord, ApprovalStatus, ContinuationId, SessionBranch,
+    SessionBranchSummaryInput, SessionCompactionInput, SessionContinuation,
+    SessionContinuationClaim, SessionContinuationInput, SessionContinuationKind,
+    SessionContinuationStatus, SessionEntry, SessionEntryId, SessionEntryKind, SessionId,
+    SessionRecord, SessionRetryInput, SessionSearchHit, SessionSearchIndex, SessionSearchQuery,
+    SessionSource, SessionStore, SessionWriter, TurnId,
 };
 use ikaros_core::{IkarosError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -16,7 +18,7 @@ use std::{
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const SESSION_SCHEMA_VERSION: i64 = 2;
+const SESSION_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone)]
 pub struct SqliteSessionStore {
@@ -139,7 +141,31 @@ impl SqliteSessionStore {
             CREATE INDEX IF NOT EXISTS approvals_session_at_idx
                 ON approvals(session_id, at);
 
-            PRAGMA user_version = 2;
+            CREATE TABLE IF NOT EXISTS session_continuations (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_id TEXT,
+                parent_continuation_id TEXT,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                claimed_at TEXT,
+                completed_at TEXT,
+                lease_owner TEXT,
+                error TEXT,
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );
+            CREATE INDEX IF NOT EXISTS session_continuations_session_status_idx
+                ON session_continuations(session_id, status, priority, created_at);
+            CREATE INDEX IF NOT EXISTS session_continuations_turn_idx
+                ON session_continuations(turn_id);
+            CREATE INDEX IF NOT EXISTS session_continuations_parent_idx
+                ON session_continuations(parent_continuation_id);
+
+            PRAGMA user_version = 3;
             "#,
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
@@ -334,6 +360,78 @@ impl SessionStore for SqliteSessionStore {
         }
         let conn = self.open()?;
         search_entries(&conn, &self.path, query)
+    }
+
+    fn enqueue_continuation(
+        &self,
+        input: &SessionContinuationInput,
+    ) -> Result<SessionContinuation> {
+        let conn = self.open()?;
+        enqueue_continuation(&conn, &self.path, input)
+    }
+
+    fn claim_next_continuation(
+        &self,
+        claim: &SessionContinuationClaim,
+    ) -> Result<Option<SessionContinuation>> {
+        let conn = self.open()?;
+        claim_next_continuation(&conn, &self.path, claim)
+    }
+
+    fn complete_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        payload: serde_json::Value,
+    ) -> Result<Option<SessionContinuation>> {
+        let conn = self.open()?;
+        update_continuation_status(
+            &conn,
+            &self.path,
+            continuation_id,
+            SessionContinuationStatus::Completed,
+            Some(payload),
+            None,
+        )
+    }
+
+    fn fail_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        error: &str,
+    ) -> Result<Option<SessionContinuation>> {
+        let conn = self.open()?;
+        update_continuation_status(
+            &conn,
+            &self.path,
+            continuation_id,
+            SessionContinuationStatus::Failed,
+            None,
+            Some(error),
+        )
+    }
+
+    fn cancel_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        reason: &str,
+    ) -> Result<Option<SessionContinuation>> {
+        let conn = self.open()?;
+        update_continuation_status(
+            &conn,
+            &self.path,
+            continuation_id,
+            SessionContinuationStatus::Cancelled,
+            None,
+            Some(reason),
+        )
+    }
+
+    fn continuations(&self, session_id: &SessionId) -> Result<Vec<SessionContinuation>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let conn = self.open()?;
+        continuations_for_session(&conn, &self.path, session_id)
     }
 
     fn agent_events(&self, session_id: &SessionId) -> Result<Vec<AgentEvent>> {
@@ -1088,6 +1186,368 @@ fn append_retry_marker(
     Ok(entry)
 }
 
+type SessionContinuationRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn session_continuation_from_parts(row: SessionContinuationRow) -> Result<SessionContinuation> {
+    let (
+        id,
+        session_id,
+        turn_id,
+        parent_continuation_id,
+        kind,
+        status,
+        priority,
+        payload_json,
+        created_at,
+        updated_at,
+        claimed_at,
+        completed_at,
+        lease_owner,
+        error,
+    ) = row;
+    Ok(SessionContinuation {
+        continuation_id: ContinuationId::from(id),
+        session_id: SessionId::from(session_id),
+        turn_id: turn_id.map(TurnId::from),
+        parent_continuation_id: parent_continuation_id.map(ContinuationId::from),
+        kind: continuation_kind_from_str(&kind)?,
+        status: continuation_status_from_str(&status)?,
+        priority,
+        payload: serde_json::from_str(&payload_json)?,
+        created_at: parse_time(&created_at)?,
+        updated_at: parse_time(&updated_at)?,
+        claimed_at: claimed_at.as_deref().map(parse_time).transpose()?,
+        completed_at: completed_at.as_deref().map(parse_time).transpose()?,
+        lease_owner,
+        error,
+    })
+}
+
+fn continuation_by_id(
+    conn: &Connection,
+    path: &Path,
+    continuation_id: &ContinuationId,
+) -> Result<Option<SessionContinuation>> {
+    conn.query_row(
+        r#"
+        SELECT id, session_id, turn_id, parent_continuation_id, kind, status, priority,
+               payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner, error
+        FROM session_continuations
+        WHERE id = ?1
+        "#,
+        params![continuation_id.as_str()],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|source| sqlite_error(path, source))?
+    .map(session_continuation_from_parts)
+    .transpose()
+}
+
+fn enqueue_continuation(
+    conn: &Connection,
+    path: &Path,
+    input: &SessionContinuationInput,
+) -> Result<SessionContinuation> {
+    insert_missing_session(conn, path, &input.session_id)?;
+    let continuation_id = ContinuationId::new();
+    let now = OffsetDateTime::now_utc();
+    conn.execute(
+        r#"
+        INSERT INTO session_continuations (
+            id, session_id, turn_id, parent_continuation_id, kind, status, priority,
+            payload_json, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+        params![
+            continuation_id.as_str(),
+            input.session_id.as_str(),
+            input.turn_id.as_ref().map(TurnId::as_str),
+            input
+                .parent_continuation_id
+                .as_ref()
+                .map(ContinuationId::as_str),
+            continuation_kind_to_str(input.kind),
+            continuation_status_to_str(SessionContinuationStatus::Queued),
+            input.priority,
+            serde_json::to_string(&input.payload)?,
+            format_time(now)?,
+            format_time(now)?,
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    continuation_by_id(conn, path, &continuation_id)?.ok_or_else(|| {
+        IkarosError::Message(format!(
+            "queued continuation disappeared after insert: {continuation_id}"
+        ))
+    })
+}
+
+fn claim_next_continuation(
+    conn: &Connection,
+    path: &Path,
+    claim: &SessionContinuationClaim,
+) -> Result<Option<SessionContinuation>> {
+    conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+        .map_err(|source| sqlite_error(path, source))?;
+    let result = claim_next_continuation_in_transaction(conn, path, claim);
+    match result {
+        Ok(claimed) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|source| sqlite_error(path, source))?;
+            Ok(claimed)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+fn claim_next_continuation_in_transaction(
+    conn: &Connection,
+    path: &Path,
+    claim: &SessionContinuationClaim,
+) -> Result<Option<SessionContinuation>> {
+    let mut queued = queued_continuations(conn, path)?;
+    queued.retain(|continuation| continuation_matches_claim(continuation, claim));
+    queued.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.created_at.cmp(&right.created_at))
+            .then_with(|| left.continuation_id.cmp(&right.continuation_id))
+    });
+    let Some(selected) = queued.into_iter().next() else {
+        return Ok(None);
+    };
+    let now = OffsetDateTime::now_utc();
+    let updated = conn
+        .execute(
+            r#"
+            UPDATE session_continuations
+            SET status = ?1,
+                updated_at = ?2,
+                claimed_at = ?2,
+                lease_owner = ?3,
+                error = NULL
+            WHERE id = ?4
+              AND status = ?5
+            "#,
+            params![
+                continuation_status_to_str(SessionContinuationStatus::Running),
+                format_time(now)?,
+                claim.lease_owner.as_deref(),
+                selected.continuation_id.as_str(),
+                continuation_status_to_str(SessionContinuationStatus::Queued),
+            ],
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    if updated == 0 {
+        return Ok(None);
+    }
+    continuation_by_id(conn, path, &selected.continuation_id)
+}
+
+fn queued_continuations(conn: &Connection, path: &Path) -> Result<Vec<SessionContinuation>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, session_id, turn_id, parent_continuation_id, kind, status, priority,
+                   payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner, error
+            FROM session_continuations
+            WHERE status = ?1
+            ORDER BY priority ASC, created_at ASC, rowid ASC
+            "#,
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    let rows = stmt
+        .query_map(
+            params![continuation_status_to_str(
+                SessionContinuationStatus::Queued
+            )],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                ))
+            },
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    let mut continuations = Vec::new();
+    for row in rows {
+        continuations.push(session_continuation_from_parts(
+            row.map_err(|source| sqlite_error(path, source))?,
+        )?);
+    }
+    Ok(continuations)
+}
+
+fn continuation_matches_claim(
+    continuation: &SessionContinuation,
+    claim: &SessionContinuationClaim,
+) -> bool {
+    if let Some(session_id) = claim.session_id.as_ref() {
+        if &continuation.session_id != session_id {
+            return false;
+        }
+    }
+    if let Some(turn_id) = claim.turn_id.as_ref() {
+        if continuation.turn_id.as_ref() != Some(turn_id) {
+            return false;
+        }
+    }
+    claim.kinds.is_empty() || claim.kinds.contains(&continuation.kind)
+}
+
+fn update_continuation_status(
+    conn: &Connection,
+    path: &Path,
+    continuation_id: &ContinuationId,
+    status: SessionContinuationStatus,
+    payload: Option<serde_json::Value>,
+    error: Option<&str>,
+) -> Result<Option<SessionContinuation>> {
+    let Some(existing) = continuation_by_id(conn, path, continuation_id)? else {
+        return Ok(None);
+    };
+    let now = OffsetDateTime::now_utc();
+    let payload = payload
+        .map(|payload| merged_continuation_payload(existing.payload.clone(), payload))
+        .unwrap_or(existing.payload);
+    let completed_at = match status {
+        SessionContinuationStatus::Completed
+        | SessionContinuationStatus::Failed
+        | SessionContinuationStatus::Cancelled => Some(format_time(now)?),
+        SessionContinuationStatus::Queued | SessionContinuationStatus::Running => None,
+    };
+    conn.execute(
+        r#"
+        UPDATE session_continuations
+        SET status = ?1,
+            payload_json = ?2,
+            updated_at = ?3,
+            completed_at = COALESCE(?4, completed_at),
+            error = ?5
+        WHERE id = ?6
+        "#,
+        params![
+            continuation_status_to_str(status),
+            serde_json::to_string(&payload)?,
+            format_time(now)?,
+            completed_at.as_deref(),
+            error,
+            continuation_id.as_str(),
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    continuation_by_id(conn, path, continuation_id)
+}
+
+fn merged_continuation_payload(
+    mut existing: serde_json::Value,
+    update: serde_json::Value,
+) -> serde_json::Value {
+    match (&mut existing, update) {
+        (serde_json::Value::Object(existing), serde_json::Value::Object(update)) => {
+            for (key, value) in update {
+                existing.insert(key, value);
+            }
+            serde_json::Value::Object(existing.clone())
+        }
+        (_, update) => update,
+    }
+}
+
+fn continuations_for_session(
+    conn: &Connection,
+    path: &Path,
+    session_id: &SessionId,
+) -> Result<Vec<SessionContinuation>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, session_id, turn_id, parent_continuation_id, kind, status, priority,
+                   payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner, error
+            FROM session_continuations
+            WHERE session_id = ?1
+            ORDER BY created_at ASC, rowid ASC
+            "#,
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    let rows = stmt
+        .query_map(params![session_id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+            ))
+        })
+        .map_err(|source| sqlite_error(path, source))?;
+    let mut continuations = Vec::new();
+    for row in rows {
+        continuations.push(session_continuation_from_parts(
+            row.map_err(|source| sqlite_error(path, source))?,
+        )?);
+    }
+    Ok(continuations)
+}
+
 fn search_entries(
     conn: &Connection,
     path: &Path,
@@ -1326,6 +1786,54 @@ fn entry_kind_from_str(value: &str) -> Result<SessionEntryKind> {
     }
 }
 
+fn continuation_kind_to_str(kind: SessionContinuationKind) -> &'static str {
+    match kind {
+        SessionContinuationKind::Steer => "steer",
+        SessionContinuationKind::FollowUp => "follow_up",
+        SessionContinuationKind::NextTurn => "next_turn",
+        SessionContinuationKind::Resume => "resume",
+        SessionContinuationKind::Retry => "retry",
+        SessionContinuationKind::Compact => "compact",
+    }
+}
+
+fn continuation_kind_from_str(value: &str) -> Result<SessionContinuationKind> {
+    match value {
+        "steer" => Ok(SessionContinuationKind::Steer),
+        "follow_up" => Ok(SessionContinuationKind::FollowUp),
+        "next_turn" => Ok(SessionContinuationKind::NextTurn),
+        "resume" => Ok(SessionContinuationKind::Resume),
+        "retry" => Ok(SessionContinuationKind::Retry),
+        "compact" => Ok(SessionContinuationKind::Compact),
+        other => Err(IkarosError::Message(format!(
+            "unknown session continuation kind in state.db: {other}"
+        ))),
+    }
+}
+
+fn continuation_status_to_str(status: SessionContinuationStatus) -> &'static str {
+    match status {
+        SessionContinuationStatus::Queued => "queued",
+        SessionContinuationStatus::Running => "running",
+        SessionContinuationStatus::Completed => "completed",
+        SessionContinuationStatus::Failed => "failed",
+        SessionContinuationStatus::Cancelled => "cancelled",
+    }
+}
+
+fn continuation_status_from_str(value: &str) -> Result<SessionContinuationStatus> {
+    match value {
+        "queued" => Ok(SessionContinuationStatus::Queued),
+        "running" => Ok(SessionContinuationStatus::Running),
+        "completed" => Ok(SessionContinuationStatus::Completed),
+        "failed" => Ok(SessionContinuationStatus::Failed),
+        "cancelled" => Ok(SessionContinuationStatus::Cancelled),
+        other => Err(IkarosError::Message(format!(
+            "unknown session continuation status in state.db: {other}"
+        ))),
+    }
+}
+
 fn event_source_to_str(source: crate::AgentEventSource) -> &'static str {
     match source {
         crate::AgentEventSource::Runtime => "runtime",
@@ -1387,7 +1895,8 @@ mod tests {
     use super::*;
     use crate::{
         AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, ApprovalStatus,
-        PersistingAgentEventSink, PersistingAgentTurnSink,
+        PersistingAgentEventSink, PersistingAgentTurnSink, SessionContinuationClaim,
+        SessionContinuationInput, SessionContinuationKind, SessionContinuationStatus,
     };
     use ikaros_models::ModelStreamEvent;
     use serde_json::json;
@@ -1913,6 +2422,140 @@ mod tests {
                 SessionEntryKind::Leaf,
             ]
         );
+    }
+
+    #[test]
+    fn continuation_queue_claims_by_priority_and_tracks_terminal_status() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-continuation-priority");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+
+        let mut next =
+            SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::NextTurn);
+        next.payload = json!({"content": "next"});
+        let next = store.enqueue_continuation(&next).expect("next");
+
+        let mut follow =
+            SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::FollowUp);
+        follow.payload = json!({"content": "follow"});
+        let follow = store.enqueue_continuation(&follow).expect("follow");
+
+        let mut steer =
+            SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::Steer);
+        steer.payload = json!({"content": "steer"});
+        let steer = store.enqueue_continuation(&steer).expect("steer");
+
+        let claim =
+            SessionContinuationClaim::for_session(session_id.clone()).with_lease_owner("worker-a");
+        let claimed = store
+            .claim_next_continuation(&claim)
+            .expect("claim")
+            .expect("claimed");
+        assert_eq!(claimed.continuation_id, steer.continuation_id);
+        assert_eq!(claimed.status, SessionContinuationStatus::Running);
+        assert_eq!(claimed.lease_owner.as_deref(), Some("worker-a"));
+        assert!(claimed.claimed_at.is_some());
+
+        let completed = store
+            .complete_continuation(&claimed.continuation_id, json!({"turn_id": "turn-a"}))
+            .expect("complete")
+            .expect("completed");
+        assert_eq!(completed.status, SessionContinuationStatus::Completed);
+        assert_eq!(completed.payload["turn_id"], json!("turn-a"));
+        assert!(completed.completed_at.is_some());
+
+        let failed = store
+            .claim_next_continuation(&claim)
+            .expect("claim follow")
+            .expect("follow claimed");
+        assert_eq!(failed.continuation_id, follow.continuation_id);
+        let failed = store
+            .fail_continuation(&failed.continuation_id, "provider unavailable")
+            .expect("fail")
+            .expect("failed");
+        assert_eq!(failed.status, SessionContinuationStatus::Failed);
+        assert_eq!(failed.error.as_deref(), Some("provider unavailable"));
+
+        let cancelled = store
+            .cancel_continuation(&next.continuation_id, "user cancelled")
+            .expect("cancel")
+            .expect("cancelled");
+        assert_eq!(cancelled.status, SessionContinuationStatus::Cancelled);
+        assert_eq!(cancelled.error.as_deref(), Some("user cancelled"));
+
+        let continuations = store.continuations(&session_id).expect("continuations");
+        let status_for = |id: &ContinuationId| {
+            continuations
+                .iter()
+                .find(|continuation| &continuation.continuation_id == id)
+                .map(|continuation| continuation.status)
+        };
+        assert_eq!(
+            status_for(&steer.continuation_id),
+            Some(SessionContinuationStatus::Completed)
+        );
+        assert_eq!(
+            status_for(&follow.continuation_id),
+            Some(SessionContinuationStatus::Failed)
+        );
+        assert_eq!(
+            status_for(&next.continuation_id),
+            Some(SessionContinuationStatus::Cancelled)
+        );
+        assert!(
+            store
+                .claim_next_continuation(&claim)
+                .expect("claim none")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn continuation_queue_survives_store_reopen_and_filters_by_turn_and_kind() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from("session-continuation-reopen");
+        let turn_id = TurnId::from("turn-continuation-reopen");
+        let other_turn = TurnId::from("turn-other-continuation-reopen");
+        let queued_id = {
+            let store = SqliteSessionStore::new(temp.path());
+            store
+                .upsert_session(&sample_session(session_id.clone()))
+                .expect("session");
+
+            let mut retry =
+                SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::Retry);
+            retry.turn_id = Some(turn_id.clone());
+            retry.payload = json!({"entry_id": "leaf-a", "reason": "try again"});
+            let retry = store.enqueue_continuation(&retry).expect("retry");
+
+            let mut compact =
+                SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::Compact);
+            compact.turn_id = Some(other_turn.clone());
+            compact.payload = json!({"entry_id": "leaf-b"});
+            store.enqueue_continuation(&compact).expect("compact");
+            retry.continuation_id
+        };
+
+        let reopened = SqliteSessionStore::new(temp.path());
+        let claim = SessionContinuationClaim::for_session(session_id.clone())
+            .with_turn(turn_id)
+            .with_kinds([SessionContinuationKind::Retry])
+            .with_lease_owner("worker-b");
+        let claimed = reopened
+            .claim_next_continuation(&claim)
+            .expect("claim")
+            .expect("claimed");
+        assert_eq!(claimed.continuation_id, queued_id);
+        assert_eq!(claimed.kind, SessionContinuationKind::Retry);
+        assert_eq!(claimed.payload["reason"], json!("try again"));
+
+        let remaining = reopened.continuations(&session_id).expect("continuations");
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].status, SessionContinuationStatus::Running);
+        assert_eq!(remaining[1].status, SessionContinuationStatus::Queued);
     }
 
     #[test]

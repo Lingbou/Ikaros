@@ -3,7 +3,7 @@
 use super::*;
 use ikaros_core::IkarosPaths;
 use ikaros_gateway::{GatewayMessageKind, GatewayMessageStatus, GatewayRoute, LocalGatewayStore};
-use ikaros_session::{SessionSource, SessionStore, SqliteSessionStore};
+use ikaros_session::{AgentEventKind, SessionSource, SessionStore, SqliteSessionStore};
 
 #[tokio::test]
 async fn drain_gateway_chat_message_records_delivery_and_redacts_inbox() {
@@ -117,7 +117,25 @@ async fn drain_gateway_task_message_records_task_report_delivery() {
     );
     assert_eq!(replay.entries[1].payload["source"], "gateway");
     assert_eq!(replay.entries[1].payload["status"], "processed");
-    assert_eq!(replay.agent_events.len(), 4);
+    assert!(replay.agent_events.len() >= 4);
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnStart))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ModelStream(_)))
+    );
 }
 
 #[tokio::test]

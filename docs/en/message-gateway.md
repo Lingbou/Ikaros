@@ -115,7 +115,10 @@ ikaros message webhook --port 8002
 `message drain` and `message worker` process pending inbox records through `ikaros-runtime`.
 
 - `chat` messages use the same governed chat path as `ikaros chat --message`.
-- `task` messages use the deterministic harness task runner.
+- `task` messages use the session-aware task agent-loop path with a
+  gateway-derived session id, turn id, and session source, so their typed events
+  can share the same `state.db` timeline as gateway request/result/delivery
+  evidence.
 
 Successful outputs are written to the local outbox. The gateway does not grant additional permissions; agent/profile data only affects runtime context and policy overlay.
 

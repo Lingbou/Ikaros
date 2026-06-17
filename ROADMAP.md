@@ -18,13 +18,18 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Runtime
 
 - Harden `AgentRuntime` so future runtimes can plug in without changing provider adapters.
-- Expand the new stateful `AgentHarness` beyond chat/task agent-loop entry
-  points into gateway, schedule, and agent handoff.
+- Keep the stateful `AgentHarness` as the shared path for chat and task
+  agent-loop turns, including gateway task drain, scheduled task execution, and
+  agent-loop handoff.
 - Keep harness branch-summary, compaction, and retry marker helpers append-only
   through `SessionStore`; do not reintroduce history rewriting for these phase
   operations.
-- Treat current `AgentHarness` continuation queues as in-memory runtime state
-  until durable queue, scheduler, and planner semantics are defined.
+- Harden durable `AgentHarness` continuations in `state.db`: queue claiming,
+  resume/compact/retry execution, terminal status reporting, and replay/debug
+  queries should stay consistent across process restarts.
+- Add continuation lease expiry/reclaim, cancellation event propagation,
+  cross-process abort handling, and CLI/debug query surfaces before treating the
+  queue as a full scheduler.
 - Keep observer hooks stable as the extension boundary for provider attempts,
   tool lifecycle telemetry, memory policy observation, gateway UI, and replay
   diagnostics.
@@ -38,7 +43,7 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   still live partly outside `state.db`.
 - Derive more runtime reports from persisted event streams rather than carrying
   separate one-off summaries.
-- Refine tool continuation behavior and report fields for automation users.
+- Refine continuation and tool timeout report fields for automation users.
 - Extend cancellation beyond the current provider/tool checkpoints and
   in-flight tool future cancellation toward external abort propagation and
   richer timeout reporting.

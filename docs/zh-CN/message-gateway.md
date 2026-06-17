@@ -103,7 +103,9 @@ ikaros message webhook --port 8002
 `message drain` 和 `message worker` 通过 `ikaros-runtime` 处理 pending inbox record。
 
 - `chat` 消息使用 `ikaros chat --message` 相同的 governed chat path。
-- `task` 消息使用确定性的 harness task runner。
+- `task` 消息使用 session-aware task agent-loop path，并携带 gateway 派生的 session
+  id、turn id 和 session source，因此 typed event 可以和 gateway request/result/delivery
+  evidence 落在同一个 `state.db` timeline 中。
 
 成功输出写入本地 outbox。Gateway 自身不授予额外权限，agent/profile 只影响 runtime 上下文和 policy overlay。
 
