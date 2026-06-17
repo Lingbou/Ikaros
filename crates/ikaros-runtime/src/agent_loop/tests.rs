@@ -7,7 +7,8 @@ use super::{
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, IkarosPaths, Result, RiskLevel};
 use ikaros_harness::{
-    ExecutionSession, GuardrailConfig, Skill, SkillContext, SkillOutput, SkillRegistry,
+    ExecutionSession, GuardrailConfig, Skill, SkillContext, SkillDescriptor, SkillOutput,
+    SkillRegistry, ToolExecutionMode,
 };
 use ikaros_models::{
     ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent, ModelToolCall,
@@ -21,6 +22,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use tokio::time::{Duration, sleep};
 
 #[derive(Debug)]
 struct SequenceProvider {
@@ -45,6 +47,17 @@ struct StreamingNativeToolProvider {
 
 #[derive(Debug)]
 struct FailingProvider;
+
+#[derive(Debug)]
+struct MissingToolProvider {
+    calls: AtomicUsize,
+}
+
+#[derive(Debug)]
+struct MultiToolProvider {
+    calls: AtomicUsize,
+    tool_names: Vec<&'static str>,
+}
 
 #[async_trait]
 impl ModelProvider for NativeToolProvider {
@@ -156,6 +169,81 @@ impl ModelProvider for FailingProvider {
         Err(IkarosError::Message(
             "agent-loop provider failed token=abc123".into(),
         ))
+    }
+}
+
+#[async_trait]
+impl ModelProvider for MissingToolProvider {
+    fn name(&self) -> &str {
+        "missing-tool"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        if index == 0 {
+            return Ok(ModelResponse {
+                provider: self.name().into(),
+                model: "missing-tool-model".into(),
+                content: String::new(),
+                tool_calls: vec![ModelToolCall {
+                    id: Some("missing-call-1".into()),
+                    name: "loop_missing".into(),
+                    input: json!({"text": "hello token=abc123"}),
+                    raw_arguments: None,
+                }],
+                usage: TokenUsage::default(),
+                diagnostics: Vec::new(),
+            });
+        }
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "missing-tool-model".into(),
+            content: r#"{"final_answer":"handled missing tool"}"#.into(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[async_trait]
+impl ModelProvider for MultiToolProvider {
+    fn name(&self) -> &str {
+        "multi-tool"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        if index == 0 {
+            let tool_calls = self
+                .tool_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    json!({
+                        "id": format!("call-{index}"),
+                        "name": name,
+                        "input": {"value": index, "text": "token=abc123"},
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(ModelResponse {
+                provider: self.name().into(),
+                model: "multi-tool-model".into(),
+                content: json!({"tool_calls": tool_calls}).to_string(),
+                tool_calls: Vec::new(),
+                usage: TokenUsage::default(),
+                diagnostics: Vec::new(),
+            });
+        }
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "multi-tool-model".into(),
+            content: r#"{"final_answer":"multi done"}"#.into(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -273,6 +361,53 @@ impl Skill for NoProgressSkill {
 #[derive(Debug)]
 struct WriteSkill;
 
+#[derive(Debug, Default)]
+struct ConcurrencyProbe {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+impl ConcurrencyProbe {
+    fn enter(&self) {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut current = self.max_active.load(Ordering::SeqCst);
+        while active > current {
+            match self.max_active.compare_exchange(
+                current,
+                active,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn exit(&self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn max_active(&self) -> usize {
+        self.max_active.load(Ordering::SeqCst)
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug)]
+struct ProbeSkill {
+    name: &'static str,
+    mode: Option<ToolExecutionMode>,
+    timeout_ms: Option<u64>,
+    delay_ms: u64,
+    probe: Arc<ConcurrencyProbe>,
+}
+
 #[async_trait]
 impl Skill for WriteSkill {
     fn name(&self) -> &'static str {
@@ -293,6 +428,41 @@ impl Skill for WriteSkill {
 
     async fn execute(&self, _input: serde_json::Value, _ctx: SkillContext) -> Result<SkillOutput> {
         Ok(SkillOutput::new("write ok", json!({"ok": true})))
+    }
+}
+
+#[async_trait]
+impl Skill for ProbeSkill {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "records concurrency while simulating tool work"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::SafeRead
+    }
+
+    fn descriptor(&self) -> SkillDescriptor {
+        let mut descriptor = SkillDescriptor::from_skill(self);
+        if let Some(mode) = self.mode {
+            descriptor.execution_mode = mode;
+        }
+        descriptor.timeout_ms = self.timeout_ms;
+        descriptor
+    }
+
+    async fn execute(&self, input: serde_json::Value, _ctx: SkillContext) -> Result<SkillOutput> {
+        self.probe.enter();
+        sleep(Duration::from_millis(self.delay_ms)).await;
+        self.probe.exit();
+        Ok(SkillOutput::new("probe ok", json!({"input": input})))
     }
 }
 
@@ -347,6 +517,29 @@ async fn agent_loop_dispatches_tool_then_finishes() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(report.final_content.contains("[REDACTED_SECRET]"));
     assert!(!report.final_content.contains("abc123"));
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::ToolCallStarted)
+            && event
+                .payload
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                == Some("loop_echo")
+    }));
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallOutputDelta))
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallCompleted))
+    );
+    let events_json = serde_json::to_string(&report.events).expect("events json");
+    assert!(!events_json.contains("abc123"));
+    assert!(events_json.contains("[REDACTED_SECRET]"));
     let events = session.audit.read_all().expect("audit");
     assert!(events.iter().any(|event| event.kind == "agent_loop_start"));
     assert!(
@@ -355,6 +548,228 @@ async fn agent_loop_dispatches_tool_then_finishes() {
             .any(|event| event.kind == "agent_loop_model_result")
     );
     assert!(events.iter().any(|event| event.kind == "agent_loop_end"));
+}
+
+#[tokio::test]
+async fn agent_loop_emits_failed_tool_lifecycle_event() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let registry = SkillRegistry::new();
+    let provider = MissingToolProvider {
+        calls: AtomicUsize::new(0),
+    };
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("missing-tool-session".into()),
+            turn_id: Some("missing-tool-turn".into()),
+            task_id: Some("missing-tool-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::FinalAnswer);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallStarted))
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallFailed))
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallCompleted))
+    );
+    let events_json = serde_json::to_string(&report.events).expect("events json");
+    assert!(!events_json.contains("abc123"));
+    assert!(events_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn agent_loop_runs_parallel_tool_batch_for_parallel_safe_reads() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let mut registry = SkillRegistry::new();
+    registry.register(ProbeSkill {
+        name: "parallel_probe_a",
+        mode: Some(ToolExecutionMode::Parallel),
+        timeout_ms: Some(1_000),
+        delay_ms: 50,
+        probe: probe.clone(),
+    });
+    registry.register(ProbeSkill {
+        name: "parallel_probe_b",
+        mode: Some(ToolExecutionMode::Parallel),
+        timeout_ms: Some(1_000),
+        delay_ms: 50,
+        probe: probe.clone(),
+    });
+    let provider = MultiToolProvider {
+        calls: AtomicUsize::new(0),
+        tool_names: vec!["parallel_probe_a", "parallel_probe_b"],
+    };
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("parallel-tool-session".into()),
+            turn_id: Some("parallel-tool-turn".into()),
+            task_id: Some("parallel-tool-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::FinalAnswer);
+    assert_eq!(probe.calls(), 2);
+    assert_eq!(
+        probe.max_active(),
+        2,
+        "parallel probe tools should overlap in one scheduled batch"
+    );
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::ToolCallStarted)
+            && event
+                .payload
+                .get("execution_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("parallel")
+            && event
+                .payload
+                .get("timeout_ms")
+                .and_then(serde_json::Value::as_u64)
+                == Some(1_000)
+    }));
+    let events_json = serde_json::to_string(&report.events).expect("events json");
+    assert!(!events_json.contains("abc123"));
+}
+
+#[tokio::test]
+async fn agent_loop_honors_sequential_tool_execution_mode() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let mut registry = SkillRegistry::new();
+    registry.register(ProbeSkill {
+        name: "sequential_probe_a",
+        mode: Some(ToolExecutionMode::Sequential),
+        timeout_ms: None,
+        delay_ms: 20,
+        probe: probe.clone(),
+    });
+    registry.register(ProbeSkill {
+        name: "sequential_probe_b",
+        mode: Some(ToolExecutionMode::Sequential),
+        timeout_ms: None,
+        delay_ms: 20,
+        probe: probe.clone(),
+    });
+    let provider = MultiToolProvider {
+        calls: AtomicUsize::new(0),
+        tool_names: vec!["sequential_probe_a", "sequential_probe_b"],
+    };
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("sequential-tool-session".into()),
+            turn_id: Some("sequential-tool-turn".into()),
+            task_id: Some("sequential-tool-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::FinalAnswer);
+    assert_eq!(probe.calls(), 2);
+    assert_eq!(
+        probe.max_active(),
+        1,
+        "sequential tool execution mode must not overlap tool calls"
+    );
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::ToolCallStarted)
+            && event
+                .payload
+                .get("execution_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("sequential")
+    }));
+}
+
+#[tokio::test]
+async fn agent_loop_fails_tool_call_on_descriptor_timeout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let mut registry = SkillRegistry::new();
+    registry.register(ProbeSkill {
+        name: "timeout_probe",
+        mode: Some(ToolExecutionMode::Sequential),
+        timeout_ms: Some(5),
+        delay_ms: 100,
+        probe,
+    });
+    let provider = MultiToolProvider {
+        calls: AtomicUsize::new(0),
+        tool_names: vec!["timeout_probe"],
+    };
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("timeout-tool-session".into()),
+            turn_id: Some("timeout-tool-turn".into()),
+            task_id: Some("timeout-tool-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::FinalAnswer);
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::ToolCallFailed)
+            && event
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                == Some("failed")
+            && event
+                .payload
+                .get("summary")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|summary| summary.contains("timed out"))
+    }));
 }
 
 #[tokio::test]
@@ -538,13 +953,13 @@ async fn agent_loop_streams_final_answer_after_streamed_tool_call() {
         report
             .events
             .iter()
-            .any(|event| matches!(event.kind, AgentEventKind::ToolStart))
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallStarted))
     );
     assert!(
         report
             .events
             .iter()
-            .any(|event| matches!(event.kind, AgentEventKind::ToolEnd))
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallCompleted))
     );
     assert!(report.events.iter().any(|event| {
         matches!(

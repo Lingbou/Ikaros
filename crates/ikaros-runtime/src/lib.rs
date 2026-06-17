@@ -2,6 +2,7 @@
 //! Runtime coordination over config, harness sessions, skills, and task execution.
 
 mod agent;
+mod agent_harness;
 mod agent_loop;
 mod body;
 mod chat;
@@ -18,6 +19,10 @@ mod task;
 pub use agent::{
     AgentHandoffReport, AgentPoolItemReport, AgentPoolReport, AgentPoolTask, run_agent_handoff,
     run_agent_handoff_with_options, run_agent_pool, run_agent_pool_with_options,
+};
+pub use agent_harness::{
+    AgentHarness, AgentHarnessConfig, AgentHarnessMessage, AgentHarnessPendingCounts,
+    AgentHarnessPhase, AgentHarnessTurn,
 };
 pub use agent_loop::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,

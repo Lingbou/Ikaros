@@ -30,9 +30,21 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 
 默认实现是 `HarnessAgentRuntime`。如果调用方需要不同 loop 实现，应替换 runtime 层，而不是污染 provider adapter。
 
+`AgentHarness` 是 `AgentRuntime` 上层的 stateful wrapper，面向需要稳定
+session id、每轮 turn id、phase 跟踪和 continuation queue 的调用方。它负责
+harness phase，以及 steer、follow-up、next-turn 三类队列，然后把真正的 turn
+交给 `AgentRuntime::run_turn_with_events()`。返回的 `AgentHarnessTurn` 以 typed
+events 为主，`AgentLoopReport` 目前仍作为兼容摘要暴露。内置 chat 和 task
+agent-loop 入口已经使用这个 wrapper；直接的 `run_agent_loop*` helper 保留为测试和
+特殊 runtime 的底层 API。
+
 需要持久化 timeline 的调用方应使用 `run_turn_with_events()` 并传入 `AgentEventSink`。`ikaros-session` 提供逐事件写入的 `PersistingAgentEventSink`，也提供按 turn 事务写入本地 SQLite `SessionStore` 的 `PersistingAgentTurnSink`。
 
 `session_id` 是 event timeline 的持久化身份；`turn_id` 标识该 timeline 内的一轮持久化 turn。调用方需要让 chat history、session entry 和 agent event 共用同一个 turn identity 时，可以显式传入 turn id。`task_id` 只作为 task/report 元数据。调用方不传 session id 时，loop 会为该 turn 创建新的 `SessionId`，不会再落到全局 `"local"` session。
+
+`AgentHarnessConfig` 也可以携带调用方提供的 `turn_id`。Chat 用它保证 chat history
+record、append-only session entry 和 agent event 落在同一轮 turn 上。Task agent-loop
+会让 harness 在 task session 内创建新的 turn id。
 
 默认选项：
 
@@ -52,10 +64,19 @@ Loop 拥有 turn 编排。它不拥有 provider 认证、provider wire format、
 4. 如果没有 native tool call，则从文本解析 fallback JSON 协议。
 5. 如果存在 final answer，以 `FinalAnswer` 停止。
 6. 把标准化 tool call 通过 `ExecutionSession` dispatch。
-7. 把 tool result 追加到下一次 model turn。
-8. 继续前检查 guardrail 和 iteration budget。
+7. 发出 tool lifecycle event：`ToolCallStarted`、`ToolCallOutputDelta`、
+   `ToolCallCompleted` 或 `ToolCallFailed`。`ToolCallCancelled` 预留给取消路径。
+8. 把 tool result 追加到下一次 model turn。
+9. 继续前检查 guardrail 和 iteration budget。
 
 Provider 返回 native tool call id 时会保留这些 id，以便下一轮用 provider 偏好的格式传回 tool result history。
+
+Tool 调度由 harness metadata 决定，不属于 provider adapter。每个
+`SkillDescriptor` 会暴露 `execution_mode` 和可选 `timeout_ms`。Runtime 会把连续
+的 `parallel` tool call 组成一批并发执行，并在追加下一轮 tool result 时保持模型
+原始调用顺序；`sequential` 调用会单独执行。safe-read 和 shell-read 工具默认
+parallel；write、network、remote、destructive、secret 和 self-modify 风险工具默认
+sequential，除非 descriptor 显式收窄或改变策略。
 
 ## 停止原因
 
@@ -133,6 +154,12 @@ Loop 会报告这些 parse strategy：
 - tool results
 
 Tool result summary 和 output 由 harness 产生。展示给用户或写入审计前应完成脱敏。
+
+Tool lifecycle event payload 包含标准化 tool name、provider 提供的 tool call id
+（如果有）、脱敏后的 input snapshot、output summary/delta、status、execution mode、
+timeout，以及 approval event 可引用的稳定 tool-event anchor。进入 report 或持久化
+session event 前必须先脱敏。Descriptor timeout 会把该 tool call 记录成 failed tool
+lifecycle result；它不能绕过 `ExecutionSession` 或 `ExecutionEnv`。
 
 `AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。Replay、gateway、schedule 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
 

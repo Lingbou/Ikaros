@@ -14,8 +14,8 @@ use super::{
     types::{ChatMessageResult, ChatRunOptions, ChatTurnReport},
 };
 use crate::{
-    AgentEventSink, AgentLoopInput, AgentLoopOptions, noop_agent_event_sink,
-    run_agent_loop_with_events,
+    AgentEventSink, AgentHarness, AgentHarnessConfig, AgentLoopOptions, HarnessAgentRuntime,
+    noop_agent_event_sink,
 };
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
 use ikaros_context::TokenEstimator;
@@ -477,26 +477,28 @@ pub async fn run_chat_turn_with_events(
         return Err(error);
     }
     let (response, streamed, stream_chunks) = if options.agent_loop {
-        let loop_report = run_agent_loop_with_events(
-            AgentLoopInput {
-                session_id: Some(chat_session_id.clone()),
-                turn_id: Some(turn_id.to_string()),
+        let runtime = HarnessAgentRuntime;
+        let mut harness = AgentHarness::new(
+            AgentHarnessConfig {
+                session_id: SessionId::from(chat_session_id.clone()),
+                turn_id: Some(turn_id.clone()),
                 task_id: None,
                 system_prompt,
-                user_input: input.into(),
+                options: AgentLoopOptions {
+                    max_iterations: 4,
+                    request_options: ModelRequestOptions::default(),
+                    stream: options.stream,
+                    guardrails: GuardrailConfig::default(),
+                },
             },
+            &runtime,
             provider,
             session,
             registry,
             event_sink,
-            AgentLoopOptions {
-                max_iterations: 4,
-                request_options: ModelRequestOptions::default(),
-                stream: options.stream,
-                guardrails: GuardrailConfig::default(),
-            },
-        )
-        .await?;
+        );
+        let harness_turn = harness.run_turn(input).await?;
+        let loop_report = harness_turn.report;
         let response = ModelResponse {
             provider: loop_report.provider,
             model: loop_report.model,

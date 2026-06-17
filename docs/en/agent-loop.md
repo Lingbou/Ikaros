@@ -35,6 +35,15 @@ The default implementation is `HarnessAgentRuntime`. Callers that need a
 different loop implementation should swap the runtime layer, not the provider
 adapter.
 
+`AgentHarness` is the stateful wrapper above `AgentRuntime` for callers that
+need a stable session id, per-turn ids, phase tracking, and continuation queues.
+It owns the harness phase and the steer, follow-up, and next-turn queues, then
+delegates the actual turn to `AgentRuntime::run_turn_with_events()`. The
+returned `AgentHarnessTurn` keeps typed events first and exposes
+`AgentLoopReport` as the current compatibility summary. Built-in chat and task
+agent-loop entry points use this wrapper; direct `run_agent_loop*` helpers remain
+the low-level API for tests and specialized runtimes.
+
 Callers that need durable timelines should call `run_turn_with_events()` with an
 `AgentEventSink`. `ikaros-session` provides `PersistingAgentEventSink` for
 per-event writes and `PersistingAgentTurnSink` for turn-scoped transaction
@@ -46,6 +55,11 @@ when they need chat history, session entries, and agent events to share the same
 turn identity. `task_id` remains task/report metadata. If no session id is
 supplied, the loop creates a fresh `SessionId` for that turn instead of reusing a
 global fallback session.
+
+`AgentHarnessConfig` may also carry a caller-supplied `turn_id`. Chat uses that
+to keep the chat history record, append-only session entries, and agent events
+on the same turn. Task agent-loop runs let the harness create a fresh turn id
+inside the task session.
 
 Default options:
 
@@ -66,11 +80,23 @@ Each iteration follows the same order:
 4. If no native tool call exists, parse the fallback JSON protocol from text.
 5. If a final answer is present, stop with `FinalAnswer`.
 6. Dispatch normalized tool calls through `ExecutionSession`.
-7. Append tool results to the next model turn.
-8. Observe guardrails and iteration budget before continuing.
+7. Emit tool lifecycle events:
+   `ToolCallStarted`, `ToolCallOutputDelta`, `ToolCallCompleted`, or
+   `ToolCallFailed`. `ToolCallCancelled` is reserved for the cancellation path.
+8. Append tool results to the next model turn.
+9. Observe guardrails and iteration budget before continuing.
 
 Provider-native tool call ids are preserved when the provider supplies them, so
 tool result history can be sent back in the provider's preferred shape.
+
+Tool scheduling is driven by harness metadata, not by provider adapters. Each
+`SkillDescriptor` exposes an `execution_mode` and optional `timeout_ms`. The
+runtime executes contiguous `parallel` tool calls concurrently and preserves the
+original call order when appending tool results to the next model request.
+`sequential` calls are executed alone. Safe read and shell read tools default to
+parallel; tools with write, network, remote, destructive, secret, or
+self-modification risk default to sequential unless a descriptor explicitly
+narrows or changes the policy.
 
 ## Stop Reasons
 
@@ -156,6 +182,14 @@ so the runtime contract stays narrow.
 
 Tool result summaries and outputs are produced by the harness. They should be
 redacted before surfacing to users or audit output.
+
+Tool lifecycle event payloads include the normalized tool name, provider tool
+call id when present, a redacted input snapshot, output summary/delta, status,
+execution mode, timeout, and a stable tool-event anchor used by approval events.
+Secrets must be redacted before those payloads enter reports or persisted
+session events. A descriptor timeout turns that tool call into a failed tool
+lifecycle result; it does not let the runtime bypass `ExecutionSession` or
+`ExecutionEnv`.
 
 `AgentLoopReport.events` is a compatibility summary for current callers. The
 durable fact source is the `ikaros-session` event stream when a persisting sink

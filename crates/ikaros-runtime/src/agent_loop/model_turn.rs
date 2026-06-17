@@ -14,18 +14,21 @@ use super::{
     types::{
         AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopFinish,
         AgentLoopInput, AgentLoopModelTurn, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
-        AgentSessionId, AgentTurnId,
+        AgentLoopToolCall, AgentLoopToolDefinition, AgentLoopToolResult, AgentSessionId,
+        AgentTurnId,
     },
 };
 use ikaros_core::{IkarosError, Result, redact_json, redact_secrets};
-use ikaros_harness::{AuditEvent, ExecutionSession, GuardrailState, SkillRegistry};
+use ikaros_harness::{
+    AuditEvent, ExecutionSession, GuardrailState, SkillRegistry, ToolExecutionMode,
+};
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall,
     TokenUsage,
 };
 use ikaros_session::{
-    ApprovalRecord as SessionApprovalRecord, ApprovalStatus as SessionApprovalStatus, SessionId,
-    TurnId,
+    AgentEventId, ApprovalRecord as SessionApprovalRecord, ApprovalStatus as SessionApprovalStatus,
+    SessionId, TurnId,
 };
 use serde_json::json;
 use time::OffsetDateTime;
@@ -249,105 +252,127 @@ pub(super) async fn run_agent_loop_turn(
                 redact_secrets(&response.content),
                 response.tool_calls.clone(),
             ));
-            for call in envelope.tool_calls {
-                let tool_call_id = call.id.clone();
-                let tool_call_name = call.name.clone();
-                emit_agent_event(
-                    &mut events,
-                    event_sink,
-                    &session_id,
-                    &turn_id,
-                    AgentEventSource::Tool,
-                    AgentEventKind::ToolStart,
-                    json!({
-                        "iteration": iteration,
-                        "id": &tool_call_id,
-                        "name": &tool_call_name,
-                        "input": &call.input,
-                    }),
-                )?;
-                let tool_result =
-                    dispatch_agent_loop_tool_call(session, registry, iteration, call).await;
-                if tool_result.output.get("approval_id").is_some()
-                    || tool_result
-                        .output
-                        .get("decision")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("ask_user")
-                {
+            let scheduled_calls =
+                schedule_agent_loop_tool_calls(envelope.tool_calls, &tool_definitions);
+            let mut scheduled_index = 0;
+            while scheduled_index < scheduled_calls.len() {
+                let batch_end = scheduled_tool_batch_end(&scheduled_calls, scheduled_index);
+                let batch = scheduled_calls[scheduled_index..batch_end].to_vec();
+                let dispatched = dispatch_scheduled_tool_batch(
+                    ToolBatchDispatchContext {
+                        session,
+                        registry,
+                        session_id: &session_id,
+                        turn_id: &turn_id,
+                        events: &mut events,
+                        event_sink,
+                    },
+                    iteration,
+                    batch,
+                )
+                .await?;
+                for dispatched_tool in dispatched {
+                    let tool_call_id = dispatched_tool.tool_call_id;
+                    let tool_call_name = dispatched_tool.tool_call_name;
+                    let started_event_id = dispatched_tool.started_event_id;
+                    let tool_result = dispatched_tool.result;
+                    if tool_result_waiting_for_approval(&tool_result) {
+                        emit_agent_event(
+                            &mut events,
+                            event_sink,
+                            &session_id,
+                            &turn_id,
+                            AgentEventSource::Harness,
+                            AgentEventKind::ApprovalRequested,
+                            json!({
+                                "iteration": iteration,
+                                "tool_call_id": &tool_call_id,
+                                "tool_event_id": started_event_id.as_str(),
+                                "tool": &tool_result.name,
+                                "output": &tool_result.output,
+                            }),
+                        )?;
+                        emit_session_approval_record(
+                            event_sink,
+                            session,
+                            &session_id,
+                            &turn_id,
+                            &tool_result.output,
+                        )?;
+                    }
                     emit_agent_event(
                         &mut events,
                         event_sink,
                         &session_id,
                         &turn_id,
-                        AgentEventSource::Harness,
-                        AgentEventKind::ApprovalRequested,
+                        AgentEventSource::Tool,
+                        AgentEventKind::ToolCallOutputDelta,
                         json!({
                             "iteration": iteration,
-                            "tool": &tool_result.name,
+                            "tool_call_id": &tool_call_id,
+                            "tool_event_id": started_event_id.as_str(),
+                            "name": &tool_result.name,
+                            "summary": &tool_result.summary,
                             "output": &tool_result.output,
                         }),
                     )?;
-                    emit_session_approval_record(
-                        event_sink,
-                        session,
-                        &session_id,
-                        &turn_id,
-                        &tool_result.output,
-                    )?;
-                }
-                emit_agent_event(
-                    &mut events,
-                    event_sink,
-                    &session_id,
-                    &turn_id,
-                    AgentEventSource::Tool,
-                    AgentEventKind::ToolEnd,
-                    json!({
-                        "iteration": iteration,
-                        "name": &tool_result.name,
-                        "ok": tool_result.ok,
-                        "summary": &tool_result.summary,
-                        "output": &tool_result.output,
-                    }),
-                )?;
-                let stop = observe_agent_loop_tool_result(
-                    session,
-                    input.task_id.as_deref(),
-                    &mut guardrails,
-                    &options.guardrails,
-                    &tool_result,
-                )?;
-                messages.push(model_message_for_tool_result(
-                    tool_call_id,
-                    tool_call_name,
-                    &tool_result,
-                ));
-                let stop_reason = stop.or_else(|| stop_reason_from_tool_result(&tool_result));
-                tool_results.push(tool_result);
-                if let Some(stop_reason) = stop_reason {
-                    return finish_agent_loop_turn(
-                        session,
-                        input.task_id,
-                        &session_id,
-                        &turn_id,
+                    emit_agent_event(
                         &mut events,
                         event_sink,
-                        AgentLoopFinish {
-                            stop_reason,
-                            final_content: last_content,
-                            provider: last_provider,
-                            model: last_model,
-                            usage: total_usage,
-                            streamed: final_streamed,
-                            stream_chunks: final_stream_chunks,
-                            iterations: iteration,
-                            tool_call_diagnostics,
-                            tool_results,
-                            events: Vec::new(),
-                        },
-                    );
+                        &session_id,
+                        &turn_id,
+                        AgentEventSource::Tool,
+                        tool_lifecycle_end_kind(&tool_result),
+                        json!({
+                            "iteration": iteration,
+                            "tool_call_id": &tool_call_id,
+                            "tool_event_id": started_event_id.as_str(),
+                            "name": &tool_result.name,
+                            "ok": tool_result.ok,
+                            "status": tool_lifecycle_status(&tool_result),
+                            "summary": &tool_result.summary,
+                            "output": &tool_result.output,
+                        }),
+                    )?;
+                    let stop = observe_agent_loop_tool_result(
+                        session,
+                        input.task_id.as_deref(),
+                        &mut guardrails,
+                        &options.guardrails,
+                        &tool_result,
+                    )?;
+                    messages.push(model_message_for_tool_result(
+                        tool_call_id,
+                        tool_call_name,
+                        &tool_result,
+                    ));
+                    let stop_reason = stop.or_else(|| stop_reason_from_tool_result(&tool_result));
+                    tool_results.push(tool_result);
+                    if let Some(stop_reason) = stop_reason {
+                        return finish_agent_loop_turn(
+                            session,
+                            input.task_id,
+                            &session_id,
+                            &turn_id,
+                            &mut events,
+                            event_sink,
+                            AgentLoopFinish {
+                                stop_reason,
+                                final_content: last_content,
+                                provider: last_provider,
+                                model: last_model,
+                                usage: total_usage,
+                                streamed: final_streamed,
+                                stream_chunks: final_stream_chunks,
+                                iterations: iteration,
+                                tool_call_diagnostics,
+                                tool_results,
+                                events: Vec::new(),
+                            },
+                        );
+                    }
                 }
+                scheduled_index = batch_end;
             }
             continue;
         }
@@ -475,6 +500,162 @@ fn model_tool_call_stream_events(calls: &[ModelToolCall]) -> Vec<ModelStreamEven
     events
 }
 
+#[derive(Clone)]
+struct ScheduledAgentLoopToolCall {
+    call: AgentLoopToolCall,
+    tool_call_id: Option<String>,
+    tool_call_name: String,
+    execution_mode: ToolExecutionMode,
+    timeout_ms: Option<u64>,
+}
+
+struct DispatchedAgentLoopToolCall {
+    tool_call_id: Option<String>,
+    tool_call_name: String,
+    started_event_id: AgentEventId,
+    result: AgentLoopToolResult,
+}
+
+struct ToolBatchDispatchContext<'a> {
+    session: &'a ExecutionSession,
+    registry: &'a SkillRegistry,
+    session_id: &'a AgentSessionId,
+    turn_id: &'a AgentTurnId,
+    events: &'a mut Vec<AgentEvent>,
+    event_sink: &'a dyn AgentEventSink,
+}
+
+fn schedule_agent_loop_tool_calls(
+    calls: Vec<AgentLoopToolCall>,
+    definitions: &[AgentLoopToolDefinition],
+) -> Vec<ScheduledAgentLoopToolCall> {
+    calls
+        .into_iter()
+        .map(|call| {
+            let definition = definitions
+                .iter()
+                .find(|definition| definition.name == call.name);
+            let execution_mode = definition
+                .map(|definition| definition.execution_mode)
+                .unwrap_or(ToolExecutionMode::Sequential);
+            let timeout_ms = definition.and_then(|definition| definition.timeout_ms);
+            ScheduledAgentLoopToolCall {
+                tool_call_id: call.id.clone(),
+                tool_call_name: call.name.clone(),
+                call,
+                execution_mode,
+                timeout_ms,
+            }
+        })
+        .collect()
+}
+
+fn scheduled_tool_batch_end(calls: &[ScheduledAgentLoopToolCall], start: usize) -> usize {
+    if calls[start].execution_mode == ToolExecutionMode::Sequential {
+        return start + 1;
+    }
+    calls[start..]
+        .iter()
+        .position(|call| call.execution_mode == ToolExecutionMode::Sequential)
+        .map(|offset| start + offset)
+        .unwrap_or(calls.len())
+        .max(start + 1)
+}
+
+async fn dispatch_scheduled_tool_batch(
+    context: ToolBatchDispatchContext<'_>,
+    iteration: u32,
+    batch: Vec<ScheduledAgentLoopToolCall>,
+) -> Result<Vec<DispatchedAgentLoopToolCall>> {
+    let mut started = Vec::with_capacity(batch.len());
+    for scheduled in batch {
+        let started_event_id = emit_agent_event(
+            context.events,
+            context.event_sink,
+            context.session_id,
+            context.turn_id,
+            AgentEventSource::Tool,
+            AgentEventKind::ToolCallStarted,
+            json!({
+                "iteration": iteration,
+                "id": &scheduled.tool_call_id,
+                "name": &scheduled.tool_call_name,
+                "input": redacted_json_value(scheduled.call.input.clone()),
+                "execution_mode": scheduled.execution_mode.as_str(),
+                "timeout_ms": scheduled.timeout_ms,
+            }),
+        )?;
+        started.push((scheduled, started_event_id));
+    }
+
+    if started.len() == 1
+        || started
+            .iter()
+            .any(|(scheduled, _)| scheduled.execution_mode == ToolExecutionMode::Sequential)
+    {
+        let mut dispatched = Vec::with_capacity(started.len());
+        for (scheduled, started_event_id) in started {
+            let result = dispatch_agent_loop_tool_call(
+                context.session,
+                context.registry,
+                iteration,
+                scheduled.call,
+                scheduled.timeout_ms,
+            )
+            .await;
+            dispatched.push(DispatchedAgentLoopToolCall {
+                tool_call_id: scheduled.tool_call_id,
+                tool_call_name: scheduled.tool_call_name,
+                started_event_id,
+                result,
+            });
+        }
+        return Ok(dispatched);
+    }
+
+    let mut handles = Vec::with_capacity(started.len());
+    for (scheduled, started_event_id) in started {
+        let session = context.session.clone();
+        let registry = context.registry.clone();
+        let tool_call_id = scheduled.tool_call_id.clone();
+        let tool_call_name = scheduled.tool_call_name.clone();
+        let timeout_ms = scheduled.timeout_ms;
+        handles.push((
+            tool_call_id,
+            tool_call_name,
+            started_event_id,
+            tokio::spawn(async move {
+                dispatch_agent_loop_tool_call(
+                    &session,
+                    &registry,
+                    iteration,
+                    scheduled.call,
+                    timeout_ms,
+                )
+                .await
+            }),
+        ));
+    }
+
+    let mut dispatched = Vec::with_capacity(handles.len());
+    for (tool_call_id, tool_call_name, started_event_id, handle) in handles {
+        let result = handle.await.unwrap_or_else(|error| AgentLoopToolResult {
+            iteration,
+            name: redact_secrets(&tool_call_name),
+            ok: false,
+            summary: redact_secrets(&format!("tool task failed: {error}")),
+            output: json!({"error": redact_secrets(&format!("tool task failed: {error}"))}),
+        });
+        dispatched.push(DispatchedAgentLoopToolCall {
+            tool_call_id,
+            tool_call_name,
+            started_event_id,
+            result,
+        });
+    }
+    Ok(dispatched)
+}
+
 fn emit_agent_event(
     events: &mut Vec<AgentEvent>,
     sink: &dyn AgentEventSink,
@@ -483,7 +664,7 @@ fn emit_agent_event(
     source: AgentEventSource,
     kind: AgentEventKind,
     payload: serde_json::Value,
-) -> Result<()> {
+) -> Result<AgentEventId> {
     let parent_event_id = events.last().map(|event| event.event_id.clone());
     let event = AgentEvent::new(
         session_id.clone(),
@@ -493,9 +674,10 @@ fn emit_agent_event(
         kind,
         payload,
     );
+    let event_id = event.event_id.clone();
     sink.emit(&event)?;
     events.push(event);
-    Ok(())
+    Ok(event_id)
 }
 
 fn emit_session_approval_record(
@@ -541,6 +723,33 @@ fn emit_session_approval_record(
 
 fn redacted_json_value(value: serde_json::Value) -> serde_json::Value {
     redact_json(value)
+}
+
+fn tool_lifecycle_end_kind(result: &AgentLoopToolResult) -> AgentEventKind {
+    if result.ok || tool_result_waiting_for_approval(result) {
+        AgentEventKind::ToolCallCompleted
+    } else {
+        AgentEventKind::ToolCallFailed
+    }
+}
+
+fn tool_lifecycle_status(result: &AgentLoopToolResult) -> &'static str {
+    if result.ok {
+        "completed"
+    } else if tool_result_waiting_for_approval(result) {
+        "waiting_for_approval"
+    } else {
+        "failed"
+    }
+}
+
+fn tool_result_waiting_for_approval(result: &AgentLoopToolResult) -> bool {
+    result.output.get("approval_id").is_some()
+        || result
+            .output
+            .get("decision")
+            .and_then(serde_json::Value::as_str)
+            == Some("ask_user")
 }
 
 fn finish_agent_loop_turn(

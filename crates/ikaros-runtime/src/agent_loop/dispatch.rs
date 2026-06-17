@@ -8,18 +8,29 @@ use ikaros_harness::{
 };
 use ikaros_models::ModelMessage;
 use serde_json::json;
+use tokio::time::{Duration, timeout};
 
 pub(super) async fn dispatch_agent_loop_tool_call(
     session: &ExecutionSession,
     registry: &SkillRegistry,
     iteration: u32,
     call: AgentLoopToolCall,
+    timeout_ms: Option<u64>,
 ) -> AgentLoopToolResult {
     let name = redact_secrets(&call.name);
-    match session
-        .execute_skill(registry, &call.name, call.input.clone())
-        .await
-    {
+    let execution = session.execute_skill(registry, &call.name, call.input.clone());
+    let result = match timeout_ms {
+        Some(timeout_ms) if timeout_ms > 0 => {
+            match timeout(Duration::from_millis(timeout_ms), execution).await {
+                Ok(result) => result,
+                Err(_) => Err(ikaros_core::IkarosError::Message(format!(
+                    "tool {name} timed out after {timeout_ms} ms"
+                ))),
+            }
+        }
+        _ => execution.await,
+    };
+    match result {
         Ok(result) => agent_loop_tool_result_from_tool_result(iteration, name, result),
         Err(error) => AgentLoopToolResult {
             iteration,

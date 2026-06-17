@@ -18,6 +18,8 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Runtime
 
 - Harden `AgentRuntime` so future runtimes can plug in without changing provider adapters.
+- Expand the new stateful `AgentHarness` beyond chat/task agent-loop entry
+  points into gateway, schedule, agent handoff, and coding callers.
 - Keep `ikaros-session` as the runtime fact source for chat, gateway,
   schedule, approvals, replay, search, and branch navigation.
 - Expand session evidence for memory and audit lifecycle boundaries without
@@ -29,6 +31,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Derive more runtime reports from persisted event streams rather than carrying
   separate one-off summaries.
 - Refine tool continuation behavior and report fields for automation users.
+- Extend typed tool lifecycle coverage from started/output/completed/failed
+  events and descriptor-driven parallel/sequential scheduling to cancellation,
+  external abort, and richer timeout propagation.
 - Continue separating provider transport concerns from turn-loop ownership.
 - Keep provider request quirks inside model adapters and compatibility profiles,
   not in the runtime turn loop.

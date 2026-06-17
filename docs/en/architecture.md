@@ -38,7 +38,7 @@ calling context, persistent state, or user-visible behavior changes.
   replay/search/branch reads.
 - `ikaros-context`: context bundles, sections, references, provider-aware
   token budgets, quota-based compaction, and context diffs.
-- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and context orchestration.
+- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, `AgentHarness`, and context orchestration.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
 - `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle,
   memory policy/journal primitives, and provider registry metadata.
@@ -59,6 +59,8 @@ Most entry points follow the same path:
 2. Runtime resolves an `AgentInstance` with `agent_id`, profile overlay, workspace, state dir, session policy, auth scope, and route bindings.
 3. Runtime builds stores, provider adapters, the skill registry, context engine, and harness session.
 4. Model turns run through `AgentRuntime`; the default implementation is `HarnessAgentRuntime`.
+   Chat and task agent-loop entry points wrap it in `AgentHarness`, which owns
+   phase, caller-provided turn ids, and steer, follow-up, and next-turn queues.
    Runtime emits typed `AgentEvent` records. Callers may attach an
    `AgentEventSink` to persist those records in `ikaros-session`, while existing
    CLI and worker callers can still use the final report.
@@ -67,7 +69,10 @@ Most entry points follow the same path:
 7. Runtime reduces the same turn path into stable reports for CLI, body,
    schedule, gateway, chat, or agent callers.
 
-Chat, task execution, scheduled jobs, gateway drains, and agent handoffs reuse this path.
+Chat and task agent-loop execution now use the stateful harness path. Scheduled
+jobs, gateway drains, and agent handoffs still reuse the same lower-level
+runtime/harness/session boundary and should move behind `AgentHarness` as their
+turn-continuation needs grow.
 
 ## Agent Identity
 
@@ -160,6 +165,13 @@ State ownership:
   relationship CLI is a convenience façade over the memory store, not a second
   memory system.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
+- Tool lifecycle uses typed events: `ToolCallStarted`,
+  `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and the
+  reserved `ToolCallCancelled` path. Approval events carry tool anchors so UI,
+  replay, and audit views can line up the request with the tool invocation.
+- Tool scheduling is descriptor-driven. Adjacent parallel tool calls may run
+  concurrently, sequential calls run alone, and per-tool timeout failures are
+  reported through the same lifecycle event stream.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.
 

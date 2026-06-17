@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_core::RiskLevel;
-use ikaros_harness::GuardrailConfig;
+use ikaros_harness::{GuardrailConfig, ToolExecutionMode};
 use ikaros_models::{ModelRequestOptions, ModelResponse, ModelStreamEvent, TokenUsage};
 pub use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId, AgentTurnId,
@@ -128,6 +128,9 @@ pub struct AgentLoopToolDefinition {
     pub description: String,
     pub input_schema: serde_json::Value,
     pub risk: RiskLevel,
+    pub execution_mode: ToolExecutionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

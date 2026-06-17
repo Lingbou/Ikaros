@@ -40,7 +40,7 @@ pub use policy::{
 pub use session::ExecutionSession;
 pub use skill::{
     Skill, SkillBundle, SkillContext, SkillDescriptor, SkillDescriptorKind, SkillOutput,
-    SkillRegistry, TaskGraph, ToolRegistry,
+    SkillRegistry, TaskGraph, ToolExecutionMode, ToolRegistry,
 };
 pub use task_runner::{
     CancellationToken, ExecutablePlanStep, ExecutionOptions, PlanStepStatus, StepExecutionRecord,

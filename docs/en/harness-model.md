@@ -49,6 +49,19 @@ instead of mutating global state.
 
 Safe-read skills may pass redacted audit input while executing with the real local input. Chat uses this for local memory/RAG lookup so the audit log does not store full user prompts.
 
+Skill descriptors also carry runtime scheduling metadata:
+
+- `execution_mode = parallel`: eligible to run in the same batch as adjacent
+  parallel calls from one model response.
+- `execution_mode = sequential`: must run alone and preserve strict ordering.
+- `timeout_ms`: optional per-tool runtime timeout. Timeout returns a failed tool
+  result and is reflected in lifecycle events.
+
+Safe read and shell read descriptors default to `parallel`. Write, network,
+remote, destructive, secret, and self-modification risk descriptors default to
+`sequential`. The model provider sees only the callable tool schema; scheduling
+metadata belongs to the runtime/harness boundary.
+
 ## Policy Decisions
 
 Policy returns one of three effective states:

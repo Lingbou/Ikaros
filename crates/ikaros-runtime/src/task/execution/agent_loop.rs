@@ -2,7 +2,9 @@
 
 use super::super::types::{RuntimeTaskPlan, TaskRunOptions};
 use super::reporting::{audit_agent_loop_task_report, task_execution_report_from_agent_loop};
-use crate::agent_loop::{AgentLoopInput, AgentLoopOptions, AgentLoopReport, run_agent_loop};
+use crate::{
+    AgentHarness, AgentHarnessConfig, AgentLoopOptions, AgentLoopReport, HarnessAgentRuntime,
+};
 use ikaros_core::{
     IkarosConfig, IkarosPaths, Plan, PlanStep, ResolvedAgentProfile, Result, RiskLevel,
     redact_secrets,
@@ -11,6 +13,7 @@ use ikaros_harness::{
     AuditEvent, ExecutionSession, GuardrailConfig, SkillRegistry, TaskExecutionReport,
 };
 use ikaros_models::{ModelRequestOptions, governed_provider_from_config};
+use ikaros_session::SessionId;
 use ikaros_soul::{PersonaProfile, load_or_default};
 use serde_json::json;
 
@@ -59,9 +62,10 @@ pub(super) async fn execute_agent_loop_task(
             "max_iterations": input.options.loop_max_iterations.max(1),
         }),
     )?)?;
-    let loop_report = run_agent_loop(
-        AgentLoopInput {
-            session_id: Some(input.task_id.to_owned()),
+    let runtime = HarnessAgentRuntime;
+    let mut harness = AgentHarness::new(
+        AgentHarnessConfig {
+            session_id: SessionId::from(input.task_id.to_owned()),
             turn_id: None,
             task_id: Some(input.task_id.to_owned()),
             system_prompt: render_task_agent_loop_system_prompt(
@@ -69,19 +73,20 @@ pub(super) async fn execute_agent_loop_task(
                 &persona,
                 input.options.dry_run,
             ),
-            user_input: input.task_text.to_owned(),
+            options: AgentLoopOptions {
+                max_iterations: input.options.loop_max_iterations.max(1),
+                request_options: ModelRequestOptions::default(),
+                stream: false,
+                guardrails: GuardrailConfig::default(),
+            },
         },
+        &runtime,
         provider.as_ref(),
         input.session,
         input.registry,
-        AgentLoopOptions {
-            max_iterations: input.options.loop_max_iterations.max(1),
-            request_options: ModelRequestOptions::default(),
-            stream: false,
-            guardrails: GuardrailConfig::default(),
-        },
-    )
-    .await?;
+        crate::noop_agent_event_sink(),
+    );
+    let loop_report = harness.run_turn(input.task_text.to_owned()).await?.report;
     let report = task_execution_report_from_agent_loop(
         input.task_id,
         &loop_report,
