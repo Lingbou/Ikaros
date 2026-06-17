@@ -667,6 +667,7 @@ name = "ikaros-coding"
 version = "0.1.0"
 dependencies = [
  "ikaros-core",
+ "ikaros-harness",
  "serde",
  "serde_json",
  "tempfile",

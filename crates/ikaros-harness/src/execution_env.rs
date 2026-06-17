@@ -37,6 +37,11 @@ pub trait FileSystem: Send + Sync {
         &'a self,
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>>;
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 }
 
 pub trait ProcessRunner: Send + Sync {
@@ -187,6 +192,15 @@ impl FileSystem for LocalExecutionEnv {
             entries.sort();
             Ok(entries)
         })
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(
+            async move { fs::remove_file(path).map_err(|source| IkarosError::io(path, source)) },
+        )
     }
 }
 

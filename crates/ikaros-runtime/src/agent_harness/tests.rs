@@ -6,20 +6,55 @@ use super::{
 };
 use crate::agent_loop::{
     AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason, AgentRuntime,
+    HarnessAgentRuntime,
 };
+use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
-use ikaros_models::{MockModelProvider, ModelProvider, TokenUsage};
+use ikaros_models::{MockModelProvider, ModelProvider, ModelRequest, ModelResponse, TokenUsage};
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, SessionId, TurnId,
     noop_agent_event_sink,
 };
 use serde_json::json;
-use std::{future::Future, path::Path, pin::Pin, sync::Mutex};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 #[derive(Default)]
 struct RecordingRuntime {
     inputs: Mutex<Vec<AgentLoopInput>>,
+}
+
+static TEST_SESSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Default)]
+struct CountingProvider {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ModelProvider for CountingProvider {
+    fn name(&self) -> &str {
+        "counting"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "counting-model".into(),
+            content: r#"{"final_answer":"called"}"#.into(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
+        })
+    }
 }
 
 impl RecordingRuntime {
@@ -89,8 +124,15 @@ impl AgentRuntime for RecordingRuntime {
 }
 
 fn test_session() -> ExecutionSession {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/agent-harness-test-workspace");
-    let audit = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/agent-harness-test-audit");
+    let index = TEST_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let root = std::env::temp_dir().join(format!(
+        "ikaros-agent-harness-test-{}-{index}-workspace",
+        std::process::id()
+    ));
+    let audit = std::env::temp_dir().join(format!(
+        "ikaros-agent-harness-test-{}-{index}-audit",
+        std::process::id()
+    ));
     ExecutionSession::new(root, audit)
 }
 
@@ -214,4 +256,28 @@ async fn agent_harness_can_use_caller_supplied_turn_id() {
             .iter()
             .all(|event| event.turn_id.as_str() == "fixed-turn")
     );
+}
+
+#[tokio::test]
+async fn agent_harness_cancel_aborts_next_turn_before_provider_request() {
+    let runtime = HarnessAgentRuntime;
+    let provider = CountingProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+    let mut harness = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        noop_agent_event_sink(),
+    );
+
+    harness.cancel();
+    let turn = harness.run_turn("hello").await.expect("cancelled turn");
+
+    assert_eq!(turn.report.stop_reason, AgentLoopStopReason::Cancelled);
+    assert_eq!(turn.report.iterations, 0);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.phase(), AgentHarnessPhase::Idle);
 }

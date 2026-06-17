@@ -489,6 +489,7 @@ pub async fn run_chat_turn_with_events(
                     request_options: ModelRequestOptions::default(),
                     stream: options.stream,
                     guardrails: GuardrailConfig::default(),
+                    cancellation: Default::default(),
                 },
             },
             &runtime,

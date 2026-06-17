@@ -23,3 +23,11 @@ impl CancellationToken {
         self.cancelled.load(Ordering::SeqCst)
     }
 }
+
+impl PartialEq for CancellationToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_cancelled() == other.is_cancelled()
+    }
+}
+
+impl Eq for CancellationToken {}

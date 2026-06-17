@@ -163,6 +163,87 @@ fn patch_iteration_planner_prioritizes_blockers_and_tests() {
 }
 
 #[test]
+fn coding_workflow_orders_codex_style_steps_and_redacts_secret() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::write(temp.path().join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::create_dir_all(temp.path().join("src")).expect("src");
+    fs::write(temp.path().join("src/lib.rs"), "pub fn old() {}\n").expect("lib");
+    let diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,2 @@\n pub fn old() {}\n+let leaked = \"token=abc123\";\n";
+    let test_analysis = TestFailureAnalyzer::analyze("cargo test", 0, "test result: ok", "");
+
+    let report = CodingWorkflow::new(temp.path())
+        .run(CodingWorkflowInput {
+            objective: "fix token=abc123 safely".into(),
+            diff: Some(diff.into()),
+            test_analysis: Some(test_analysis),
+        })
+        .expect("workflow");
+
+    let kinds = report
+        .steps
+        .iter()
+        .map(|step| step.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            CodingWorkflowStepKind::ReadRepo,
+            CodingWorkflowStepKind::Plan,
+            CodingWorkflowStepKind::Patch,
+            CodingWorkflowStepKind::Test,
+            CodingWorkflowStepKind::Review,
+            CodingWorkflowStepKind::FinalReport,
+        ]
+    );
+    assert_eq!(report.steps[2].status, CodingWorkflowStepStatus::Completed);
+    assert_eq!(report.steps[3].status, CodingWorkflowStepStatus::Completed);
+    assert!(report.requires_guarded_edit);
+    assert!(!report.ready_for_approval);
+    assert!(
+        report
+            .suggested_tests
+            .iter()
+            .any(|command| command.command.contains("cargo test"))
+    );
+    let workflow_json = serde_json::to_string(&report).expect("workflow json");
+    assert!(workflow_json.contains("[REDACTED_SECRET]"));
+    assert!(!workflow_json.contains("abc123"));
+    assert!(report.final_report.contains("Final Report"));
+}
+
+#[test]
+fn coding_workflow_without_diff_blocks_patch_step_without_mutating_repo() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::write(temp.path().join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::create_dir_all(temp.path().join("src")).expect("src");
+    let source = temp.path().join("src/lib.rs");
+    fs::write(&source, "pub fn unchanged() {}\n").expect("lib");
+
+    let report = CodingWorkflow::new(temp.path())
+        .run(CodingWorkflowInput {
+            objective: "plan a safe change".into(),
+            diff: None,
+            test_analysis: None,
+        })
+        .expect("workflow");
+
+    assert_eq!(report.steps[2].kind, CodingWorkflowStepKind::Patch);
+    assert_eq!(report.steps[2].status, CodingWorkflowStepStatus::Blocked);
+    assert_eq!(report.steps[3].status, CodingWorkflowStepStatus::Planned);
+    assert!(
+        report
+            .review
+            .findings
+            .iter()
+            .any(|finding| finding.title == "No diff detected")
+    );
+    assert_eq!(
+        fs::read_to_string(source).expect("source"),
+        "pub fn unchanged() {}\n"
+    );
+}
+
+#[test]
 fn guarded_patch_applier_modifies_existing_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("note.txt");

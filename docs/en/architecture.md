@@ -166,12 +166,14 @@ State ownership:
   memory system.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
 - Tool lifecycle uses typed events: `ToolCallStarted`,
-  `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and the
-  reserved `ToolCallCancelled` path. Approval events carry tool anchors so UI,
-  replay, and audit views can line up the request with the tool invocation.
+  `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and
+  `ToolCallCancelled`. Approval events carry tool anchors so UI, replay, and
+  audit views can line up the request with the tool invocation.
 - Tool scheduling is descriptor-driven. Adjacent parallel tool calls may run
   concurrently, sequential calls run alone, and per-tool timeout failures are
-  reported through the same lifecycle event stream.
+  reported through the same lifecycle event stream. Cancellation is checked
+  before provider requests and before planned tool calls start; planned but
+  unstarted calls are reported as cancelled, not executed.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.
 

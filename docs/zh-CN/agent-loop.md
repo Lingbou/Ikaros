@@ -44,7 +44,9 @@ agent-loop 入口已经使用这个 wrapper；直接的 `run_agent_loop*` helper
 
 `AgentHarnessConfig` 也可以携带调用方提供的 `turn_id`。Chat 用它保证 chat history
 record、append-only session entry 和 agent event 落在同一轮 turn 上。Task agent-loop
-会让 harness 在 task session 内创建新的 turn id。
+会让 harness 在 task session 内创建新的 turn id。调用方可以 clone harness 的
+cancellation token，或直接调用 `AgentHarness::cancel()`，以取消下一次 provider
+request 或尚未启动的已规划 tool call。
 
 默认选项：
 
@@ -53,21 +55,26 @@ record、append-only session entry 和 agent event 落在同一轮 turn 上。Ta
 - `temperature = 0.2`
 - `stream = false`
 - 默认 guardrail 设置
+- 新的 cancellation token
 
 ## Turn Sequence
 
 每次迭代顺序一致：
 
-1. 用 system prompt、user input、之前的 assistant output、tool definition 和 tool result 构造模型请求。
-2. 请求 provider 生成普通或 streaming response。
-3. 优先消费 provider-native tool call。
-4. 如果没有 native tool call，则从文本解析 fallback JSON 协议。
-5. 如果存在 final answer，以 `FinalAnswer` 停止。
-6. 把标准化 tool call 通过 `ExecutionSession` dispatch。
-7. 发出 tool lifecycle event：`ToolCallStarted`、`ToolCallOutputDelta`、
-   `ToolCallCompleted` 或 `ToolCallFailed`。`ToolCallCancelled` 预留给取消路径。
-8. 把 tool result 追加到下一次 model turn。
-9. 继续前检查 guardrail 和 iteration budget。
+1. 发起 provider request 前检查 cancellation token。
+2. 用 system prompt、user input、之前的 assistant output、tool definition 和 tool result 构造模型请求。
+3. 请求 provider 生成普通或 streaming response。
+4. 优先消费 provider-native tool call。
+5. 如果没有 native tool call，则从文本解析 fallback JSON 协议。
+6. 如果存在 final answer，以 `FinalAnswer` 停止。
+7. dispatch 已规划 tool call 前再次检查 cancellation。
+8. 把标准化 tool call 通过 `ExecutionSession` dispatch。
+9. 发出 tool lifecycle event：`ToolCallStarted`、`ToolCallOutputDelta`、
+   `ToolCallCompleted` 或 `ToolCallFailed`。如果模型已经返回 tool plan，但
+   dispatch 前收到取消请求，runtime 会为每个已规划调用发出 `ToolCallCancelled`，
+   并且不会调用对应 skill。
+10. 把 tool result 追加到下一次 model turn。
+11. 继续前检查 guardrail 和 iteration budget。
 
 Provider 返回 native tool call id 时会保留这些 id，以便下一轮用 provider 偏好的格式传回 tool result history。
 
@@ -159,7 +166,9 @@ Tool lifecycle event payload 包含标准化 tool name、provider 提供的 tool
 （如果有）、脱敏后的 input snapshot、output summary/delta、status、execution mode、
 timeout，以及 approval event 可引用的稳定 tool-event anchor。进入 report 或持久化
 session event 前必须先脱敏。Descriptor timeout 会把该 tool call 记录成 failed tool
-lifecycle result；它不能绕过 `ExecutionSession` 或 `ExecutionEnv`。
+lifecycle result；它不能绕过 `ExecutionSession` 或 `ExecutionEnv`。已规划调用启动
+前收到 cancellation 时，会产生 `ToolCallCancelled` payload，并以 `Cancelled` 停止
+turn；runtime 不能先启动工具再试图隐藏结果。
 
 `AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。Replay、gateway、schedule 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
 

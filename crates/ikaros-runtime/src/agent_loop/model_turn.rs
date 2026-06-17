@@ -122,7 +122,54 @@ pub(super) async fn run_agent_loop_turn(
     let mut final_streamed = false;
     let mut final_stream_chunks = Vec::new();
 
+    if options.cancellation.is_cancelled() {
+        return finish_agent_loop_turn(
+            session,
+            input.task_id,
+            &session_id,
+            &turn_id,
+            &mut events,
+            event_sink,
+            AgentLoopFinish {
+                stop_reason: AgentLoopStopReason::Cancelled,
+                final_content: last_content,
+                provider: last_provider,
+                model: last_model,
+                usage: total_usage,
+                streamed: final_streamed,
+                stream_chunks: final_stream_chunks,
+                iterations: 0,
+                tool_call_diagnostics,
+                tool_results,
+                events: Vec::new(),
+            },
+        );
+    }
+
     for iteration in 1..=max_iterations {
+        if options.cancellation.is_cancelled() {
+            return finish_agent_loop_turn(
+                session,
+                input.task_id,
+                &session_id,
+                &turn_id,
+                &mut events,
+                event_sink,
+                AgentLoopFinish {
+                    stop_reason: AgentLoopStopReason::Cancelled,
+                    final_content: last_content,
+                    provider: last_provider,
+                    model: last_model,
+                    usage: total_usage,
+                    streamed: final_streamed,
+                    stream_chunks: final_stream_chunks,
+                    iterations: iteration.saturating_sub(1),
+                    tool_call_diagnostics,
+                    tool_results,
+                    events: Vec::new(),
+                },
+            );
+        }
         let turn = match request_agent_loop_model_turn(
             provider,
             ModelRequest {
@@ -254,6 +301,41 @@ pub(super) async fn run_agent_loop_turn(
             ));
             let scheduled_calls =
                 schedule_agent_loop_tool_calls(envelope.tool_calls, &tool_definitions);
+            if options.cancellation.is_cancelled() {
+                tool_results.extend(emit_cancelled_tool_call_events(
+                    ToolBatchDispatchContext {
+                        session,
+                        registry,
+                        session_id: &session_id,
+                        turn_id: &turn_id,
+                        events: &mut events,
+                        event_sink,
+                    },
+                    iteration,
+                    &scheduled_calls,
+                )?);
+                return finish_agent_loop_turn(
+                    session,
+                    input.task_id,
+                    &session_id,
+                    &turn_id,
+                    &mut events,
+                    event_sink,
+                    AgentLoopFinish {
+                        stop_reason: AgentLoopStopReason::Cancelled,
+                        final_content: last_content,
+                        provider: last_provider,
+                        model: last_model,
+                        usage: total_usage,
+                        streamed: final_streamed,
+                        stream_chunks: final_stream_chunks,
+                        iterations: iteration,
+                        tool_call_diagnostics,
+                        tool_results,
+                        events: Vec::new(),
+                    },
+                );
+            }
             let mut scheduled_index = 0;
             while scheduled_index < scheduled_calls.len() {
                 let batch_end = scheduled_tool_batch_end(&scheduled_calls, scheduled_index);
@@ -371,6 +453,29 @@ pub(super) async fn run_agent_loop_turn(
                             },
                         );
                     }
+                }
+                if options.cancellation.is_cancelled() {
+                    return finish_agent_loop_turn(
+                        session,
+                        input.task_id,
+                        &session_id,
+                        &turn_id,
+                        &mut events,
+                        event_sink,
+                        AgentLoopFinish {
+                            stop_reason: AgentLoopStopReason::Cancelled,
+                            final_content: last_content,
+                            provider: last_provider,
+                            model: last_model,
+                            usage: total_usage,
+                            streamed: final_streamed,
+                            stream_chunks: final_stream_chunks,
+                            iterations: iteration,
+                            tool_call_diagnostics,
+                            tool_results,
+                            events: Vec::new(),
+                        },
+                    );
                 }
                 scheduled_index = batch_end;
             }
@@ -654,6 +759,48 @@ async fn dispatch_scheduled_tool_batch(
         });
     }
     Ok(dispatched)
+}
+
+fn emit_cancelled_tool_call_events(
+    context: ToolBatchDispatchContext<'_>,
+    iteration: u32,
+    scheduled_calls: &[ScheduledAgentLoopToolCall],
+) -> Result<Vec<AgentLoopToolResult>> {
+    let mut results = Vec::with_capacity(scheduled_calls.len());
+    for scheduled in scheduled_calls {
+        let summary = "tool call cancelled before execution".to_string();
+        let output = json!({
+            "cancelled": true,
+            "reason": "agent loop cancellation requested",
+        });
+        emit_agent_event(
+            context.events,
+            context.event_sink,
+            context.session_id,
+            context.turn_id,
+            AgentEventSource::Tool,
+            AgentEventKind::ToolCallCancelled,
+            json!({
+                "iteration": iteration,
+                "tool_call_id": &scheduled.tool_call_id,
+                "name": &scheduled.tool_call_name,
+                "input": redacted_json_value(scheduled.call.input.clone()),
+                "execution_mode": scheduled.execution_mode.as_str(),
+                "timeout_ms": scheduled.timeout_ms,
+                "status": "cancelled",
+                "summary": &summary,
+                "output": &output,
+            }),
+        )?;
+        results.push(AgentLoopToolResult {
+            iteration,
+            name: redact_secrets(&scheduled.tool_call_name),
+            ok: false,
+            summary,
+            output,
+        });
+    }
+    Ok(results)
 }
 
 fn emit_agent_event(

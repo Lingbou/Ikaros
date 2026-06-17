@@ -31,6 +31,13 @@ pub(crate) enum CodeCommand {
         #[arg(long = "test-analysis-json")]
         test_analysis_json: Option<String>,
     },
+    Workflow {
+        objective: String,
+        #[arg(long)]
+        diff: Option<String>,
+        #[arg(long = "test-analysis-json")]
+        test_analysis_json: Option<String>,
+    },
     Review {
         #[arg(long)]
         diff: Option<String>,
@@ -90,6 +97,26 @@ pub(crate) async fn code_command(
             (
                 session
                     .execute_skill(&registry, "code_iterate", input)
+                    .await?,
+                None,
+            )
+        }
+        CodeCommand::Workflow {
+            objective,
+            diff,
+            test_analysis_json,
+        } => {
+            let mut input = json!({"objective": objective});
+            if let Some(diff) = diff {
+                input["diff"] = json!(diff);
+            }
+            if let Some(test_analysis_json) = test_analysis_json {
+                input["test_analysis"] = serde_json::from_str(&test_analysis_json)
+                    .with_context(|| "failed to parse --test-analysis-json")?;
+            }
+            (
+                session
+                    .execute_skill(&registry, "code_workflow", input)
                     .await?,
                 None,
             )

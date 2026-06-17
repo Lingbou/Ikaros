@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_core::RiskLevel;
-use ikaros_harness::{GuardrailConfig, ToolExecutionMode};
+use ikaros_harness::{CancellationToken, GuardrailConfig, ToolExecutionMode};
 use ikaros_models::{ModelRequestOptions, ModelResponse, ModelStreamEvent, TokenUsage};
 pub use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId, AgentTurnId,
@@ -27,6 +27,8 @@ pub struct AgentLoopOptions {
     pub request_options: ModelRequestOptions,
     pub stream: bool,
     pub guardrails: GuardrailConfig,
+    #[serde(skip)]
+    pub cancellation: CancellationToken,
 }
 
 impl Default for AgentLoopOptions {
@@ -36,6 +38,7 @@ impl Default for AgentLoopOptions {
             request_options: ModelRequestOptions::default(),
             stream: false,
             guardrails: GuardrailConfig::default(),
+            cancellation: CancellationToken::new(),
         }
     }
 }

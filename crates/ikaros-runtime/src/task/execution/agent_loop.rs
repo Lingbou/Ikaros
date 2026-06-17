@@ -78,6 +78,7 @@ pub(super) async fn execute_agent_loop_task(
                 request_options: ModelRequestOptions::default(),
                 stream: false,
                 guardrails: GuardrailConfig::default(),
+                cancellation: Default::default(),
             },
         },
         &runtime,

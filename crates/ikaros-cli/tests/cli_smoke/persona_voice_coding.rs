@@ -228,6 +228,13 @@ diff --git a/src/lib.rs b/src/lib.rs
     assert!(iteration.contains("\"ready_for_approval\": false"));
     assert!(iteration.contains("cargo test --workspace --all-features"));
 
+    let workflow = env.run(["code", "workflow", "prepare patch", "--diff", diff]);
+    assert!(workflow.contains("summary: coding workflow prepared"));
+    assert!(workflow.contains("\"kind\": \"read_repo\""));
+    assert!(workflow.contains("\"kind\": \"final_report\""));
+    assert!(workflow.contains("\"requires_guarded_edit\":"));
+    assert!(!workflow.contains("abc123"));
+
     let proposal = env.run([
         "self-modify",
         "propose",

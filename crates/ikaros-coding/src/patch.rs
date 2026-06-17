@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_core::{IkarosError, Result};
+use ikaros_harness::FileSystem as ExecutionFileSystem;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -78,6 +79,75 @@ impl GuardedPatchApplier {
 
         Ok(report)
     }
+
+    pub async fn apply_unified_diff_with_env(
+        root: &Path,
+        diff: &str,
+        file_system: &dyn ExecutionFileSystem,
+    ) -> Result<PatchApplyReport> {
+        let staged = stage_unified_diff_with_env(root, diff, file_system).await?;
+        let report = build_patch_report(&staged);
+        let mut written = Vec::<StagedFilePatch>::new();
+        for staged_patch in staged {
+            if let Some(parent) = staged_patch.target.parent()
+                && let Err(error) = file_system.create_dir_all(parent).await
+            {
+                rollback_staged_writes_with_env(file_system, &written).await;
+                return Err(error);
+            }
+            if let Err(error) = file_system
+                .write_string(&staged_patch.target, staged_patch.updated.clone())
+                .await
+            {
+                rollback_staged_writes_with_env(file_system, &written).await;
+                return Err(error);
+            }
+            written.push(staged_patch);
+        }
+        Ok(report)
+    }
+}
+
+async fn stage_unified_diff_with_env(
+    root: &Path,
+    diff: &str,
+    file_system: &dyn ExecutionFileSystem,
+) -> Result<Vec<StagedFilePatch>> {
+    let patches = parse_unified_diff(diff)?;
+    if patches.is_empty() {
+        return Err(IkarosError::Message(
+            "diff did not contain any file hunks".into(),
+        ));
+    }
+
+    let mut staged = Vec::<StagedFilePatch>::new();
+    for patch in patches {
+        let target = resolve_patch_path(root, &patch.new_path)?;
+        if staged
+            .iter()
+            .any(|staged_patch| staged_patch.target == target)
+        {
+            return Err(IkarosError::Message(format!(
+                "guarded edit contains duplicate target: {}",
+                patch.new_path.display()
+            )));
+        }
+        let existed = target.exists();
+        let original = if existed {
+            file_system.read_to_string(&target).await?
+        } else {
+            String::new()
+        };
+        let updated = apply_file_patch(&original, &patch)?;
+        staged.push(StagedFilePatch {
+            target,
+            existed,
+            original,
+            updated,
+            patch,
+        });
+    }
+    Ok(staged)
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +198,21 @@ fn rollback_staged_writes(written: &[StagedFilePatch]) {
             let _ = fs::write(&staged_patch.target, &staged_patch.original);
         } else {
             let _ = fs::remove_file(&staged_patch.target);
+        }
+    }
+}
+
+async fn rollback_staged_writes_with_env(
+    file_system: &dyn ExecutionFileSystem,
+    written: &[StagedFilePatch],
+) {
+    for staged_patch in written.iter().rev() {
+        if staged_patch.existed {
+            let _ = file_system
+                .write_string(&staged_patch.target, staged_patch.original.clone())
+                .await;
+        } else {
+            let _ = file_system.remove_file(&staged_patch.target).await;
         }
     }
 }

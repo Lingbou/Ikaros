@@ -7,8 +7,8 @@ use super::{
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, IkarosPaths, Result, RiskLevel};
 use ikaros_harness::{
-    ExecutionSession, GuardrailConfig, Skill, SkillContext, SkillDescriptor, SkillOutput,
-    SkillRegistry, ToolExecutionMode,
+    CancellationToken, ExecutionSession, GuardrailConfig, Skill, SkillContext, SkillDescriptor,
+    SkillOutput, SkillRegistry, ToolExecutionMode,
 };
 use ikaros_models::{
     ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent, ModelToolCall,
@@ -51,6 +51,12 @@ struct FailingProvider;
 #[derive(Debug)]
 struct MissingToolProvider {
     calls: AtomicUsize,
+}
+
+#[derive(Debug)]
+struct CancelAfterToolPlanProvider {
+    calls: AtomicUsize,
+    cancellation: CancellationToken,
 }
 
 #[derive(Debug)]
@@ -169,6 +175,31 @@ impl ModelProvider for FailingProvider {
         Err(IkarosError::Message(
             "agent-loop provider failed token=abc123".into(),
         ))
+    }
+}
+
+#[async_trait]
+impl ModelProvider for CancelAfterToolPlanProvider {
+    fn name(&self) -> &str {
+        "cancel-after-plan"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.cancellation.cancel();
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "cancel-after-plan-model".into(),
+            content: String::new(),
+            tool_calls: vec![ModelToolCall {
+                id: Some("cancel-call-1".into()),
+                name: "loop_echo".into(),
+                input: json!({"text": "do not execute token=abc123"}),
+                raw_arguments: None,
+            }],
+            usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -770,6 +801,112 @@ async fn agent_loop_fails_tool_call_on_descriptor_timeout() {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|summary| summary.contains("timed out"))
     }));
+}
+
+#[tokio::test]
+async fn agent_loop_cancelled_before_model_request_does_not_call_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let registry = SkillRegistry::new();
+    let provider = SequenceProvider {
+        calls: AtomicUsize::new(0),
+        responses: vec![r#"{"final_answer":"should not run"}"#.into()],
+    };
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("cancel-before-model-session".into()),
+            turn_id: Some("cancel-before-model-turn".into()),
+            task_id: Some("cancel-before-model-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start token=abc123".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions {
+            cancellation,
+            ..AgentLoopOptions::default()
+        },
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::Cancelled);
+    assert_eq!(report.iterations, 0);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::TurnEnd)
+            && event
+                .payload
+                .get("stop_reason")
+                .and_then(serde_json::Value::as_str)
+                == Some("Cancelled")
+    }));
+    let events_json = serde_json::to_string(&report.events).expect("events json");
+    assert!(!events_json.contains("abc123"));
+}
+
+#[tokio::test]
+async fn agent_loop_cancelled_after_tool_plan_emits_cancelled_tool_event() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = SkillRegistry::new();
+    registry.register(EchoSkill {
+        calls: calls.clone(),
+    });
+    let cancellation = CancellationToken::new();
+    let provider = CancelAfterToolPlanProvider {
+        calls: AtomicUsize::new(0),
+        cancellation: cancellation.clone(),
+    };
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("cancel-tool-session".into()),
+            turn_id: Some("cancel-tool-turn".into()),
+            task_id: Some("cancel-tool-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions {
+            cancellation,
+            ..AgentLoopOptions::default()
+        },
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::Cancelled);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::ToolCallCancelled)
+            && event
+                .payload
+                .get("tool_call_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("cancel-call-1")
+            && event
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                == Some("cancelled")
+    }));
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallStarted))
+    );
+    let events_json = serde_json::to_string(&report.events).expect("events json");
+    assert!(!events_json.contains("abc123"));
 }
 
 #[tokio::test]

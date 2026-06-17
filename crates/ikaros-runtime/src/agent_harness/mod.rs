@@ -4,7 +4,7 @@ use crate::agent_loop::{
     AgentEvent, AgentEventSink, AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentRuntime,
 };
 use ikaros_core::{IkarosError, Result};
-use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_harness::{CancellationToken, ExecutionSession, SkillRegistry};
 use ikaros_models::ModelProvider;
 use ikaros_session::{SessionId, TurnId};
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,14 @@ impl<'a> AgentHarness<'a> {
             follow_up: self.follow_up_queue.len(),
             next_turn: self.next_turn_queue.len(),
         }
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.config.options.cancellation.clone()
+    }
+
+    pub fn cancel(&self) {
+        self.config.options.cancellation.cancel();
     }
 
     pub fn enqueue_steer(&mut self, message: AgentHarnessMessage) {

@@ -142,6 +142,7 @@ ikaros repo scan
 ikaros test infer
 ikaros test run --command "cargo test"
 ikaros code plan "add focused tests"
+ikaros code workflow "prepare guarded patch" --diff "<unified diff>"
 ikaros code review
 ikaros code iterate
 ikaros code guarded-edit "apply approved patch" --diff "<unified diff>"

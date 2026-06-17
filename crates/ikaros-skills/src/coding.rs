@@ -6,8 +6,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use ikaros_coding::{
-    ChangePlanner, CodeReviewAssistant, DiffSummarizer, GuardedPatchApplier, PatchIterationPlanner,
-    RepoScanner, TestFailureAnalysis, TestFailureAnalyzer, TestRunnerPlan,
+    ChangePlanner, CodeReviewAssistant, CodingWorkflow, CodingWorkflowInput, DiffSummarizer,
+    GuardedPatchApplier, PatchIterationPlanner, RepoScanner, TestFailureAnalysis,
+    TestFailureAnalyzer, TestRunnerPlan,
 };
 use ikaros_core::{Result, RiskLevel};
 use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
@@ -208,10 +209,14 @@ impl Skill for CodeEditGuardedSkill {
             if diff.trim().is_empty() {
                 None
             } else {
-                Some(GuardedPatchApplier::apply_unified_diff(
-                    &ctx.session.sandbox.workspace_root,
-                    diff,
-                )?)
+                Some(
+                    GuardedPatchApplier::apply_unified_diff_with_env(
+                        &ctx.session.sandbox.workspace_root,
+                        diff,
+                        ctx.session.env.as_ref(),
+                    )
+                    .await?,
+                )
             }
         } else {
             None
@@ -306,5 +311,47 @@ impl Skill for CodeIterateSkill {
             "patch iteration plan prepared",
             json!({"review": review, "iteration": iteration}),
         ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeWorkflowSkill;
+
+#[async_trait]
+impl Skill for CodeWorkflowSkill {
+    fn name(&self) -> &'static str {
+        "code_workflow"
+    }
+
+    fn description(&self) -> &'static str {
+        "Run the controlled coding workflow: repo map, plan, candidate patch review, test evidence, iteration plan, and final report."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "required": ["objective"], "properties": {"objective": {"type": "string"}, "diff": {"type": "string"}, "test_analysis": {"type": "object"}}})
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::SafeRead
+    }
+
+    async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
+        let objective = input_string(&input, "objective")?;
+        let diff = input
+            .get("diff")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let test_analysis = input
+            .get("test_analysis")
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value::<TestFailureAnalysis>(value.clone()))
+            .transpose()?;
+        let report =
+            CodingWorkflow::new(&ctx.session.sandbox.workspace_root).run(CodingWorkflowInput {
+                objective,
+                diff,
+                test_analysis,
+            })?;
+        Ok(SkillOutput::new("coding workflow prepared", json!(report)))
     }
 }

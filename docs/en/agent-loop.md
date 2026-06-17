@@ -59,7 +59,9 @@ global fallback session.
 `AgentHarnessConfig` may also carry a caller-supplied `turn_id`. Chat uses that
 to keep the chat history record, append-only session entries, and agent events
 on the same turn. Task agent-loop runs let the harness create a fresh turn id
-inside the task session.
+inside the task session. Callers can clone the harness cancellation token or
+call `AgentHarness::cancel()` to abort the next provider request or any planned
+tool calls that have not started yet.
 
 Default options:
 
@@ -68,23 +70,28 @@ Default options:
 - `temperature = 0.2`
 - `stream = false`
 - default guardrail settings
+- a fresh cancellation token
 
 ## Turn Sequence
 
 Each iteration follows the same order:
 
-1. Build a model request with system prompt, user input, prior assistant output,
+1. Check the cancellation token before issuing a provider request.
+2. Build a model request with system prompt, user input, prior assistant output,
    tool definitions, and prior tool results.
-2. Ask the provider for a normal or streaming response.
-3. Prefer provider-native tool calls when present.
-4. If no native tool call exists, parse the fallback JSON protocol from text.
-5. If a final answer is present, stop with `FinalAnswer`.
-6. Dispatch normalized tool calls through `ExecutionSession`.
-7. Emit tool lifecycle events:
+3. Ask the provider for a normal or streaming response.
+4. Prefer provider-native tool calls when present.
+5. If no native tool call exists, parse the fallback JSON protocol from text.
+6. If a final answer is present, stop with `FinalAnswer`.
+7. Check cancellation again before dispatching planned tool calls.
+8. Dispatch normalized tool calls through `ExecutionSession`.
+9. Emit tool lifecycle events:
    `ToolCallStarted`, `ToolCallOutputDelta`, `ToolCallCompleted`, or
-   `ToolCallFailed`. `ToolCallCancelled` is reserved for the cancellation path.
-8. Append tool results to the next model turn.
-9. Observe guardrails and iteration budget before continuing.
+   `ToolCallFailed`. If cancellation is requested after the model returns a
+   tool plan but before dispatch begins, the runtime emits `ToolCallCancelled`
+   for each planned call and does not invoke the skill.
+10. Append tool results to the next model turn.
+11. Observe guardrails and iteration budget before continuing.
 
 Provider-native tool call ids are preserved when the provider supplies them, so
 tool result history can be sent back in the provider's preferred shape.
@@ -189,7 +196,9 @@ execution mode, timeout, and a stable tool-event anchor used by approval events.
 Secrets must be redacted before those payloads enter reports or persisted
 session events. A descriptor timeout turns that tool call into a failed tool
 lifecycle result; it does not let the runtime bypass `ExecutionSession` or
-`ExecutionEnv`.
+`ExecutionEnv`. Cancellation requested before a planned call starts produces a
+`ToolCallCancelled` payload and stops the turn with `Cancelled`; it must not
+start the tool and then try to hide the result.
 
 `AgentLoopReport.events` is a compatibility summary for current callers. The
 durable fact source is the `ikaros-session` event stream when a persisting sink

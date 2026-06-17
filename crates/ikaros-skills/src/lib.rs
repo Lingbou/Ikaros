@@ -12,8 +12,8 @@ mod support;
 mod voice;
 
 pub use coding::{
-    CodeEditGuardedSkill, CodeIterateSkill, CodeReviewSkill, RepoScanSkill, RunTestsSkill,
-    TaskSummarizeSkill,
+    CodeEditGuardedSkill, CodeIterateSkill, CodeReviewSkill, CodeWorkflowSkill, RepoScanSkill,
+    RunTestsSkill, TaskSummarizeSkill,
 };
 pub use fs::{FsReadSkill, FsWriteGuardedSkill, ListDirSkill};
 use ikaros_core::{RagConfig, RemoteProviderConfig};
@@ -74,6 +74,7 @@ pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     registry.register(CodeEditGuardedSkill);
     registry.register(CodeReviewSkill);
     registry.register(CodeIterateSkill);
+    registry.register(CodeWorkflowSkill);
     registry.register(RagIngestSkill::new(
         env.rag_index.clone(),
         env.rag_config.clone(),

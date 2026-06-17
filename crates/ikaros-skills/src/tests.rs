@@ -1,14 +1,109 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::*;
-use ikaros_harness::{ApprovalStatus, ExecutionSession};
+use ikaros_core::Result;
+use ikaros_harness::{
+    ApprovalStatus, ExecutionEnv, ExecutionSession, FileSystem, LocalExecutionEnv, NetworkEgress,
+    NetworkEgressRequest, NetworkEgressResponse, ProcessOutput, ProcessRequest, ProcessRunner,
+    Skill, SkillContext, SkillOutput,
+};
 use ikaros_memory::{LocalMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryStore};
 use ikaros_rag::{LocalRagStore, RagQuery, RagStore};
 use ikaros_soul::PersonaLoader;
 use serde_json::json;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{fs, path::Path};
+use std::{
+    fs,
+    future::Future,
+    path::Path,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+struct TrackingEnv {
+    writes: Arc<AtomicUsize>,
+}
+
+impl FileSystem for TrackingEnv {
+    fn read_to_string<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        LocalExecutionEnv.read_to_string(path)
+    }
+
+    fn write_string<'a>(
+        &'a self,
+        path: &'a Path,
+        content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionEnv.write_string(path, content)
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.create_dir_all(path)
+    }
+
+    fn read_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        LocalExecutionEnv.read_dir(path)
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.remove_file(path)
+    }
+}
+
+impl ProcessRunner for TrackingEnv {
+    fn run_process<'a>(
+        &'a self,
+        request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput>> + Send + 'a>> {
+        LocalExecutionEnv.run_process(request)
+    }
+}
+
+impl NetworkEgress for TrackingEnv {
+    fn send_network_request<'a>(
+        &'a self,
+        request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        LocalExecutionEnv.send_network_request(request)
+    }
+}
+
+impl ExecutionEnv for TrackingEnv {
+    fn execute_skill<'a>(
+        &'a self,
+        skill: Arc<dyn Skill>,
+        input: serde_json::Value,
+        session: &'a ExecutionSession,
+    ) -> Pin<Box<dyn Future<Output = Result<SkillOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            skill
+                .execute(
+                    input,
+                    SkillContext {
+                        session: session.clone(),
+                    },
+                )
+                .await
+        })
+    }
+}
 
 fn test_env(root: &Path, workspace: &Path) -> SkillEnvironment {
     let rag_config = ikaros_core::RagConfig {
@@ -646,6 +741,30 @@ async fn code_plan_only_is_safe_but_guarded_edit_requests_approval() {
         "old\nkeep\n"
     );
 
+    let workflow = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "review token=abc123 safely",
+                "diff": "diff --git a/note.txt b/note.txt\n--- a/note.txt\n+++ b/note.txt\n@@ -1,2 +1,3 @@\n old\n keep\n+let leaked = \"token=abc123\";\n",
+            }),
+        )
+        .await
+        .expect("workflow");
+    assert!(workflow.ok);
+    assert_eq!(workflow.output["steps"][0]["kind"], json!("read_repo"));
+    assert_eq!(workflow.output["steps"][2]["kind"], json!("patch"));
+    assert_eq!(workflow.output["steps"][2]["status"], json!("completed"));
+    assert_eq!(workflow.output["requires_guarded_edit"], json!(true));
+    let workflow_json = serde_json::to_string(&workflow.output).expect("workflow json");
+    assert!(workflow_json.contains("[REDACTED_SECRET]"));
+    assert!(!workflow_json.contains("abc123"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("note.txt")).expect("note before workflow"),
+        "old\nkeep\n"
+    );
+
     let guarded = session
         .execute_skill(
             &registry,
@@ -675,6 +794,58 @@ async fn code_plan_only_is_safe_but_guarded_edit_requests_approval() {
     assert!(executed.ok);
     assert_eq!(executed.summary, "guarded code edit applied");
     assert_eq!(executed.output["apply_report"]["files_changed"], json!(1));
+    assert_eq!(
+        fs::read_to_string(workspace.join("note.txt")).expect("note after approval"),
+        "new\nkeep\n"
+    );
+}
+
+#[tokio::test]
+async fn guarded_code_edit_applies_patch_through_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("note.txt"), "old\nkeep\n").expect("note");
+    let registry = builtin_registry(test_env(temp.path(), &workspace));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
+        Arc::new(TrackingEnv {
+            writes: writes.clone(),
+        }),
+    );
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_edit_guarded",
+            json!({
+                "objective": "edit note through env",
+                "diff": "diff --git a/note.txt b/note.txt\n--- a/note.txt\n+++ b/note.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\n",
+            }),
+        )
+        .await
+        .expect("guarded request");
+    assert!(!requested.ok);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("approval id");
+    session
+        .decide_approval(approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+    let executed = session
+        .execute_approved_skill(&registry, approval_id)
+        .await
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    assert_eq!(executed.summary, "guarded code edit applied");
+    assert!(
+        writes.load(Ordering::SeqCst) > 0,
+        "approved guarded patch writes must go through ExecutionEnv::write_string"
+    );
     assert_eq!(
         fs::read_to_string(workspace.join("note.txt")).expect("note after approval"),
         "new\nkeep\n"

@@ -48,6 +48,13 @@ impl FileSystem for InterceptEnv {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         LocalExecutionEnv.read_dir(path)
     }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.remove_file(path)
+    }
 }
 
 impl ProcessRunner for InterceptEnv {
