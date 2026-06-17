@@ -6,9 +6,15 @@ use crate::agent_loop::{
 use ikaros_core::{IkarosError, Result};
 use ikaros_harness::{CancellationToken, ExecutionSession, SkillRegistry};
 use ikaros_models::ModelProvider;
-use ikaros_session::{SessionId, TurnId};
+use ikaros_session::{
+    ApprovalRecord, SessionBranchSummaryInput, SessionCompactionInput, SessionEntry,
+    SessionEntryId, SessionId, SessionRetryInput, SessionStore, TurnId,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +149,61 @@ impl<'a> AgentHarness<'a> {
         self.run_user_message(message.content).await
     }
 
+    pub fn append_branch_summary(
+        &mut self,
+        store: &dyn SessionStore,
+        parent_entry_id: SessionEntryId,
+        summary: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Result<SessionEntry> {
+        let summary = summary.into();
+        self.run_phase(AgentHarnessPhase::BranchSummary, |harness| {
+            store.branch_from_entry(&SessionBranchSummaryInput {
+                session_id: harness.config.session_id.clone(),
+                parent_entry_id,
+                summary,
+                payload,
+            })
+        })
+    }
+
+    pub fn append_compaction(
+        &mut self,
+        store: &dyn SessionStore,
+        parent_entry_id: SessionEntryId,
+        summary: impl Into<String>,
+        compacted_entry_ids: Vec<SessionEntryId>,
+        payload: serde_json::Value,
+    ) -> Result<SessionEntry> {
+        let summary = summary.into();
+        self.run_phase(AgentHarnessPhase::Compaction, |harness| {
+            store.append_compaction(&SessionCompactionInput {
+                session_id: harness.config.session_id.clone(),
+                parent_entry_id,
+                summary,
+                compacted_entry_ids,
+                payload,
+            })
+        })
+    }
+
+    pub fn append_retry_marker(
+        &mut self,
+        store: &dyn SessionStore,
+        parent_entry_id: SessionEntryId,
+        reason: Option<String>,
+        payload: serde_json::Value,
+    ) -> Result<SessionEntry> {
+        self.run_phase(AgentHarnessPhase::Retry, |harness| {
+            store.retry_from_entry(&SessionRetryInput {
+                session_id: harness.config.session_id.clone(),
+                parent_entry_id,
+                reason,
+                payload,
+            })
+        })
+    }
+
     async fn run_user_message(&mut self, user_input: String) -> Result<AgentHarnessTurn> {
         if self.phase != AgentHarnessPhase::Idle {
             return Err(IkarosError::Message(format!(
@@ -152,13 +213,18 @@ impl<'a> AgentHarness<'a> {
         }
         self.phase = AgentHarnessPhase::Turn;
         let session_id = self.config.session_id.clone();
-        let turn_id = self.config.turn_id.clone().unwrap_or_default();
+        let turn_id = self.config.turn_id.take().unwrap_or_default();
         let input = AgentLoopInput {
             session_id: Some(session_id.as_str().to_owned()),
             turn_id: Some(turn_id.as_str().to_owned()),
             task_id: self.config.task_id.clone(),
             system_prompt: self.config.system_prompt.clone(),
             user_input,
+        };
+        let emitted_events = Arc::new(Mutex::new(Vec::new()));
+        let event_sink = CollectingAgentEventSink {
+            downstream: self.event_sink,
+            events: emitted_events.clone(),
         };
         let result = self
             .runtime
@@ -167,19 +233,65 @@ impl<'a> AgentHarness<'a> {
                 self.provider,
                 self.session,
                 self.registry,
-                self.event_sink,
+                &event_sink,
                 self.config.options.clone(),
             )
             .await;
         self.phase = AgentHarnessPhase::Idle;
-        let report = result?;
+        let mut report = result?;
+        let events = collected_events(&emitted_events)?;
+        report.events = events.clone();
         Ok(AgentHarnessTurn {
             session_id,
             turn_id,
-            events: report.events.clone(),
+            events,
             report,
         })
     }
+
+    fn run_phase<T>(
+        &mut self,
+        phase: AgentHarnessPhase,
+        operation: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
+        if self.phase != AgentHarnessPhase::Idle {
+            return Err(IkarosError::Message(format!(
+                "agent harness is busy in {:?} phase",
+                self.phase
+            )));
+        }
+        self.phase = phase;
+        let result = operation(self);
+        self.phase = AgentHarnessPhase::Idle;
+        result
+    }
+}
+
+struct CollectingAgentEventSink<'a> {
+    downstream: &'a dyn AgentEventSink,
+    events: Arc<Mutex<Vec<AgentEvent>>>,
+}
+
+impl AgentEventSink for CollectingAgentEventSink<'_> {
+    fn emit(&self, event: &AgentEvent) -> Result<()> {
+        self.downstream.emit(event)?;
+        self.events
+            .lock()
+            .map_err(|_| IkarosError::Message("agent harness event lock poisoned".into()))?
+            .push(event.clone());
+        Ok(())
+    }
+
+    fn emit_approval(&self, approval: &ApprovalRecord) -> Result<()> {
+        self.downstream.emit_approval(approval)
+    }
+}
+
+fn collected_events(events: &Arc<Mutex<Vec<AgentEvent>>>) -> Result<Vec<AgentEvent>> {
+    events
+        .lock()
+        .map(|events| events.clone())
+        .map_err(|_| IkarosError::Message("agent harness event lock poisoned".into()))
 }
 
 #[cfg(test)]

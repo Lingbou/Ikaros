@@ -15,10 +15,10 @@ pub use runtime::{
     run_agent_loop_with_events,
 };
 pub use types::{
-    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,
-    AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolCallDiagnostic,
-    AgentLoopToolCallParseStrategy, AgentLoopToolDefinition, AgentLoopToolResult,
-    noop_agent_event_sink,
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopHookEvent,
+    AgentLoopHooks, AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
+    AgentLoopToolCall, AgentLoopToolCallDiagnostic, AgentLoopToolCallParseStrategy,
+    AgentLoopToolDefinition, AgentLoopToolResult, noop_agent_event_sink,
 };
 
 #[cfg(test)]

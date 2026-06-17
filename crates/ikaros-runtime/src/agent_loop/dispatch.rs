@@ -35,6 +35,7 @@ pub(super) async fn dispatch_agent_loop_tool_call(
         Err(error) => AgentLoopToolResult {
             iteration,
             name,
+            harness_call_id: None,
             ok: false,
             summary: redact_secrets(&error.to_string()),
             output: json!({"error": redact_secrets(&error.to_string())}),
@@ -118,6 +119,7 @@ fn agent_loop_tool_result_from_tool_result(
     AgentLoopToolResult {
         iteration,
         name,
+        harness_call_id: Some(result.call_id),
         ok: result.ok,
         summary: redact_secrets(&result.summary),
         output: redact_json(result.output),

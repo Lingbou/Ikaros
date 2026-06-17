@@ -13,9 +13,9 @@ use super::{
     tool_parse::{agent_loop_model_envelope_from_response, agent_loop_tool_call_diagnostic},
     types::{
         AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopFinish,
-        AgentLoopInput, AgentLoopModelTurn, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
-        AgentLoopToolCall, AgentLoopToolDefinition, AgentLoopToolResult, AgentSessionId,
-        AgentTurnId,
+        AgentLoopHookEvent, AgentLoopHooks, AgentLoopInput, AgentLoopModelTurn, AgentLoopOptions,
+        AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolDefinition,
+        AgentLoopToolResult, AgentSessionId, AgentTurnId,
     },
 };
 use ikaros_core::{IkarosError, Result, redact_json, redact_secrets};
@@ -171,17 +171,34 @@ pub(super) async fn run_agent_loop_turn(
                 },
             );
         }
-        let turn = match request_agent_loop_model_turn(
-            provider,
-            ModelRequest {
-                messages: messages.clone(),
-                options: options.request_options.clone(),
-                tools: model_tool_definitions(&tool_definitions),
+        let request = ModelRequest {
+            messages: messages.clone(),
+            options: options.request_options.clone(),
+            tools: model_tool_definitions(&tool_definitions),
+        };
+        invoke_agent_loop_hook(
+            HookDispatchContext {
+                hooks: options.hooks(),
+                events: &mut events,
+                event_sink,
+                session_id: &session_id,
+                turn_id: &turn_id,
+                task_id: input.task_id.as_deref(),
+                iteration,
+                event_id: None,
+                hook_name: "before_provider_request",
             },
-            options.stream,
-        )
-        .await
-        {
+            json!({
+                "provider": provider.name(),
+                "stream": options.stream,
+                "message_count": request.messages.len(),
+                "tool_count": request.tools.len(),
+                "max_tokens": request.options.max_tokens,
+                "temperature": request.options.temperature,
+            }),
+            |hooks, event| hooks.before_provider_request(event),
+        )?;
+        let turn = match request_agent_loop_model_turn(provider, request, options.stream).await {
             Ok(turn) => turn,
             Err(error) => {
                 let error = IkarosError::Message(redact_secrets(&error.to_string()));
@@ -216,6 +233,30 @@ pub(super) async fn run_agent_loop_turn(
             }
         };
         let response = turn.response;
+        invoke_agent_loop_hook(
+            HookDispatchContext {
+                hooks: options.hooks(),
+                events: &mut events,
+                event_sink,
+                session_id: &session_id,
+                turn_id: &turn_id,
+                task_id: input.task_id.as_deref(),
+                iteration,
+                event_id: None,
+                hook_name: "after_provider_response",
+            },
+            json!({
+                "provider": &response.provider,
+                "model": &response.model,
+                "streamed": turn.streamed,
+                "stream_event_count": turn.stream_events.len(),
+                "stream_chunk_count": turn.stream_chunks.len(),
+                "native_tool_call_count": response.tool_calls.len(),
+                "usage": &response.usage,
+                "diagnostic_count": response.diagnostics.len(),
+            }),
+            |hooks, event| hooks.after_provider_response(event),
+        )?;
         for event in &turn.stream_events {
             emit_agent_event(
                 &mut events,
@@ -308,6 +349,8 @@ pub(super) async fn run_agent_loop_turn(
                         session,
                         registry,
                         cancellation: &options.cancellation,
+                        hooks: options.hooks(),
+                        task_id: input.task_id.as_deref(),
                         session_id: &session_id,
                         turn_id: &turn_id,
                         events: &mut events,
@@ -347,6 +390,8 @@ pub(super) async fn run_agent_loop_turn(
                         session,
                         registry,
                         cancellation: &options.cancellation,
+                        hooks: options.hooks(),
+                        task_id: input.task_id.as_deref(),
                         session_id: &session_id,
                         turn_id: &turn_id,
                         events: &mut events,
@@ -385,7 +430,7 @@ pub(super) async fn run_agent_loop_turn(
                             &tool_result.output,
                         )?;
                     }
-                    emit_agent_event(
+                    let terminal_event_id = emit_agent_event(
                         &mut events,
                         event_sink,
                         &session_id,
@@ -418,6 +463,42 @@ pub(super) async fn run_agent_loop_turn(
                             "summary": &tool_result.summary,
                             "output": &tool_result.output,
                         }),
+                    )?;
+                    invoke_agent_loop_hook(
+                        HookDispatchContext {
+                            hooks: options.hooks(),
+                            events: &mut events,
+                            event_sink,
+                            session_id: &session_id,
+                            turn_id: &turn_id,
+                            task_id: input.task_id.as_deref(),
+                            iteration,
+                            event_id: Some(&terminal_event_id),
+                            hook_name: "after_tool_call",
+                        },
+                        json!({
+                            "tool_call_id": &tool_call_id,
+                            "tool_event_id": started_event_id.as_str(),
+                            "name": &tool_result.name,
+                            "ok": tool_result.ok,
+                            "status": tool_lifecycle_status(&tool_result),
+                            "summary": redact_secrets(&tool_result.summary),
+                            "output": redacted_json_value(tool_result.output.clone()),
+                        }),
+                        |hooks, event| hooks.after_tool_call(event),
+                    )?;
+                    emit_tool_audit_anchor(
+                        ToolAuditAnchorContext {
+                            session,
+                            events: &mut events,
+                            event_sink,
+                            session_id: &session_id,
+                            turn_id: &turn_id,
+                            iteration,
+                            tool_call_id: &tool_call_id,
+                            tool_event_id: &started_event_id,
+                        },
+                        &tool_result,
                     )?;
                     let stop = observe_agent_loop_tool_result(
                         session,
@@ -610,6 +691,7 @@ fn model_tool_call_stream_events(calls: &[ModelToolCall]) -> Vec<ModelStreamEven
 
 #[derive(Clone)]
 struct ScheduledAgentLoopToolCall {
+    model_order: usize,
     call: AgentLoopToolCall,
     tool_call_id: Option<String>,
     tool_call_name: String,
@@ -618,6 +700,7 @@ struct ScheduledAgentLoopToolCall {
 }
 
 struct DispatchedAgentLoopToolCall {
+    model_order: usize,
     tool_call_id: Option<String>,
     tool_call_name: String,
     started_event_id: AgentEventId,
@@ -628,6 +711,8 @@ struct ToolBatchDispatchContext<'a> {
     session: &'a ExecutionSession,
     registry: &'a SkillRegistry,
     cancellation: &'a CancellationToken,
+    hooks: &'a dyn AgentLoopHooks,
+    task_id: Option<&'a str>,
     session_id: &'a AgentSessionId,
     turn_id: &'a AgentTurnId,
     events: &'a mut Vec<AgentEvent>,
@@ -640,7 +725,8 @@ fn schedule_agent_loop_tool_calls(
 ) -> Vec<ScheduledAgentLoopToolCall> {
     calls
         .into_iter()
-        .map(|call| {
+        .enumerate()
+        .map(|(model_order, call)| {
             let definition = definitions
                 .iter()
                 .find(|definition| definition.name == call.name);
@@ -649,6 +735,7 @@ fn schedule_agent_loop_tool_calls(
                 .unwrap_or(ToolExecutionMode::Sequential);
             let timeout_ms = definition.and_then(|definition| definition.timeout_ms);
             ScheduledAgentLoopToolCall {
+                model_order,
                 tool_call_id: call.id.clone(),
                 tool_call_name: call.name.clone(),
                 call,
@@ -694,6 +781,28 @@ async fn dispatch_scheduled_tool_batch(
                 "timeout_ms": scheduled.timeout_ms,
             }),
         )?;
+        invoke_agent_loop_hook(
+            HookDispatchContext {
+                hooks: context.hooks,
+                events: context.events,
+                event_sink: context.event_sink,
+                session_id: context.session_id,
+                turn_id: context.turn_id,
+                task_id: context.task_id,
+                iteration,
+                event_id: Some(&started_event_id),
+                hook_name: "before_tool_call",
+            },
+            json!({
+                "tool_call_id": &scheduled.tool_call_id,
+                "tool_event_id": started_event_id.as_str(),
+                "name": &scheduled.tool_call_name,
+                "input": redacted_json_value(scheduled.call.input.clone()),
+                "execution_mode": scheduled.execution_mode.as_str(),
+                "timeout_ms": scheduled.timeout_ms,
+            }),
+            |hooks, event| hooks.before_tool_call(event),
+        )?;
         started.push((scheduled, started_event_id));
     }
 
@@ -711,6 +820,7 @@ async fn dispatch_scheduled_tool_batch(
             )
             .await;
             dispatched.push(DispatchedAgentLoopToolCall {
+                model_order: scheduled.model_order,
                 tool_call_id: scheduled.tool_call_id,
                 tool_call_name: scheduled.tool_call_name,
                 started_event_id,
@@ -728,6 +838,7 @@ async fn dispatch_scheduled_tool_batch(
         let registry = context.registry.clone();
         let timeout_ms = scheduled.timeout_ms;
         let pending_call = PendingAgentLoopToolCall {
+            model_order: scheduled.model_order,
             tool_call_id: scheduled.tool_call_id.clone(),
             tool_call_name: scheduled.tool_call_name.clone(),
             started_event_id,
@@ -756,6 +867,7 @@ async fn dispatch_scheduled_tool_batch(
                     Some((pending_call, result)) => {
                         pending.retain(|call| call.started_event_id != pending_call.started_event_id);
                         dispatched.push(DispatchedAgentLoopToolCall {
+                            model_order: pending_call.model_order,
                             tool_call_id: pending_call.tool_call_id,
                             tool_call_name: pending_call.tool_call_name,
                             started_event_id: pending_call.started_event_id,
@@ -765,12 +877,14 @@ async fn dispatch_scheduled_tool_batch(
                     None => {
                         for pending_call in pending.drain(..) {
                             dispatched.push(DispatchedAgentLoopToolCall {
+                                model_order: pending_call.model_order,
                                 tool_call_id: pending_call.tool_call_id,
                                 tool_call_name: pending_call.tool_call_name.clone(),
                                 started_event_id: pending_call.started_event_id,
                                 result: AgentLoopToolResult {
                                     iteration,
                                     name: redact_secrets(&pending_call.tool_call_name),
+                                    harness_call_id: None,
                                     ok: false,
                                     summary: "tool task ended without reporting a result".into(),
                                     output: json!({"error": "tool task ended without reporting a result"}),
@@ -786,6 +900,7 @@ async fn dispatch_scheduled_tool_batch(
                 }
                 for pending_call in pending.drain(..) {
                     dispatched.push(DispatchedAgentLoopToolCall {
+                        model_order: pending_call.model_order,
                         tool_call_id: pending_call.tool_call_id,
                         tool_call_name: pending_call.tool_call_name.clone(),
                         started_event_id: pending_call.started_event_id,
@@ -796,15 +911,18 @@ async fn dispatch_scheduled_tool_batch(
                         ),
                     });
                 }
+                dispatched.sort_by_key(|call| call.model_order);
                 return Ok(dispatched);
             }
         }
     }
+    dispatched.sort_by_key(|call| call.model_order);
     Ok(dispatched)
 }
 
 #[derive(Clone)]
 struct PendingAgentLoopToolCall {
+    model_order: usize,
     tool_call_id: Option<String>,
     tool_call_name: String,
     started_event_id: AgentEventId,
@@ -841,6 +959,7 @@ fn cancelled_agent_loop_tool_result(
     AgentLoopToolResult {
         iteration,
         name: redact_secrets(tool_call_name),
+        harness_call_id: None,
         ok: false,
         summary: summary.into(),
         output: json!({
@@ -862,7 +981,7 @@ fn emit_cancelled_tool_call_events(
             "cancelled": true,
             "reason": "agent loop cancellation requested",
         });
-        emit_agent_event(
+        let event_id = emit_agent_event(
             context.events,
             context.event_sink,
             context.session_id,
@@ -881,15 +1000,84 @@ fn emit_cancelled_tool_call_events(
                 "output": &output,
             }),
         )?;
+        invoke_agent_loop_hook(
+            HookDispatchContext {
+                hooks: context.hooks,
+                events: context.events,
+                event_sink: context.event_sink,
+                session_id: context.session_id,
+                turn_id: context.turn_id,
+                task_id: context.task_id,
+                iteration,
+                event_id: Some(&event_id),
+                hook_name: "after_tool_call",
+            },
+            json!({
+                "tool_call_id": &scheduled.tool_call_id,
+                "name": &scheduled.tool_call_name,
+                "input": redacted_json_value(scheduled.call.input.clone()),
+                "execution_mode": scheduled.execution_mode.as_str(),
+                "timeout_ms": scheduled.timeout_ms,
+                "status": "cancelled",
+                "summary": &summary,
+                "output": &output,
+            }),
+            |hooks, event| hooks.after_tool_call(event),
+        )?;
         results.push(AgentLoopToolResult {
             iteration,
             name: redact_secrets(&scheduled.tool_call_name),
+            harness_call_id: None,
             ok: false,
             summary,
             output,
         });
     }
     Ok(results)
+}
+
+struct HookDispatchContext<'a> {
+    hooks: &'a dyn AgentLoopHooks,
+    events: &'a mut Vec<AgentEvent>,
+    event_sink: &'a dyn AgentEventSink,
+    session_id: &'a AgentSessionId,
+    turn_id: &'a AgentTurnId,
+    task_id: Option<&'a str>,
+    iteration: u32,
+    event_id: Option<&'a AgentEventId>,
+    hook_name: &'static str,
+}
+
+fn invoke_agent_loop_hook(
+    context: HookDispatchContext<'_>,
+    payload: serde_json::Value,
+    invoke: impl FnOnce(&dyn AgentLoopHooks, &AgentLoopHookEvent) -> Result<()>,
+) -> Result<()> {
+    let hook_event = AgentLoopHookEvent {
+        session_id: context.session_id.clone(),
+        turn_id: context.turn_id.clone(),
+        task_id: context.task_id.map(ToOwned::to_owned),
+        iteration: context.iteration,
+        event_id: context.event_id.cloned(),
+        payload: redacted_json_value(payload),
+    };
+    if let Err(error) = invoke(context.hooks, &hook_event) {
+        emit_agent_event(
+            context.events,
+            context.event_sink,
+            context.session_id,
+            context.turn_id,
+            AgentEventSource::Runtime,
+            AgentEventKind::Error,
+            json!({
+                "phase": "agent_loop_hook",
+                "hook": context.hook_name,
+                "iteration": context.iteration,
+                "message": redact_secrets(&error.to_string()),
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 fn emit_agent_event(
@@ -955,6 +1143,67 @@ fn emit_session_approval_record(
         request: redacted_json_value(serde_json::to_value(&record.request)?),
         decision,
     })
+}
+
+struct ToolAuditAnchorContext<'a> {
+    session: &'a ExecutionSession,
+    events: &'a mut Vec<AgentEvent>,
+    event_sink: &'a dyn AgentEventSink,
+    session_id: &'a AgentSessionId,
+    turn_id: &'a AgentTurnId,
+    iteration: u32,
+    tool_call_id: &'a Option<String>,
+    tool_event_id: &'a AgentEventId,
+}
+
+fn emit_tool_audit_anchor(
+    context: ToolAuditAnchorContext<'_>,
+    tool_result: &AgentLoopToolResult,
+) -> Result<()> {
+    let Some(audit_event) = matching_tool_result_audit_event(context.session, tool_result)? else {
+        return Ok(());
+    };
+    let AuditEvent {
+        id: audit_event_id,
+        kind: audit_kind,
+        ..
+    } = audit_event;
+    emit_agent_event(
+        context.events,
+        context.event_sink,
+        context.session_id,
+        context.turn_id,
+        AgentEventSource::Audit,
+        AgentEventKind::AuditAnchor,
+        json!({
+            "iteration": context.iteration,
+            "tool_call_id": context.tool_call_id,
+            "tool_event_id": context.tool_event_id.as_str(),
+            "harness_call_id": &tool_result.harness_call_id,
+            "name": &tool_result.name,
+            "audit_event_id": audit_event_id,
+            "audit_kind": audit_kind,
+            "audit_path": context.session.audit.path().display().to_string(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn matching_tool_result_audit_event(
+    session: &ExecutionSession,
+    tool_result: &AgentLoopToolResult,
+) -> Result<Option<AuditEvent>> {
+    let Some(call_id) = tool_result.harness_call_id.as_deref() else {
+        return Ok(None);
+    };
+    Ok(session.audit.read_all()?.into_iter().rev().find(|event| {
+        event.kind == "tool_result"
+            && event
+                .data
+                .get("call_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(call_id)
+    }))
 }
 
 fn redacted_json_value(value: serde_json::Value) -> serde_json::Value {

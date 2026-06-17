@@ -25,11 +25,12 @@ pub use agent_harness::{
     AgentHarnessPhase, AgentHarnessTurn,
 };
 pub use agent_loop::{
-    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,
-    AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolCallDiagnostic,
-    AgentLoopToolCallParseStrategy, AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime,
-    HarnessAgentRuntime, RecordingAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink,
-    run_agent_loop, run_agent_loop_with_events,
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopHookEvent,
+    AgentLoopHooks, AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
+    AgentLoopToolCall, AgentLoopToolCallDiagnostic, AgentLoopToolCallParseStrategy,
+    AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime, HarnessAgentRuntime,
+    RecordingAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink, run_agent_loop,
+    run_agent_loop_with_events,
 };
 pub use body::{
     audit_event_to_body_event, audit_event_to_body_event_for_body, base_body_status,

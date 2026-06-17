@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    AgentEventKind, AgentLoopInput, AgentLoopOptions, AgentLoopStopReason,
-    AgentLoopToolCallParseStrategy, AgentRuntime, HarnessAgentRuntime, RecordingAgentRuntime,
-    run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
+    AgentEventKind, AgentLoopHookEvent, AgentLoopHooks, AgentLoopInput, AgentLoopOptions,
+    AgentLoopStopReason, AgentLoopToolCallParseStrategy, AgentRuntime, HarnessAgentRuntime,
+    RecordingAgentRuntime, run_agent_loop, tool_parse::parse_agent_loop_model_envelope,
 };
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, IkarosPaths, Result, RiskLevel};
@@ -20,7 +20,7 @@ use ikaros_session::{
 };
 use serde_json::json;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::time::{Duration, sleep};
@@ -64,6 +64,54 @@ struct CancelAfterToolPlanProvider {
 struct MultiToolProvider {
     calls: AtomicUsize,
     tool_names: Vec<&'static str>,
+}
+
+#[derive(Debug, Default)]
+struct RecordingAgentLoopHooks {
+    calls: Mutex<Vec<RecordedHookCall>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+struct RecordedHookCall {
+    name: &'static str,
+    iteration: u32,
+    payload: serde_json::Value,
+}
+
+impl RecordingAgentLoopHooks {
+    fn calls(&self) -> Vec<RecordedHookCall> {
+        self.calls.lock().expect("hook calls").clone()
+    }
+
+    fn record(&self, name: &'static str, event: &AgentLoopHookEvent) -> Result<()> {
+        self.calls
+            .lock()
+            .expect("hook calls")
+            .push(RecordedHookCall {
+                name,
+                iteration: event.iteration,
+                payload: event.payload.clone(),
+            });
+        Ok(())
+    }
+}
+
+impl AgentLoopHooks for RecordingAgentLoopHooks {
+    fn before_provider_request(&self, event: &AgentLoopHookEvent) -> Result<()> {
+        self.record("before_provider_request", event)
+    }
+
+    fn after_provider_response(&self, event: &AgentLoopHookEvent) -> Result<()> {
+        self.record("after_provider_response", event)
+    }
+
+    fn before_tool_call(&self, event: &AgentLoopHookEvent) -> Result<()> {
+        self.record("before_tool_call", event)
+    }
+
+    fn after_tool_call(&self, event: &AgentLoopHookEvent) -> Result<()> {
+        self.record("after_tool_call", event)
+    }
 }
 
 #[async_trait]
@@ -581,14 +629,18 @@ async fn agent_loop_dispatches_tool_then_finishes() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(report.final_content.contains("[REDACTED_SECRET]"));
     assert!(!report.final_content.contains("abc123"));
-    assert!(report.events.iter().any(|event| {
-        matches!(event.kind, AgentEventKind::ToolCallStarted)
-            && event
-                .payload
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                == Some("loop_echo")
-    }));
+    let tool_started_event = report
+        .events
+        .iter()
+        .find(|event| {
+            matches!(event.kind, AgentEventKind::ToolCallStarted)
+                && event
+                    .payload
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("loop_echo")
+        })
+        .expect("tool started event");
     assert!(
         report
             .events
@@ -611,7 +663,102 @@ async fn agent_loop_dispatches_tool_then_finishes() {
             .iter()
             .any(|event| event.kind == "agent_loop_model_result")
     );
+    let audit_tool_result = events
+        .iter()
+        .find(|event| event.kind == "tool_result")
+        .expect("tool_result audit event");
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::AuditAnchor)
+            && event
+                .payload
+                .get("tool_event_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(tool_started_event.event_id.as_str())
+            && event
+                .payload
+                .get("audit_event_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(audit_tool_result.id.as_str())
+            && event
+                .payload
+                .get("audit_kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool_result")
+    }));
     assert!(events.iter().any(|event| event.kind == "agent_loop_end"));
+}
+
+#[tokio::test]
+async fn agent_loop_invokes_observer_hooks_with_redacted_payloads() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = SkillRegistry::new();
+    registry.register(EchoSkill {
+        calls: calls.clone(),
+    });
+    let provider = SequenceProvider {
+        calls: AtomicUsize::new(0),
+        responses: vec![
+            r#"{"tool_calls":[{"id":"hook-call-1","name":"loop_echo","input":{"text":"hello token=abc123"}}]}"#.into(),
+            r#"{"final_answer":"finished token=abc123"}"#.into(),
+        ],
+    };
+    let hooks = Arc::new(RecordingAgentLoopHooks::default());
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("hook-session".into()),
+            turn_id: Some("hook-turn".into()),
+            task_id: Some("hook-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start token=abc123".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions::default().with_hooks(hooks.clone()),
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(report.stop_reason, AgentLoopStopReason::FinalAnswer);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let calls = hooks.calls();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| (call.name, call.iteration))
+            .collect::<Vec<_>>(),
+        vec![
+            ("before_provider_request", 1),
+            ("after_provider_response", 1),
+            ("before_tool_call", 1),
+            ("after_tool_call", 1),
+            ("before_provider_request", 2),
+            ("after_provider_response", 2),
+        ]
+    );
+    assert!(calls.iter().any(|call| {
+        call.name == "before_tool_call"
+            && call.payload.get("name").and_then(serde_json::Value::as_str) == Some("loop_echo")
+            && call
+                .payload
+                .get("tool_event_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+    }));
+    assert!(calls.iter().any(|call| {
+        call.name == "after_tool_call"
+            && call
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                == Some("completed")
+    }));
+    let rendered = serde_json::to_string(&calls).expect("hook json");
+    assert!(!rendered.contains("abc123"));
+    assert!(rendered.contains("[REDACTED_SECRET]"));
 }
 
 #[tokio::test]
@@ -726,6 +873,58 @@ async fn agent_loop_runs_parallel_tool_batch_for_parallel_safe_reads() {
     }));
     let events_json = serde_json::to_string(&report.events).expect("events json");
     assert!(!events_json.contains("abc123"));
+}
+
+#[tokio::test]
+async fn agent_loop_preserves_model_tool_order_after_parallel_batch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session = ExecutionSession::new(temp.path().join("workspace"), temp.path().join("audit"));
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let mut registry = SkillRegistry::new();
+    registry.register(ProbeSkill {
+        name: "parallel_slow_first",
+        mode: Some(ToolExecutionMode::Parallel),
+        timeout_ms: Some(1_000),
+        delay_ms: 90,
+        probe: probe.clone(),
+    });
+    registry.register(ProbeSkill {
+        name: "parallel_fast_second",
+        mode: Some(ToolExecutionMode::Parallel),
+        timeout_ms: Some(1_000),
+        delay_ms: 5,
+        probe: probe.clone(),
+    });
+    let provider = MultiToolProvider {
+        calls: AtomicUsize::new(0),
+        tool_names: vec!["parallel_slow_first", "parallel_fast_second"],
+    };
+
+    let report = run_agent_loop(
+        AgentLoopInput {
+            session_id: Some("parallel-order-session".into()),
+            turn_id: Some("parallel-order-turn".into()),
+            task_id: Some("parallel-order-task".into()),
+            system_prompt: "Use tools when useful.".into(),
+            user_input: "start".into(),
+        },
+        &provider,
+        &session,
+        &registry,
+        AgentLoopOptions::default(),
+    )
+    .await
+    .expect("agent loop");
+
+    assert_eq!(probe.max_active(), 2);
+    assert_eq!(
+        report
+            .tool_results
+            .iter()
+            .map(|result| result.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["parallel_slow_first", "parallel_fast_second"]
+    );
 }
 
 #[tokio::test]
@@ -1327,6 +1526,43 @@ async fn agent_loop_can_persist_event_timeline_to_session_store() {
         replay.agent_events.last().map(|event| &event.kind),
         Some(AgentEventKind::TurnEnd)
     ));
+    let tool_started = replay
+        .agent_events
+        .iter()
+        .find(|event| {
+            matches!(event.kind, AgentEventKind::ToolCallStarted)
+                && event
+                    .payload
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("loop_echo")
+        })
+        .expect("tool started replay event");
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallOutputDelta))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ToolCallCompleted))
+    );
+    assert!(replay.agent_events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::AuditAnchor)
+            && event
+                .payload
+                .get("tool_event_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(tool_started.event_id.as_str())
+            && event
+                .payload
+                .get("audit_kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool_result")
+    }));
     let replay_json = serde_json::to_string(&replay).expect("json");
     assert!(!replay_json.contains("abc123"));
     assert!(replay_json.contains("[REDACTED_SECRET]"));
@@ -1369,6 +1605,19 @@ async fn agent_loop_persists_approval_records_to_session_store() {
             .iter()
             .any(|event| matches!(event.kind, AgentEventKind::ApprovalRequested))
     );
+    assert!(report.events.iter().any(|event| {
+        matches!(event.kind, AgentEventKind::ApprovalRequested)
+            && event
+                .payload
+                .get("tool_event_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            && event
+                .payload
+                .get("tool")
+                .and_then(serde_json::Value::as_str)
+                == Some("loop_write")
+    }));
     let replay = session_store
         .replay_session(&SessionId::from("approval-loop"))
         .expect("replay")

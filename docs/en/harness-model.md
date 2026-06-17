@@ -106,7 +106,10 @@ Filesystem writes, byte writes, directory creation, file removal, and process
 working directories must stay under the workspace root. The scope check uses both
 lexical normalization and canonical existing-path anchors, so `..` paths and
 symlink escapes cannot turn an approved workspace operation into an external
-host write. Filesystem skills, shell commands, coding helpers, RAG maintenance,
+host write. Read APIs also resolve relative paths from the workspace, but read
+authorization still belongs to the skill policy or reference resolver; the
+environment wrapper alone should not be treated as a complete read sandbox.
+Filesystem skills, shell commands, coding helpers, RAG maintenance,
 voice output, voice ASR audio reads, self-modify workspace reads/writes/checks,
 and command-backed plugins should use session/env instead of calling host APIs
 directly.

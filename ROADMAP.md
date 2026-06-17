@@ -19,8 +19,15 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 
 - Harden `AgentRuntime` so future runtimes can plug in without changing provider adapters.
 - Expand the new stateful `AgentHarness` beyond chat/task agent-loop entry
-  points into gateway, schedule, agent handoff, and the new coding workflow
-  control plane.
+  points into gateway, schedule, and agent handoff.
+- Keep harness branch-summary, compaction, and retry marker helpers append-only
+  through `SessionStore`; do not reintroduce history rewriting for these phase
+  operations.
+- Treat current `AgentHarness` continuation queues as in-memory runtime state
+  until durable queue, scheduler, and planner semantics are defined.
+- Keep observer hooks stable as the extension boundary for provider attempts,
+  tool lifecycle telemetry, memory policy observation, gateway UI, and replay
+  diagnostics.
 - Keep `ikaros-session` as the runtime fact source for chat, gateway,
   schedule, approvals, replay, search, and branch navigation.
 - Expand session evidence for memory and audit lifecycle boundaries without

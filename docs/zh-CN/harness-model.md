@@ -87,9 +87,11 @@ scope。`LocalExecutionEnv` 仍然是原始 host backend，主要给测试和后
 `WorkspaceExecutionEnv` 会把相对路径解析到 session workspace。文件写入、二进制
 写入、创建目录、删除文件和进程 cwd 都必须留在 workspace root 下。Scope 检查同时做
 lexical normalize 和已有路径的 canonical anchor 校验，因此 `..` 路径和 symlink
-逃逸不能把一次获批的 workspace 操作变成外部 host 写入。文件、shell、coding、RAG
-maintenance、voice output、voice ASR 音频读取、self-modify 的 workspace
-读写/check 和 command-backed plugin 都应走 session/env，不应直接调用 host API。
+逃逸不能把一次获批的 workspace 操作变成外部 host 写入。读取 API 也会从 workspace
+解析相对路径，但读取授权仍属于 skill policy 或 reference resolver；不能把
+environment wrapper 本身当作完整 read sandbox。文件、shell、coding、RAG maintenance、
+voice output、voice ASR 音频读取、self-modify 的 workspace 读写/check 和
+command-backed plugin 都应走 session/env，不应直接调用 host API。
 
 `ProcessRequest` 有两种模式：
 

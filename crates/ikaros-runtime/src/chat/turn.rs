@@ -490,6 +490,7 @@ pub async fn run_chat_turn_with_events(
                     stream: options.stream,
                     guardrails: GuardrailConfig::default(),
                     cancellation: Default::default(),
+                    hooks: None,
                 },
             },
             &runtime,

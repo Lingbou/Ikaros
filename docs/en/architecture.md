@@ -169,6 +169,9 @@ State ownership:
   `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and
   `ToolCallCancelled`. Approval events carry tool anchors so UI, replay, and
   audit views can line up the request with the tool invocation.
+- Agent-loop observer hooks cover provider request/response and tool start/end
+  boundaries. Hook payloads are redacted metadata; typed events and persisted
+  session timelines remain the durable observation surface.
 - Tool scheduling is descriptor-driven. Adjacent parallel tool calls may run
   concurrently, sequential calls run alone, and per-tool timeout failures are
   reported through the same lifecycle event stream. Cancellation is checked

@@ -4,10 +4,11 @@ use ikaros_core::RiskLevel;
 use ikaros_harness::{CancellationToken, GuardrailConfig, ToolExecutionMode};
 use ikaros_models::{ModelRequestOptions, ModelResponse, ModelStreamEvent, TokenUsage};
 pub use ikaros_session::{
-    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId, AgentTurnId,
-    noop_agent_event_sink,
+    AgentEvent, AgentEventId, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId,
+    AgentTurnId, noop_agent_event_sink,
 };
 use serde::{Deserialize, Serialize};
+use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentLoopInput {
@@ -21,7 +22,7 @@ pub struct AgentLoopInput {
     pub user_input: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLoopOptions {
     pub max_iterations: u32,
     pub request_options: ModelRequestOptions,
@@ -29,6 +30,8 @@ pub struct AgentLoopOptions {
     pub guardrails: GuardrailConfig,
     #[serde(skip)]
     pub cancellation: CancellationToken,
+    #[serde(skip)]
+    pub hooks: Option<Arc<dyn AgentLoopHooks>>,
 }
 
 impl Default for AgentLoopOptions {
@@ -39,8 +42,72 @@ impl Default for AgentLoopOptions {
             stream: false,
             guardrails: GuardrailConfig::default(),
             cancellation: CancellationToken::new(),
+            hooks: None,
         }
     }
+}
+
+impl AgentLoopOptions {
+    pub fn with_hooks(mut self, hooks: Arc<dyn AgentLoopHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    pub(super) fn hooks(&self) -> &dyn AgentLoopHooks {
+        self.hooks.as_deref().unwrap_or(noop_agent_loop_hooks())
+    }
+}
+
+impl PartialEq for AgentLoopOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.max_iterations == other.max_iterations
+            && self.request_options == other.request_options
+            && self.stream == other.stream
+            && self.guardrails == other.guardrails
+            && self.cancellation == other.cancellation
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentLoopHookEvent {
+    pub session_id: AgentSessionId,
+    pub turn_id: AgentTurnId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub iteration: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<AgentEventId>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub payload: serde_json::Value,
+}
+
+pub trait AgentLoopHooks: Send + Sync + fmt::Debug {
+    fn before_provider_request(&self, _event: &AgentLoopHookEvent) -> ikaros_core::Result<()> {
+        Ok(())
+    }
+
+    fn after_provider_response(&self, _event: &AgentLoopHookEvent) -> ikaros_core::Result<()> {
+        Ok(())
+    }
+
+    fn before_tool_call(&self, _event: &AgentLoopHookEvent) -> ikaros_core::Result<()> {
+        Ok(())
+    }
+
+    fn after_tool_call(&self, _event: &AgentLoopHookEvent) -> ikaros_core::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct NoopAgentLoopHooks;
+
+impl AgentLoopHooks for NoopAgentLoopHooks {}
+
+static NOOP_AGENT_LOOP_HOOKS: NoopAgentLoopHooks = NoopAgentLoopHooks;
+
+pub fn noop_agent_loop_hooks() -> &'static dyn AgentLoopHooks {
+    &NOOP_AGENT_LOOP_HOOKS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,6 +187,8 @@ pub struct AgentLoopToolCall {
 pub struct AgentLoopToolResult {
     pub iteration: u32,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_call_id: Option<String>,
     pub ok: bool,
     pub summary: String,
     pub output: serde_json::Value,

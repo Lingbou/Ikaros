@@ -44,10 +44,33 @@ callers that need a complete in-memory event trace without making
 need a stable session id, per-turn ids, phase tracking, and continuation queues.
 It owns the harness phase and the steer, follow-up, and next-turn queues, then
 delegates the actual turn to `AgentRuntime::run_turn_with_events()`. The
-returned `AgentHarnessTurn` keeps typed events first and exposes
-`AgentLoopReport` as the current compatibility summary. Built-in chat and task
-agent-loop entry points use this wrapper; direct `run_agent_loop*` helpers remain
-the low-level API for tests and specialized runtimes.
+returned `AgentHarnessTurn` keeps typed events first. The harness collects the
+same emitted event stream it forwards to the caller's sink and uses that stream
+to backfill `AgentLoopReport.events` as a compatibility summary. Built-in chat
+and task agent-loop entry points use this wrapper; direct `run_agent_loop*`
+helpers remain the low-level API for tests and specialized runtimes.
+
+The harness phase is not just a display enum. `AgentHarnessPhase` now has
+concrete public operations for branch summaries, compaction markers, and retry
+markers through `append_branch_summary()`, `append_compaction()`, and
+`append_retry_marker()`. Each helper runs as a bounded harness phase and writes
+through `SessionStore`. The session tree remains append-only; branch,
+compaction, retry, and active-leaf operations add or select entries instead of
+rewriting previous turns.
+
+The current continuation queues are in-memory harness state. They make one
+runtime instance stateful, but they are not yet durable cross-entry-point
+queues, a scheduler, or a planner. Gateway drains, schedule workers, and agent
+handoffs still use the lower-level runtime/harness/session boundary until their
+continuation semantics are explicit.
+
+`AgentLoopOptions::with_hooks()` installs observer-only `AgentLoopHooks` for
+provider request/response and tool call boundaries. Hook payloads carry
+redacted metadata and event anchors, not raw prompt or tool secrets. Hook
+failures are recorded as runtime error events and do not mutate or stop the
+turn. Durable facts should still be read from the typed `AgentEvent` stream and
+persisted session timeline; hooks are an extension boundary for telemetry,
+policy observation, UI, and replay diagnostics.
 
 Callers that need durable timelines should call `run_turn_with_events()` with an
 `AgentEventSink`. `ikaros-session` provides `PersistingAgentEventSink` for
@@ -63,11 +86,13 @@ global fallback session.
 
 `AgentHarnessConfig` may also carry a caller-supplied `turn_id`. Chat uses that
 to keep the chat history record, append-only session entries, and agent events
-on the same turn. Task agent-loop runs let the harness create a fresh turn id
-inside the task session. Callers can clone the harness cancellation token or
-call `AgentHarness::cancel()` to abort the next provider request or any planned
-tool calls that have not started yet, or to drop an in-flight tool future that
-is still awaiting completion.
+on the same turn. This is a one-turn override: after that turn runs, continuation
+turns receive fresh ids unless the caller explicitly supplies another one. Task
+agent-loop runs let the harness create a fresh turn id inside the task session.
+Callers can clone the harness cancellation token or call `AgentHarness::cancel()`
+to abort the next provider request or any planned tool calls that have not
+started yet, or to drop an in-flight tool future that is still awaiting
+completion.
 
 Default options:
 
@@ -85,21 +110,29 @@ Each iteration follows the same order:
 1. Check the cancellation token before issuing a provider request.
 2. Build a model request with system prompt, user input, prior assistant output,
    tool definitions, and prior tool results.
-3. Ask the provider for a normal or streaming response.
-4. Prefer provider-native tool calls when present.
-5. If no native tool call exists, parse the fallback JSON protocol from text.
-6. If a final answer is present, stop with `FinalAnswer`.
-7. Check cancellation again before dispatching planned tool calls.
-8. Dispatch normalized tool calls through `ExecutionSession`.
-9. Emit tool lifecycle events:
-   `ToolCallStarted`, `ToolCallOutputDelta`, `ToolCallCompleted`, or
-   `ToolCallFailed`. If cancellation is requested after the model returns a
-   tool plan but before dispatch begins, the runtime emits `ToolCallCancelled`
-   for each planned call and does not invoke the skill. If cancellation is
-   requested while a tool future is already in flight, the runtime drops that
-   future, emits `ToolCallCancelled`, and stops the turn with `Cancelled`.
-10. Append tool results to the next model turn.
-11. Observe guardrails and iteration budget before continuing.
+3. Invoke the `before_provider_request` hook, then ask the provider for a
+   normal or streaming response.
+4. Invoke the `after_provider_response` hook and normalize the provider response
+   into text, stream, tool-call, usage, error,
+   and done records.
+5. Prefer provider-native tool calls when present.
+6. If no native tool call exists, parse the fallback JSON protocol from text.
+7. If a final answer is present, stop with `FinalAnswer`.
+8. Check cancellation again before dispatching planned tool calls.
+9. Emit `ToolCallStarted`, invoke the `before_tool_call` hook, then dispatch
+   normalized tool calls through `ExecutionSession`.
+10. Emit tool lifecycle events for each tool result, then invoke the
+   `after_tool_call` hook with the redacted result status. Normal dispatches
+   emit `ToolCallOutputDelta` followed by `ToolCallCompleted` or
+   `ToolCallFailed`; cancelled calls emit `ToolCallCancelled`. If cancellation
+   is requested after the model returns a tool plan but before dispatch begins,
+   the runtime emits `ToolCallCancelled` for each planned call and does not
+   invoke the skill. If cancellation is requested while a tool future is already
+   in flight, the runtime drops that future, emits `ToolCallCancelled`, and
+   stops the turn with `Cancelled`.
+11. Append tool results to the next model turn in the model's original tool
+    call order, even when a parallel batch completed out of order.
+12. Observe guardrails and iteration budget before continuing.
 
 Provider-native tool call ids are preserved when the provider supplies them, so
 tool result history can be sent back in the provider's preferred shape.
@@ -200,15 +233,17 @@ redacted before surfacing to users or audit output.
 
 Tool lifecycle event payloads include the normalized tool name, provider tool
 call id when present, a redacted input snapshot, output summary/delta, status,
-execution mode, timeout, and a stable tool-event anchor used by approval events.
-Secrets must be redacted before those payloads enter reports or persisted
-session events. A descriptor timeout turns that tool call into a failed tool
-lifecycle result; it does not let the runtime bypass `ExecutionSession` or
-`ExecutionEnv`. Cancellation requested before a planned call starts produces a
-`ToolCallCancelled` payload and stops the turn with `Cancelled`; cancellation
-while a tool future is in flight produces the same lifecycle event and drops the
-future. Process-backed local tools rely on `kill_on_drop` in the local
-`ExecutionEnv` process runner.
+execution mode, timeout, and a stable tool-event anchor used by approval and
+audit evidence. Successful harness dispatches also emit an `AuditAnchor` event
+that binds the tool-event id, harness call id, audit event id, audit kind, and
+audit path. Secrets must be redacted before those payloads enter reports or
+persisted session events. A descriptor timeout turns that tool call into a
+failed tool lifecycle result; it does not let the runtime bypass
+`ExecutionSession` or `ExecutionEnv`. Cancellation requested before a planned
+call starts produces a `ToolCallCancelled` payload and stops the turn with
+`Cancelled`; cancellation while a tool future is in flight produces the same
+lifecycle event and drops the future. Process-backed local tools rely on
+`kill_on_drop` in the local `ExecutionEnv` process runner.
 
 `AgentLoopReport.events` is a compatibility summary for current callers. The
 durable fact source is the `ikaros-session` event stream when a persisting sink
