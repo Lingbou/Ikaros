@@ -33,7 +33,7 @@ pub(crate) struct ChatArgs {
     no_agent_loop: bool,
     #[arg(long, default_value_t = 3)]
     memory_limit: usize,
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 0)]
     rag_top_k: usize,
     #[arg(long, default_value_t = 3)]
     history_context_limit: usize,
@@ -180,13 +180,13 @@ pub(crate) async fn chat_command(
         )
         .await?;
         println!(
-            "context: relationship={} references={} history={} memory={} rag={} learned={}",
+            "context: relationship={} references={} history={} memory={} rag={} relationship_candidates_created={}",
             report.relationship_hits,
             report.reference_hits,
             report.history_hits,
             report.memory_hits,
             report.rag_hits,
-            report.relationship_learned
+            report.relationship_candidates_created
         );
         if let Some(path) = &report.chat_history_path {
             println!("chat_history: {}", path.display());

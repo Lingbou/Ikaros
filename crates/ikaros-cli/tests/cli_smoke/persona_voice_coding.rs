@@ -65,10 +65,10 @@ fn persona_and_relationship_paths_are_local_audited_and_searchable() {
         "I prefer concise companionship updates.",
         "--no-context",
     ]);
-    assert!(learned.contains("learned=1"));
-    let learned_relationship = env.run(["relationship", "show", "--scope", "default"]);
-    assert!(learned_relationship.contains("User preference: concise companionship updates"));
-    assert!(learned_relationship.contains("tags=relationship,chat-learned"));
+    assert!(learned.contains("relationship_candidates_created=1"));
+    let pending_candidate = env.run(["memory", "candidate", "list", "--status", "pending"]);
+    assert!(pending_candidate.contains("User preference: concise companionship updates"));
+    assert!(pending_candidate.contains("\"kind\": \"Relationship\""));
 
     let disabled_learning = env.run([
         "chat",
@@ -77,7 +77,7 @@ fn persona_and_relationship_paths_are_local_audited_and_searchable() {
         "--no-context",
         "--no-relationship-learning",
     ]);
-    assert!(disabled_learning.contains("learned=0"));
+    assert!(disabled_learning.contains("relationship_candidates_created=0"));
 }
 
 #[test]

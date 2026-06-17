@@ -9,7 +9,7 @@ use super::{
         ChatHistoryAppend, ChatHistoryStore, build_chat_history_record_with_turn_id,
         new_chat_session_id,
     },
-    learning::learn_relationships_from_chat,
+    learning::create_relationship_candidates_from_chat,
     prompt::{render_chat_system_prompt, render_persona_agent_context},
     types::{ChatMessageResult, ChatRunOptions, ChatTurnReport},
 };
@@ -165,8 +165,6 @@ pub async fn run_chat_message(
         &memory_journal,
         &memory_policy,
         &sync_report,
-        report.relationship_learned,
-        options.scope.as_deref().unwrap_or("default"),
     )?;
     emit_chat_lifecycle_event(
         &event_sink,
@@ -201,7 +199,7 @@ pub async fn run_chat_message(
         streamed: report.streamed,
         stream_chunks: report.stream_chunks,
         relationship_hits: report.relationship_hits,
-        relationship_learned: report.relationship_learned,
+        relationship_candidates_created: report.relationship_candidates_created,
         reference_hits: report.reference_hits,
         history_hits: report.history_hits,
         memory_hits: report.memory_hits,
@@ -410,7 +408,9 @@ pub async fn run_chat_turn_with_events(
         .relationship_context(chat_context.relationship.clone())
         .reference_context(chat_context.references.clone())
         .chat_history_context(chat_context.history.clone())
-        .memory_context(chat_context.memory.clone())
+        .memory_projection_context(chat_context.memory_projection.clone())
+        .working_memory_context(chat_context.working_memory.clone())
+        .retrieved_memory_context(chat_context.retrieved_memory.clone())
         .rag_context(chat_context.rag.clone())
         .context_continuation_prompt(context_bundle.continuation_prompt.clone())
         .build();
@@ -420,7 +420,7 @@ pub async fn run_chat_turn_with_events(
         None,
         "chat context built from persona, memory, and RAG",
         json!({
-            "memory_hits": chat_context.memory.len(),
+            "memory_hits": chat_context.memory_hits(),
             "relationship_hits": chat_context.relationship.len(),
             "reference_hits": chat_context.references.len(),
             "history_hits": chat_context.history.len(),
@@ -446,7 +446,7 @@ pub async fn run_chat_turn_with_events(
     }
     let context_signal = if chat_context.relationship.is_empty()
         && chat_context.history.is_empty()
-        && chat_context.memory.is_empty()
+        && chat_context.memory_hits() == 0
         && chat_context.rag.is_empty()
     {
         RuntimeSignal::Planning
@@ -458,7 +458,7 @@ pub async fn run_chat_turn_with_events(
         context_signal,
         "chat context prepared",
         json!({
-            "memory_hits": chat_context.memory.len(),
+            "memory_hits": chat_context.memory_hits(),
             "relationship_hits": chat_context.relationship.len(),
             "reference_hits": chat_context.references.len(),
             "history_hits": chat_context.history.len(),
@@ -638,21 +638,29 @@ pub async fn run_chat_turn_with_events(
             return Err(error);
         }
     };
-    let relationship_learned =
-        match learn_relationships_from_chat(input, session, registry, options).await {
-            Ok(count) => count,
-            Err(error) => {
-                let _ = emit_chat_failure_events(
-                    &mut single_call_events,
-                    event_sink,
-                    &session_id,
-                    &turn_id,
-                    "relationship_learning",
-                    &error,
-                );
-                return Err(error);
-            }
-        };
+    let relationship_candidates_created = match create_relationship_candidates_from_chat(
+        input,
+        &chat_session_id,
+        turn_id.as_str(),
+        session,
+        registry,
+        options,
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let _ = emit_chat_failure_events(
+                &mut single_call_events,
+                event_sink,
+                &session_id,
+                &turn_id,
+                "relationship_candidate_creation",
+                &error,
+            );
+            return Err(error);
+        }
+    };
     if let Err(error) = context_engine
         .after_turn(TurnRecord {
             session_id: Some(chat_session_id.clone()),
@@ -682,7 +690,7 @@ pub async fn run_chat_turn_with_events(
         stats: ChatSessionEntryStats {
             relationship_hits: chat_context.relationship.len(),
             reference_hits: chat_context.references.len(),
-            memory_hits: chat_context.memory.len(),
+            memory_hits: chat_context.memory_hits(),
             rag_hits: chat_context.rag.len(),
         },
     }) {
@@ -710,7 +718,7 @@ pub async fn run_chat_turn_with_events(
                 "streamed": streamed,
                 "relationship_hits": chat_context.relationship.len(),
                 "reference_hits": chat_context.references.len(),
-                "memory_hits": chat_context.memory.len(),
+                "memory_hits": chat_context.memory_hits(),
                 "rag_hits": chat_context.rag.len(),
             }),
         )?;
@@ -729,7 +737,7 @@ pub async fn run_chat_turn_with_events(
                 user_message: input,
                 assistant_message: &response.content,
                 relationship_hits: chat_context.relationship.len(),
-                memory_hits: chat_context.memory.len(),
+                memory_hits: chat_context.memory_hits(),
                 rag_hits: chat_context.rag.len(),
             },
         )?;
@@ -778,10 +786,10 @@ pub async fn run_chat_turn_with_events(
         streamed,
         stream_chunks,
         relationship_hits: chat_context.relationship.len(),
-        relationship_learned,
+        relationship_candidates_created,
         reference_hits: chat_context.references.len(),
         history_hits: chat_context.history.len(),
-        memory_hits: chat_context.memory.len(),
+        memory_hits: chat_context.memory_hits(),
         rag_hits: chat_context.rag.len(),
         chat_history_path,
         chat_session_id,
@@ -978,8 +986,6 @@ fn apply_runtime_memory_policy(
     journal: &dyn MemoryJournal,
     policy: &MemoryPolicy,
     report: &MemoryLifecycleReport,
-    relationship_learned: usize,
-    relationship_scope: &str,
 ) -> Result<Vec<MemoryJournalEntry>> {
     let mut entries = append_memory_sync_journal(provider, journal, policy, report)?;
     if report.phase != "sync_turn" {
@@ -996,14 +1002,6 @@ fn apply_runtime_memory_policy(
             &record_ref.scope,
         );
     }
-    if relationship_learned > 0 {
-        push_affected_scope(
-            &mut affected_scopes,
-            MemoryKind::Relationship,
-            relationship_scope,
-        );
-    }
-
     for (kind, scope) in affected_scopes {
         let mut records_in_scope = scope_records(provider, kind.clone(), &scope)?;
         for record in records_in_scope.clone() {
@@ -1063,6 +1061,20 @@ fn append_memory_sync_journal(
         .find(|note| note.to_ascii_lowercase().contains("skipped"));
     if report.records_written > 0 {
         let mut entries = Vec::new();
+        if report
+            .notes
+            .iter()
+            .any(|note| note == "working_memory_written")
+        {
+            let mut entry = MemoryJournalEntry::new(
+                MemoryJournalAction::Append,
+                "sync_turn wrote working memory",
+            )?;
+            if let Some(source_ref) = report.source_ref.clone() {
+                entry = entry.with_source_ref(source_ref)?;
+            }
+            entries.push(journal.append(entry)?);
+        }
         for record_ref in &report.records {
             let Some(record) = find_memory_record(provider, record_ref)? else {
                 continue;
@@ -1073,7 +1085,7 @@ fn append_memory_sync_journal(
             entries.push(append_memory_entry_journal(
                 journal,
                 MemoryJournalAction::Append,
-                "sync_turn wrote turn summary",
+                "sync_turn wrote core memory record",
                 &record,
                 Some(score),
                 record
@@ -1158,6 +1170,7 @@ fn scope_records(
     provider.search(MemoryQuery {
         kind: Some(kind),
         scope: Some(scope.to_owned()),
+        perspective: None,
         text: None,
         limit: Some(usize::MAX),
     })

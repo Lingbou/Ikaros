@@ -179,6 +179,11 @@ fn memory_journal_action_name(action: &ikaros_memory::MemoryJournalAction) -> &'
         ikaros_memory::MemoryJournalAction::Demote => "demote",
         ikaros_memory::MemoryJournalAction::Forget => "forget",
         ikaros_memory::MemoryJournalAction::Skip => "skip",
+        ikaros_memory::MemoryJournalAction::CandidateAccepted => "candidate_accepted",
+        ikaros_memory::MemoryJournalAction::CandidateRejected => "candidate_rejected",
+        ikaros_memory::MemoryJournalAction::ProjectionRendered => "projection_rendered",
+        ikaros_memory::MemoryJournalAction::Superseded => "superseded",
+        ikaros_memory::MemoryJournalAction::WorkingMemoryExpired => "working_memory_expired",
     }
 }
 

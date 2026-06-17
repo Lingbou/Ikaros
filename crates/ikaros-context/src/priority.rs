@@ -146,10 +146,24 @@ impl PriorityContextEngine {
             estimator,
             &mut compressed_sections,
         );
-        let memory = budget_section(
-            ContextSectionKind::Memory,
-            context.memory,
-            allocations.memory,
+        let memory_projection = budget_section(
+            ContextSectionKind::MemoryProjection,
+            context.memory_projection,
+            allocations.memory_projection,
+            estimator,
+            &mut compressed_sections,
+        );
+        let working_memory = budget_section(
+            ContextSectionKind::WorkingMemory,
+            context.working_memory,
+            allocations.working_memory,
+            estimator,
+            &mut compressed_sections,
+        );
+        let retrieved_memory = budget_section(
+            ContextSectionKind::RetrievedMemory,
+            context.retrieved_memory,
+            allocations.retrieved_memory,
             estimator,
             &mut compressed_sections,
         );
@@ -165,7 +179,9 @@ impl PriorityContextEngine {
             relationship,
             references,
             history,
-            memory,
+            memory_projection,
+            working_memory,
+            retrieved_memory,
             rag,
         };
         enforce_total_budget(&mut context, budget, estimator, &self.protection);
@@ -182,7 +198,9 @@ struct ContextBudgetAllocation {
     relationship: usize,
     references: usize,
     history: usize,
-    memory: usize,
+    memory_projection: usize,
+    working_memory: usize,
+    retrieved_memory: usize,
     rag: usize,
 }
 
@@ -224,12 +242,25 @@ impl ContextBudgetAllocation {
             tokens
         };
 
+        let relationship = next((!protection.relationship).then_some(policy.relationship));
+        let references = next((!protection.references).then_some(policy.references));
+        let history = next(Some(policy.history));
+        let memory_budget = next(Some(policy.memory));
+        let rag = next(Some(policy.rag));
+        let memory_projection = memory_budget / 2;
+        let working_memory = memory_budget / 3;
+        let retrieved_memory = memory_budget
+            .saturating_sub(memory_projection)
+            .saturating_sub(working_memory);
+
         Self {
-            relationship: next((!protection.relationship).then_some(policy.relationship)),
-            references: next((!protection.references).then_some(policy.references)),
-            history: next(Some(policy.history)),
-            memory: next(Some(policy.memory)),
-            rag: next(Some(policy.rag)),
+            relationship,
+            references,
+            history,
+            memory_projection,
+            working_memory,
+            retrieved_memory,
+            rag,
         }
     }
 }
@@ -291,7 +322,13 @@ fn enforce_total_budget(
         if context.rag.pop().is_some() {
             continue;
         }
-        if context.memory.pop().is_some() {
+        if context.retrieved_memory.pop().is_some() {
+            continue;
+        }
+        if context.working_memory.pop().is_some() {
+            continue;
+        }
+        if context.memory_projection.pop().is_some() {
             continue;
         }
         if context.history.pop().is_some() {

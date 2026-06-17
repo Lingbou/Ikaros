@@ -13,12 +13,20 @@ pub struct ChatContext {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub memory: Vec<String>,
+    pub memory_projection: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working_memory: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retrieved_memory: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rag: Vec<String>,
 }
 
 impl ChatContext {
+    pub fn memory_hits(&self) -> usize {
+        self.memory_projection.len() + self.working_memory.len() + self.retrieved_memory.len()
+    }
+
     pub fn to_sections(&self, estimator: &dyn TokenEstimator) -> Vec<ContextSection> {
         let mut sections = Vec::new();
         push_section(
@@ -44,9 +52,23 @@ impl ChatContext {
         );
         push_section(
             &mut sections,
-            ContextSectionKind::Memory,
-            "memory",
-            self.memory.clone(),
+            ContextSectionKind::MemoryProjection,
+            "memory_projection",
+            self.memory_projection.clone(),
+            estimator,
+        );
+        push_section(
+            &mut sections,
+            ContextSectionKind::WorkingMemory,
+            "working_memory",
+            self.working_memory.clone(),
+            estimator,
+        );
+        push_section(
+            &mut sections,
+            ContextSectionKind::RetrievedMemory,
+            "retrieved_memory",
+            self.retrieved_memory.clone(),
             estimator,
         );
         push_section(
@@ -104,9 +126,39 @@ impl ContextBundle {
 pub struct ContextSection {
     pub kind: ContextSectionKind,
     pub label: String,
+    pub trust_level: ContextTrustLevel,
+    pub source_kind: ContextSourceKind,
+    pub injection_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lines: Vec<String>,
     pub estimated_tokens: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTrustLevel {
+    High,
+    Medium,
+    MediumLow,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSourceKind {
+    Runtime,
+    AcceptedMemory,
+    ExplicitReference,
+    SessionHistory,
+    MemoryProjection,
+    WorkingMemory,
+    RetrievedMemory,
+    RagIndex,
+    ToolResult,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -117,7 +169,9 @@ pub enum ContextSectionKind {
     Relationship,
     References,
     History,
-    Memory,
+    MemoryProjection,
+    WorkingMemory,
+    RetrievedMemory,
     Rag,
     ToolResults,
 }
@@ -130,7 +184,9 @@ impl fmt::Display for ContextSectionKind {
             ContextSectionKind::Relationship => "relationship",
             ContextSectionKind::References => "references",
             ContextSectionKind::History => "history",
-            ContextSectionKind::Memory => "memory",
+            ContextSectionKind::MemoryProjection => "memory_projection",
+            ContextSectionKind::WorkingMemory => "working_memory",
+            ContextSectionKind::RetrievedMemory => "retrieved_memory",
             ContextSectionKind::Rag => "rag",
             ContextSectionKind::ToolResults => "tool_results",
         })
@@ -266,6 +322,64 @@ pub struct ResolvedContextReference {
     pub line: String,
 }
 
+struct ContextSectionContract {
+    trust_level: ContextTrustLevel,
+    source_kind: ContextSourceKind,
+    injection_reason: &'static str,
+}
+
+impl ContextSectionContract {
+    fn for_kind(kind: ContextSectionKind) -> Self {
+        match kind {
+            ContextSectionKind::System | ContextSectionKind::Developer => Self {
+                trust_level: ContextTrustLevel::High,
+                source_kind: ContextSourceKind::Runtime,
+                injection_reason: "runtime_prompt",
+            },
+            ContextSectionKind::Relationship => Self {
+                trust_level: ContextTrustLevel::High,
+                source_kind: ContextSourceKind::AcceptedMemory,
+                injection_reason: "relationship_core",
+            },
+            ContextSectionKind::References => Self {
+                trust_level: ContextTrustLevel::High,
+                source_kind: ContextSourceKind::ExplicitReference,
+                injection_reason: "user_explicit_reference",
+            },
+            ContextSectionKind::History => Self {
+                trust_level: ContextTrustLevel::Medium,
+                source_kind: ContextSourceKind::SessionHistory,
+                injection_reason: "recent_episode_history",
+            },
+            ContextSectionKind::MemoryProjection => Self {
+                trust_level: ContextTrustLevel::High,
+                source_kind: ContextSourceKind::MemoryProjection,
+                injection_reason: "accepted_memory_projection",
+            },
+            ContextSectionKind::WorkingMemory => Self {
+                trust_level: ContextTrustLevel::Medium,
+                source_kind: ContextSourceKind::WorkingMemory,
+                injection_reason: "session_working_memory",
+            },
+            ContextSectionKind::RetrievedMemory => Self {
+                trust_level: ContextTrustLevel::MediumLow,
+                source_kind: ContextSourceKind::RetrievedMemory,
+                injection_reason: "on_demand_memory_search",
+            },
+            ContextSectionKind::Rag => Self {
+                trust_level: ContextTrustLevel::MediumLow,
+                source_kind: ContextSourceKind::RagIndex,
+                injection_reason: "explicit_reference_retrieval",
+            },
+            ContextSectionKind::ToolResults => Self {
+                trust_level: ContextTrustLevel::Medium,
+                source_kind: ContextSourceKind::ToolResult,
+                injection_reason: "tool_result",
+            },
+        }
+    }
+}
+
 fn push_section(
     sections: &mut Vec<ContextSection>,
     kind: ContextSectionKind,
@@ -280,10 +394,85 @@ fn push_section(
         .iter()
         .map(|line| estimator.estimate_tokens(line))
         .sum();
+    let contract = ContextSectionContract::for_kind(kind);
     sections.push(ContextSection {
         kind,
         label: label.to_owned(),
+        trust_level: contract.trust_level,
+        source_kind: contract.source_kind,
+        injection_reason: contract.injection_reason.to_owned(),
+        freshness: None,
+        scope: None,
         lines,
         estimated_tokens,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::HeuristicTokenEstimator;
+
+    #[test]
+    fn context_sections_carry_trust_source_and_injection_reason() {
+        let context = ChatContext {
+            relationship: vec!["User prefers concise updates".into()],
+            references: vec!["@file:README.md".into()],
+            history: vec!["user: hello".into()],
+            memory_projection: vec!["# User\n- Do not commit without approval".into()],
+            working_memory: vec!["[working turn/default] current PR scope is docs".into()],
+            retrieved_memory: vec!["[knowledge/default] RAG is reference context".into()],
+            rag: vec!["docs/context.md: RAG reference".into()],
+        };
+
+        let sections = context.to_sections(&HeuristicTokenEstimator);
+        let relationship = sections
+            .iter()
+            .find(|section| section.kind == ContextSectionKind::Relationship)
+            .expect("relationship section");
+        assert_eq!(relationship.trust_level, ContextTrustLevel::High);
+        assert_eq!(relationship.source_kind, ContextSourceKind::AcceptedMemory);
+        assert_eq!(relationship.injection_reason, "relationship_core");
+
+        let memory_projection = sections
+            .iter()
+            .find(|section| section.kind == ContextSectionKind::MemoryProjection)
+            .expect("memory projection section");
+        assert_eq!(memory_projection.trust_level, ContextTrustLevel::High);
+        assert_eq!(
+            memory_projection.source_kind,
+            ContextSourceKind::MemoryProjection
+        );
+        assert_eq!(
+            memory_projection.injection_reason,
+            "accepted_memory_projection"
+        );
+
+        let working_memory = sections
+            .iter()
+            .find(|section| section.kind == ContextSectionKind::WorkingMemory)
+            .expect("working memory section");
+        assert_eq!(working_memory.trust_level, ContextTrustLevel::Medium);
+        assert_eq!(working_memory.source_kind, ContextSourceKind::WorkingMemory);
+        assert_eq!(working_memory.injection_reason, "session_working_memory");
+
+        let retrieved_memory = sections
+            .iter()
+            .find(|section| section.kind == ContextSectionKind::RetrievedMemory)
+            .expect("retrieved memory section");
+        assert_eq!(retrieved_memory.trust_level, ContextTrustLevel::MediumLow);
+        assert_eq!(
+            retrieved_memory.source_kind,
+            ContextSourceKind::RetrievedMemory
+        );
+        assert_eq!(retrieved_memory.injection_reason, "on_demand_memory_search");
+
+        let rag = sections
+            .iter()
+            .find(|section| section.kind == ContextSectionKind::Rag)
+            .expect("rag section");
+        assert_eq!(rag.trust_level, ContextTrustLevel::MediumLow);
+        assert_eq!(rag.source_kind, ContextSourceKind::RagIndex);
+        assert_eq!(rag.injection_reason, "explicit_reference_retrieval");
+    }
 }

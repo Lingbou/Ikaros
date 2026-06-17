@@ -77,8 +77,9 @@ agent:
       persona_overlay: "Operate as the default local implementation agent. Use harnessed tools and keep writes approval-aware."
       # Include local memory context in turns started by this profile.
       memory_context: true
-      # Include local RAG context in turns started by this profile.
-      rag_context: true
+      # Include local RAG reference snippets automatically. Keep false for ordinary chat;
+      # enable per profile or pass --rag-top-k when a turn needs cited local references.
+      rag_context: false
       # Workspace write policy: allow, ask, or deny.
       workspace_writes: ask
       # Shell policy: allow, ask, or deny.
@@ -94,8 +95,8 @@ agent:
       persona_overlay: "Operate in read-only planning mode. Prefer analysis, design notes, and explicit implementation plans; do not request file edits."
       # Include local memory context in planning turns.
       memory_context: true
-      # Include local RAG context in planning turns.
-      rag_context: true
+      # Include local RAG reference snippets automatically.
+      rag_context: false
       # Planning should not write to the workspace by default.
       workspace_writes: deny
       # Shell policy for planning.
@@ -111,8 +112,8 @@ agent:
       persona_overlay: "Operate as a general-purpose research agent. Gather local context first and keep recommendations grounded in available evidence."
       # Include local memory context in general turns.
       memory_context: true
-      # Include local RAG context in general turns.
-      rag_context: true
+      # Include local RAG reference snippets automatically.
+      rag_context: false
       # Workspace write policy for general turns.
       workspace_writes: ask
       # Shell policy for general turns.

@@ -100,4 +100,7 @@ content, citation metadata, score, and embedding provider.
 
 ## Chat Context
 
-Automatic chat context lookup uses SafeRead local RAG. Cloud embedding is explicit through `ikaros rag` commands rather than automatic chat retrieval.
+Chat does not inject RAG by default. Local RAG can be added to a turn when a
+profile enables `rag_context` and the request uses a nonzero `--rag-top-k`, or
+when the user calls `ikaros rag search` directly. Cloud embedding remains an
+explicit RAG command path rather than background chat retrieval.

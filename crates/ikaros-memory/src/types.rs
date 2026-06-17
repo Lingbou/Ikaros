@@ -20,8 +20,20 @@ pub struct MemoryRecord {
     pub id: String,
     pub created_at: String,
     pub updated_at: Option<String>,
+    #[serde(default = "default_active_memory")]
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
     pub kind: MemoryKind,
     pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perspective: Option<MemoryPerspective>,
     pub content: String,
     pub tags: Vec<String>,
     pub source: Option<String>,
@@ -45,8 +57,14 @@ impl MemoryRecord {
             id: Uuid::new_v4().to_string(),
             created_at: now_rfc3339()?,
             updated_at: None,
+            active: true,
+            supersedes: Vec::new(),
+            superseded_by: None,
+            valid_from: None,
+            valid_until: None,
             kind,
             scope,
+            perspective: None,
             content,
             tags: Vec::new(),
             source: None,
@@ -71,8 +89,16 @@ impl MemoryRecord {
         self
     }
 
+    pub fn with_perspective(mut self, perspective: MemoryPerspective) -> Self {
+        self.perspective = Some(perspective);
+        self
+    }
+
     pub fn validate_metadata(&self) -> Result<()> {
         reject_secret_like(&self.scope, "memory scope")?;
+        if let Some(perspective) = &self.perspective {
+            perspective.validate()?;
+        }
         for tag in &self.tags {
             reject_secret_like(tag, "memory tag")?;
         }
@@ -81,6 +107,50 @@ impl MemoryRecord {
         }
         if let Some(source_ref) = &self.source_ref {
             source_ref.validate()?;
+        }
+        for memory_id in &self.supersedes {
+            reject_secret_like(memory_id, "memory supersedes id")?;
+        }
+        if let Some(memory_id) = &self.superseded_by {
+            reject_secret_like(memory_id, "memory superseded-by id")?;
+        }
+        if let Some(valid_from) = &self.valid_from {
+            reject_secret_like(valid_from, "memory valid-from")?;
+        }
+        if let Some(valid_until) = &self.valid_until {
+            reject_secret_like(valid_until, "memory valid-until")?;
+        }
+        Ok(())
+    }
+}
+
+fn default_active_memory() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryPerspective {
+    pub observer: String,
+    pub subject: String,
+}
+
+impl MemoryPerspective {
+    pub fn new(observer: impl Into<String>, subject: impl Into<String>) -> Result<Self> {
+        let perspective = Self {
+            observer: observer.into(),
+            subject: subject.into(),
+        };
+        perspective.validate()?;
+        Ok(perspective)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        reject_secret_like(&self.observer, "memory perspective observer")?;
+        reject_secret_like(&self.subject, "memory perspective subject")?;
+        if self.observer.trim().is_empty() || self.subject.trim().is_empty() {
+            return Err(ikaros_core::IkarosError::Message(
+                "memory perspective observer and subject must be non-empty".into(),
+            ));
         }
         Ok(())
     }
@@ -139,6 +209,7 @@ impl MemoryRef {
 pub struct MemoryQuery {
     pub kind: Option<MemoryKind>,
     pub scope: Option<String>,
+    pub perspective: Option<MemoryPerspective>,
     pub text: Option<String>,
     pub limit: Option<usize>,
 }
@@ -153,6 +224,11 @@ pub trait MemoryStore {
         content: Option<String>,
         tags: Option<Vec<String>>,
     ) -> Result<Option<MemoryRecord>>;
+    fn supersede(
+        &self,
+        old_id: &str,
+        replacement: MemoryRecord,
+    ) -> Result<Option<(MemoryRecord, MemoryRecord)>>;
     fn delete_by_id(&self, id: &str) -> Result<bool>;
     fn delete_scope(&self, kind: Option<MemoryKind>, scope: &str) -> Result<usize>;
     fn path(&self) -> &Path;

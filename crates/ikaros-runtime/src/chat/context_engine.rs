@@ -2,8 +2,8 @@
 
 use super::{
     context::{
-        context_lookup_is_safe_read, extract_memory_context, extract_rag_context,
-        redact_chat_context,
+        context_lookup_is_safe_read, extract_projection_context, extract_rag_context,
+        extract_retrieved_memory_context, extract_working_memory_context, redact_chat_context,
     },
     history::ChatHistoryStore,
     types::{ChatContext, ChatRunOptions},
@@ -355,6 +355,59 @@ async fn assemble_memory_context(
     .await?;
     context.relationship = relationship_context_lines(&relationship, options.memory_limit);
 
+    if context_lookup_is_safe_read(registry, "memory_projection") {
+        let mut projection_input = json!({
+            "user_scope": "default",
+        });
+        let mut projection_audit_input = json!({
+            "user_scope": "default",
+        });
+        if let Some(scope) = &options.scope {
+            projection_input["project_scope"] = json!(scope);
+            projection_audit_input["project_scope"] = json!(scope);
+        }
+        let result = session
+            .execute_read_skill_with_audit_input(
+                registry,
+                "memory_projection",
+                projection_input,
+                projection_audit_input,
+            )
+            .await?;
+        if result.ok {
+            context
+                .memory_projection
+                .extend(extract_projection_context(&result.output));
+        }
+    }
+
+    if let Some(session_id) = &options.session_id
+        && context_lookup_is_safe_read(registry, "working_memory_list")
+    {
+        let result = session
+            .execute_read_skill_with_audit_input(
+                registry,
+                "working_memory_list",
+                json!({
+                    "session_id": session_id,
+                    "limit": options.memory_limit,
+                }),
+                json!({
+                    "session_id": "<redacted chat session>",
+                    "limit": options.memory_limit,
+                }),
+            )
+            .await?;
+        if result.ok {
+            context
+                .working_memory
+                .extend(extract_working_memory_context(
+                    &result.output,
+                    options.memory_limit,
+                ));
+        }
+    }
+
     let mut memory_input = json!({
         "query": input,
         "limit": options.memory_limit,
@@ -376,7 +429,12 @@ async fn assemble_memory_context(
         )
         .await?;
     if result.ok {
-        context.memory = extract_memory_context(&result.output, options.memory_limit);
+        context
+            .retrieved_memory
+            .extend(extract_retrieved_memory_context(
+                &result.output,
+                options.memory_limit,
+            ));
     }
     Ok(())
 }

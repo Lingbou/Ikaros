@@ -21,7 +21,10 @@ use ikaros_harness::SkillRegistry;
 use ikaros_memory::LocalMemoryStore;
 use ikaros_rag::LocalRagStore;
 use ikaros_voice::VoiceProviderConfig;
-pub use memory::{MemoryAppendSkill, MemoryDeleteSkill, MemorySearchSkill, MemoryUpdateSkill};
+pub use memory::{
+    MemoryAppendSkill, MemoryCandidateCreateSkill, MemoryDeleteSkill, MemoryProjectionSkill,
+    MemorySearchSkill, MemoryUpdateSkill, WorkingMemoryListSkill,
+};
 pub use persona::PersonaLoadSkill;
 pub use plugin::PluginCommandRunSkill;
 pub use rag::{
@@ -57,6 +60,9 @@ pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     registry.register(GitDiffSkill);
     registry.register(MemoryAppendSkill::new(env.memory_store.clone()));
     registry.register(MemorySearchSkill::new(env.memory_store.clone()));
+    registry.register(MemoryCandidateCreateSkill::new(env.memory_store.clone()));
+    registry.register(MemoryProjectionSkill::new(env.memory_store.clone()));
+    registry.register(WorkingMemoryListSkill::new(env.memory_store.clone()));
     registry.register(MemoryUpdateSkill::new(env.memory_store.clone()));
     registry.register(MemoryDeleteSkill::new(env.memory_store.clone()));
     registry.register(PersonaLoadSkill::new(env.persona_path));

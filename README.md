@@ -49,6 +49,11 @@ Useful local commands:
 ```bash
 cargo run -p ikaros-cli -- memory add "Keep RAG local-first" --kind project --scope ikaros
 cargo run -p ikaros-cli -- memory search "RAG"
+cargo run -p ikaros-cli -- memory add --kind relationship --scope default --observer alice --subject bob "Bob likes pancakes"
+cargo run -p ikaros-cli -- memory projection render --scope ikaros
+cargo run -p ikaros-cli -- memory candidate list
+cargo run -p ikaros-cli -- memory candidate accept <candidate-id> --supersedes <memory-id> --reason "user corrected this"
+cargo run -p ikaros-cli -- memory working prune
 cargo run -p ikaros-cli -- rag ingest docs --scope project
 cargo run -p ikaros-cli -- rag search "harness policy"
 cargo run -p ikaros-cli -- task run "summarize this repository" --dry-run
@@ -62,7 +67,7 @@ Use `IKAROS_HOME=/custom/path` or `--ikaros-home /custom/path` to isolate local 
 
 ## Configuration
 
-`ikaros init` creates `IKAROS_HOME/config.yaml`. The default config uses local JSONL storage and generic OpenAI-compatible provider entries with empty local credentials.
+`ikaros init` creates `IKAROS_HOME/config.yaml`. The default config uses local JSONL storage and generic OpenAI-compatible provider entries with empty local credentials. Ordinary chat injects accepted memory projections, recent history, and session working memory; RAG is treated as cited reference retrieval and is off unless a profile enables it or the user passes `--rag-top-k`.
 
 Switch local stores to SQLite by editing `~/.ikaros/config.yaml`:
 

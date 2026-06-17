@@ -8,7 +8,9 @@ mod prompt;
 mod turn;
 mod types;
 
-pub use context::{context_lookup_is_safe_read, extract_memory_context, extract_rag_context};
+pub use context::{
+    context_lookup_is_safe_read, extract_rag_context, extract_retrieved_memory_context,
+};
 pub use context_engine::{
     CompactInput, CompactReport, ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent,
     ContextModelBudget, LocalChatContextEngine, TurnRecord, build_chat_context,

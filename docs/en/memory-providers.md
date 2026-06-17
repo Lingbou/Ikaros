@@ -39,8 +39,13 @@ The memory policy boundary includes:
 
 The journal is an audit and replay aid for memory lifecycle decisions. Runtime
 chat writes `sync_turn` append or skipped-write decisions to the journal, then
-records promote, demote, forget, and quota-eviction decisions for affected
-scopes. Quota evictions are journaled as `forget` actions with a quota reason.
+records promote, demote, forget, and quota-eviction decisions for affected core
+memory scopes when any exist. Quota evictions are journaled as `forget` actions
+with a quota reason.
+Projection renders, candidate accept/reject decisions, working-memory expiry,
+and supersession events are also journaled so debug tooling can explain why a
+projected memory surface changed, why a scratchpad record disappeared, and
+which old memory was replaced.
 It does not replace the memory store, and it does not enable external memory
 providers. The current policy pass is turn-scoped rather than a full-store
 compactor.
@@ -77,10 +82,11 @@ Lifecycle context:
 - `prefetch`: receives a `MemoryQuery` plus optional session and agent ids; local
   providers map this to search.
 - `sync_turn`: receives session id, agent id, user input, and assistant output
-  after a turn. The local provider writes a redacted `Task` turn-summary record
-  with `MemoryRef::SessionTurn` when the turn is safe to store; if a redacted
-  secret marker is present, it reports a skipped write instead of failing the
-  chat turn.
+  after a turn. The local provider writes a redacted session working-memory
+  record with `MemoryRef::SessionTurn` when the turn is safe to store; it does
+  not promote ordinary turn summaries into long-term `Task` memory. If a
+  redacted secret marker is present, it reports a skipped write instead of
+  failing the chat turn.
 - `pre_compress`: receives session id, agent id, and the target context budget.
 - `session_switch`: receives old/new session ids and agent id.
 - `delegation_observation`: records parent/child agent ids and a summary of the
@@ -94,16 +100,21 @@ Runtime chat persists `turn_start` and `sync_turn` reports as
 `MemoryLifecycle` session events. `sync_turn` reports include
 `MemoryRef::SessionTurn` when they can be tied to a turn. If the local provider
 sees a redaction marker in the derived turn summary, it records a skipped write
-instead of storing the summary.
+instead of storing the summary. A successful ordinary `sync_turn` is journaled
+as a working-memory append.
 
-After a successful `sync_turn`, runtime applies `MemoryPolicy` to the written
-turn-summary record and any relationship records learned during the turn. The
-same pass also checks the affected kind/scope groups against
-`max_records_per_scope`. Promote/demote decisions update local tags; forget
-decisions delete low-score or quota-evicted records. Every action is written to
-`JsonlMemoryJournal` with a score and `MemoryRef::SessionTurn` when available.
-Memory store updates/deletes and journal appends are still separate local
-operations until cross-store transaction semantics are introduced.
+After a successful `sync_turn`, runtime applies `MemoryPolicy` only to affected
+core memory scopes referenced by the lifecycle report. Ordinary local sync now
+writes working memory, so it normally contributes a journaled working-memory
+append without promoting, demoting, or forgetting core records. Automatic
+relationship observations are written as pending candidates, so they do not
+trigger a relationship core memory policy pass until a candidate is accepted.
+When a core-memory scope is affected, the same pass checks the kind/scope group
+against `max_records_per_scope`. Promote/demote decisions update local tags;
+forget decisions delete low-score or quota-evicted records. Every action is
+written to `JsonlMemoryJournal` with a score and `MemoryRef::SessionTurn` when
+available. Memory store updates/deletes and journal appends are still separate
+local operations until cross-store transaction semantics are introduced.
 
 Inspect persisted lifecycle evidence with:
 
@@ -118,11 +129,16 @@ redaction-related notes, action counts, and runtime memory policy actions.
 
 ## Runtime Context
 
-Chat context assembly uses memory through harness safe-read skills. The skill
-executes with the real local query but records a redacted audit input, so the
-audit log does not store full prompts. Relationship memory is
-`MemoryKind::Relationship` and normal memory search excludes that kind from the
-generic memory section because it is rendered in the relationship section.
+Chat context assembly uses memory through harness safe-read skills. Projection
+and working-memory reads are separate safe-read tools, and retrieved memory
+search remains available for explicit local lookup. The skills execute with the
+real local query but record a redacted audit input, so the audit log does not
+store full prompts. Relationship memory is `MemoryKind::Relationship` and
+normal memory search excludes that kind from the retrieved-memory section
+because it is rendered in the relationship section. Ordinary `Task` turn
+summaries are also excluded from retrieved memory context. The persisted context
+event keeps projection, working memory, and retrieved memory as separate
+sections with separate trust/source metadata.
 Neither path bypasses policy.
 
 `ContextEngine` owns when memory is assembled and compacted. `MemoryProvider`
@@ -149,15 +165,16 @@ implemented.
 
 ## Boundaries
 
-- Local memory and RAG remain the default path.
+- Local memory remains the default path. RAG is local but only injected when a
+  profile enables it or the user requests hits with `--rag-top-k`.
 - External provider config does not automatically replace local stores.
 - External provider descriptors are not a runtime capability until a real
   adapter is implemented.
 - Secret-like memory content is rejected or redacted.
 - Memory records can carry a structured `MemoryRef` such as a session turn,
   session entry, skill call, or manual note.
-- Runtime `sync_turn` append, skipped-write, promote, demote, forget, and quota
-  decisions are recorded in `MemoryJournal`.
+- Runtime `sync_turn` working-memory append, skipped-write, promote, demote,
+  forget, and quota decisions are recorded in `MemoryJournal`.
 - Relationship, task, project, and knowledge memory should not silently diverge across multiple providers.
 
 ## Failure Handling

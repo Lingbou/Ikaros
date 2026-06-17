@@ -263,13 +263,16 @@ and `AuditAnchor` may appear after `TurnEnd`; consumers should use event kinds
 rather than assuming the last event is always the turn end.
 
 Those session entries and chat agent events for one turn commit or roll back
-together. Chat history, memory records, relationship learning, and audit writes
-are still separate stores for now. Memory sync can write a redacted turn-summary
-record with `MemoryRef::SessionTurn`; the session timeline only stores the
-high-level lifecycle evidence. The local memory journal records the matching
-`sync_turn` append/skipped-write decision and any turn-scoped promote, demote,
-forget, or quota policy action so debug callers can inspect memory lifecycle
-behavior without reading the memory store directly. Approval requests
+together. Chat history, core memory records, memory candidates, and audit writes
+are still separate stores for now. Memory sync writes safe redacted turn context
+into session working memory with `MemoryRef::SessionTurn`; ordinary turn
+summaries are not promoted into long-term `Task` memory. Automatic relationship
+observations enter the candidate inbox instead of core memory. The session
+timeline only stores the high-level lifecycle evidence. The local memory journal
+records the matching `sync_turn` append/skipped-write decision and any
+turn-scoped promote, demote, forget, or quota policy action so debug callers can
+inspect memory lifecycle behavior without reading the memory store directly.
+Approval requests
 created by a persisting agent-loop turn are double-written into the session
 approval table with redacted request data; later approve, deny, or execute
 decisions update the same session approval record and emit `ApprovalResolved`.

@@ -127,8 +127,9 @@ mod tests {
             relationship: vec!["relationship fact".into()],
             references: vec!["explicit file reference".into()],
             history: vec!["older history detail that can be compacted".into()],
-            memory: vec!["older memory detail that can be compacted".into()],
+            retrieved_memory: vec!["older memory detail that can be compacted".into()],
             rag: vec!["rag detail that can be compacted".into()],
+            ..ChatContext::default()
         };
         let protected_tokens = estimator.estimate_tokens("relationship fact")
             + estimator.estimate_tokens("explicit file reference");
@@ -184,7 +185,7 @@ mod tests {
         let context = ChatContext {
             relationship: vec!["relationship fact".into()],
             history: vec!["older history detail that should be compacted".into()],
-            memory: vec!["older memory detail that should be compacted".into()],
+            retrieved_memory: vec!["older memory detail that should be compacted".into()],
             ..ChatContext::default()
         };
         let protected_tokens = estimator.estimate_tokens("relationship fact");

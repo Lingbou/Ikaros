@@ -77,9 +77,21 @@ pub(crate) fn all_context_lines(context: &ChatContext) -> Vec<(ContextSectionKin
         )
         .chain(
             context
-                .memory
+                .memory_projection
                 .iter()
-                .map(|line| (ContextSectionKind::Memory, line.as_str())),
+                .map(|line| (ContextSectionKind::MemoryProjection, line.as_str())),
+        )
+        .chain(
+            context
+                .working_memory
+                .iter()
+                .map(|line| (ContextSectionKind::WorkingMemory, line.as_str())),
+        )
+        .chain(
+            context
+                .retrieved_memory
+                .iter()
+                .map(|line| (ContextSectionKind::RetrievedMemory, line.as_str())),
         )
         .chain(
             context
@@ -101,8 +113,9 @@ mod tests {
             relationship: vec!["rel".into()],
             references: vec!["ref".into()],
             history: vec!["hist".into()],
-            memory: vec!["memory-context-is-long-enough-to-truncate".into()],
+            retrieved_memory: vec!["memory-context-is-long-enough-to-truncate".into()],
             rag: vec!["rag should be omitted".into()],
+            ..ChatContext::default()
         };
 
         let budgeted = apply_context_token_budget(context, 12, &estimator);
@@ -110,7 +123,7 @@ mod tests {
         assert_eq!(budgeted.relationship, vec!["rel"]);
         assert_eq!(budgeted.references, vec!["ref"]);
         assert_eq!(budgeted.history, vec!["hist"]);
-        assert!(budgeted.memory.is_empty());
+        assert!(budgeted.retrieved_memory.is_empty());
         assert!(budgeted.rag.is_empty());
         assert!(chat_context_token_count(&budgeted, &estimator) <= 12);
     }

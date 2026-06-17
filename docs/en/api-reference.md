@@ -60,12 +60,26 @@ Memory and relationship notes:
 
 ```bash
 ikaros memory add "note" --kind project --scope ikaros
+ikaros memory add --kind relationship --scope default --observer alice --subject bob "Bob likes pancakes"
 ikaros memory search "query"
 ikaros memory update <id> --content "new note"
 ikaros memory delete --id <id>
+ikaros memory projection render --scope ikaros
+ikaros memory projection show --scope ikaros
+ikaros memory candidate list
+ikaros memory candidate accept <candidate-id> --reason "explicit user instruction"
+ikaros memory candidate accept <candidate-id> --supersedes <memory-id> --reason "user corrected this"
+ikaros memory candidate reject <candidate-id> --reason "temporary task scope"
+ikaros memory working list --session <session-id>
+ikaros memory working prune
 ikaros relationship remember "preference" --scope user
 ikaros relationship show --scope user
 ```
+
+Runtime chat writes safe turn state into session working memory, not long-term
+`Task` memory. Automatic relationship observations are pending candidates until
+accepted. Projection commands render the accepted long-term memory surface used
+by chat context.
 
 RAG:
 

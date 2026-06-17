@@ -88,7 +88,7 @@ async fn run_task(
     let context = ContextBuilder::new()
         .task(task.clone())
         .persona_context(persona.context_summary())
-        .memory_context(vec![memory_summary.clone(), task_memory_summary.clone()])
+        .retrieved_memory_context(vec![memory_summary.clone(), task_memory_summary.clone()])
         .rag_context(vec![rag_summary.clone()])
         .build();
     let mut body_status = BodyStatus::new(

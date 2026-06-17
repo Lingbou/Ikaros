@@ -23,6 +23,13 @@ impl LocalMemoryStore {
             ))),
         }
     }
+
+    pub fn memory_dir(&self) -> PathBuf {
+        self.path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
 }
 
 impl MemoryStore for LocalMemoryStore {
@@ -56,6 +63,17 @@ impl MemoryStore for LocalMemoryStore {
         match self {
             Self::Jsonl(store) => store.update(id, content, tags),
             Self::Sqlite(store) => store.update(id, content, tags),
+        }
+    }
+
+    fn supersede(
+        &self,
+        old_id: &str,
+        replacement: MemoryRecord,
+    ) -> Result<Option<(MemoryRecord, MemoryRecord)>> {
+        match self {
+            Self::Jsonl(store) => store.supersede(old_id, replacement),
+            Self::Sqlite(store) => store.supersede(old_id, replacement),
         }
     }
 

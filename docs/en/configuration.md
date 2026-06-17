@@ -77,15 +77,18 @@ agent:
       shell: allow
       network: ask
       memory_context: true
-      rag_context: true
+      rag_context: false
     plan:
       mode: plan
       workspace_writes: deny
       shell: ask
       network: ask
       memory_context: true
-      rag_context: true
+      rag_context: false
 ```
+
+Keep `rag_context` false for ordinary chat. Enable it on a profile, or pass
+`--rag-top-k`, when the turn needs cited local reference snippets.
 
 Use a profile with:
 

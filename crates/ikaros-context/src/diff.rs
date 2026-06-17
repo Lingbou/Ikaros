@@ -40,9 +40,23 @@ pub fn diff_chat_context(
     );
     collect_section_diff(
         &mut diff,
-        ContextSectionKind::Memory,
-        &before.memory,
-        &after.memory,
+        ContextSectionKind::MemoryProjection,
+        &before.memory_projection,
+        &after.memory_projection,
+        estimator,
+    );
+    collect_section_diff(
+        &mut diff,
+        ContextSectionKind::WorkingMemory,
+        &before.working_memory,
+        &after.working_memory,
+        estimator,
+    );
+    collect_section_diff(
+        &mut diff,
+        ContextSectionKind::RetrievedMemory,
+        &before.retrieved_memory,
+        &after.retrieved_memory,
         estimator,
     );
     collect_section_diff(
@@ -111,11 +125,11 @@ mod tests {
     #[test]
     fn context_summary_marks_removed_lines_as_compressed() {
         let before = ChatContext {
-            memory: vec!["older memory detail".into()],
+            retrieved_memory: vec!["older memory detail".into()],
             ..ChatContext::default()
         };
         let after = ChatContext {
-            memory: vec!["[context summary: memory omitted 1 line(s)]".into()],
+            retrieved_memory: vec!["[context summary: retrieved_memory omitted 1 line(s)]".into()],
             ..ChatContext::default()
         };
 

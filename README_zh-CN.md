@@ -49,6 +49,11 @@ cargo run -p ikaros-cli -- chat --message "hello"
 ```bash
 cargo run -p ikaros-cli -- memory add "Keep RAG local-first" --kind project --scope ikaros
 cargo run -p ikaros-cli -- memory search "RAG"
+cargo run -p ikaros-cli -- memory add --kind relationship --scope default --observer alice --subject bob "Bob likes pancakes"
+cargo run -p ikaros-cli -- memory projection render --scope ikaros
+cargo run -p ikaros-cli -- memory candidate list
+cargo run -p ikaros-cli -- memory candidate accept <candidate-id> --supersedes <memory-id> --reason "user corrected this"
+cargo run -p ikaros-cli -- memory working prune
 cargo run -p ikaros-cli -- rag ingest docs --scope project
 cargo run -p ikaros-cli -- rag search "harness policy"
 cargo run -p ikaros-cli -- task run "summarize this repository" --dry-run
@@ -62,7 +67,7 @@ cargo run -p ikaros-cli -- skill list
 
 ## 配置
 
-`ikaros init` 会创建 `IKAROS_HOME/config.yaml`。默认配置使用 JSONL 本地存储和通用 OpenAI-compatible provider 条目，凭证字段为空。
+`ikaros init` 会创建 `IKAROS_HOME/config.yaml`。默认配置使用 JSONL 本地存储和通用 OpenAI-compatible provider 条目，凭证字段为空。普通 chat 默认注入已接受的 memory projection、最近历史和当前 session working memory；RAG 是带 citation 的 reference retrieval，除非 profile 显式启用或用户传入 `--rag-top-k`，否则不会自动注入。
 
 可以在 `~/.ikaros/config.yaml` 中切换到 SQLite：
 

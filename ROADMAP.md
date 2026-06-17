@@ -49,7 +49,8 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 
 ## Context And Memory
 
-- Keep local-first memory and RAG as the default behavior.
+- Keep local-first memory as the default behavior; keep RAG as opt-in cited
+  reference retrieval rather than ordinary chat memory.
 - Keep `ikaros-context` as the shared boundary for context bundles, references,
   provider-aware token budgets, quota-based compaction, and context diffs.
 - Keep `ModelContextProfile` wired into context budgeting and estimator
@@ -60,12 +61,25 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   `context-diff` debug query.
 - Keep relationship data as `MemoryKind::Relationship`, not as a second memory
   database.
+- Keep accepted memory projections, session working memory, retrieved memory,
+  and RAG as separate context sections with trust/source metadata.
+- Keep ordinary `sync_turn` summaries out of long-term `Task` memory; they
+  should remain session working memory unless promoted through an explicit
+  candidate path.
+- Keep automatic relationship observations as pending candidates until an
+  explicit accept path promotes them to core memory.
+- Keep supersession metadata (`active`, `supersedes`, `superseded_by`,
+  `valid_from`, `valid_until`) as the update path for durable memory conflicts.
 - Keep `NoopMemoryProvider` explicit; memory lifecycle hooks should not hide
   default no-op behavior in the trait.
-- Keep runtime memory policy journaling covered for append, skipped-write,
-  promote, demote, forget, and quota decisions as memory extraction grows.
+- Keep runtime memory journaling covered for working-memory append,
+  skipped-write, candidate accept/reject, projection render, supersession,
+  working-memory expiry, promote, demote, forget, and quota decisions as memory
+  extraction grows.
 - Treat the current memory policy pass as turn-scoped; add cross-store
   transaction and replay consistency before enabling remote or vector writes.
+- Add debug/query surfaces that can explain why a projection changed, why a
+  candidate was accepted or rejected, and which record superseded an older fact.
 - Define governed remote memory adapters behind the provider registry.
 - Require remote memory behavior to match local approval, audit, promotion, demotion, sync, and secret-handling rules.
 - Add dry-run reports for memory migration or synchronization.

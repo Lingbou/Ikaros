@@ -8,8 +8,10 @@ use serde_json::json;
 const MAX_CANDIDATES_PER_TURN: usize = 3;
 const MAX_MEMORY_CHARS: usize = 180;
 
-pub async fn learn_relationships_from_chat(
+pub async fn create_relationship_candidates_from_chat(
     input: &str,
+    session_id: &str,
+    turn_id: &str,
     session: &ExecutionSession,
     registry: &SkillRegistry,
     options: &ChatRunOptions,
@@ -18,7 +20,7 @@ pub async fn learn_relationships_from_chat(
         return Ok(0);
     }
     let scope = options.scope.as_deref().unwrap_or("default");
-    let mut learned = 0;
+    let mut created = 0;
     for candidate in extract_relationship_memory_candidates(input) {
         if relationship_memory_exists(session, registry, scope, &candidate).await? {
             continue;
@@ -26,31 +28,45 @@ pub async fn learn_relationships_from_chat(
         let result = session
             .execute_skill(
                 registry,
-                "memory_append",
+                "memory_candidate_create",
                 json!({
                     "kind": "relationship",
                     "scope": scope,
                     "content": candidate,
+                    "reason": "preference_pattern",
+                    "confidence": 0.7,
                     "tags": ["relationship", "chat-learned"],
+                    "source_ref": {
+                        "type": "session_turn",
+                        "data": {
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                        }
+                    },
                 }),
             )
             .await?;
-        if result.ok {
-            learned += 1;
+        if result
+            .output
+            .get("created")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            created += 1;
         }
     }
-    if learned > 0 {
+    if created > 0 {
         session.audit.append(AuditEvent::new(
-            "chat_relationship_learned",
+            "chat_relationship_candidate_created",
             None,
-            "relationship memory learned from chat",
+            "relationship memory candidate created from chat",
             json!({
-                "learned": learned,
+                "created": created,
                 "scope": redact_secrets(scope),
             }),
         )?)?;
     }
-    Ok(learned)
+    Ok(created)
 }
 
 async fn relationship_memory_exists(
@@ -72,7 +88,7 @@ async fn relationship_memory_exists(
             json!({
                 "kind": "relationship",
                 "scope": redact_secrets(scope),
-                "query": "<redacted learned relationship>",
+                "query": "<redacted relationship candidate>",
                 "limit": 5,
             }),
         )
@@ -155,19 +171,6 @@ fn relationship_candidate_from_statement(statement: &str) -> Option<String> {
         ],
     ) {
         return normalized_candidate("User asked Ikaros to remember", value);
-    }
-
-    if let Some(value) = candidate_after_any(
-        &statement,
-        &[
-            "i want you to ",
-            "i need you to ",
-            "我希望你",
-            "我想让你",
-            "我需要你",
-        ],
-    ) {
-        return normalized_candidate("User expectation", value);
     }
 
     None

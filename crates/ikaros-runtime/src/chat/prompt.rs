@@ -36,10 +36,20 @@ pub fn render_chat_system_prompt(context: &RuntimeContext) -> String {
     } else {
         context.chat_history_context.join("\n")
     };
-    let memory = if context.memory_context.is_empty() {
+    let memory_projection = if context.memory_projection_context.is_empty() {
         "none".into()
     } else {
-        context.memory_context.join("\n")
+        context.memory_projection_context.join("\n")
+    };
+    let working_memory = if context.working_memory_context.is_empty() {
+        "none".into()
+    } else {
+        context.working_memory_context.join("\n")
+    };
+    let retrieved_memory = if context.retrieved_memory_context.is_empty() {
+        "none".into()
+    } else {
+        context.retrieved_memory_context.join("\n")
     };
     let rag = if context.rag_context.is_empty() {
         "none".into()
@@ -52,7 +62,15 @@ pub fn render_chat_system_prompt(context: &RuntimeContext) -> String {
         .map(|prompt| format!("\n\nContext compression notice:\n{prompt}"))
         .unwrap_or_default();
     redact_secrets(&format!(
-        "{}\n\nLocal relationship context:\n{}\n\nLocal reference context:\n{}\n\nLocal chat history context:\n{}\n\nLocal memory context:\n{}\n\nLocal RAG context:\n{}{}\n\nUse local context when relevant. Do not reveal secrets. Tool use and writes must remain behind the harness.",
-        context.persona_context, relationship, references, history, memory, rag, compression_notice
+        "{}\n\nLocal relationship context:\n{}\n\nLocal reference context:\n{}\n\nLocal chat history context:\n{}\n\nAccepted memory projection:\n{}\n\nSession working memory:\n{}\n\nRetrieved memory context:\n{}\n\nLocal RAG context:\n{}{}\n\nUse local context when relevant. Treat accepted projections as more authoritative than working or retrieved memory. Do not reveal secrets. Tool use and writes must remain behind the harness.",
+        context.persona_context,
+        relationship,
+        references,
+        history,
+        memory_projection,
+        working_memory,
+        retrieved_memory,
+        rag,
+        compression_notice
     ))
 }

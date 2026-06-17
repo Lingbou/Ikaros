@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    MemoryKind, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
+    MemoryKind, MemoryPerspective, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
     common::{filter_records, memory_kind_from_str, memory_kind_to_str},
 };
 use ikaros_core::{IkarosError, Result, contains_secret_like, now_rfc3339, reject_secret_like};
@@ -48,12 +48,18 @@ impl SqliteMemoryStore {
                 updated_at TEXT,
                 kind TEXT NOT NULL,
                 scope TEXT NOT NULL,
+                perspective_json TEXT,
                 content TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
                 source TEXT,
                 source_ref_json TEXT,
                 confidence REAL,
-                sensitive INTEGER NOT NULL DEFAULT 0
+                sensitive INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                supersedes_json TEXT NOT NULL DEFAULT '[]',
+                superseded_by TEXT,
+                valid_from TEXT,
+                valid_until TEXT
             );
             CREATE INDEX IF NOT EXISTS memories_kind_scope_idx ON memories(kind, scope);
             CREATE INDEX IF NOT EXISTS memories_created_at_idx ON memories(created_at);
@@ -61,6 +67,24 @@ impl SqliteMemoryStore {
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
         add_column_if_missing(conn, &self.path, "memories", "source_ref_json", "TEXT")?;
+        add_column_if_missing(conn, &self.path, "memories", "perspective_json", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            &self.path,
+            "memories",
+            "active",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            &self.path,
+            "memories",
+            "supersedes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        add_column_if_missing(conn, &self.path, "memories", "superseded_by", "TEXT")?;
+        add_column_if_missing(conn, &self.path, "memories", "valid_from", "TEXT")?;
+        add_column_if_missing(conn, &self.path, "memories", "valid_until", "TEXT")?;
         Ok(())
     }
 
@@ -71,26 +95,35 @@ impl SqliteMemoryStore {
         let conn = self.open()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, created_at, updated_at, kind, scope, content, tags_json, source, source_ref_json, confidence, sensitive FROM memories",
+                "SELECT id, created_at, updated_at, kind, scope, perspective_json, content, tags_json, source, source_ref_json, confidence, sensitive, active, supersedes_json, superseded_by, valid_from, valid_until FROM memories",
             )
             .map_err(|source| sqlite_error(&self.path, source))?;
         let rows = stmt
             .query_map([], |row| {
-                let tags_json: String = row.get(6)?;
+                let tags_json: String = row.get(7)?;
                 let tags = serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default();
+                let supersedes_json: String = row.get(13)?;
+                let supersedes =
+                    serde_json::from_str::<Vec<String>>(&supersedes_json).unwrap_or_default();
                 let kind_raw: String = row.get(3)?;
                 Ok(MemoryRecord {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
                     updated_at: row.get(2)?,
+                    active: row.get::<_, i64>(12)? != 0,
+                    supersedes,
+                    superseded_by: row.get(14)?,
+                    valid_from: row.get(15)?,
+                    valid_until: row.get(16)?,
                     kind: memory_kind_from_str(&kind_raw).unwrap_or(MemoryKind::Knowledge),
                     scope: row.get(4)?,
-                    content: row.get(5)?,
+                    perspective: perspective_from_json(row.get::<_, Option<String>>(5)?),
+                    content: row.get(6)?,
                     tags,
-                    source: row.get(7)?,
-                    source_ref: source_ref_from_json(row.get::<_, Option<String>>(8)?),
-                    confidence: row.get::<_, Option<f64>>(9)?.map(|value| value as f32),
-                    sensitive: row.get::<_, i64>(10)? != 0,
+                    source: row.get(8)?,
+                    source_ref: source_ref_from_json(row.get::<_, Option<String>>(9)?),
+                    confidence: row.get::<_, Option<f64>>(10)?.map(|value| value as f32),
+                    sensitive: row.get::<_, i64>(11)? != 0,
                 })
             })
             .map_err(|source| sqlite_error(&self.path, source))?;
@@ -112,26 +145,38 @@ impl MemoryStore for SqliteMemoryStore {
         record.updated_at = None;
         let conn = self.open()?;
         let tags_json = serde_json::to_string(&record.tags)?;
+        let supersedes_json = serde_json::to_string(&record.supersedes)?;
+        let perspective_json = record
+            .perspective
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let source_ref_json = record
             .source_ref
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
         conn.execute(
-            "INSERT INTO memories (id, created_at, updated_at, kind, scope, content, tags_json, source, source_ref_json, confidence, sensitive)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO memories (id, created_at, updated_at, kind, scope, perspective_json, content, tags_json, source, source_ref_json, confidence, sensitive, active, supersedes_json, superseded_by, valid_from, valid_until)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 record.id,
                 record.created_at,
                 record.updated_at,
                 memory_kind_to_str(&record.kind),
                 record.scope,
+                perspective_json,
                 record.content,
                 tags_json,
                 record.source,
                 source_ref_json,
                 record.confidence.map(f64::from),
                 i64::from(record.sensitive),
+                i64::from(record.active),
+                supersedes_json,
+                record.superseded_by,
+                record.valid_from,
+                record.valid_until,
             ],
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
@@ -184,6 +229,101 @@ impl MemoryStore for SqliteMemoryStore {
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
         Ok(Some(record))
+    }
+
+    fn supersede(
+        &self,
+        old_id: &str,
+        mut replacement: MemoryRecord,
+    ) -> Result<Option<(MemoryRecord, MemoryRecord)>> {
+        reject_secret_like(old_id, "memory superseded id")?;
+        if replacement.id == old_id {
+            return Err(IkarosError::Message(
+                "replacement memory cannot supersede itself".into(),
+            ));
+        }
+        reject_secret_like(&replacement.content, "memory content")?;
+        replacement.validate_metadata()?;
+        if replacement.sensitive || contains_secret_like(&replacement.content) {
+            return Err(IkarosError::SecretRejected("memory content".into()));
+        }
+
+        let Some(mut superseded) = self
+            .read_all()?
+            .into_iter()
+            .find(|record| record.id == old_id)
+        else {
+            return Ok(None);
+        };
+        let now = now_rfc3339()?;
+        replacement.active = true;
+        replacement.updated_at = None;
+        replacement.valid_from.get_or_insert_with(|| now.clone());
+        if !replacement.supersedes.iter().any(|id| id == old_id) {
+            replacement.supersedes.push(old_id.to_owned());
+        }
+        replacement.validate_metadata()?;
+
+        superseded.active = false;
+        superseded.updated_at = Some(now.clone());
+        superseded.valid_until = Some(now);
+        superseded.superseded_by = Some(replacement.id.clone());
+        superseded.validate_metadata()?;
+
+        let conn = self.open()?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|source| sqlite_error(&self.path, source))?;
+        tx.execute(
+            "UPDATE memories SET updated_at = ?1, active = ?2, superseded_by = ?3, valid_until = ?4 WHERE id = ?5",
+            params![
+                &superseded.updated_at,
+                i64::from(superseded.active),
+                &superseded.superseded_by,
+                &superseded.valid_until,
+                old_id,
+            ],
+        )
+        .map_err(|source| sqlite_error(&self.path, source))?;
+        let tags_json = serde_json::to_string(&replacement.tags)?;
+        let supersedes_json = serde_json::to_string(&replacement.supersedes)?;
+        let perspective_json = replacement
+            .perspective
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let source_ref_json = replacement
+            .source_ref
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        tx.execute(
+            "INSERT INTO memories (id, created_at, updated_at, kind, scope, perspective_json, content, tags_json, source, source_ref_json, confidence, sensitive, active, supersedes_json, superseded_by, valid_from, valid_until)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            params![
+                replacement.id,
+                replacement.created_at,
+                replacement.updated_at,
+                memory_kind_to_str(&replacement.kind),
+                replacement.scope,
+                perspective_json,
+                replacement.content,
+                tags_json,
+                replacement.source,
+                source_ref_json,
+                replacement.confidence.map(f64::from),
+                i64::from(replacement.sensitive),
+                i64::from(replacement.active),
+                supersedes_json,
+                replacement.superseded_by,
+                replacement.valid_from,
+                replacement.valid_until,
+            ],
+        )
+        .map_err(|source| sqlite_error(&self.path, source))?;
+        tx.commit()
+            .map_err(|source| sqlite_error(&self.path, source))?;
+        Ok(Some((superseded, replacement)))
     }
 
     fn delete_by_id(&self, id: &str) -> Result<bool> {
@@ -247,5 +387,9 @@ fn add_column_if_missing(
 }
 
 fn source_ref_from_json(value: Option<String>) -> Option<MemoryRef> {
+    value.and_then(|value| serde_json::from_str(&value).ok())
+}
+
+fn perspective_from_json(value: Option<String>) -> Option<MemoryPerspective> {
     value.and_then(|value| serde_json::from_str(&value).ok())
 }

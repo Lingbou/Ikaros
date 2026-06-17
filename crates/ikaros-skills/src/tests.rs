@@ -7,7 +7,11 @@ use ikaros_harness::{
     NetworkEgress, NetworkEgressRequest, NetworkEgressResponse, ProcessOutput, ProcessRequest,
     ProcessRunner, Skill, SkillContext, SkillOutput,
 };
-use ikaros_memory::{LocalMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryStore};
+use ikaros_memory::{
+    JsonlMemoryCandidateStore, JsonlWorkingMemoryStore, LocalMemoryStore, MemoryCandidateQuery,
+    MemoryCandidateStatus, MemoryKind, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
+    WorkingMemoryRecord,
+};
 use ikaros_rag::{LocalRagStore, RagQuery, RagStore};
 use ikaros_soul::PersonaLoader;
 use serde_json::json;
@@ -262,6 +266,84 @@ async fn memory_skills_run_through_harness_and_reject_secret_updates() {
 }
 
 #[tokio::test]
+async fn memory_candidate_create_skill_writes_pending_inbox_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    let memory_dir = temp.path().join("memory");
+    let memory = LocalMemoryStore::new(&memory_dir, "jsonl").expect("memory");
+    let env = SkillEnvironment {
+        memory_store: memory.clone(),
+        ..test_env(temp.path(), &workspace)
+    };
+    let registry = builtin_registry(env);
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+
+    let created = session
+        .execute_skill(
+            &registry,
+            "memory_candidate_create",
+            json!({
+                "kind": "relationship",
+                "scope": "default",
+                "content": "User preference: concise updates",
+                "reason": "preference_pattern",
+                "confidence": 0.7,
+                "tags": ["relationship", "chat-learned"],
+                "source_ref": {
+                    "type": "session_turn",
+                    "data": {"session_id": "chat-1", "turn_id": "turn-1"}
+                }
+            }),
+        )
+        .await
+        .expect("create candidate");
+
+    assert!(created.ok);
+    assert_eq!(created.output["created"], json!(true));
+    assert!(
+        memory
+            .list(MemoryQuery::default())
+            .expect("core memory")
+            .is_empty(),
+        "candidate creation must not promote into core memory"
+    );
+
+    let candidates = JsonlMemoryCandidateStore::new(&memory_dir)
+        .list(MemoryCandidateQuery {
+            status: Some(MemoryCandidateStatus::Pending),
+            ..MemoryCandidateQuery::default()
+        })
+        .expect("pending candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].content, "User preference: concise updates");
+    assert_eq!(
+        candidates[0].source_ref,
+        Some(MemoryRef::SessionTurn {
+            session_id: "chat-1".into(),
+            turn_id: Some("turn-1".into())
+        })
+    );
+
+    let duplicate = session
+        .execute_skill(
+            &registry,
+            "memory_candidate_create",
+            json!({
+                "kind": "relationship",
+                "scope": "default",
+                "content": "User preference: concise updates",
+                "reason": "preference_pattern"
+            }),
+        )
+        .await
+        .expect("duplicate candidate");
+    assert!(duplicate.ok);
+    assert_eq!(duplicate.output["created"], json!(false));
+    assert_eq!(duplicate.output["id"], json!(candidates[0].id));
+}
+
+#[tokio::test]
 async fn memory_delete_with_kind_does_not_delete_other_kinds_by_id() {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace = temp.path().join("workspace");
@@ -338,6 +420,125 @@ async fn memory_delete_with_kind_finds_records_beyond_default_search_limit() {
             .expect("list")
             .iter()
             .all(|record| record.content != "old project note")
+    );
+}
+
+#[tokio::test]
+async fn memory_projection_skill_renders_core_memory_without_task_summaries() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    let memory = LocalMemoryStore::new(temp.path().join("memory"), "jsonl").expect("memory");
+    let env = SkillEnvironment {
+        memory_store: memory.clone(),
+        ..test_env(temp.path(), &workspace)
+    };
+    let registry = builtin_registry(env);
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    memory
+        .append(
+            MemoryRecord::new(MemoryKind::User, "default", "User preference: concise")
+                .expect("record"),
+        )
+        .expect("append user");
+    memory
+        .append(
+            MemoryRecord::new(
+                MemoryKind::Project,
+                "repo",
+                "Working convention: local-first memory",
+            )
+            .expect("record"),
+        )
+        .expect("append project");
+    memory
+        .append(
+            MemoryRecord::new(
+                MemoryKind::Task,
+                "chat-session",
+                "Turn summary\nuser: do this once",
+            )
+            .expect("record")
+            .with_tags(vec!["turn-summary".into()]),
+        )
+        .expect("append task");
+
+    let projection = session
+        .execute_skill(
+            &registry,
+            "memory_projection",
+            json!({"user_scope": "default", "project_scope": "repo"}),
+        )
+        .await
+        .expect("projection");
+
+    assert!(projection.ok);
+    assert!(
+        projection.output["user"]
+            .as_str()
+            .expect("user")
+            .contains("concise")
+    );
+    assert!(
+        projection.output["project"]
+            .as_str()
+            .expect("project")
+            .contains("local-first memory")
+    );
+    assert!(
+        !projection.output.to_string().contains("do this once"),
+        "projection must not expose ordinary episode summaries as core memory"
+    );
+}
+
+#[tokio::test]
+async fn working_memory_list_skill_reads_session_scratchpad() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    let memory = LocalMemoryStore::new(temp.path().join("memory"), "jsonl").expect("memory");
+    let working = JsonlWorkingMemoryStore::new(temp.path().join("memory"));
+    working
+        .append(
+            WorkingMemoryRecord::new(
+                "session-1",
+                MemoryKind::Task,
+                "session-1",
+                "Current task goal: finish memory projection",
+                Some(24),
+            )
+            .expect("working memory")
+            .with_source_ref(MemoryRef::SessionTurn {
+                session_id: "session-1".into(),
+                turn_id: Some("turn-1".into()),
+            })
+            .expect("source ref"),
+        )
+        .expect("append working memory");
+    let env = SkillEnvironment {
+        memory_store: memory,
+        ..test_env(temp.path(), &workspace)
+    };
+    let registry = builtin_registry(env);
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+
+    let result = session
+        .execute_skill(
+            &registry,
+            "working_memory_list",
+            json!({"session_id": "session-1", "limit": 5}),
+        )
+        .await
+        .expect("working memory list");
+
+    assert!(result.ok);
+    let records = result.output.as_array().expect("records");
+    assert_eq!(records.len(), 1);
+    assert!(
+        records[0]["content"]
+            .as_str()
+            .expect("content")
+            .contains("memory projection")
     );
 }
 

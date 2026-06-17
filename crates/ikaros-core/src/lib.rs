@@ -43,6 +43,8 @@ mod tests {
         let agent = config.agent.active();
         assert_eq!(agent.name, "build");
         assert_eq!(agent.mode(), &AgentMode::Build);
+        assert!(agent.profile.memory_context);
+        assert!(!agent.profile.rag_context);
         assert!(config.agent.profiles.contains_key("plan"));
         assert_eq!(config.model.default.provider, "openai-compatible");
         assert_eq!(config.policy.workspace_writes, "ask");
@@ -77,7 +79,7 @@ agent:
       description: "Repository research"
       persona_overlay: "Stay read-heavy."
       memory_context: true
-      rag_context: true
+      rag_context: false
       workspace_writes: deny
       shell: ask
       network: deny
@@ -165,7 +167,7 @@ agent:
       description: "Repository research"
       persona_overlay: "Stay read-heavy and cite local context."
       memory_context: false
-      rag_context: true
+      rag_context: false
       workspace_writes: deny
       shell: ask
       network: deny

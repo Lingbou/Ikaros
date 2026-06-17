@@ -26,10 +26,34 @@ Context 边界控制哪些本地状态可以进入一次模型 turn。它不是 
 - relationship
 - references
 - history
-- memory
+- memory projection
+- working memory
+- retrieved memory
 - RAG
 
 `system`、`developer` 和 `tool_results` section kind 已作为协议形状预留，但当前 chat prompt 还没有把它们作为独立 budgeted section 使用。
+
+每个持久化 `ContextSection` 还会携带 contract：
+
+- `trust_level`
+- `source_kind`
+- `injection_reason`
+- 可选 `freshness`
+- 可选 `scope`
+
+默认映射：
+
+| Section | Trust | Source | Injection reason |
+| --- | --- | --- | --- |
+| relationship | high | accepted memory | relationship core |
+| references | high | explicit reference | user explicit reference |
+| history | medium | session history | recent episode history |
+| memory_projection | high | memory projection | accepted memory projection |
+| working_memory | medium | working memory | session working memory |
+| retrieved_memory | medium-low | retrieved memory | on-demand memory search |
+| RAG | medium-low | RAG index | explicit reference retrieval |
+
+这份 contract 是 event payload 的一部分。Replay、debug 和 UI 调用方可以解释某段可见 context 来自已接受记忆、session scratchpad/history、显式本地 reference，还是带 citation 的 RAG 片段。
 
 ## Token Budget
 
@@ -53,7 +77,7 @@ Estimator 会根据 provider profile 的 tokenizer kind 选择。当前 adapter 
 - relationship：10%
 - 显式 references：35%
 - history：20%
-- memory：20%
+- memory projection、working memory 和 retrieved memory：总共 20%
 - RAG：15%
 
 `TrajectoryCompressor` 应用这套 quota policy，并记录被压缩 section 的确定性省略摘要。这些摘要用于解释哪些内容没有进入本轮 context，还不是模型生成的语义总结。正常行为不再依赖单行 `[truncated]` 截断。

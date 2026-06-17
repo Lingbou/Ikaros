@@ -134,6 +134,50 @@ impl MemoryStore for JsonlMemoryStore {
         Ok(updated)
     }
 
+    fn supersede(
+        &self,
+        old_id: &str,
+        mut replacement: MemoryRecord,
+    ) -> Result<Option<(MemoryRecord, MemoryRecord)>> {
+        reject_secret_like(old_id, "memory superseded id")?;
+        if replacement.id == old_id {
+            return Err(IkarosError::Message(
+                "replacement memory cannot supersede itself".into(),
+            ));
+        }
+        reject_secret_like(&replacement.content, "memory content")?;
+        replacement.validate_metadata()?;
+        if replacement.sensitive || contains_secret_like(&replacement.content) {
+            return Err(IkarosError::SecretRejected("memory content".into()));
+        }
+
+        let mut records = self.read_all()?;
+        let now = now_rfc3339()?;
+        let Some(old_index) = records.iter().position(|record| record.id == old_id) else {
+            return Ok(None);
+        };
+
+        replacement.active = true;
+        replacement.updated_at = None;
+        replacement.valid_from.get_or_insert_with(|| now.clone());
+        if !replacement.supersedes.iter().any(|id| id == old_id) {
+            replacement.supersedes.push(old_id.to_owned());
+        }
+        replacement.validate_metadata()?;
+
+        records[old_index].active = false;
+        records[old_index].updated_at = Some(now.clone());
+        records[old_index].valid_until = Some(now);
+        records[old_index].superseded_by = Some(replacement.id.clone());
+        records[old_index].validate_metadata()?;
+
+        let superseded = records[old_index].clone();
+        let active = replacement.clone();
+        records.push(replacement);
+        self.write_all(&records)?;
+        Ok(Some((superseded, active)))
+    }
+
     fn delete_by_id(&self, id: &str) -> Result<bool> {
         let records = self.read_all()?;
         let before = records.len();

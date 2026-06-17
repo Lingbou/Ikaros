@@ -49,12 +49,25 @@ ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
 
 ```bash
 ikaros memory add "note" --kind project --scope ikaros
+ikaros memory add --kind relationship --scope default --observer alice --subject bob "Bob likes pancakes"
 ikaros memory search "query"
 ikaros memory update <id> --content "new note"
 ikaros memory delete --id <id>
+ikaros memory projection render --scope ikaros
+ikaros memory projection show --scope ikaros
+ikaros memory candidate list
+ikaros memory candidate accept <candidate-id> --reason "explicit user instruction"
+ikaros memory candidate accept <candidate-id> --supersedes <memory-id> --reason "user corrected this"
+ikaros memory candidate reject <candidate-id> --reason "temporary task scope"
+ikaros memory working list --session <session-id>
+ikaros memory working prune
 ikaros relationship remember "preference" --scope user
 ikaros relationship show --scope user
 ```
+
+Runtime chat 会把安全的 turn 状态写进 session working memory，而不是长期 `Task`
+memory。自动 relationship 观察会先进入 pending candidate；接受后才成为 core
+memory。Projection 命令渲染 chat context 使用的已接受长期记忆 surface。
 
 RAG：
 

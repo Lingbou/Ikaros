@@ -59,15 +59,17 @@ agent:
       shell: allow
       network: ask
       memory_context: true
-      rag_context: true
+      rag_context: false
     plan:
       mode: plan
       workspace_writes: deny
       shell: ask
       network: ask
       memory_context: true
-      rag_context: true
+      rag_context: false
 ```
+
+普通 chat 建议保持 `rag_context` 为 false。只有当前 turn 需要带 citation 的本地 reference snippet 时，再在 profile 中启用或传入 `--rag-top-k`。
 
 使用 profile：
 

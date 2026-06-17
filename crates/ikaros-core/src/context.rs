@@ -10,7 +10,9 @@ pub struct RuntimeContext {
     pub relationship_context: Vec<String>,
     pub reference_context: Vec<String>,
     pub chat_history_context: Vec<String>,
-    pub memory_context: Vec<String>,
+    pub memory_projection_context: Vec<String>,
+    pub working_memory_context: Vec<String>,
+    pub retrieved_memory_context: Vec<String>,
     pub rag_context: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_continuation_prompt: Option<String>,
@@ -23,7 +25,9 @@ pub struct ContextBuilder {
     relationship_context: Vec<String>,
     reference_context: Vec<String>,
     chat_history_context: Vec<String>,
-    memory_context: Vec<String>,
+    memory_projection_context: Vec<String>,
+    working_memory_context: Vec<String>,
+    retrieved_memory_context: Vec<String>,
     rag_context: Vec<String>,
     context_continuation_prompt: Option<String>,
 }
@@ -58,8 +62,18 @@ impl ContextBuilder {
         self
     }
 
-    pub fn memory_context(mut self, context: Vec<String>) -> Self {
-        self.memory_context = context;
+    pub fn memory_projection_context(mut self, context: Vec<String>) -> Self {
+        self.memory_projection_context = context;
+        self
+    }
+
+    pub fn working_memory_context(mut self, context: Vec<String>) -> Self {
+        self.working_memory_context = context;
+        self
+    }
+
+    pub fn retrieved_memory_context(mut self, context: Vec<String>) -> Self {
+        self.retrieved_memory_context = context;
         self
     }
 
@@ -80,7 +94,9 @@ impl ContextBuilder {
             relationship_context: self.relationship_context,
             reference_context: self.reference_context,
             chat_history_context: self.chat_history_context,
-            memory_context: self.memory_context,
+            memory_projection_context: self.memory_projection_context,
+            working_memory_context: self.working_memory_context,
+            retrieved_memory_context: self.retrieved_memory_context,
             rag_context: self.rag_context,
             context_continuation_prompt: self.context_continuation_prompt,
         }

@@ -32,12 +32,38 @@ Current chat context sections are:
 - relationship
 - references
 - history
-- memory
+- memory projection
+- working memory
+- retrieved memory
 - RAG
 
 `system`, `developer`, and `tool_results` section kinds exist as protocol
 shapes, but the current chat prompt does not yet use them as independent
 budgeted sections.
+
+Each persisted `ContextSection` also carries a contract:
+
+- `trust_level`
+- `source_kind`
+- `injection_reason`
+- optional `freshness`
+- optional `scope`
+
+The default mapping is:
+
+| Section | Trust | Source | Injection reason |
+| --- | --- | --- | --- |
+| relationship | high | accepted memory | relationship core |
+| references | high | explicit reference | user explicit reference |
+| history | medium | session history | recent episode history |
+| memory_projection | high | memory projection | accepted memory projection |
+| working_memory | medium | working memory | session working memory |
+| retrieved_memory | medium-low | retrieved memory | on-demand memory search |
+| RAG | medium-low | RAG index | explicit reference retrieval |
+
+This contract is intentionally part of the event payload. Replay, debug, and UI
+callers can explain whether a visible line came from accepted memory, session
+scratchpad/history, explicit local references, or cited RAG snippets.
 
 ## Token Budget
 
@@ -74,7 +100,7 @@ debug callers can see which accounting path shaped the turn.
 - relationship: 10%
 - explicit references: 35%
 - history: 20%
-- memory: 20%
+- memory projection, working memory, and retrieved memory: 20% total
 - RAG: 15%
 
 `TrajectoryCompressor` applies that quota policy and records deterministic

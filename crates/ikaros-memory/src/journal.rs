@@ -79,6 +79,11 @@ pub enum MemoryJournalAction {
     Demote,
     Forget,
     Skip,
+    CandidateAccepted,
+    CandidateRejected,
+    ProjectionRendered,
+    Superseded,
+    WorkingMemoryExpired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,6 +131,18 @@ impl MemoryJournalEntry {
         reject_secret_like(&scope, "memory journal scope")?;
         self.memory_id = Some(memory_id);
         self.kind = Some(kind);
+        self.scope = Some(scope);
+        Ok(self)
+    }
+
+    pub fn with_scope(
+        mut self,
+        kind: Option<MemoryKind>,
+        scope: impl Into<String>,
+    ) -> Result<Self> {
+        let scope = scope.into();
+        reject_secret_like(&scope, "memory journal scope")?;
+        self.kind = kind;
         self.scope = Some(scope);
         Ok(self)
     }

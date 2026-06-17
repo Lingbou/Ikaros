@@ -8,6 +8,7 @@ use ikaros_context::{
 use ikaros_core::{
     AgentProfile, ContextBuilder, IkarosError, IkarosPaths, RagConfig, ResolvedAgentProfile, Result,
 };
+use ikaros_memory::{JsonlMemoryCandidateStore, MemoryCandidateStatus};
 use ikaros_models::{
     ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent,
     ModelTokenizerKind,
@@ -69,17 +70,23 @@ fn chat_context_extractors_redact_values() {
             "content": "Relationship context should be handled separately"
         },
         {
+            "kind": "Task",
+            "scope": "session",
+            "content": "Turn summary should stay in episode history"
+        },
+        {
             "kind": "Project",
             "scope": "repo",
             "content": "Prefer local RAG and never expose token=abc123"
         }
     ]);
-    let memory_context = extract_memory_context(&memory, 5);
-    assert_eq!(memory_context.len(), 1);
-    assert!(memory_context[0].contains("[Project/repo]"));
-    assert!(!memory_context[0].contains("Relationship context"));
-    assert!(!memory_context[0].contains("abc123"));
-    assert!(memory_context[0].contains("[REDACTED_SECRET]"));
+    let retrieved_memory = extract_retrieved_memory_context(&memory, 5);
+    assert_eq!(retrieved_memory.len(), 1);
+    assert!(retrieved_memory[0].contains("[Project/repo]"));
+    assert!(!retrieved_memory[0].contains("Relationship context"));
+    assert!(!retrieved_memory[0].contains("Turn summary"));
+    assert!(!retrieved_memory[0].contains("abc123"));
+    assert!(retrieved_memory[0].contains("[REDACTED_SECRET]"));
 
     let rag = serde_json::json!([
         {
@@ -94,13 +101,20 @@ fn chat_context_extractors_redact_values() {
 }
 
 #[test]
+fn chat_defaults_do_not_auto_inject_rag() {
+    assert_eq!(ChatRunOptions::default().rag_top_k, 0);
+}
+
+#[test]
 fn chat_system_prompt_uses_context_and_redacts() {
     let context = ContextBuilder::new()
         .persona_context("Persona token=abc123")
         .relationship_context(vec!["Relationship prefers concise updates".into()])
         .reference_context(vec!["Reference src/lib.rs".into()])
         .chat_history_context(vec!["Earlier user asked for a quiet status".into()])
-        .memory_context(vec!["Memory sk-not-real".into()])
+        .memory_projection_context(vec!["Projection says: concise updates".into()])
+        .working_memory_context(vec!["Working memory sk-not-real".into()])
+        .retrieved_memory_context(vec!["Retrieved memory from search".into()])
         .rag_context(vec!["RAG safe citation".into()])
         .context_continuation_prompt(Some(
             "Compacted sections: history. Do not invent omitted details.".into(),
@@ -113,7 +127,11 @@ fn chat_system_prompt_uses_context_and_redacts() {
     assert!(prompt.contains("Reference src/lib.rs"));
     assert!(prompt.contains("Local chat history context"));
     assert!(prompt.contains("Earlier user asked for a quiet status"));
-    assert!(prompt.contains("Local memory context"));
+    assert!(prompt.contains("Accepted memory projection"));
+    assert!(prompt.contains("Projection says: concise updates"));
+    assert!(prompt.contains("Session working memory"));
+    assert!(prompt.contains("Retrieved memory context"));
+    assert!(prompt.contains("Retrieved memory from search"));
     assert!(prompt.contains("Local RAG context"));
     assert!(prompt.contains("RAG safe citation"));
     assert!(prompt.contains("Context compression notice"));
@@ -145,8 +163,9 @@ fn chat_context_budget_preserves_priority_and_omits_low_sections() {
         relationship: vec!["rel".into()],
         references: vec!["ref".into()],
         history: vec!["hist".into()],
-        memory: vec!["memory-context-is-long-enough-to-truncate".into()],
+        retrieved_memory: vec!["memory-context-is-long-enough-to-truncate".into()],
         rag: vec!["rag should be omitted".into()],
+        ..ChatContext::default()
     };
 
     let estimator = HeuristicTokenEstimator;
@@ -156,7 +175,7 @@ fn chat_context_budget_preserves_priority_and_omits_low_sections() {
     assert_eq!(budgeted.relationship, vec!["rel"]);
     assert_eq!(budgeted.references, vec!["ref"]);
     assert_eq!(budgeted.history, vec!["hist"]);
-    assert!(budgeted.memory.is_empty());
+    assert!(budgeted.retrieved_memory.is_empty());
     assert!(budgeted.rag.is_empty());
     assert!(chat_context_token_count(&budgeted, &estimator) <= 12);
 }
@@ -167,7 +186,9 @@ fn chat_context_budget_zero_keeps_context_unbounded() {
         relationship: vec!["rel".into()],
         references: vec!["ref".into()],
         history: vec!["hist".into()],
-        memory: vec!["memory".into()],
+        memory_projection: vec!["projection".into()],
+        working_memory: vec!["working".into()],
+        retrieved_memory: vec!["memory".into()],
         rag: vec!["rag".into()],
     };
 
@@ -370,12 +391,119 @@ fn relationship_learning_extracts_clear_preferences_and_redacts() {
     );
     assert!(
         super::learning::extract_relationship_memory_candidates(
+            "I want you to only inspect docs in this turn. 我希望你这次不要跑测试。"
+        )
+        .is_empty(),
+        "short-lived instructions belong in working memory or candidates, not core relationship memory"
+    );
+    assert!(
+        super::learning::extract_relationship_memory_candidates(
             "我喜欢安静一点的回复。请记住我偏好本地优先。"
         )
         .iter()
         .any(|candidate| candidate.contains("User preference: 安静一点的回复"))
     );
     assert!(super::learning::extract_relationship_memory_candidates("hello world").is_empty());
+}
+
+#[tokio::test]
+async fn chat_context_uses_projection_and_working_memory_without_task_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let memory =
+        ikaros_memory::LocalMemoryStore::new(temp.path().join("memory"), "jsonl").expect("memory");
+    ikaros_memory::MemoryStore::append(
+        &memory,
+        ikaros_memory::MemoryRecord::new(
+            ikaros_memory::MemoryKind::User,
+            "default",
+            "User preference: concise status",
+        )
+        .expect("user memory"),
+    )
+    .expect("append user");
+    ikaros_memory::MemoryStore::append(
+        &memory,
+        ikaros_memory::MemoryRecord::new(
+            ikaros_memory::MemoryKind::Project,
+            "repo",
+            "Working convention: memory and RAG stay separate",
+        )
+        .expect("project memory"),
+    )
+    .expect("append project");
+    ikaros_memory::MemoryStore::append(
+        &memory,
+        ikaros_memory::MemoryRecord::new(
+            ikaros_memory::MemoryKind::Task,
+            "chat-session",
+            "Turn summary\nuser: one-off task",
+        )
+        .expect("task memory")
+        .with_tags(vec!["turn-summary".into()]),
+    )
+    .expect("append task");
+    ikaros_memory::JsonlWorkingMemoryStore::new(temp.path().join("memory"))
+        .append(
+            ikaros_memory::WorkingMemoryRecord::new(
+                "chat-session",
+                ikaros_memory::MemoryKind::Task,
+                "chat-session",
+                "Current task goal: keep runtime context local-first",
+                Some(24),
+            )
+            .expect("working memory"),
+        )
+        .expect("append working");
+
+    let registry = ikaros_skills::builtin_registry(ikaros_skills::SkillEnvironment {
+        workspace_root: workspace.clone(),
+        memory_store: memory,
+        rag_index: ikaros_rag::LocalRagStore::new(temp.path().join("rag"), "jsonl").expect("rag"),
+        rag_config: RagConfig {
+            embedding_provider: "hash".into(),
+            ..RagConfig::default()
+        },
+        rag_provider: ikaros_core::RemoteProviderConfig::default(),
+        persona_path: temp.path().join("persona.md"),
+        skills_dir: temp.path().join("skills"),
+        voice_tts: ikaros_voice::VoiceProviderConfig::mock_tts(),
+        voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
+        voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
+        voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
+    });
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let mut profile = AgentProfile::build();
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "build".into(),
+        profile,
+    };
+
+    let context = build_chat_context(
+        "continue",
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions {
+            session_id: Some("chat-session".into()),
+            scope: Some("repo".into()),
+            memory_limit: 5,
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect("context");
+
+    let projection = context.memory_projection.join("\n");
+    let working = context.working_memory.join("\n");
+    let retrieved = context.retrieved_memory.join("\n");
+    assert!(projection.contains("concise status"));
+    assert!(projection.contains("memory and RAG stay separate"));
+    assert!(working.contains("Current task goal"));
+    assert!(!retrieved.contains("one-off task"));
 }
 
 #[test]
@@ -405,7 +533,7 @@ fn cloud_rag_is_not_used_for_redacted_safe_read_chat_lookup() {
 }
 
 #[tokio::test]
-async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences() {
+async fn run_chat_message_creates_relationship_candidate_from_clear_user_preferences() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("home");
     let workspace = temp.path().join("workspace");
@@ -426,8 +554,21 @@ async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences
     .await
     .expect("first chat");
     assert_eq!(first.relationship_hits, 0);
-    assert_eq!(first.relationship_learned, 1);
+    assert_eq!(first.relationship_candidates_created, 1);
     assert_eq!(first.emotion, EmotionState::Satisfied);
+    let candidate_store = JsonlMemoryCandidateStore::new(&paths.memory_dir);
+    let pending = candidate_store
+        .list(ikaros_memory::MemoryCandidateQuery {
+            status: Some(MemoryCandidateStatus::Pending),
+            ..ikaros_memory::MemoryCandidateQuery::default()
+        })
+        .expect("pending candidates");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].scope, "default");
+    assert_eq!(
+        pending[0].content,
+        "User preference: concise progress updates"
+    );
 
     let duplicate = run_chat_message(
         "I prefer concise progress updates.",
@@ -441,17 +582,13 @@ async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences
     )
     .await
     .expect("duplicate chat");
-    assert_eq!(duplicate.relationship_learned, 0);
+    assert_eq!(duplicate.relationship_candidates_created, 0);
 
     let snapshot =
         crate::relationship_snapshot(&paths, &workspace, Some("build"), Some("default"), 5)
             .await
             .expect("relationship snapshot");
-    assert_eq!(snapshot.notes.len(), 1);
-    assert_eq!(
-        snapshot.notes[0].content,
-        "User preference: concise progress updates"
-    );
+    assert!(snapshot.notes.is_empty());
 
     let disabled = run_chat_message(
         "Call me Ikaros friend.",
@@ -466,7 +603,7 @@ async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences
     )
     .await
     .expect("disabled learning chat");
-    assert_eq!(disabled.relationship_learned, 0);
+    assert_eq!(disabled.relationship_candidates_created, 0);
 }
 
 #[tokio::test]
@@ -508,7 +645,7 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
     assert!(!result.content.is_empty());
     assert!(!result.content.contains("abc123"));
     assert_eq!(result.relationship_hits, 1);
-    assert_eq!(result.relationship_learned, 0);
+    assert_eq!(result.relationship_candidates_created, 0);
     assert_eq!(result.history_hits, 0);
     assert!(result.audit_path.exists());
     assert!(result.model_usage_path.exists());
@@ -530,7 +667,7 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
     assert_eq!(second.chat_session_id, result.chat_session_id);
     assert_eq!(second.history_hits, 1);
     assert_eq!(second.relationship_hits, 1);
-    assert_eq!(second.relationship_learned, 0);
+    assert_eq!(second.relationship_candidates_created, 0);
     assert_eq!(second.emotion, EmotionState::Satisfied);
 
     let isolated = run_chat_message(
@@ -674,7 +811,7 @@ async fn run_chat_message_persists_single_call_chat_timeline() {
     .expect("single-call chat");
 
     assert_eq!(result.provider, "mock");
-    assert_eq!(result.relationship_learned, 0);
+    assert_eq!(result.relationship_candidates_created, 0);
     let history = ChatHistoryStore::new(&paths.home)
         .read_all()
         .expect("chat history");

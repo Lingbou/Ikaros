@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{LocalMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore};
+use crate::{
+    JsonlWorkingMemoryStore, LocalMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryRef,
+    MemoryStore, WorkingMemoryRecord,
+};
 use ikaros_core::{ExternalMemoryProviderConfig, IkarosError, Result, redact_secrets};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -395,18 +398,30 @@ impl MemoryProvider for LocalMemoryStore {
                 notes: vec!["skipped: redacted secret marker present".into()],
             });
         }
-        let record = MemoryRecord::new(MemoryKind::Task, session_id.clone(), content)?
-            .with_tags(vec!["turn-summary".into(), "memory-lifecycle".into()])
-            .with_source("memory_lifecycle")
-            .with_source_ref(source_ref.clone());
-        let record = MemoryStore::append(self, record)?;
+        let working = JsonlWorkingMemoryStore::new(memory_dir_for_store_path(self.path()));
+        let record = WorkingMemoryRecord::new(
+            session_id.clone(),
+            MemoryKind::Task,
+            session_id.clone(),
+            content,
+            Some(24),
+        )?
+        .with_tags(vec!["turn-summary".into(), "memory-lifecycle".into()])?
+        .with_source_ref(source_ref.clone())?;
+        let record = working.append(record)?;
         Ok(MemoryLifecycleReport {
             phase: "sync_turn".into(),
             records_read: 0,
             records_written: 1,
             source_ref: Some(source_ref),
-            records: vec![MemoryLifecycleRecordRef::from(&record)],
-            notes: Vec::new(),
+            records: vec![MemoryLifecycleRecordRef {
+                id: record.id,
+                kind: record.kind,
+                scope: record.scope,
+                source_ref: record.source_ref,
+                confidence: None,
+            }],
+            notes: vec!["working_memory_written".into()],
         })
     }
 
@@ -513,6 +528,12 @@ fn local_path(memory_dir: &Path, backend: &str) -> Result<PathBuf> {
             "unsupported memory backend: {other}"
         ))),
     }
+}
+
+fn memory_dir_for_store_path(path: &Path) -> PathBuf {
+    path.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn normalized_or_default(value: &str, default: String) -> String {

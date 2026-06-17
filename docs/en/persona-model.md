@@ -37,7 +37,9 @@ ikaros relationship remember "Prefer short updates" --scope user
 ikaros relationship show --scope user
 ```
 
-Chat can learn clear preferences after redaction and de-duplication. Use `--no-relationship-learning` to disable that for a turn.
+Chat can extract clear preferences after redaction and de-duplication, but
+automatic observations enter the memory candidate inbox first. Use
+`--no-relationship-learning` to disable candidate creation for a turn.
 
 ## Boundary
 

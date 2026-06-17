@@ -28,8 +28,8 @@ pub use references::{
 pub use tokenizer::{ContextTokenEstimator, ContextTokenizerKind};
 pub use types::{
     ChatContext, ContextBudget, ContextBundle, ContextDiff, ContextDiffItem, ContextLimitReport,
-    ContextReference, ContextReferenceKind, ContextSection, ContextSectionKind,
-    ResolvedContextReference,
+    ContextReference, ContextReferenceKind, ContextSection, ContextSectionKind, ContextSourceKind,
+    ContextTrustLevel, ResolvedContextReference,
 };
 
 pub const DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET: usize = 2_000;

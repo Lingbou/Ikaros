@@ -3,7 +3,11 @@
 use std::fs;
 
 use crate::support::TestHome;
-use ikaros_memory::{JsonlMemoryStore, MemoryKind, MemoryRecord, MemoryStore};
+use ikaros_memory::{
+    JsonlMemoryCandidateStore, JsonlMemoryJournal, JsonlMemoryStore, JsonlWorkingMemoryStore,
+    MemoryCandidate, MemoryCandidateReason, MemoryCandidateStatus, MemoryJournal,
+    MemoryJournalAction, MemoryKind, MemoryRecord, MemoryStore, WorkingMemoryRecord,
+};
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSource, SessionId, SessionRecord, SessionSource,
     SessionStore, SqliteSessionStore, TurnId,
@@ -192,6 +196,299 @@ fn local_memory_and_message_gateway_smoke_paths_run_offline() {
     assert!(drained.contains("\"status\": \"Pending\""));
     assert!(drained.contains("gateway_inbox:"));
     assert!(drained.contains("gateway_outbox:"));
+}
+
+#[test]
+fn memory_cli_filters_observer_subject_perspective() {
+    let env = TestHome::new();
+    env.init();
+
+    let alice = env.run([
+        "memory",
+        "add",
+        "--kind",
+        "relationship",
+        "--scope",
+        "default",
+        "--observer",
+        "alice",
+        "--subject",
+        "bob",
+        "Bob likes pancakes",
+    ]);
+    assert!(alice.contains("summary: memory appended"));
+    let carol = env.run([
+        "memory",
+        "add",
+        "--kind",
+        "relationship",
+        "--scope",
+        "default",
+        "--observer",
+        "carol",
+        "--subject",
+        "bob",
+        "Bob prefers waffles",
+    ]);
+    assert!(carol.contains("summary: memory appended"));
+
+    let alice_search = env.run([
+        "memory",
+        "search",
+        "--kind",
+        "relationship",
+        "--scope",
+        "default",
+        "--observer",
+        "alice",
+        "--subject",
+        "bob",
+        "Bob",
+    ]);
+    assert!(alice_search.contains("pancakes"));
+    assert!(!alice_search.contains("waffles"));
+
+    let carol_list = env.run([
+        "memory",
+        "list",
+        "--kind",
+        "relationship",
+        "--scope",
+        "default",
+        "--observer",
+        "carol",
+        "--subject",
+        "bob",
+    ]);
+    assert!(carol_list.contains("waffles"));
+    assert!(!carol_list.contains("pancakes"));
+}
+
+#[test]
+fn memory_projection_and_candidate_cli_manage_core_memory_surface() {
+    let env = TestHome::new();
+    env.init();
+    let store = JsonlMemoryStore::new(env.home.join("memory"));
+    store
+        .append(
+            MemoryRecord::new(
+                MemoryKind::User,
+                "default",
+                "User preference: concise updates",
+            )
+            .expect("user memory"),
+        )
+        .expect("append user");
+    store
+        .append(
+            MemoryRecord::new(
+                MemoryKind::Project,
+                "repo",
+                "Working convention: memory and RAG stay separate",
+            )
+            .expect("project memory"),
+        )
+        .expect("append project");
+    store
+        .append(
+            MemoryRecord::new(
+                MemoryKind::Task,
+                "chat-session",
+                "Turn summary should not project",
+            )
+            .expect("task memory")
+            .with_tags(vec!["turn-summary".into()]),
+        )
+        .expect("append task");
+    let old_relationship = store
+        .append(
+            MemoryRecord::new(
+                MemoryKind::Relationship,
+                "default",
+                "User asked Ikaros to remember: commit whenever the implementation passes tests",
+            )
+            .expect("old relationship"),
+        )
+        .expect("append old relationship");
+
+    let rendered = env.run(["memory", "projection", "render", "--scope", "repo"]);
+    assert!(rendered.contains("projection rendered"));
+    let journal = JsonlMemoryJournal::new(env.home.join("memory"));
+    let entries = journal.list().expect("projection journal entries");
+    assert!(entries.iter().any(
+        |entry| entry.action == MemoryJournalAction::ProjectionRendered
+            && entry.scope.as_deref() == Some("repo")
+    ));
+    let user_projection =
+        fs::read_to_string(env.home.join("memory/projections/USER.md")).expect("user projection");
+    let project_projection =
+        fs::read_to_string(env.home.join("memory/projections/PROJECT.repo.md"))
+            .expect("project projection");
+    assert!(user_projection.contains("concise updates"));
+    assert!(project_projection.contains("memory and RAG stay separate"));
+    assert!(!user_projection.contains("Turn summary"));
+    assert!(!project_projection.contains("Turn summary"));
+
+    let shown = env.run(["memory", "projection", "show", "--scope", "repo"]);
+    assert!(shown.contains("# User"));
+    assert!(shown.contains("# Project Memory: repo"));
+
+    let candidate_store = JsonlMemoryCandidateStore::new(env.home.join("memory"));
+    let accepted = candidate_store
+        .create(
+            MemoryCandidate::new(
+                MemoryKind::Relationship,
+                "default",
+                "User asked Ikaros to remember: do not commit unless explicitly requested",
+                MemoryCandidateReason::ExplicitRemember,
+                0.93,
+            )
+            .expect("accepted candidate"),
+        )
+        .expect("create accepted candidate");
+    let rejected = candidate_store
+        .create(
+            MemoryCandidate::new(
+                MemoryKind::Task,
+                "chat-session",
+                "Temporary PR scope: docs only",
+                MemoryCandidateReason::TaskOutcome,
+                0.45,
+            )
+            .expect("rejected candidate"),
+        )
+        .expect("create rejected candidate");
+
+    let listed = env.run(["memory", "candidate", "list"]);
+    assert!(listed.contains("\"status\": \"pending\""));
+    assert!(listed.contains("do not commit"));
+    let accepted_output = env.run([
+        "memory",
+        "candidate",
+        "accept",
+        &accepted.id,
+        "--reason",
+        "explicit user instruction",
+        "--supersedes",
+        &old_relationship.id,
+    ]);
+    assert!(accepted_output.contains("\"status\": \"accepted\""));
+    let entries = journal.list().expect("candidate accept journal entries");
+    assert!(entries.iter().any(
+        |entry| entry.action == MemoryJournalAction::CandidateAccepted
+            && entry.memory_id.as_deref() == Some(&accepted.id)
+            && entry.scope.as_deref() == Some("default")
+    ));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.action == MemoryJournalAction::Superseded
+                && entry.memory_id.as_deref() == Some(&old_relationship.id)
+                && entry.scope.as_deref() == Some("default"))
+    );
+    let user_projection =
+        fs::read_to_string(env.home.join("memory/projections/USER.md")).expect("user projection");
+    assert!(user_projection.contains("do not commit unless explicitly requested"));
+    assert!(!user_projection.contains("commit whenever"));
+    let records = store
+        .list(ikaros_memory::MemoryQuery {
+            scope: Some("default".into()),
+            ..ikaros_memory::MemoryQuery::default()
+        })
+        .expect("memory records");
+    assert!(records.iter().any(|record| {
+        record.id == old_relationship.id && !record.active && record.superseded_by.is_some()
+    }));
+    let search = env.run([
+        "memory",
+        "search",
+        "--kind",
+        "relationship",
+        "--scope",
+        "default",
+        "do not commit",
+    ]);
+    assert!(search.contains("do not commit unless explicitly requested"));
+
+    let rejected_output = env.run([
+        "memory",
+        "candidate",
+        "reject",
+        &rejected.id,
+        "--reason",
+        "temporary scope stays in episode history",
+    ]);
+    assert!(rejected_output.contains("\"status\": \"rejected\""));
+    let entries = journal.list().expect("candidate reject journal entries");
+    assert!(entries.iter().any(
+        |entry| entry.action == MemoryJournalAction::CandidateRejected
+            && entry.memory_id.as_deref() == Some(&rejected.id)
+            && entry.scope.as_deref() == Some("chat-session")
+    ));
+    assert_eq!(
+        candidate_store
+            .list(ikaros_memory::MemoryCandidateQuery {
+                status: Some(MemoryCandidateStatus::Pending),
+                ..ikaros_memory::MemoryCandidateQuery::default()
+            })
+            .expect("pending candidates")
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn memory_working_cli_lists_and_prunes_expired_scratchpad() {
+    let env = TestHome::new();
+    env.init();
+    let store = JsonlWorkingMemoryStore::new(env.home.join("memory"));
+    let mut expired = WorkingMemoryRecord::new(
+        "session-1",
+        MemoryKind::Task,
+        "session-1",
+        "expired temporary scope",
+        None,
+    )
+    .expect("expired");
+    expired.expires_at = Some("2000-01-01T00:00:00Z".into());
+    let active = WorkingMemoryRecord::new(
+        "session-1",
+        MemoryKind::Task,
+        "session-1",
+        "active temporary scope",
+        None,
+    )
+    .expect("active");
+    store.append(expired).expect("append expired");
+    store.append(active).expect("append active");
+
+    let listed = env.run(["memory", "working", "list", "--session", "session-1"]);
+    assert!(listed.contains("active temporary scope"));
+    assert!(!listed.contains("expired temporary scope"));
+
+    let pruned = env.run(["memory", "working", "prune"]);
+    assert!(pruned.contains("\"summary\": \"working memory pruned\""));
+    assert!(pruned.contains("\"expired_count\": 1"));
+    assert!(pruned.contains("expired temporary scope"));
+
+    let listed_after = env.run([
+        "memory",
+        "working",
+        "list",
+        "--session",
+        "session-1",
+        "--include-expired",
+    ]);
+    assert!(listed_after.contains("active temporary scope"));
+    assert!(!listed_after.contains("expired temporary scope"));
+
+    let journal = JsonlMemoryJournal::new(env.home.join("memory"));
+    let entries = journal.list().expect("journal");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.action == MemoryJournalAction::WorkingMemoryExpired)
+    );
 }
 
 #[test]
@@ -415,7 +712,7 @@ memory:
   policy:
     promote_threshold: 0.70
     demote_threshold: 0.45
-    forget_threshold: 0.10
+    forget_threshold: 0.30
     max_records_per_scope: 2
 
 rag:
@@ -425,12 +722,39 @@ rag:
     )
     .expect("policy config");
     let store = JsonlMemoryStore::new(env.home.join("memory"));
-    store
-        .append(MemoryRecord::new(MemoryKind::Task, "policy-session", "old").expect("old"))
-        .expect("append old");
-    store
-        .append(MemoryRecord::new(MemoryKind::Task, "policy-session", "stale").expect("stale"))
-        .expect("append stale");
+    let mut promote = MemoryRecord::new(
+        MemoryKind::Task,
+        "policy-session",
+        "remember stable project preference concise updates",
+    )
+    .expect("promote");
+    promote.created_at = "2099-01-01T00:00:00Z".into();
+    promote.confidence = Some(1.0);
+    promote.source = Some("manual".into());
+    promote.tags = vec!["turn-summary".into(), "memory-lifecycle".into()];
+    store.append(promote).expect("append promote");
+
+    let mut demote =
+        MemoryRecord::new(MemoryKind::Task, "policy-session", "stale task note").expect("demote");
+    demote.created_at = "2002-01-01T00:00:00Z".into();
+    demote.confidence = Some(0.2);
+    store.append(demote).expect("append demote");
+
+    let mut quota = MemoryRecord::new(MemoryKind::Task, "policy-session", "low confidence task")
+        .expect("quota");
+    quota.created_at = "2001-01-01T00:00:00Z".into();
+    quota.confidence = Some(0.3);
+    store.append(quota).expect("append quota");
+
+    let mut forget = MemoryRecord::new(
+        MemoryKind::Task,
+        "policy-session",
+        "obsolete temporary note",
+    )
+    .expect("forget");
+    forget.created_at = "2000-01-01T00:00:00Z".into();
+    forget.confidence = Some(0.0);
+    store.append(forget).expect("append forget");
 
     let chat = env.run([
         "chat",
