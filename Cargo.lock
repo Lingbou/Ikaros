@@ -836,6 +836,7 @@ dependencies = [
  "ikaros-harness",
  "ikaros-memory",
  "ikaros-rag",
+ "ikaros-session",
  "ikaros-soul",
  "ikaros-voice",
  "serde",

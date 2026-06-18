@@ -21,6 +21,7 @@ pub(crate) enum DebugCommand {
     ContextDiff(DebugSessionQuery),
     MemoryLifecycle(DebugSessionQuery),
     Continuations(DebugSessionQuery),
+    CodingTurn(DebugSessionQuery),
 }
 
 #[derive(Debug, Args)]
@@ -46,7 +47,72 @@ pub(crate) fn debug_command(
         DebugCommand::Continuations(args) => {
             debug_continuations(args, paths, workspace, agent_override)
         }
+        DebugCommand::CodingTurn(args) => debug_coding_turn(args, paths, workspace, agent_override),
     }
+}
+
+fn debug_coding_turn(
+    args: DebugSessionQuery,
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+) -> Result<()> {
+    let (state_db, replay) = replay_session(paths, workspace, agent_override, &args.session_id)?;
+    let events = filter_turn_events(
+        &replay.agent_events,
+        &args.session_id,
+        args.turn_id.as_deref(),
+    )?;
+    let coding_events = events
+        .into_iter()
+        .filter(|event| matches!(event.kind, AgentEventKind::CodingTurn))
+        .collect::<Vec<_>>();
+    let mut event_kind_counts = BTreeMap::<String, usize>::new();
+    for event in &coding_events {
+        if let Some(kind) = event.payload["kind"].as_str() {
+            *event_kind_counts.entry(kind.to_owned()).or_default() += 1;
+        }
+    }
+    let entries = replay
+        .entries
+        .iter()
+        .filter(|entry| {
+            args.turn_id.as_deref().is_none_or(|turn_id| {
+                entry
+                    .turn_id
+                    .as_ref()
+                    .is_some_and(|entry_turn_id| entry_turn_id.as_str() == turn_id)
+            }) && entry.payload["kind"].as_str().is_some()
+        })
+        .map(|entry| {
+            json!({
+                "entry_id": entry.entry_id.clone(),
+                "turn_id": entry.turn_id.clone(),
+                "kind": entry.kind,
+                "coding_kind": entry.payload["kind"].as_str(),
+                "visible_text": entry.visible_text.clone(),
+                "payload": entry.payload.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let review_findings = coding_events
+        .iter()
+        .filter(|event| event.payload["kind"].as_str() == Some("review_finding"))
+        .map(|event| event.payload.clone())
+        .collect::<Vec<_>>();
+    let output = json!({
+        "session_id": args.session_id,
+        "turn_id": args.turn_id,
+        "state_db": state_db.display().to_string(),
+        "event_count": coding_events.len(),
+        "entry_count": entries.len(),
+        "event_kind_counts": event_kind_counts,
+        "review_findings": review_findings,
+        "events": coding_events,
+        "entries": entries,
+    });
+    println!("{}", serde_json::to_string_pretty(&redact_json(output))?);
+    Ok(())
 }
 
 fn debug_context_diff(

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{print_approval_hint, print_skill_result, session_and_registry};
+use crate::{
+    print_approval_hint, print_skill_result, resolve_agent_instance, session_and_registry,
+    session_and_registry_for_instance, skill_env,
+};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use ikaros_core::{IkarosPaths, ToolResult, redact_secrets};
@@ -9,8 +12,13 @@ use ikaros_models::{
     ModelMessage, ModelRequest, ModelRequestOptions, ModelUsageLedger,
     governed_provider_from_config,
 };
+use ikaros_session::{SessionId, SessionSource, SqliteSessionStore, TurnId};
+use ikaros_skills::{CodingSessionConfig, builtin_registry};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CodeCommand {
@@ -35,6 +43,18 @@ pub(crate) enum CodeCommand {
         objective: String,
         #[arg(long)]
         diff: Option<String>,
+        #[arg(long, default_value = "plan")]
+        mode: String,
+        #[arg(long)]
+        apply_patch: bool,
+        #[arg(long)]
+        run_tests: bool,
+        #[arg(long = "test-command")]
+        test_commands: Vec<String>,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        turn_id: Option<String>,
         #[arg(long = "test-analysis-json")]
         test_analysis_json: Option<String>,
     },
@@ -104,11 +124,29 @@ pub(crate) async fn code_command(
         CodeCommand::Workflow {
             objective,
             diff,
+            mode,
+            apply_patch,
+            run_tests,
+            test_commands,
+            session_id,
+            turn_id,
             test_analysis_json,
         } => {
-            let mut input = json!({"objective": objective});
+            let (session, registry, session_id, turn_id) =
+                coding_session_and_registry(paths, workspace, agent_override, session_id, turn_id)?;
+            let mut input = json!({
+                "objective": objective,
+                "mode": mode,
+                "apply_patch": apply_patch,
+                "run_tests": run_tests,
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+            });
             if let Some(diff) = diff {
                 input["diff"] = json!(diff);
+            }
+            if !test_commands.is_empty() {
+                input["test_commands"] = json!(test_commands);
             }
             if let Some(test_analysis_json) = test_analysis_json {
                 input["test_analysis"] = serde_json::from_str(&test_analysis_json)
@@ -153,6 +191,30 @@ pub(crate) async fn code_command(
         println!("approvals: {}", log.path().display());
     }
     Ok(())
+}
+
+fn coding_session_and_registry(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+    session_id: Option<String>,
+    turn_id: Option<String>,
+) -> Result<(ExecutionSession, SkillRegistry, SessionId, TurnId)> {
+    let config = ikaros_core::IkarosConfig::load(&paths.config)?;
+    let agent = resolve_agent_instance(&config, agent_override, workspace, &paths.home)?;
+    let (session, _) = session_and_registry_for_instance(paths, &config, &agent)?;
+    let session_id = session_id.map(SessionId::from).unwrap_or_default();
+    let turn_id = turn_id.map(TurnId::from).unwrap_or_default();
+    let mut env = skill_env(paths, &agent.workspace, &config)?;
+    env.coding_session = Some(CodingSessionConfig {
+        store: Arc::new(SqliteSessionStore::new(&agent.state_dir)),
+        session_id: session_id.clone(),
+        turn_id: turn_id.clone(),
+        source: SessionSource::Cli,
+        agent_id: Some(agent.agent_id.clone()),
+        workspace: Some(agent.workspace.clone()),
+    });
+    Ok((session, builtin_registry(env), session_id, turn_id))
 }
 
 async fn resolve_code_diff(

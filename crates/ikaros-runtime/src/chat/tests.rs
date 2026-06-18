@@ -473,6 +473,7 @@ async fn chat_context_uses_projection_and_working_memory_without_task_memory() {
         voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
         voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
         voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
+        coding_session: None,
     });
     let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
     let mut profile = AgentProfile::build();
@@ -527,6 +528,7 @@ fn cloud_rag_is_not_used_for_redacted_safe_read_chat_lookup() {
         voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
         voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
         voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
+        coding_session: None,
     });
 
     assert!(!context_lookup_is_safe_read(&registry, "rag_search"));

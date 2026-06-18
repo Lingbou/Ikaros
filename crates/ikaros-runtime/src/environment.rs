@@ -115,6 +115,7 @@ pub fn skill_environment(
         voice_tts_provider: config.providers.tts.clone(),
         voice_asr: config.voice.asr.clone(),
         voice_asr_provider: config.providers.asr.clone(),
+        coding_session: None,
     })
 }
 

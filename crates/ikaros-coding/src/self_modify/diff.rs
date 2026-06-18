@@ -62,7 +62,7 @@ impl SelfModifyStore {
                 "self-modify store paths are protected".into(),
             ));
         }
-        let rendered = resolved
+        let rendered = relative
             .to_string_lossy()
             .replace('\\', "/")
             .to_ascii_lowercase();
@@ -141,7 +141,10 @@ impl SelfModifyStore {
                 "self-modify store paths are protected".into(),
             ));
         }
-        let rendered = resolved
+        let relative = resolved.strip_prefix(workspace_root).map_err(|_| {
+            IkarosError::Message("self-modify target must stay inside the workspace".into())
+        })?;
+        let rendered = relative
             .to_string_lossy()
             .replace('\\', "/")
             .to_ascii_lowercase();

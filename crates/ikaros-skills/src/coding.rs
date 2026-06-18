@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
+    CodingSessionConfig,
     shell::{run_shell, validate_test_command},
     support::input_string,
 };
 use async_trait::async_trait;
 use ikaros_coding::{
-    ChangePlanner, CodeReviewAssistant, CodingWorkflow, CodingWorkflowInput, DiffSummarizer,
-    GuardedPatchApplier, PatchIterationPlanner, RepoScanner, TestFailureAnalysis,
-    TestFailureAnalyzer, TestRunnerPlan,
+    ChangePlanner, CodeReviewAssistant, CodingMode, CodingModeCapabilities,
+    CodingPermissionProfile, CodingTurnContext, CodingTurnContextInput, CodingTurnInput,
+    DeterministicCodingRuntime, DiffSummarizer, GuardedPatchApplier, PatchIterationPlanner,
+    RepoScanner, TestCommand, TestFailureAnalysis, TestFailureAnalyzer, TestRunnerPlan,
 };
-use ikaros_core::{Result, RiskLevel};
+use ikaros_core::{IkarosError, Result, RiskLevel};
 use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
-use serde_json::json;
+use ikaros_session::{
+    AgentEvent, AgentEventKind, AgentEventSource, SessionEntry, SessionEntryKind, SessionRecord,
+};
+use serde_json::{Value, json};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -315,7 +320,15 @@ impl Skill for CodeIterateSkill {
 }
 
 #[derive(Debug, Clone)]
-pub struct CodeWorkflowSkill;
+pub struct CodeWorkflowSkill {
+    coding_session: Option<CodingSessionConfig>,
+}
+
+impl CodeWorkflowSkill {
+    pub fn new(coding_session: Option<CodingSessionConfig>) -> Self {
+        Self { coding_session }
+    }
+}
 
 #[async_trait]
 impl Skill for CodeWorkflowSkill {
@@ -328,30 +341,301 @@ impl Skill for CodeWorkflowSkill {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        json!({"type": "object", "required": ["objective"], "properties": {"objective": {"type": "string"}, "diff": {"type": "string"}, "test_analysis": {"type": "object"}}})
+        json!({
+            "type": "object",
+            "required": ["objective"],
+            "properties": {
+                "objective": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["plan", "edit", "review", "test", "self_modify"]
+                },
+                "diff": {"type": "string"},
+                "apply_patch": {"type": "boolean"},
+                "run_tests": {"type": "boolean"},
+                "test_analysis": {"type": "object"},
+                "test_commands": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "required": ["command"],
+                                "properties": {
+                                    "command": {"type": "string"},
+                                    "reason": {"type": "string"}
+                                }
+                            }
+                        ]
+                    }
+                },
+                "instructions": {"type": "array", "items": {"type": "string"}},
+                "session_id": {"type": "string"},
+                "turn_id": {"type": "string"}
+            }
+        })
     }
 
     fn risk_level(&self) -> RiskLevel {
         RiskLevel::SafeRead
     }
 
+    fn policy_request(&self, input: &serde_json::Value, _workspace_root: &Path) -> PolicyRequest {
+        let mode = parse_coding_mode_lossy(input);
+        let apply_patch = code_workflow_apply_patch_requested(input);
+        let runs_tests = code_workflow_runs_tests(input);
+        let capabilities = CodingModeCapabilities::for_mode(mode);
+        let invalid_request = capabilities
+            .validate_request(apply_patch, runs_tests)
+            .is_err();
+        let writes = apply_patch && capabilities.can_apply_patch;
+        PolicyRequest {
+            action: self.name().into(),
+            risk: if capabilities.requires_self_modify_boundary {
+                RiskLevel::SelfModify
+            } else if invalid_request {
+                RiskLevel::Destructive
+            } else if writes {
+                RiskLevel::LocalWrite
+            } else if runs_tests {
+                RiskLevel::ShellRead
+            } else {
+                self.risk_level()
+            },
+            path: None,
+            command: None,
+            is_write: writes,
+        }
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
         let objective = input_string(&input, "objective")?;
+        let mode = parse_coding_mode(&input)?;
         let diff = input
             .get("diff")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
-        let test_analysis = input
+        let apply_patch = input
+            .get("apply_patch")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let runs_tests = code_workflow_runs_tests(&input);
+        CodingModeCapabilities::for_mode(mode).validate_request(apply_patch, runs_tests)?;
+        let mut test_matrix = Vec::new();
+        let mut test_analysis = input
             .get("test_analysis")
             .filter(|value| !value.is_null())
             .map(|value| serde_json::from_value::<TestFailureAnalysis>(value.clone()))
             .transpose()?;
-        let report =
-            CodingWorkflow::new(&ctx.session.sandbox.workspace_root).run(CodingWorkflowInput {
-                objective,
-                diff,
-                test_analysis,
-            })?;
-        Ok(SkillOutput::new("coding workflow prepared", json!(report)))
+        let test_commands = parse_test_commands(input.get("test_commands"))?;
+        if runs_tests {
+            test_matrix = run_coding_test_matrix(&test_commands, &ctx).await?;
+            test_analysis = primary_test_analysis(&test_matrix);
+        }
+        let instructions = parse_string_array(input.get("instructions"), "instructions")?;
+        let context = CodingTurnContext::from_workspace(CodingTurnContextInput {
+            workspace_root: ctx.session.sandbox.workspace_root.clone(),
+            objective,
+            mode,
+            instructions,
+            test_commands,
+            session_id: input
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            turn_id: input
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            permission_profile: CodingPermissionProfile::default(),
+        })?;
+        let report = DeterministicCodingRuntime
+            .run_turn_with_env(
+                CodingTurnInput {
+                    context,
+                    candidate_diff: diff,
+                    apply_patch,
+                    test_matrix,
+                    test_analysis,
+                },
+                ctx.session.env.as_ref(),
+            )
+            .await?;
+        persist_coding_turn_report(self.coding_session.as_ref(), &report)?;
+        Ok(SkillOutput::new("coding turn completed", json!(report)))
     }
+}
+
+async fn run_coding_test_matrix(
+    test_commands: &[TestCommand],
+    ctx: &SkillContext,
+) -> Result<Vec<TestFailureAnalysis>> {
+    let commands = if test_commands.is_empty() {
+        let repo = RepoScanner::new(&ctx.session.sandbox.workspace_root).scan()?;
+        let inferred = TestRunnerPlan::infer(&repo);
+        if inferred.is_empty() {
+            return Err(IkarosError::Message(
+                "no test command inferred for coding turn".into(),
+            ));
+        }
+        inferred
+    } else {
+        test_commands.to_vec()
+    };
+    let mut matrix = Vec::with_capacity(commands.len());
+    for command in commands {
+        let output = run_shell(&command.command, &ctx.session).await?;
+        matrix.push(TestFailureAnalyzer::analyze(
+            command.command,
+            output.status,
+            &output.stdout,
+            &output.stderr,
+        ));
+    }
+    Ok(matrix)
+}
+
+fn primary_test_analysis(test_matrix: &[TestFailureAnalysis]) -> Option<TestFailureAnalysis> {
+    test_matrix
+        .iter()
+        .find(|analysis| analysis.status != 0)
+        .or_else(|| test_matrix.first())
+        .cloned()
+}
+
+pub(crate) fn persist_coding_turn_report(
+    config: Option<&CodingSessionConfig>,
+    report: &ikaros_coding::CodingTurnReport,
+) -> Result<()> {
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let mut session = SessionRecord::new(config.session_id.clone(), config.source.clone());
+    session.agent_id = config.agent_id.clone();
+    session.workspace = config.workspace.clone();
+    let mut writer = config.store.begin_turn(&session, &config.turn_id)?;
+    for event in &report.events {
+        let payload = coding_event_payload(event)?;
+        writer.append_agent_event(&AgentEvent::new(
+            config.session_id.clone(),
+            config.turn_id.clone(),
+            None,
+            AgentEventSource::Tool,
+            AgentEventKind::CodingTurn,
+            payload.clone(),
+        ))?;
+        let mut entry = SessionEntry::new(config.session_id.clone(), SessionEntryKind::Custom);
+        entry.turn_id = Some(config.turn_id.clone());
+        entry.visible_text = Some(event.summary.clone());
+        entry.payload = payload;
+        writer.append_entry(&entry)?;
+    }
+    writer.commit()
+}
+
+fn coding_event_payload(event: &ikaros_coding::CodingTurnEvent) -> Result<Value> {
+    Ok(json!({
+        "kind": serde_json::to_value(event.kind)?,
+        "summary": event.summary,
+        "payload": event.payload,
+    }))
+}
+
+fn parse_coding_mode(input: &serde_json::Value) -> Result<CodingMode> {
+    let mode = input
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("plan");
+    match mode {
+        "plan" => Ok(CodingMode::Plan),
+        "edit" => Ok(CodingMode::Edit),
+        "review" => Ok(CodingMode::Review),
+        "test" => Ok(CodingMode::Test),
+        "self_modify" => Ok(CodingMode::SelfModify),
+        other => Err(IkarosError::Message(format!(
+            "unsupported coding mode: {other}"
+        ))),
+    }
+}
+
+fn parse_coding_mode_lossy(input: &serde_json::Value) -> CodingMode {
+    parse_coding_mode(input).unwrap_or(CodingMode::Plan)
+}
+
+fn code_workflow_apply_patch_requested(input: &serde_json::Value) -> bool {
+    let apply_patch = input
+        .get("apply_patch")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let has_diff = input
+        .get("diff")
+        .and_then(serde_json::Value::as_str)
+        .map(|diff| !diff.trim().is_empty())
+        .unwrap_or(false);
+    apply_patch && has_diff
+}
+
+fn code_workflow_runs_tests(input: &serde_json::Value) -> bool {
+    input
+        .get("run_tests")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn parse_test_commands(value: Option<&serde_json::Value>) -> Result<Vec<TestCommand>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let commands = value
+        .as_array()
+        .ok_or_else(|| IkarosError::Message("test_commands must be an array".into()))?;
+    commands
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            if let Some(command) = command.as_str() {
+                return Ok(TestCommand {
+                    command: command.to_owned(),
+                    reason: "explicit coding turn command".into(),
+                });
+            }
+            let object = command.as_object().ok_or_else(|| {
+                IkarosError::Message(format!("test_commands[{index}] must be a string or object"))
+            })?;
+            let command = object
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    IkarosError::Message(format!("test_commands[{index}].command is required"))
+                })?;
+            let reason = object
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("explicit coding turn command");
+            Ok(TestCommand {
+                command: command.to_owned(),
+                reason: reason.to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn parse_string_array(value: Option<&serde_json::Value>, field: &str) -> Result<Vec<String>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| IkarosError::Message(format!("{field} must be an array")))?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| IkarosError::Message(format!("{field}[{index}] must be a string")))
+        })
+        .collect()
 }

@@ -29,6 +29,10 @@ ikaros chat --history
 ikaros chat --history-search "query"
 ```
 
+Running `ikaros chat` without `--message` starts the current interactive chat
+REPL. It supports slash commands such as `/help`, `/agents`, `/agent <profile>`,
+`/status`, and `/quit`.
+
 Chat messages may include local context references such as `@file:path:line-line`,
 `@folder:path`, `@git:rev`, `@diff`, and `@staged`. These references are
 resolved under the current workspace and recorded in the session context diff.
@@ -48,6 +52,8 @@ ikaros debug memory-lifecycle <session-id>
 ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
 ikaros debug continuations <session-id>
 ikaros debug continuations <session-id> --turn-id <turn-id>
+ikaros debug coding-turn <session-id>
+ikaros debug coding-turn <session-id> --turn-id <turn-id>
 ```
 
 `context-diff` reads `state.db` and reports the estimator, budget, context
@@ -62,6 +68,8 @@ count, terminal summaries, worker-lease timeout evidence, errors, and redacted
 payload data for queued/running/completed/failed/cancelled items. Filtering by
 `--turn-id` returns an empty result when the turn exists but has no
 continuations; it only errors when the turn is absent from the replay.
+`coding-turn` reports persisted `CodingTurn` events, coding event-kind counts,
+review findings, and custom session entries produced by `ikaros code workflow`.
 
 Memory and relationship notes:
 
@@ -178,10 +186,25 @@ ikaros test infer
 ikaros test run --command "cargo test"
 ikaros code plan "add focused tests"
 ikaros code workflow "prepare guarded patch" --diff "<unified diff>"
+ikaros code workflow "apply candidate patch" --mode edit --diff "<unified diff>" --apply-patch
+ikaros code workflow "run focused tests" --mode test --run-tests --test-command "cargo test -p ikaros-coding"
+ikaros code workflow "persist replay evidence" --session-id <session-id> --turn-id <turn-id>
 ikaros code review
 ikaros code iterate
 ikaros code guarded-edit "apply approved patch" --diff "<unified diff>"
 ```
+
+`code workflow` builds a `CodingTurnContext`, repo map, change plan, optional
+patch attempt, turn diff, test-matrix evidence, review, iteration plan, loop
+report, and final report. It supports `--mode plan|edit|review|test|self_modify`.
+The mode policy is explicit: `plan`/`review` are read-oriented, `test` can run
+the test matrix, `edit` can apply a candidate patch only with `--apply-patch`,
+and `self_modify` is rejected by ordinary workflow until the dedicated
+self-modify approval path is used. The context captures a git baseline including
+HEAD, branch/detached state, clean/dirty/not-git/unknown state, and
+staged/unstaged/untracked flags when available. When session and turn ids are
+present, coding events are persisted into `state.db` and can be inspected with
+`ikaros debug coding-turn`.
 
 Service-manager templates:
 

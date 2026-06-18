@@ -29,6 +29,9 @@ ikaros chat --history
 ikaros chat --history-search "query"
 ```
 
+不传 `--message` 时，`ikaros chat` 会进入当前交互式 chat REPL。它支持 `/help`、
+`/agents`、`/agent <profile>`、`/status` 和 `/quit` 这类 slash command。
+
 Chat message 可以包含本地 context reference，例如 `@file:path:line-line`、`@folder:path`、`@git:rev`、`@diff` 和 `@staged`。这些 reference 会在当前 workspace 下解析，并写入 session context diff。`@url:` 只解析，不抓取。
 
 `--context-token-budget 0` 表示让 runtime chat 使用 provider 推导出来的可用 context window，不表示可以绕过模型上下文窗口。
@@ -43,9 +46,12 @@ ikaros debug memory-lifecycle <session-id>
 ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
 ikaros debug continuations <session-id>
 ikaros debug continuations <session-id> --turn-id <turn-id>
+ikaros debug coding-turn <session-id>
+ikaros debug coding-turn <session-id> --turn-id <turn-id>
 ```
 
 `context-diff` 读取 `state.db`，报告 estimator、budget、context window、section token 估算、added/removed/compressed context、已解析 reference、compaction summary、continuation prompt、`ContextCompacted` 和 context-limit error。`memory-lifecycle` 读取 session timeline 和 `memory_journal.jsonl`，查询匹配的 `MemoryLifecycle` event、`MemoryRef::SessionTurn` 关联、skipped write、redaction 相关 note、action count 和 runtime memory policy action。`continuations` 会报告 durable continuation queue status、status reason、lease owner、lease expiry、attempt count、terminal summary、worker lease timeout evidence、error 和已脱敏 payload。按 `--turn-id` 过滤时，如果 turn 存在但没有 continuation，会返回空结果；只有 replay 中不存在该 turn 时才报错。
+`coding-turn` 会报告 `ikaros code workflow` 持久化的 `CodingTurn` event、coding event kind 计数、review finding 和 custom session entry。
 
 记忆和关系笔记：
 
@@ -158,10 +164,23 @@ ikaros test infer
 ikaros test run --command "cargo test"
 ikaros code plan "add focused tests"
 ikaros code workflow "prepare guarded patch" --diff "<unified diff>"
+ikaros code workflow "apply candidate patch" --mode edit --diff "<unified diff>" --apply-patch
+ikaros code workflow "run focused tests" --mode test --run-tests --test-command "cargo test -p ikaros-coding"
+ikaros code workflow "persist replay evidence" --session-id <session-id> --turn-id <turn-id>
 ikaros code review
 ikaros code iterate
 ikaros code guarded-edit "apply approved patch" --diff "<unified diff>"
 ```
+
+`code workflow` 会构造 `CodingTurnContext`、repo map、change plan、可选 patch
+attempt、turn diff、test-matrix evidence、review、iteration plan、loop report 和
+final report。它支持 `--mode plan|edit|review|test|self_modify`。Mode policy 是显式的：
+`plan`/`review` 偏只读，`test` 可以运行 test matrix，`edit` 只有在设置
+`--apply-patch` 时才会应用候选 patch，`self_modify` 在进入专用 self-modify
+审批路径前会被普通 workflow 拒绝。Context 会记录 git baseline，包括 HEAD、
+branch/detached 状态、clean/dirty/not-git/unknown 状态，以及
+staged/unstaged/untracked 标记。传入 session/turn id 时，coding event 会写入
+`state.db`，可用 `ikaros debug coding-turn` 查询。
 
 Service manager 模板：
 

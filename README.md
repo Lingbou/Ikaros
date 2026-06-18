@@ -8,7 +8,7 @@ The project is currently a pre-MVP local runtime for development and experimenta
 
 ## What It Does
 
-- Provides a CLI for local agent workflows: chat, memory, RAG, scheduled tasks, message ingestion, approvals, plugins, code review helpers, and guarded edits.
+- Provides a CLI for local agent workflows: chat, memory, RAG, scheduled tasks, message ingestion, approvals, plugins, coding turn reports, code review helpers, and guarded edits.
 - Keeps memory, chat history, RAG indexes, automation metadata, gateway messages, approvals, and audit logs local by default.
 - Routes tool execution through a harness layer with policy decisions, approval requests, audit events, dry-run behavior, and guardrails.
 - Implements OpenAI-compatible, Anthropic-compatible, and Ollama model adapters, plus OpenAI-compatible embedding, TTS, and ASR adapters. Mock providers remain available only when explicitly selected for offline tests.
@@ -20,7 +20,7 @@ The project is currently a pre-MVP local runtime for development and experimenta
 - `crates/ikaros-automation`: local scheduled automation metadata and run state.
 - `crates/ikaros-body`: replaceable body/status/frame contracts and dashboard rendering.
 - `crates/ikaros-cli`: the `ikaros` command-line application.
-- `crates/ikaros-coding`: repository scan, guarded patching, code review, self-modify records, and test-command validation.
+- `crates/ikaros-coding`: repository scan, guarded patching, structured patch failures, turn diff tracking, code review, coding turn reports, self-modify records, and test-command analysis.
 - `crates/ikaros-context`: context bundle, section, reference, provider-aware token budget, token estimator adapters, quota-based compaction, and diff primitives.
 - `crates/ikaros-gateway`: local message inbox/outbox metadata and delivery routes.
 - `crates/ikaros-harness`: policy engine, approval queue, audit log, skill execution session, plugins, and task runner.
@@ -41,6 +41,7 @@ The project is currently a pre-MVP local runtime for development and experimenta
 cargo run -p ikaros-cli -- init
 cargo run -p ikaros-cli -- config validate
 cargo run -p ikaros-cli -- doctor
+cargo run -p ikaros-cli -- chat
 cargo run -p ikaros-cli -- chat --message "hello"
 ```
 
@@ -57,8 +58,10 @@ cargo run -p ikaros-cli -- memory working prune
 cargo run -p ikaros-cli -- rag ingest docs --scope project
 cargo run -p ikaros-cli -- rag search "harness policy"
 cargo run -p ikaros-cli -- task run "summarize this repository" --dry-run
+cargo run -p ikaros-cli -- code workflow "review a candidate patch" --diff "<unified diff>"
 cargo run -p ikaros-cli -- debug context-diff <session-id>
 cargo run -p ikaros-cli -- debug memory-lifecycle <session-id>
+cargo run -p ikaros-cli -- debug coding-turn <session-id>
 cargo run -p ikaros-cli -- approval list
 cargo run -p ikaros-cli -- skill list
 ```

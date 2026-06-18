@@ -96,6 +96,33 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Add dry-run reports for memory migration or synchronization.
 - Exercise session-switch, delegation-observation, and pre-compression lifecycle hooks with real provider tests before enabling remote writes.
 
+## Coding Agent
+
+- Keep `code workflow` as the controlled coding turn surface: context
+  preparation, repo scan, planning, optional guarded patch application, turn
+  diff tracking, test evidence, review, iteration plan, final report, and
+  persisted `CodingTurn` replay evidence.
+- Keep coding modes explicit. `plan` and `review` remain read-oriented; `test`
+  requires shell policy for the test matrix; `edit` is the only ordinary
+  workflow mode that may apply a candidate patch. `self_modify` must stay on the
+  dedicated self-modify approval path, not ordinary `code workflow`.
+- Expand the first-pass `CodingTurnContext` into a full dirty-state and
+  instruction boundary before relying on it for autonomous self-modification or
+  long-running coding sessions. The current git baseline already records HEAD,
+  branch/detached state, clean/dirty/not-git/unknown state, and
+  staged/unstaged/untracked flags.
+- Keep hardening patch handling beyond add/update/delete/move: the current
+  parser rejects malformed hunk ranges, quoted/space-truncated paths, ambiguous
+  anchors, already-applied hunks, and no-mutation malformed diffs; broader
+  fuzzing can continue as the parser surface grows.
+- Use the mock-model patch/test/review loop as the replay contract for the next
+  real-provider coding loop. The current loop can replay multi-iteration
+  scripted patches through session events, but provider-generated follow-up
+  patches, cancellation, budget handling, and approval replay remain future
+  hardening.
+- Keep `debug coding-turn` aligned with the session timeline so coding replay
+  can be inspected without reading ad hoc report files.
+
 ## Gateway And Automation
 
 - Evolve the local gateway worker into a long-running daemon with device pairing, capabilities, multi-channel routing, and session continuity across channel threads.
@@ -122,6 +149,11 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 
 ## Product Surface
 
+- Improve the terminal-first interactive experience beyond the current basic
+  `ikaros chat` REPL: readline/history, multiline input, cleaner streaming
+  output, visible tool/approval/context status, cancellation, session resume,
+  and coding commands should become the primary pre-MVP user surface before a
+  web UI.
 - Improve voice and body integration beyond provider/status contracts.
 - Add optional remote sync only after local state, audit, and conflict behavior are well defined.
 - Define remote or distributed subagent worker boundaries before introducing multi-node execution.

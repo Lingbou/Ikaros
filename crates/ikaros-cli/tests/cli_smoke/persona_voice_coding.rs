@@ -229,9 +229,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     assert!(iteration.contains("cargo test --workspace --all-features"));
 
     let workflow = env.run(["code", "workflow", "prepare patch", "--diff", diff]);
-    assert!(workflow.contains("summary: coding workflow prepared"));
-    assert!(workflow.contains("\"kind\": \"read_repo\""));
-    assert!(workflow.contains("\"kind\": \"final_report\""));
+    assert!(workflow.contains("summary: coding turn completed"));
+    assert!(workflow.contains("\"kind\": \"repo_scanned\""));
+    assert!(workflow.contains("\"kind\": \"final_report_prepared\""));
     assert!(workflow.contains("\"requires_guarded_edit\":"));
     assert!(!workflow.contains("abc123"));
 
@@ -317,4 +317,47 @@ diff --git a/src/lib.rs b/src/lib.rs
             .expect("restored")
             .contains("a + b")
     );
+}
+
+#[test]
+fn coding_workflow_persists_debuggable_turn_timeline() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+    let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn add(a: i32, b: i32) -> i32 { a + b }
++pub fn add(a: i32, b: i32) -> i32 { a.saturating_add(b) }
+";
+
+    let workflow = env.run([
+        "code",
+        "workflow",
+        "prepare persistent coding timeline",
+        "--session-id",
+        "coding-cli-session",
+        "--turn-id",
+        "coding-cli-turn",
+        "--diff",
+        diff,
+    ]);
+    assert!(workflow.contains("summary: coding turn completed"));
+
+    let debug = env.run([
+        "debug",
+        "coding-turn",
+        "coding-cli-session",
+        "--turn-id",
+        "coding-cli-turn",
+    ]);
+    assert!(debug.contains("\"session_id\": \"coding-cli-session\""));
+    assert!(debug.contains("\"turn_id\": \"coding-cli-turn\""));
+    assert!(debug.contains("\"event_count\""));
+    assert!(debug.contains("\"patch_skipped\""));
+    assert!(debug.contains("\"review_started\""));
+    assert!(debug.contains("\"final_report_prepared\""));
 }

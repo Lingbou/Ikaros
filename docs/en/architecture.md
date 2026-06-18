@@ -25,6 +25,9 @@ calling context, persistent state, or user-visible behavior changes.
 - Context bundle: the token-budgeted set of context sections used for a turn,
   plus parsed references and a diff explaining what was added, removed, or
   compressed.
+- Coding turn context: the workspace, git state, mode, permission profile,
+  instructions, test commands, and session/turn identity used by the controlled
+  coding workflow.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
   session policy, auth scope, and route bindings.
@@ -50,7 +53,7 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-skills`: built-in skills exposed through the harness.
 - `ikaros-cli`: command-line interface and terminal rendering.
 - `ikaros-body`: body/status/frame contracts and simple renderers.
-- `ikaros-automation`, `ikaros-service`, `ikaros-coding`, and `ikaros-soul`: focused support crates for their named domains.
+- `ikaros-automation`, `ikaros-service`, `ikaros-coding`, and `ikaros-soul`: focused support crates for their named domains. `ikaros-coding` owns repo scan, guarded patching, structured patch failures, turn diff tracking, code review, coding turn reports, self-modify records, and test-command analysis.
 
 ## Runtime Flow
 
@@ -120,7 +123,7 @@ State ownership:
 - `state.db`: session metadata, append-only session entries, persisted
   chat/agent-loop events, gateway and schedule evidence, approval records,
   durable continuation queue records, FTS5/trigram search indexes,
-  branch/compact/retry markers, and replay data.
+  branch/compact/retry markers, coding turn events, and replay data.
   Built-in chat turns write user/assistant entries through a turn-scoped
   `SessionWriter` transaction. Gateway and schedule workers also map their
   request/result/delivery evidence into the same store. Memory lifecycle and
@@ -180,6 +183,17 @@ State ownership:
   relationship CLI is a convenience façade over the memory store, not a second
   memory system.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
+- Coding workflow execution is a governed harness skill. It builds a
+  `CodingTurnContext`, git baseline, repo map, change plan, optional patch
+  attempt, turn diff, test matrix evidence, review, iteration plan, loop report,
+  and final report. The git baseline records HEAD, branch/detached state,
+  clean/dirty/not-git/unknown state, and staged/unstaged/untracked flags when
+  available. The mode policy is explicit: `plan` and `review` stay read-only,
+  `test` may run the test matrix through the harness process path, `edit` may
+  apply an explicitly requested candidate patch, and `self_modify` is rejected
+  by ordinary `code workflow` until it enters the dedicated self-modify approval
+  path. When a coding session is configured, its `CodingTurn` events and custom
+  session entries are persisted into `state.db` for `debug coding-turn`.
 - Tool lifecycle uses typed events: `ToolCallStarted`,
   `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and
   `ToolCallCancelled`. Approval events carry tool anchors so UI, replay, and
@@ -195,6 +209,14 @@ State ownership:
   but unstarted calls are reported as cancelled, not executed.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.
+- The current coding workflow is still not a full Codex-style real-provider
+  coding agent. It now has deterministic and mock-model patch/test/review loop
+  fixtures, multi-iteration session replay evidence, test-matrix events, and
+  parser hardening for malformed ranges, quoted/space-truncated paths,
+  ambiguous anchors, and already-applied hunks. Provider-generated follow-up
+  patches, cancellation, budget handling, approval replay semantics, and routing
+  git/shell snapshots through the same process/environment boundary remain
+  future hardening.
 
 ## Invariants
 

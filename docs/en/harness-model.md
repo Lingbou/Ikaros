@@ -49,14 +49,18 @@ instead of mutating global state.
 
 Safe-read skills may pass redacted audit input while executing with the real local input. Chat uses this for local memory/RAG lookup so the audit log does not store full user prompts.
 
-Coding has two separate harness paths. `code_workflow` is a safe-read control
-plane that assembles the repo map, change plan, candidate diff review, test
-evidence, iteration plan, and final report. It does not write files. Actual
-patch application still goes through `code_edit_guarded`, which is
-approval-gated and must match approval replay rules before modifying the
-workspace. Approved guarded patches read, write, create parent directories, and
-roll back through the session `ExecutionEnv` filesystem interface rather than
-calling host filesystem APIs from the skill.
+Coding has two harness paths. `code_workflow` is the controlled turn workflow:
+by default it is a safe-read plan/review path, but its policy risk upgrades to
+shell-read when `run_tests` is requested in `test`/`edit`, and to local-write
+only when an explicit candidate patch is applied in `edit` mode. `self_modify`
+is rejected by ordinary `code_workflow` until it enters the dedicated
+self-modify approval path. It builds the repo map, change plan, optional patch
+attempt, turn diff, test-matrix evidence, review, iteration plan, loop report,
+final report, and optional session replay evidence. Patch application in
+`code_workflow` and `code_edit_guarded` both go through the
+session `ExecutionEnv` filesystem interface rather than calling host filesystem
+APIs from the skill. `code_edit_guarded` remains the direct approval-gated patch
+entry point for applying a provided unified diff.
 
 Skill descriptors also carry runtime scheduling metadata:
 

@@ -249,6 +249,7 @@ pub enum AgentEventKind {
     ContextDiff,
     ContextCompacted,
     MemoryLifecycle,
+    CodingTurn,
     AuditAnchor,
     ContinuationStarted,
     ContinuationCompleted,
