@@ -25,11 +25,17 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   through `SessionStore`; do not reintroduce history rewriting for these phase
   operations.
 - Harden durable `AgentHarness` continuations in `state.db`: queue claiming,
-  resume/compact/retry execution, terminal status reporting, and replay/debug
-  queries should stay consistent across process restarts.
-- Add continuation lease expiry/reclaim, cancellation event propagation,
-  cross-process abort handling, and CLI/debug query surfaces before treating the
-  queue as a full scheduler.
+  resume/compact/retry execution, lease expiry/reclaim, attempt tracking,
+  failed/cancelled requeue, status reasons, terminal status reporting,
+  cancellation evidence, and replay/debug queries should stay consistent across
+  process restarts.
+- Keep first-pass durable cancellation polling and timeout reporting covered:
+  running workers should observe external cancellation, provider waits should
+  honor cancellation tokens, descriptor timeouts should report structured
+  timeout payloads, and debug output should explain worker lease expiry.
+- Do not treat the continuation queue as a full scheduler yet; configurable
+  polling/backoff, tool-result continuations, and richer automation-facing
+  timeout reports are still future hardening.
 - Keep observer hooks stable as the extension boundary for provider attempts,
   tool lifecycle telemetry, memory policy observation, gateway UI, and replay
   diagnostics.
@@ -43,10 +49,10 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   still live partly outside `state.db`.
 - Derive more runtime reports from persisted event streams rather than carrying
   separate one-off summaries.
-- Refine continuation and tool timeout report fields for automation users.
-- Extend cancellation beyond the current provider/tool checkpoints and
-  in-flight tool future cancellation toward external abort propagation and
-  richer timeout reporting.
+- Refine continuation and tool timeout report fields for automation users beyond
+  the current worker-lease and descriptor-timeout summaries.
+- Extend durable cancellation beyond the current polling/checkpoint model toward
+  configurable worker coordination and scheduler-grade terminal accounting.
 - Continue separating provider transport concerns from turn-loop ownership.
 - Keep provider request quirks inside model adapters and compatibility profiles,
   not in the runtime turn loop.

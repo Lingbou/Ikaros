@@ -30,6 +30,7 @@ ikaros-skills = { path = "../ikaros-skills" }
 ikaros-soul = { path = "../ikaros-soul" }
 ikaros-voice = { path = "../ikaros-voice" }
 serde_json.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

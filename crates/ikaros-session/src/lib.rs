@@ -16,7 +16,7 @@ pub use types::{
     AgentTurnId, ApprovalRecord, ApprovalStatus, ContinuationId, EventId, SessionBranch,
     SessionBranchSummaryInput, SessionCompactionInput, SessionContinuation,
     SessionContinuationClaim, SessionContinuationInput, SessionContinuationKind,
-    SessionContinuationStatus, SessionEntry, SessionEntryId, SessionEntryKind, SessionId,
-    SessionRecord, SessionReplay, SessionRetryInput, SessionSearchHit, SessionSearchIndex,
-    SessionSearchQuery, SessionSource, TurnId,
+    SessionContinuationStatus, SessionContinuationStatusReason, SessionEntry, SessionEntryId,
+    SessionEntryKind, SessionId, SessionRecord, SessionReplay, SessionRetryInput, SessionSearchHit,
+    SessionSearchIndex, SessionSearchQuery, SessionSource, TurnId,
 };

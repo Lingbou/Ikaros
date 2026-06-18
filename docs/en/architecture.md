@@ -79,8 +79,12 @@ with explicit session source metadata, so their agent-loop events and
 continuation state can land in the same `state.db` timeline as their
 gateway/schedule evidence.
 The durable continuation queue is a recovery and replay boundary, not yet a
-full scheduler; lease reclaim, cancellation propagation, cross-process abort,
-and user-facing debug queries are still runtime hardening work.
+full scheduler. It now records leases, attempt counts, status reasons, requeue
+status, terminal status, cancellation request/acknowledgement evidence,
+worker-lease timeout summaries, and user-facing debug query data. Running
+durable message continuations poll for external cancellation, but configurable
+worker coordination, tool-result continuations, and scheduler-grade terminal
+accounting are still runtime hardening work.
 
 ## Agent Identity
 
@@ -185,9 +189,10 @@ State ownership:
   session timelines remain the durable observation surface.
 - Tool scheduling is descriptor-driven. Adjacent parallel tool calls may run
   concurrently, sequential calls run alone, and per-tool timeout failures are
-  reported through the same lifecycle event stream. Cancellation is checked
-  before provider requests and before planned tool calls start; planned but
-  unstarted calls are reported as cancelled, not executed.
+  reported through the same lifecycle event stream with structured timeout
+  metadata. Cancellation is checked before and while awaiting provider requests,
+  before planned tool calls start, and while tool futures are in flight; planned
+  but unstarted calls are reported as cancelled, not executed.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.
 

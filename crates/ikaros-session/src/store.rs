@@ -64,6 +64,12 @@ pub trait SessionStore: Send + Sync {
         continuation_id: &ContinuationId,
         reason: &str,
     ) -> Result<Option<SessionContinuation>>;
+    fn requeue_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        reason: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<SessionContinuation>>;
     fn continuations(&self, session_id: &SessionId) -> Result<Vec<SessionContinuation>>;
     fn agent_events(&self, session_id: &SessionId) -> Result<Vec<AgentEvent>>;
     fn approval_record(&self, approval_id: &str) -> Result<Option<ApprovalRecord>>;

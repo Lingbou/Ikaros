@@ -46,6 +46,8 @@ ikaros debug context-diff <session-id>
 ikaros debug context-diff <session-id> --turn-id <turn-id>
 ikaros debug memory-lifecycle <session-id>
 ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
+ikaros debug continuations <session-id>
+ikaros debug continuations <session-id> --turn-id <turn-id>
 ```
 
 `context-diff` reads `state.db` and reports the estimator, budget, context
@@ -54,7 +56,12 @@ references, compaction summary, continuation prompt, `ContextCompacted`, and
 context-limit errors. `memory-lifecycle` reads the session timeline and
 `memory_journal.jsonl` for matching `MemoryLifecycle` events,
 `MemoryRef::SessionTurn` links, skipped writes, redaction-related notes, action
-counts, and runtime memory policy actions.
+counts, and runtime memory policy actions. `continuations` reports durable
+continuation queue status, status reason, lease owner, lease expiry, attempt
+count, terminal summaries, worker-lease timeout evidence, errors, and redacted
+payload data for queued/running/completed/failed/cancelled items. Filtering by
+`--turn-id` returns an empty result when the turn exists but has no
+continuations; it only errors when the turn is absent from the replay.
 
 Memory and relationship notes:
 

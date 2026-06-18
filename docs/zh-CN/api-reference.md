@@ -41,9 +41,11 @@ ikaros debug context-diff <session-id>
 ikaros debug context-diff <session-id> --turn-id <turn-id>
 ikaros debug memory-lifecycle <session-id>
 ikaros debug memory-lifecycle <session-id> --turn-id <turn-id>
+ikaros debug continuations <session-id>
+ikaros debug continuations <session-id> --turn-id <turn-id>
 ```
 
-`context-diff` 读取 `state.db`，报告 estimator、budget、context window、section token 估算、added/removed/compressed context、已解析 reference、compaction summary、continuation prompt、`ContextCompacted` 和 context-limit error。`memory-lifecycle` 读取 session timeline 和 `memory_journal.jsonl`，查询匹配的 `MemoryLifecycle` event、`MemoryRef::SessionTurn` 关联、skipped write、redaction 相关 note、action count 和 runtime memory policy action。
+`context-diff` 读取 `state.db`，报告 estimator、budget、context window、section token 估算、added/removed/compressed context、已解析 reference、compaction summary、continuation prompt、`ContextCompacted` 和 context-limit error。`memory-lifecycle` 读取 session timeline 和 `memory_journal.jsonl`，查询匹配的 `MemoryLifecycle` event、`MemoryRef::SessionTurn` 关联、skipped write、redaction 相关 note、action count 和 runtime memory policy action。`continuations` 会报告 durable continuation queue status、status reason、lease owner、lease expiry、attempt count、terminal summary、worker lease timeout evidence、error 和已脱敏 payload。按 `--turn-id` 过滤时，如果 turn 存在但没有 continuation，会返回空结果；只有 replay 中不存在该 turn 时才报错。
 
 记忆和关系笔记：
 

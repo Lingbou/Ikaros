@@ -8,6 +8,7 @@ use ikaros_harness::{
 };
 use ikaros_models::ModelMessage;
 use serde_json::json;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::time::{Duration, timeout};
 
 pub(super) async fn dispatch_agent_loop_tool_call(
@@ -18,14 +19,17 @@ pub(super) async fn dispatch_agent_loop_tool_call(
     timeout_ms: Option<u64>,
 ) -> AgentLoopToolResult {
     let name = redact_secrets(&call.name);
+    let started_at = OffsetDateTime::now_utc();
     let execution = session.execute_skill(registry, &call.name, call.input.clone());
     let result = match timeout_ms {
         Some(timeout_ms) if timeout_ms > 0 => {
             match timeout(Duration::from_millis(timeout_ms), execution).await {
                 Ok(result) => result,
-                Err(_) => Err(ikaros_core::IkarosError::Message(format!(
-                    "tool {name} timed out after {timeout_ms} ms"
-                ))),
+                Err(_) => {
+                    return timed_out_agent_loop_tool_result(
+                        iteration, name, timeout_ms, started_at,
+                    );
+                }
             }
         }
         _ => execution.await,
@@ -41,6 +45,37 @@ pub(super) async fn dispatch_agent_loop_tool_call(
             output: json!({"error": redact_secrets(&error.to_string())}),
         },
     }
+}
+
+fn timed_out_agent_loop_tool_result(
+    iteration: u32,
+    name: String,
+    timeout_ms: u64,
+    started_at: OffsetDateTime,
+) -> AgentLoopToolResult {
+    let ended_at = OffsetDateTime::now_utc();
+    let summary = format!("tool {name} timed out after {timeout_ms} ms");
+    AgentLoopToolResult {
+        iteration,
+        name,
+        harness_call_id: None,
+        ok: false,
+        summary: redact_secrets(&summary),
+        output: json!({
+            "error": redact_secrets(&summary),
+            "timeout": {
+                "kind": "tool",
+                "reason": "tool_timeout",
+                "timeout_ms": timeout_ms,
+                "started_at": format_rfc3339(started_at),
+                "ended_at": format_rfc3339(ended_at),
+            }
+        }),
+    }
+}
+
+fn format_rfc3339(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
 }
 
 pub(super) fn observe_agent_loop_tool_result(

@@ -65,16 +65,25 @@ rewriting previous turns.
 
 Continuation queues are durable when the harness is configured with a
 `SessionStore`. `ikaros-session` stores queued, running, completed, failed, and
-cancelled continuations in `state.db`. The harness can claim and complete
+cancelled continuations in `state.db`. Claiming a continuation writes a lease,
+increments its attempt count, records a status reason, and reclaims expired
+running leases before selecting the next item. Failed or cancelled continuations
+can be requeued with an explicit reason. The harness can claim and complete
 message continuations (`steer`, `follow_up`, `next_turn`, `resume`) and
 maintenance continuations (`compact`, `retry`). Message continuations run a real
 turn. Maintenance continuations append session entries and emit
 `ContinuationStarted` / `ContinuationCompleted` / `ContinuationFailed` events
-without inventing a model response. Without a continuation store, the harness
-keeps the old in-memory queues for tests and specialized one-shot callers.
-This is still a continuation queue, not a complete scheduler. Lease
-expiry/reclaim, cancellation event propagation, cross-process abort handling,
-and a user-facing debug/query surface are still hardening work.
+without inventing a model response. Explicit harness cancellation writes a
+`ContinuationCancelled` event. A running durable message continuation polls the
+store for external cancellation, cancels its turn token, and emits an
+acknowledgement event when the worker stops. `ikaros debug continuations
+<session-id>` reports queue status, status reason, lease owner, lease expiry,
+attempts, terminal summaries, worker-lease timeout evidence, errors, and
+redacted payloads. Without a continuation store, the harness keeps the old
+in-memory queues for tests and specialized one-shot callers.
+This is still a continuation queue, not a complete scheduler. Poll interval
+tuning, scheduler-grade worker coordination, tool-result continuations, and
+automation-facing timeout reports are still runtime hardening work.
 
 `AgentLoopOptions::with_hooks()` installs observer-only `AgentLoopHooks` for
 provider request/response and tool call boundaries. Hook payloads carry
@@ -250,12 +259,13 @@ audit evidence. Successful harness dispatches also emit an `AuditAnchor` event
 that binds the tool-event id, harness call id, audit event id, audit kind, and
 audit path. Secrets must be redacted before those payloads enter reports or
 persisted session events. A descriptor timeout turns that tool call into a
-failed tool lifecycle result; it does not let the runtime bypass
+failed tool lifecycle result with structured timeout metadata, including
+timeout duration and start/end timestamps; it does not let the runtime bypass
 `ExecutionSession` or `ExecutionEnv`. Cancellation requested before a planned
 call starts produces a `ToolCallCancelled` payload and stops the turn with
-`Cancelled`; cancellation while a tool future is in flight produces the same
-lifecycle event and drops the future. Process-backed local tools rely on
-`kill_on_drop` in the local `ExecutionEnv` process runner.
+`Cancelled`; cancellation while a provider request or tool future is in flight
+also stops the turn and drops the pending future. Process-backed local tools
+rely on `kill_on_drop` in the local `ExecutionEnv` process runner.
 
 `AgentLoopReport.events` is a compatibility summary for current callers. The
 durable fact source is the `ikaros-session` event stream when a persisting sink

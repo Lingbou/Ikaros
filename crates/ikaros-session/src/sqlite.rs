@@ -4,9 +4,9 @@ use crate::{
     AgentEvent, AgentEventKind, ApprovalRecord, ApprovalStatus, ContinuationId, SessionBranch,
     SessionBranchSummaryInput, SessionCompactionInput, SessionContinuation,
     SessionContinuationClaim, SessionContinuationInput, SessionContinuationKind,
-    SessionContinuationStatus, SessionEntry, SessionEntryId, SessionEntryKind, SessionId,
-    SessionRecord, SessionRetryInput, SessionSearchHit, SessionSearchIndex, SessionSearchQuery,
-    SessionSource, SessionStore, SessionWriter, TurnId,
+    SessionContinuationStatus, SessionContinuationStatusReason, SessionEntry, SessionEntryId,
+    SessionEntryKind, SessionId, SessionRecord, SessionRetryInput, SessionSearchHit,
+    SessionSearchIndex, SessionSearchQuery, SessionSource, SessionStore, SessionWriter, TurnId,
 };
 use ikaros_core::{IkarosError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -14,11 +14,12 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::Duration as StdDuration,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const SESSION_SCHEMA_VERSION: i64 = 3;
+const SESSION_SCHEMA_VERSION: i64 = 5;
+const DEFAULT_CONTINUATION_LEASE_SECONDS: i64 = 300;
 
 #[derive(Debug, Clone)]
 pub struct SqliteSessionStore {
@@ -46,7 +47,7 @@ impl SqliteSessionStore {
         }
         let conn =
             Connection::open(&self.path).map_err(|source| sqlite_error(&self.path, source))?;
-        conn.busy_timeout(Duration::from_secs(5))
+        conn.busy_timeout(StdDuration::from_secs(5))
             .map_err(|source| sqlite_error(&self.path, source))?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|source| sqlite_error(&self.path, source))?;
@@ -148,6 +149,7 @@ impl SqliteSessionStore {
                 parent_continuation_id TEXT,
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
+                status_reason TEXT,
                 priority INTEGER NOT NULL,
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -155,6 +157,8 @@ impl SqliteSessionStore {
                 claimed_at TEXT,
                 completed_at TEXT,
                 lease_owner TEXT,
+                lease_expires_at TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
@@ -164,12 +168,33 @@ impl SqliteSessionStore {
                 ON session_continuations(turn_id);
             CREATE INDEX IF NOT EXISTS session_continuations_parent_idx
                 ON session_continuations(parent_continuation_id);
-
-            PRAGMA user_version = 3;
             "#,
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
-        rebuild_missing_entry_search_indexes(conn, &self.path)
+        add_missing_column(
+            conn,
+            &self.path,
+            "session_continuations",
+            "status_reason",
+            "TEXT",
+        )?;
+        add_missing_column(
+            conn,
+            &self.path,
+            "session_continuations",
+            "lease_expires_at",
+            "TEXT",
+        )?;
+        add_missing_column(
+            conn,
+            &self.path,
+            "session_continuations",
+            "attempt_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        rebuild_missing_entry_search_indexes(conn, &self.path)?;
+        conn.pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)
+            .map_err(|source| sqlite_error(&self.path, source))
     }
 }
 
@@ -424,6 +449,16 @@ impl SessionStore for SqliteSessionStore {
             None,
             Some(reason),
         )
+    }
+
+    fn requeue_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        reason: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<SessionContinuation>> {
+        let conn = self.open()?;
+        requeue_continuation(&conn, &self.path, continuation_id, reason, payload)
     }
 
     fn continuations(&self, session_id: &SessionId) -> Result<Vec<SessionContinuation>> {
@@ -822,6 +857,30 @@ fn rebuild_missing_entry_search_indexes(conn: &Connection, path: &Path) -> Resul
     Ok(())
 }
 
+fn add_missing_column(
+    conn: &Connection,
+    path: &Path,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|source| sqlite_error(path, source))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|source| sqlite_error(path, source))?;
+    for existing in columns {
+        if existing.map_err(|source| sqlite_error(path, source))? == column {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+    ))
+    .map_err(|source| sqlite_error(path, source))
+}
+
 fn append_agent_event(conn: &Connection, path: &Path, event: &AgentEvent) -> Result<()> {
     insert_missing_session(conn, path, &event.session_id)?;
     conn.execute(
@@ -1193,6 +1252,7 @@ type SessionContinuationRow = (
     Option<String>,
     String,
     String,
+    Option<String>,
     i64,
     String,
     String,
@@ -1200,6 +1260,8 @@ type SessionContinuationRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    i64,
     Option<String>,
 );
 
@@ -1211,6 +1273,7 @@ fn session_continuation_from_parts(row: SessionContinuationRow) -> Result<Sessio
         parent_continuation_id,
         kind,
         status,
+        status_reason,
         priority,
         payload_json,
         created_at,
@@ -1218,6 +1281,8 @@ fn session_continuation_from_parts(row: SessionContinuationRow) -> Result<Sessio
         claimed_at,
         completed_at,
         lease_owner,
+        lease_expires_at,
+        attempt_count,
         error,
     ) = row;
     Ok(SessionContinuation {
@@ -1227,6 +1292,10 @@ fn session_continuation_from_parts(row: SessionContinuationRow) -> Result<Sessio
         parent_continuation_id: parent_continuation_id.map(ContinuationId::from),
         kind: continuation_kind_from_str(&kind)?,
         status: continuation_status_from_str(&status)?,
+        status_reason: status_reason
+            .as_deref()
+            .map(continuation_status_reason_from_str)
+            .transpose()?,
         priority,
         payload: serde_json::from_str(&payload_json)?,
         created_at: parse_time(&created_at)?,
@@ -1234,6 +1303,8 @@ fn session_continuation_from_parts(row: SessionContinuationRow) -> Result<Sessio
         claimed_at: claimed_at.as_deref().map(parse_time).transpose()?,
         completed_at: completed_at.as_deref().map(parse_time).transpose()?,
         lease_owner,
+        lease_expires_at: lease_expires_at.as_deref().map(parse_time).transpose()?,
+        attempt_count,
         error,
     })
 }
@@ -1245,8 +1316,9 @@ fn continuation_by_id(
 ) -> Result<Option<SessionContinuation>> {
     conn.query_row(
         r#"
-        SELECT id, session_id, turn_id, parent_continuation_id, kind, status, priority,
-               payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner, error
+        SELECT id, session_id, turn_id, parent_continuation_id, kind, status, status_reason, priority,
+               payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner,
+               lease_expires_at, attempt_count, error
         FROM session_continuations
         WHERE id = ?1
         "#,
@@ -1259,14 +1331,17 @@ fn continuation_by_id(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(7)?,
                 row.get::<_, String>(8)?,
                 row.get::<_, String>(9)?,
-                row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(10)?,
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, i64>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         },
     )
@@ -1287,10 +1362,10 @@ fn enqueue_continuation(
     conn.execute(
         r#"
         INSERT INTO session_continuations (
-            id, session_id, turn_id, parent_continuation_id, kind, status, priority,
-            payload_json, created_at, updated_at
+            id, session_id, turn_id, parent_continuation_id, kind, status, status_reason,
+            priority, payload_json, created_at, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         "#,
         params![
             continuation_id.as_str(),
@@ -1302,6 +1377,7 @@ fn enqueue_continuation(
                 .map(ContinuationId::as_str),
             continuation_kind_to_str(input.kind),
             continuation_status_to_str(SessionContinuationStatus::Queued),
+            continuation_status_reason_to_str(SessionContinuationStatusReason::Enqueued),
             input.priority,
             serde_json::to_string(&input.payload)?,
             format_time(now)?,
@@ -1342,6 +1418,7 @@ fn claim_next_continuation_in_transaction(
     path: &Path,
     claim: &SessionContinuationClaim,
 ) -> Result<Option<SessionContinuation>> {
+    reclaim_expired_continuations(conn, path)?;
     let mut queued = queued_continuations(conn, path)?;
     queued.retain(|continuation| continuation_matches_claim(continuation, claim));
     queued.sort_by(|left, right| {
@@ -1354,22 +1431,44 @@ fn claim_next_continuation_in_transaction(
         return Ok(None);
     };
     let now = OffsetDateTime::now_utc();
+    let lease_duration = claim
+        .lease_duration_seconds
+        .unwrap_or(DEFAULT_CONTINUATION_LEASE_SECONDS)
+        .max(0);
+    let lease_expires_at = now + time::Duration::seconds(lease_duration);
+    let claim_status_reason =
+        if selected.status_reason == Some(SessionContinuationStatusReason::LeaseExpired) {
+            SessionContinuationStatusReason::LeaseExpired
+        } else {
+            SessionContinuationStatusReason::Claimed
+        };
+    let claim_error = if claim_status_reason == SessionContinuationStatusReason::LeaseExpired {
+        selected.error.as_deref()
+    } else {
+        None
+    };
     let updated = conn
         .execute(
             r#"
             UPDATE session_continuations
             SET status = ?1,
-                updated_at = ?2,
-                claimed_at = ?2,
-                lease_owner = ?3,
-                error = NULL
-            WHERE id = ?4
-              AND status = ?5
+                status_reason = ?2,
+                updated_at = ?3,
+                claimed_at = ?3,
+                lease_owner = ?4,
+                lease_expires_at = ?5,
+                attempt_count = attempt_count + 1,
+                error = ?6
+            WHERE id = ?7
+              AND status = ?8
             "#,
             params![
                 continuation_status_to_str(SessionContinuationStatus::Running),
+                continuation_status_reason_to_str(claim_status_reason),
                 format_time(now)?,
                 claim.lease_owner.as_deref(),
+                format_time(lease_expires_at)?,
+                claim_error,
                 selected.continuation_id.as_str(),
                 continuation_status_to_str(SessionContinuationStatus::Queued),
             ],
@@ -1381,12 +1480,38 @@ fn claim_next_continuation_in_transaction(
     continuation_by_id(conn, path, &selected.continuation_id)
 }
 
+fn reclaim_expired_continuations(conn: &Connection, path: &Path) -> Result<usize> {
+    let now = format_time(OffsetDateTime::now_utc())?;
+    conn.execute(
+        r#"
+        UPDATE session_continuations
+        SET status = ?1,
+            status_reason = ?2,
+            updated_at = ?3,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            error = COALESCE(error, 'lease expired')
+        WHERE status = ?4
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at <= ?3
+        "#,
+        params![
+            continuation_status_to_str(SessionContinuationStatus::Queued),
+            continuation_status_reason_to_str(SessionContinuationStatusReason::LeaseExpired),
+            now,
+            continuation_status_to_str(SessionContinuationStatus::Running),
+        ],
+    )
+    .map_err(|source| sqlite_error(path, source))
+}
+
 fn queued_continuations(conn: &Connection, path: &Path) -> Result<Vec<SessionContinuation>> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, session_id, turn_id, parent_continuation_id, kind, status, priority,
-                   payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner, error
+            SELECT id, session_id, turn_id, parent_continuation_id, kind, status, status_reason, priority,
+                   payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner,
+                   lease_expires_at, attempt_count, error
             FROM session_continuations
             WHERE status = ?1
             ORDER BY priority ASC, created_at ASC, rowid ASC
@@ -1406,14 +1531,17 @@ fn queued_continuations(conn: &Connection, path: &Path) -> Result<Vec<SessionCon
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i64>(7)?,
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
-                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, String>(10)?,
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, Option<String>>(16)?,
                 ))
             },
         )
@@ -1469,14 +1597,20 @@ fn update_continuation_status(
         r#"
         UPDATE session_continuations
         SET status = ?1,
-            payload_json = ?2,
-            updated_at = ?3,
-            completed_at = COALESCE(?4, completed_at),
-            error = ?5
-        WHERE id = ?6
+            status_reason = ?2,
+            payload_json = ?3,
+            updated_at = ?4,
+            completed_at = COALESCE(?5, completed_at),
+            lease_expires_at = CASE
+                WHEN ?5 IS NULL THEN lease_expires_at
+                ELSE NULL
+            END,
+            error = ?6
+        WHERE id = ?7
         "#,
         params![
             continuation_status_to_str(status),
+            continuation_status_reason_to_str(continuation_status_reason_for_status(status)),
             serde_json::to_string(&payload)?,
             format_time(now)?,
             completed_at.as_deref(),
@@ -1485,6 +1619,56 @@ fn update_continuation_status(
         ],
     )
     .map_err(|source| sqlite_error(path, source))?;
+    continuation_by_id(conn, path, continuation_id)
+}
+
+fn requeue_continuation(
+    conn: &Connection,
+    path: &Path,
+    continuation_id: &ContinuationId,
+    reason: &str,
+    payload: serde_json::Value,
+) -> Result<Option<SessionContinuation>> {
+    let Some(existing) = continuation_by_id(conn, path, continuation_id)? else {
+        return Ok(None);
+    };
+    let merged_payload = if payload.is_null() {
+        existing.payload
+    } else {
+        merged_continuation_payload(existing.payload, payload)
+    };
+    let now = OffsetDateTime::now_utc();
+    let updated = conn
+        .execute(
+            r#"
+        UPDATE session_continuations
+        SET status = ?1,
+            status_reason = ?2,
+            payload_json = ?3,
+            updated_at = ?4,
+            completed_at = NULL,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            error = ?5
+        WHERE id = ?6
+          AND status IN (?7, ?8, ?9)
+        "#,
+            params![
+                continuation_status_to_str(SessionContinuationStatus::Queued),
+                continuation_status_reason_to_str(SessionContinuationStatusReason::Requeued),
+                serde_json::to_string(&merged_payload)?,
+                format_time(now)?,
+                reason,
+                continuation_id.as_str(),
+                continuation_status_to_str(SessionContinuationStatus::Running),
+                continuation_status_to_str(SessionContinuationStatus::Failed),
+                continuation_status_to_str(SessionContinuationStatus::Cancelled),
+            ],
+        )
+        .map_err(|source| sqlite_error(path, source))?;
+    if updated == 0 {
+        return Ok(None);
+    }
     continuation_by_id(conn, path, continuation_id)
 }
 
@@ -1511,8 +1695,9 @@ fn continuations_for_session(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, session_id, turn_id, parent_continuation_id, kind, status, priority,
-                   payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner, error
+            SELECT id, session_id, turn_id, parent_continuation_id, kind, status, status_reason, priority,
+                   payload_json, created_at, updated_at, claimed_at, completed_at, lease_owner,
+                   lease_expires_at, attempt_count, error
             FROM session_continuations
             WHERE session_id = ?1
             ORDER BY created_at ASC, rowid ASC
@@ -1528,14 +1713,17 @@ fn continuations_for_session(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(7)?,
                 row.get::<_, String>(8)?,
                 row.get::<_, String>(9)?,
-                row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(10)?,
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, i64>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         })
         .map_err(|source| sqlite_error(path, source))?;
@@ -1831,6 +2019,45 @@ fn continuation_status_from_str(value: &str) -> Result<SessionContinuationStatus
         other => Err(IkarosError::Message(format!(
             "unknown session continuation status in state.db: {other}"
         ))),
+    }
+}
+
+fn continuation_status_reason_to_str(reason: SessionContinuationStatusReason) -> &'static str {
+    match reason {
+        SessionContinuationStatusReason::Enqueued => "enqueued",
+        SessionContinuationStatusReason::Claimed => "claimed",
+        SessionContinuationStatusReason::Completed => "completed",
+        SessionContinuationStatusReason::Failed => "failed",
+        SessionContinuationStatusReason::Cancelled => "cancelled",
+        SessionContinuationStatusReason::Requeued => "requeued",
+        SessionContinuationStatusReason::LeaseExpired => "lease_expired",
+    }
+}
+
+fn continuation_status_reason_from_str(value: &str) -> Result<SessionContinuationStatusReason> {
+    match value {
+        "enqueued" => Ok(SessionContinuationStatusReason::Enqueued),
+        "claimed" => Ok(SessionContinuationStatusReason::Claimed),
+        "completed" => Ok(SessionContinuationStatusReason::Completed),
+        "failed" => Ok(SessionContinuationStatusReason::Failed),
+        "cancelled" => Ok(SessionContinuationStatusReason::Cancelled),
+        "requeued" => Ok(SessionContinuationStatusReason::Requeued),
+        "lease_expired" => Ok(SessionContinuationStatusReason::LeaseExpired),
+        other => Err(IkarosError::Message(format!(
+            "unknown session continuation status reason in state.db: {other}"
+        ))),
+    }
+}
+
+fn continuation_status_reason_for_status(
+    status: SessionContinuationStatus,
+) -> SessionContinuationStatusReason {
+    match status {
+        SessionContinuationStatus::Queued => SessionContinuationStatusReason::Requeued,
+        SessionContinuationStatus::Running => SessionContinuationStatusReason::Claimed,
+        SessionContinuationStatus::Completed => SessionContinuationStatusReason::Completed,
+        SessionContinuationStatus::Failed => SessionContinuationStatusReason::Failed,
+        SessionContinuationStatus::Cancelled => SessionContinuationStatusReason::Cancelled,
     }
 }
 
@@ -2456,6 +2683,10 @@ mod tests {
             .expect("claimed");
         assert_eq!(claimed.continuation_id, steer.continuation_id);
         assert_eq!(claimed.status, SessionContinuationStatus::Running);
+        assert_eq!(
+            claimed.status_reason,
+            Some(SessionContinuationStatusReason::Claimed)
+        );
         assert_eq!(claimed.lease_owner.as_deref(), Some("worker-a"));
         assert!(claimed.claimed_at.is_some());
 
@@ -2464,6 +2695,10 @@ mod tests {
             .expect("complete")
             .expect("completed");
         assert_eq!(completed.status, SessionContinuationStatus::Completed);
+        assert_eq!(
+            completed.status_reason,
+            Some(SessionContinuationStatusReason::Completed)
+        );
         assert_eq!(completed.payload["turn_id"], json!("turn-a"));
         assert!(completed.completed_at.is_some());
 
@@ -2477,6 +2712,10 @@ mod tests {
             .expect("fail")
             .expect("failed");
         assert_eq!(failed.status, SessionContinuationStatus::Failed);
+        assert_eq!(
+            failed.status_reason,
+            Some(SessionContinuationStatusReason::Failed)
+        );
         assert_eq!(failed.error.as_deref(), Some("provider unavailable"));
 
         let cancelled = store
@@ -2484,6 +2723,10 @@ mod tests {
             .expect("cancel")
             .expect("cancelled");
         assert_eq!(cancelled.status, SessionContinuationStatus::Cancelled);
+        assert_eq!(
+            cancelled.status_reason,
+            Some(SessionContinuationStatusReason::Cancelled)
+        );
         assert_eq!(cancelled.error.as_deref(), Some("user cancelled"));
 
         let continuations = store.continuations(&session_id).expect("continuations");
@@ -2556,6 +2799,225 @@ mod tests {
         assert_eq!(remaining.len(), 2);
         assert_eq!(remaining[0].status, SessionContinuationStatus::Running);
         assert_eq!(remaining[1].status, SessionContinuationStatus::Queued);
+    }
+
+    #[test]
+    fn continuation_claim_reclaims_expired_running_lease() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-continuation-lease");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+
+        let mut input =
+            SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::FollowUp);
+        input.payload = json!({"content": "resume after crash"});
+        let queued = store.enqueue_continuation(&input).expect("queued");
+
+        let expired_claim = SessionContinuationClaim::for_session(session_id.clone())
+            .with_lease_owner("worker-old")
+            .with_lease_duration_seconds(0);
+        let first = store
+            .claim_next_continuation(&expired_claim)
+            .expect("first claim")
+            .expect("claimed");
+        assert_eq!(first.continuation_id, queued.continuation_id);
+        assert_eq!(first.status, SessionContinuationStatus::Running);
+        assert_eq!(first.lease_owner.as_deref(), Some("worker-old"));
+        assert_eq!(first.attempt_count, 1);
+        assert!(first.lease_expires_at.is_some());
+
+        let reopened = SqliteSessionStore::new(temp.path());
+        let reclaim = SessionContinuationClaim::for_session(session_id.clone())
+            .with_lease_owner("worker-new")
+            .with_lease_duration_seconds(60);
+        let reclaimed = reopened
+            .claim_next_continuation(&reclaim)
+            .expect("reclaim")
+            .expect("reclaimed");
+        assert_eq!(reclaimed.continuation_id, queued.continuation_id);
+        assert_eq!(reclaimed.status, SessionContinuationStatus::Running);
+        assert_eq!(
+            reclaimed.status_reason,
+            Some(SessionContinuationStatusReason::LeaseExpired)
+        );
+        assert_eq!(reclaimed.lease_owner.as_deref(), Some("worker-new"));
+        assert_eq!(reclaimed.attempt_count, 2);
+        assert_eq!(reclaimed.error.as_deref(), Some("lease expired"));
+    }
+
+    #[test]
+    fn running_continuation_can_be_cancelled_from_reopened_store() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-continuation-cancel-running");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+        let queued = store
+            .enqueue_continuation(&SessionContinuationInput::new(
+                session_id.clone(),
+                SessionContinuationKind::FollowUp,
+            ))
+            .expect("queued");
+        let claimed = store
+            .claim_next_continuation(
+                &SessionContinuationClaim::for_session(session_id.clone())
+                    .with_lease_owner("worker-a")
+                    .with_lease_duration_seconds(60),
+            )
+            .expect("claim")
+            .expect("claimed");
+        assert_eq!(claimed.continuation_id, queued.continuation_id);
+        assert_eq!(claimed.status, SessionContinuationStatus::Running);
+
+        let reopened = SqliteSessionStore::new(temp.path());
+        let cancelled = reopened
+            .cancel_continuation(&queued.continuation_id, "external abort")
+            .expect("cancel")
+            .expect("cancelled");
+        assert_eq!(cancelled.status, SessionContinuationStatus::Cancelled);
+        assert_eq!(
+            cancelled.status_reason,
+            Some(SessionContinuationStatusReason::Cancelled)
+        );
+        assert_eq!(cancelled.error.as_deref(), Some("external abort"));
+        assert!(cancelled.completed_at.is_some());
+        assert!(cancelled.lease_expires_at.is_none());
+
+        let observed = store
+            .continuations(&session_id)
+            .expect("continuations")
+            .into_iter()
+            .find(|continuation| continuation.continuation_id == queued.continuation_id)
+            .expect("observed continuation");
+        assert_eq!(observed.status, SessionContinuationStatus::Cancelled);
+        assert_eq!(
+            observed.status_reason,
+            Some(SessionContinuationStatusReason::Cancelled)
+        );
+    }
+
+    #[test]
+    fn failed_or_cancelled_continuation_can_be_requeued_for_retry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-continuation-requeue");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+
+        let failed = store
+            .enqueue_continuation(&SessionContinuationInput::new(
+                session_id.clone(),
+                SessionContinuationKind::Retry,
+            ))
+            .expect("queued");
+        let failed_claim = store
+            .claim_next_continuation(
+                &SessionContinuationClaim::for_session(session_id.clone())
+                    .with_lease_owner("worker-a"),
+            )
+            .expect("claim")
+            .expect("claimed");
+        store
+            .fail_continuation(&failed_claim.continuation_id, "provider unavailable")
+            .expect("fail");
+
+        let requeued = store
+            .requeue_continuation(
+                &failed.continuation_id,
+                "retry after provider cooldown",
+                json!({"retry_after_seconds": 30}),
+            )
+            .expect("requeue")
+            .expect("requeued");
+        assert_eq!(requeued.status, SessionContinuationStatus::Queued);
+        assert_eq!(requeued.attempt_count, 1);
+        assert_eq!(
+            requeued.error.as_deref(),
+            Some("retry after provider cooldown")
+        );
+        assert_eq!(requeued.payload["retry_after_seconds"], json!(30));
+
+        let cancelled = store
+            .enqueue_continuation(&SessionContinuationInput::new(
+                session_id.clone(),
+                SessionContinuationKind::Compact,
+            ))
+            .expect("cancel queued");
+        store
+            .cancel_continuation(&cancelled.continuation_id, "operator cancelled")
+            .expect("cancel");
+        let requeued_cancel = store
+            .requeue_continuation(
+                &cancelled.continuation_id,
+                "operator resumed",
+                serde_json::Value::Null,
+            )
+            .expect("requeue cancel")
+            .expect("requeued");
+        assert_eq!(requeued_cancel.status, SessionContinuationStatus::Queued);
+        assert_eq!(requeued_cancel.error.as_deref(), Some("operator resumed"));
+    }
+
+    #[test]
+    fn requeue_continuation_returns_none_for_non_requeueable_states() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteSessionStore::new(temp.path());
+        let session_id = SessionId::from("session-continuation-requeue-noop");
+        store
+            .upsert_session(&sample_session(session_id.clone()))
+            .expect("session");
+
+        let queued = store
+            .enqueue_continuation(&SessionContinuationInput::new(
+                session_id.clone(),
+                SessionContinuationKind::FollowUp,
+            ))
+            .expect("queued");
+        assert!(
+            store
+                .requeue_continuation(&queued.continuation_id, "already queued", json!({}))
+                .expect("requeue queued")
+                .is_none()
+        );
+
+        let completed = store
+            .enqueue_continuation(&SessionContinuationInput::new(
+                session_id.clone(),
+                SessionContinuationKind::Retry,
+            ))
+            .expect("completed queued");
+        let claimed = store
+            .claim_next_continuation(
+                &SessionContinuationClaim::for_session(session_id)
+                    .with_kinds([SessionContinuationKind::Retry])
+                    .with_lease_owner("worker-a"),
+            )
+            .expect("claim")
+            .expect("claimed");
+        assert_eq!(claimed.continuation_id, completed.continuation_id);
+        store
+            .complete_continuation(&completed.continuation_id, json!({"entry_id": "leaf-a"}))
+            .expect("complete");
+
+        assert!(
+            store
+                .requeue_continuation(
+                    &completed.continuation_id,
+                    "completed should not requeue",
+                    json!({})
+                )
+                .expect("requeue completed")
+                .is_none()
+        );
+        let unchanged = store
+            .continuations(&SessionId::from("session-continuation-requeue-noop"))
+            .expect("continuations");
+        assert_eq!(unchanged[0].status, SessionContinuationStatus::Queued);
+        assert_eq!(unchanged[1].status, SessionContinuationStatus::Completed);
     }
 
     #[test]

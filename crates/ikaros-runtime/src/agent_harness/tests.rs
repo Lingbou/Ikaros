@@ -13,9 +13,9 @@ use ikaros_core::{IkarosError, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
 use ikaros_models::{MockModelProvider, ModelProvider, ModelRequest, ModelResponse, TokenUsage};
 use ikaros_session::{
-    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, PersistingAgentTurnSink,
-    SessionContinuationStatus, SessionEntry, SessionEntryKind, SessionId, SessionSource,
-    SessionStore, SqliteSessionStore, TurnId, noop_agent_event_sink,
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, PersistingAgentEventSink,
+    PersistingAgentTurnSink, SessionContinuationStatus, SessionEntry, SessionEntryKind, SessionId,
+    SessionSource, SessionStore, SqliteSessionStore, TurnId, noop_agent_event_sink,
 };
 use serde_json::json;
 use std::{
@@ -25,6 +25,7 @@ use std::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 #[derive(Default)]
@@ -47,6 +48,11 @@ struct CountingProvider {
     calls: AtomicUsize,
 }
 
+#[derive(Debug, Default)]
+struct SlowProvider {
+    calls: AtomicUsize,
+}
+
 #[async_trait]
 impl ModelProvider for CountingProvider {
     fn name(&self) -> &str {
@@ -59,6 +65,26 @@ impl ModelProvider for CountingProvider {
             provider: self.name().into(),
             model: "counting-model".into(),
             content: r#"{"final_answer":"called"}"#.into(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[async_trait]
+impl ModelProvider for SlowProvider {
+    fn name(&self) -> &str {
+        "slow"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "slow-model".into(),
+            content: r#"{"final_answer":"too late"}"#.into(),
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
             diagnostics: Vec::new(),
@@ -470,6 +496,151 @@ async fn agent_harness_runs_persisted_continuation_with_turn_sink_without_lockin
     assert!(replay.agent_events.iter().any(|event| {
         event.turn_id == turn.turn_id && matches!(event.kind, AgentEventKind::ContinuationCompleted)
     }));
+}
+
+#[test]
+fn agent_harness_cancels_durable_continuation_with_replay_event() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let event_store: std::sync::Arc<dyn SessionStore> = std::sync::Arc::new(store.clone());
+    let event_sink = PersistingAgentEventSink::new(event_store).with_source(SessionSource::Test);
+    let runtime = RecordingRuntime::default();
+    let provider = MockModelProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+    let mut config = harness_config();
+    config.turn_id = Some(TurnId::from("cancel-turn"));
+    let mut harness = AgentHarness::new(
+        config,
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &event_sink,
+    )
+    .with_continuation_store(&store);
+
+    harness
+        .enqueue_follow_up(AgentHarnessMessage::user("queued follow-up"))
+        .expect("enqueue");
+    let queued = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations")
+        .into_iter()
+        .next()
+        .expect("queued continuation");
+
+    let cancelled = harness
+        .cancel_continuation(&queued.continuation_id, "operator cancelled")
+        .expect("cancel")
+        .expect("cancelled");
+
+    assert_eq!(cancelled.status, SessionContinuationStatus::Cancelled);
+    assert_eq!(cancelled.error.as_deref(), Some("operator cancelled"));
+    let replay = store
+        .replay_session(&SessionId::from("session-a"))
+        .expect("replay")
+        .expect("session");
+    let event = replay
+        .agent_events
+        .iter()
+        .find(|event| matches!(event.kind, AgentEventKind::ContinuationCancelled))
+        .expect("cancel event");
+    assert_eq!(event.turn_id.as_str(), "cancel-turn");
+    assert_eq!(
+        event.payload["continuation_id"],
+        json!(queued.continuation_id.as_str())
+    );
+    assert_eq!(
+        event.payload["payload"]["reason"],
+        json!("operator cancelled")
+    );
+}
+
+#[tokio::test]
+async fn running_durable_continuation_observes_external_cancel() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let event_store: std::sync::Arc<dyn SessionStore> = std::sync::Arc::new(store.clone());
+    let event_sink = PersistingAgentEventSink::new(event_store).with_source(SessionSource::Test);
+    let runtime = HarnessAgentRuntime;
+    let provider = SlowProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+    let mut worker = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &event_sink,
+    )
+    .with_continuation_store(&store);
+    worker
+        .enqueue_follow_up(AgentHarnessMessage::user("slow follow-up"))
+        .expect("enqueue");
+    let continuation_id = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations")
+        .into_iter()
+        .next()
+        .expect("queued continuation")
+        .continuation_id;
+
+    let mut running = Box::pin(worker.run_continue());
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        result = &mut running => panic!("continuation finished before external cancel: {result:?}"),
+    }
+
+    let canceller = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &event_sink,
+    )
+    .with_continuation_store(&store);
+    canceller
+        .cancel_continuation(&continuation_id, "external abort")
+        .expect("cancel")
+        .expect("cancelled");
+
+    let turn = tokio::time::timeout(Duration::from_secs(2), &mut running)
+        .await
+        .expect("worker should observe durable cancellation")
+        .expect("cancelled turn");
+    assert_eq!(turn.report.stop_reason, AgentLoopStopReason::Cancelled);
+
+    let continuations = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations");
+    assert_eq!(
+        continuations[0].status,
+        SessionContinuationStatus::Cancelled
+    );
+    assert_eq!(continuations[0].error.as_deref(), Some("external abort"));
+
+    let replay = store
+        .replay_session(&SessionId::from("session-a"))
+        .expect("replay")
+        .expect("session");
+    let cancel_events = replay
+        .agent_events
+        .iter()
+        .filter(|event| matches!(event.kind, AgentEventKind::ContinuationCancelled))
+        .collect::<Vec<_>>();
+    assert!(
+        cancel_events
+            .iter()
+            .any(|event| event.payload["payload"]["reason"] == json!("external abort"))
+    );
+    assert!(
+        cancel_events
+            .iter()
+            .any(|event| event.payload["payload"]["acknowledged"] == json!(true))
+    );
 }
 
 #[tokio::test]

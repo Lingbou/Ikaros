@@ -198,7 +198,32 @@ pub(super) async fn run_agent_loop_turn(
             }),
             |hooks, event| hooks.before_provider_request(event),
         )?;
-        let turn = match request_agent_loop_model_turn(provider, request, options.stream).await {
+        let turn = match tokio::select! {
+            _ = options.cancellation.cancelled() => {
+                return finish_agent_loop_turn(
+                    session,
+                    input.task_id,
+                    &session_id,
+                    &turn_id,
+                    &mut events,
+                    event_sink,
+                    AgentLoopFinish {
+                        stop_reason: AgentLoopStopReason::Cancelled,
+                        final_content: last_content,
+                        provider: last_provider,
+                        model: last_model,
+                        usage: total_usage,
+                        streamed: final_streamed,
+                        stream_chunks: final_stream_chunks,
+                        iterations: iteration.saturating_sub(1),
+                        tool_call_diagnostics,
+                        tool_results,
+                        events: Vec::new(),
+                    },
+                );
+            }
+            result = request_agent_loop_model_turn(provider, request, options.stream) => result
+        } {
             Ok(turn) => turn,
             Err(error) => {
                 let error = IkarosError::Message(redact_secrets(&error.to_string()));

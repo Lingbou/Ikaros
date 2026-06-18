@@ -55,14 +55,19 @@ entry，不会改写已经发生的 turn。
 
 如果 harness 配置了 `SessionStore`，continuation queue 就是 durable 的。
 `ikaros-session` 会把 queued、running、completed、failed 和 cancelled continuation
-写入 `state.db`。Harness 可以 claim 并完成 message continuation（`steer`、
-`follow_up`、`next_turn`、`resume`）和 maintenance continuation（`compact`、
-`retry`）。Message continuation 会运行真实 turn；maintenance continuation 会追加
-session entry，并发出 `ContinuationStarted` / `ContinuationCompleted` /
-`ContinuationFailed` 事件，不会伪造模型响应。没有 continuation store 时，harness
-仍保留内存队列，用于测试和特殊 one-shot caller。
-这仍然只是 continuation queue，不是完整 scheduler。Lease 过期回收、取消事件传播、
-跨进程 abort 处理，以及面向用户的 debug/query 控制面仍是后续 hardening。
+写入 `state.db`。Claim continuation 时会写入 lease、递增 attempt count、记录 status reason，并在选择下一项前回收
+过期的 running lease。Failed 或 cancelled continuation 可以带明确原因重新入队。Harness 可以
+claim 并完成 message continuation（`steer`、`follow_up`、`next_turn`、`resume`）和
+maintenance continuation（`compact`、`retry`）。Message continuation 会运行真实 turn；
+maintenance continuation 会追加 session entry，并发出 `ContinuationStarted` /
+`ContinuationCompleted` / `ContinuationFailed` 事件，不会伪造模型响应。显式 harness
+取消会写入 `ContinuationCancelled` event。正在运行的 durable message continuation 会轮询
+store 中的外部取消状态，取消当前 turn token，并在 worker 停止时写入 acknowledged 事件。
+`ikaros debug continuations <session-id>` 可以查询 queue status、status reason、lease owner、
+lease expiry、attempt、terminal summary、worker lease timeout evidence、error 和脱敏 payload。没有
+continuation store 时，harness 仍保留内存队列，用于测试和特殊 one-shot caller。
+这仍然只是 continuation queue，不是完整 scheduler。轮询间隔调优、scheduler 级 worker coordination、
+tool-result continuation 和面向 automation 的 timeout report 仍属于后续 runtime hardening。
 
 `AgentLoopOptions::with_hooks()` 可以安装 observer-only `AgentLoopHooks`，覆盖
 provider request/response 和 tool call 边界。Hook payload 只携带已脱敏元数据和
@@ -206,10 +211,11 @@ timeout，以及 approval/audit evidence 可引用的稳定 tool-event anchor。
 harness dispatch 的工具结果还会发出 `AuditAnchor` event，把 tool-event id、harness
 call id、audit event id、audit kind 和 audit path 绑定起来。进入 report 或持久化
 session event 前必须先脱敏。Descriptor timeout 会把该 tool call 记录成 failed tool
-lifecycle result；它不能绕过 `ExecutionSession` 或 `ExecutionEnv`。已规划调用启动
-前收到 cancellation 时，会产生 `ToolCallCancelled` payload，并以 `Cancelled` 停止
-turn；运行中的 tool future 被取消时也会产生同样的 lifecycle event，并 drop 掉该
-future。进程型本地工具依赖 `ExecutionEnv` process runner 的 `kill_on_drop` 清理子进程。
+lifecycle result，并带上结构化 timeout metadata，包括 timeout 时长和 start/end timestamp；
+它不能绕过 `ExecutionSession` 或 `ExecutionEnv`。已规划调用启动前收到 cancellation 时，
+会产生 `ToolCallCancelled` payload，并以 `Cancelled` 停止 turn；provider request 或
+tool future 运行中被取消时，也会停止 turn 并 drop 掉 pending future。进程型本地工具依赖
+`ExecutionEnv` process runner 的 `kill_on_drop` 清理子进程。
 
 `AgentLoopReport.events` 是当前调用方的兼容摘要。挂载持久化 sink 后，真正的事实来源是 `ikaros-session` 里的 event stream。Replay、gateway、schedule 和 UI 路径应读取 session store，而不是从面向人的输出里反推 timeline。
 

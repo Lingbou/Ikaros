@@ -310,6 +310,8 @@ pub struct SessionContinuation {
     pub parent_continuation_id: Option<ContinuationId>,
     pub kind: SessionContinuationKind,
     pub status: SessionContinuationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<SessionContinuationStatusReason>,
     pub priority: i64,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub payload: serde_json::Value,
@@ -331,6 +333,14 @@ pub struct SessionContinuation {
     pub completed_at: Option<OffsetDateTime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_owner: Option<String>,
+    #[serde(
+        default,
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub lease_expires_at: Option<OffsetDateTime>,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub attempt_count: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -371,6 +381,8 @@ pub struct SessionContinuationClaim {
     pub kinds: Vec<SessionContinuationKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_duration_seconds: Option<i64>,
 }
 
 impl SessionContinuationClaim {
@@ -380,6 +392,7 @@ impl SessionContinuationClaim {
             turn_id: None,
             kinds: Vec::new(),
             lease_owner: None,
+            lease_duration_seconds: None,
         }
     }
 
@@ -395,6 +408,11 @@ impl SessionContinuationClaim {
 
     pub fn with_lease_owner(mut self, lease_owner: impl Into<String>) -> Self {
         self.lease_owner = Some(lease_owner.into());
+        self
+    }
+
+    pub fn with_lease_duration_seconds(mut self, seconds: i64) -> Self {
+        self.lease_duration_seconds = Some(seconds);
         self
     }
 }
@@ -431,6 +449,22 @@ pub enum SessionContinuationStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContinuationStatusReason {
+    Enqueued,
+    Claimed,
+    Completed,
+    Failed,
+    Cancelled,
+    Requeued,
+    LeaseExpired,
+}
+
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

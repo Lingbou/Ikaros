@@ -9,7 +9,8 @@ use ikaros_memory::{
     MemoryJournalAction, MemoryKind, MemoryRecord, MemoryStore, WorkingMemoryRecord,
 };
 use ikaros_session::{
-    AgentEvent, AgentEventKind, AgentEventSource, SessionId, SessionRecord, SessionSource,
+    AgentEvent, AgentEventKind, AgentEventSource, SessionContinuationClaim,
+    SessionContinuationInput, SessionContinuationKind, SessionId, SessionRecord, SessionSource,
     SessionStore, SqliteSessionStore, TurnId,
 };
 use serde_json::json;
@@ -775,6 +776,154 @@ rag:
     assert!(memory.contains("\"memory_journal_action_counts\""));
     assert!(memory.contains("\"source_ref\""));
     assert!(!memory.contains("abc123"));
+}
+
+#[test]
+fn debug_continuations_reports_queue_status_and_redacts_payload() {
+    let env = TestHome::new();
+    env.init();
+    let state_dir = env.home.join("agents/debug");
+    let store = SqliteSessionStore::new(&state_dir);
+    let session_id = SessionId::from("debug-continuation-session");
+    let turn_id = TurnId::from("debug-continuation-turn");
+    store
+        .upsert_session(&SessionRecord::new(session_id.clone(), SessionSource::Cli))
+        .expect("session");
+    store
+        .append_agent_event(&AgentEvent::new(
+            session_id.clone(),
+            TurnId::from("turn-without-continuations"),
+            None,
+            AgentEventSource::Runtime,
+            AgentEventKind::TurnStart,
+            json!({"fixture": "no continuation turn"}),
+        ))
+        .expect("turn without continuations");
+
+    let mut queued =
+        SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::NextTurn);
+    queued.turn_id = Some(turn_id.clone());
+    queued.payload = json!({"content": "continue safely", "api_key": "sk-continuation-secret"});
+    store.enqueue_continuation(&queued).expect("queued");
+
+    let mut running =
+        SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::FollowUp);
+    running.turn_id = Some(turn_id.clone());
+    running.payload = json!({"content": "running"});
+    store.enqueue_continuation(&running).expect("running");
+    store
+        .claim_next_continuation(
+            &SessionContinuationClaim::for_session(session_id.clone())
+                .with_kinds([SessionContinuationKind::FollowUp])
+                .with_lease_owner("debug-worker")
+                .with_lease_duration_seconds(60),
+        )
+        .expect("claim running")
+        .expect("running claimed");
+
+    let mut expired =
+        SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::Steer);
+    expired.turn_id = Some(turn_id.clone());
+    expired.payload = json!({"content": "lease reclaim"});
+    store.enqueue_continuation(&expired).expect("expired");
+    store
+        .claim_next_continuation(
+            &SessionContinuationClaim::for_session(session_id.clone())
+                .with_kinds([SessionContinuationKind::Steer])
+                .with_lease_owner("expired-worker")
+                .with_lease_duration_seconds(0),
+        )
+        .expect("claim expired")
+        .expect("expired claimed");
+    store
+        .claim_next_continuation(
+            &SessionContinuationClaim::for_session(session_id.clone())
+                .with_kinds([SessionContinuationKind::Steer])
+                .with_lease_owner("replacement-worker")
+                .with_lease_duration_seconds(60),
+        )
+        .expect("reclaim expired")
+        .expect("expired reclaimed");
+
+    let mut failed =
+        SessionContinuationInput::new(session_id.clone(), SessionContinuationKind::Retry);
+    failed.turn_id = Some(turn_id.clone());
+    let failed = store.enqueue_continuation(&failed).expect("failed");
+    let failed_claim = store
+        .claim_next_continuation(
+            &SessionContinuationClaim::for_session(session_id.clone())
+                .with_kinds([SessionContinuationKind::Retry])
+                .with_lease_owner("retry-worker"),
+        )
+        .expect("claim failed")
+        .expect("failed claimed");
+    assert_eq!(failed_claim.continuation_id, failed.continuation_id);
+    store
+        .fail_continuation(&failed.continuation_id, "provider unavailable")
+        .expect("fail");
+
+    let cancelled = store
+        .enqueue_continuation(&SessionContinuationInput::new(
+            session_id.clone(),
+            SessionContinuationKind::Compact,
+        ))
+        .expect("cancelled");
+    store
+        .cancel_continuation(&cancelled.continuation_id, "operator cancelled")
+        .expect("cancel");
+
+    let output = env.run([
+        "debug",
+        "continuations",
+        "debug-continuation-session",
+        "--turn-id",
+        "debug-continuation-turn",
+    ]);
+    assert!(output.contains("\"queued\": 1"));
+    assert!(output.contains("\"running\": 2"));
+    assert!(output.contains("\"failed\": 1"));
+    assert!(!output.contains("\"cancelled\": 1"));
+    assert!(output.contains("\"lease_owner\": \"debug-worker\""));
+    assert!(output.contains("\"lease_owner\": \"replacement-worker\""));
+    assert!(output.contains("\"attempt_count\": 1"));
+    assert!(output.contains("\"attempt_count\": 2"));
+    assert!(output.contains("\"error\": \"provider unavailable\""));
+    assert!(output.contains("\"error\": \"lease expired\""));
+    assert!(output.contains("\"lease_expired\": false"));
+    assert!(output.contains("\"status_reason\": \"lease_expired\""));
+    assert!(output.contains("\"reason\": \"lease_expired\""));
+    assert!(output.contains("\"kind\": \"worker_lease\""));
+    assert!(output.contains("\"status_reason\": \"failed\""));
+    assert!(output.contains("\"terminal\""));
+    assert!(output.contains("\"reason\": \"failed\""));
+    assert!(output.contains("\"ended_at\""));
+    assert!(output.contains("[REDACTED_SECRET]"));
+    assert!(!output.contains("sk-continuation-secret"));
+
+    let all = env.run(["debug", "continuations", "debug-continuation-session"]);
+    assert!(all.contains("\"cancelled\": 1"));
+    assert!(all.contains("\"operator cancelled\""));
+
+    let empty_turn = env.run([
+        "debug",
+        "continuations",
+        "debug-continuation-session",
+        "--turn-id",
+        "turn-without-continuations",
+    ]);
+    assert!(empty_turn.contains("\"continuation_count\": 0"));
+    assert!(!empty_turn.contains("turn not found"));
+
+    let missing_turn = env.run_failure([
+        "debug",
+        "continuations",
+        "debug-continuation-session",
+        "--turn-id",
+        "missing-turn",
+    ]);
+    assert!(missing_turn.contains("turn not found"));
+    let missing_session = env.run_failure(["debug", "continuations", "missing-session"]);
+    assert!(missing_session.contains("session not found"));
 }
 
 #[test]

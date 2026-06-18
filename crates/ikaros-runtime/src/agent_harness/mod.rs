@@ -2,21 +2,24 @@
 
 use crate::agent_loop::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,
-    AgentLoopReport, AgentRuntime,
+    AgentLoopReport, AgentLoopStopReason, AgentRuntime,
 };
 use ikaros_core::{IkarosError, Result};
 use ikaros_harness::{CancellationToken, ExecutionSession, SkillRegistry};
 use ikaros_models::ModelProvider;
 use ikaros_session::{
-    ApprovalRecord, SessionBranchSummaryInput, SessionCompactionInput, SessionContinuation,
-    SessionContinuationClaim, SessionContinuationInput, SessionContinuationKind, SessionEntry,
-    SessionEntryId, SessionId, SessionRetryInput, SessionStore, TurnId,
+    ApprovalRecord, ContinuationId, SessionBranchSummaryInput, SessionCompactionInput,
+    SessionContinuation, SessionContinuationClaim, SessionContinuationInput,
+    SessionContinuationKind, SessionContinuationStatus, SessionEntry, SessionEntryId, SessionId,
+    SessionRetryInput, SessionStore, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
+
+const DURABLE_CONTINUATION_CANCEL_POLL_MS: u64 = 25;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +141,34 @@ impl<'a> AgentHarness<'a> {
 
     pub fn cancel(&self) {
         self.config.options.cancellation.cancel();
+    }
+
+    pub fn cancel_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        reason: &str,
+    ) -> Result<Option<SessionContinuation>> {
+        let store = self.continuation_store.ok_or_else(|| {
+            IkarosError::Message("durable continuation cancellation requires a store".into())
+        })?;
+        let Some(cancelled) = store.cancel_continuation(continuation_id, reason)? else {
+            return Ok(None);
+        };
+        let turn_id = cancelled
+            .turn_id
+            .clone()
+            .or_else(|| self.config.turn_id.clone())
+            .unwrap_or_default();
+        self.emit_continuation_event(
+            &turn_id,
+            AgentEventKind::ContinuationCancelled,
+            &cancelled,
+            serde_json::json!({
+                "reason": reason,
+                "status": "cancelled",
+            }),
+        )?;
+        Ok(Some(cancelled))
     }
 
     pub fn enqueue_steer(&mut self, message: AgentHarnessMessage) -> Result<()> {
@@ -337,8 +368,46 @@ impl<'a> AgentHarness<'a> {
             &continuation,
             serde_json::json!({"kind": format!("{:?}", continuation.kind)}),
         )?;
-        match self.run_user_message(content).await {
+        let session_id = self.config.session_id.clone();
+        let token = self.config.options.cancellation.clone();
+        let result = {
+            let mut turn_future = Box::pin(self.run_user_message(content));
+            let durable_cancel = poll_durable_continuation_cancel(
+                store,
+                session_id.clone(),
+                continuation_id.clone(),
+                token,
+            );
+            tokio::select! {
+                result = &mut turn_future => result,
+                cancel_result = durable_cancel => {
+                    cancel_result?;
+                    turn_future.await
+                }
+            }
+        };
+        match result {
             Ok(turn) => {
+                if turn.report.stop_reason == AgentLoopStopReason::Cancelled {
+                    let cancelled = ensure_continuation_cancelled(
+                        store,
+                        &session_id,
+                        &continuation_id,
+                        "worker cancelled",
+                    )?
+                    .unwrap_or_else(|| continuation.clone());
+                    self.emit_continuation_event(
+                        &turn.turn_id,
+                        AgentEventKind::ContinuationCancelled,
+                        &cancelled,
+                        serde_json::json!({
+                            "acknowledged": true,
+                            "completed_turn_id": turn.turn_id.as_str(),
+                            "stop_reason": format!("{:?}", turn.report.stop_reason),
+                        }),
+                    )?;
+                    return Ok(turn);
+                }
                 store.complete_continuation(
                     &continuation_id,
                     serde_json::json!({
@@ -625,6 +694,61 @@ impl<'a> AgentHarness<'a> {
         self.phase = AgentHarnessPhase::Idle;
         result
     }
+}
+
+async fn poll_durable_continuation_cancel(
+    store: &dyn SessionStore,
+    session_id: SessionId,
+    continuation_id: ContinuationId,
+    token: CancellationToken,
+) -> Result<()> {
+    loop {
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(
+            DURABLE_CONTINUATION_CANCEL_POLL_MS,
+        ))
+        .await;
+        let Some(continuation) = continuation_for_id(store, &session_id, &continuation_id)? else {
+            return Ok(());
+        };
+        match continuation.status {
+            SessionContinuationStatus::Cancelled => {
+                token.cancel();
+                return Ok(());
+            }
+            SessionContinuationStatus::Completed | SessionContinuationStatus::Failed => {
+                return Ok(());
+            }
+            SessionContinuationStatus::Queued | SessionContinuationStatus::Running => {}
+        }
+    }
+}
+
+fn ensure_continuation_cancelled(
+    store: &dyn SessionStore,
+    session_id: &SessionId,
+    continuation_id: &ContinuationId,
+    reason: &str,
+) -> Result<Option<SessionContinuation>> {
+    if let Some(existing) = continuation_for_id(store, session_id, continuation_id)?
+        && existing.status == SessionContinuationStatus::Cancelled
+    {
+        return Ok(Some(existing));
+    }
+    store.cancel_continuation(continuation_id, reason)
+}
+
+fn continuation_for_id(
+    store: &dyn SessionStore,
+    session_id: &SessionId,
+    continuation_id: &ContinuationId,
+) -> Result<Option<SessionContinuation>> {
+    Ok(store
+        .continuations(session_id)?
+        .into_iter()
+        .find(|continuation| &continuation.continuation_id == continuation_id))
 }
 
 struct CollectingAgentEventSink<'a> {

@@ -1020,19 +1020,49 @@ async fn agent_loop_fails_tool_call_on_descriptor_timeout() {
     .expect("agent loop");
 
     assert_eq!(report.stop_reason, AgentLoopStopReason::FinalAnswer);
-    assert!(report.events.iter().any(|event| {
-        matches!(event.kind, AgentEventKind::ToolCallFailed)
-            && event
-                .payload
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                == Some("failed")
-            && event
-                .payload
-                .get("summary")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|summary| summary.contains("timed out"))
-    }));
+    let timeout_event = report
+        .events
+        .iter()
+        .find(|event| {
+            matches!(event.kind, AgentEventKind::ToolCallFailed)
+                && event
+                    .payload
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("failed")
+                && event
+                    .payload
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|summary| summary.contains("timed out"))
+        })
+        .expect("timeout tool failure event");
+    assert_eq!(
+        timeout_event.payload.pointer("/output/timeout/kind"),
+        Some(&json!("tool"))
+    );
+    assert_eq!(
+        timeout_event.payload.pointer("/output/timeout/timeout_ms"),
+        Some(&json!(5))
+    );
+    assert_eq!(
+        timeout_event.payload.pointer("/output/timeout/reason"),
+        Some(&json!("tool_timeout"))
+    );
+    assert!(
+        timeout_event
+            .payload
+            .pointer("/output/timeout/started_at")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    );
+    assert!(
+        timeout_event
+            .payload
+            .pointer("/output/timeout/ended_at")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    );
 }
 
 #[tokio::test]
