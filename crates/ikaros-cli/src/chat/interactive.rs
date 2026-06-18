@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use anyhow::{Result, anyhow};
+use crate::code::{code_command, parse_interactive_code_command};
+use anyhow::{Context, Result, anyhow};
 use ikaros_core::{IkarosConfig, IkarosPaths, ResolvedAgentProfile, redact_secrets};
 use ikaros_harness::{AuditEvent, ExecutionSession};
 use ikaros_models::ModelUsageLedger;
@@ -14,7 +15,7 @@ pub(super) struct InteractiveChatRuntime {
     pub(super) chat_session_id: String,
 }
 
-pub(super) fn handle_interactive_chat_command(
+pub(super) async fn handle_interactive_chat_command(
     input: &str,
     config: &IkarosConfig,
     paths: &IkarosPaths,
@@ -27,7 +28,9 @@ pub(super) fn handle_interactive_chat_command(
     let command = parts.next().unwrap_or_default();
     match command {
         "/help" => {
-            println!("commands: /agents, /agent <profile>, /status, /quit");
+            println!(
+                "commands: /agents, /agent <profile>, /status, /code <plan|apply|test|review|rollback> ..., /quit"
+            );
         }
         "/agents" => {
             for line in available_agent_lines(config, &runtime.agent.name) {
@@ -79,6 +82,19 @@ pub(super) fn handle_interactive_chat_command(
                     &history_store,
                 )
             );
+        }
+        "/code" => {
+            let command_line = input
+                .strip_prefix("/code")
+                .map(str::trim)
+                .unwrap_or_default();
+            if command_line.is_empty() {
+                println!("usage: /code <plan|apply|test|review|rollback> ...");
+            } else {
+                let command = parse_interactive_code_command(command_line)
+                    .with_context(|| "failed to parse /code command")?;
+                code_command(command, paths, workspace, Some(&runtime.agent.name)).await?;
+            }
         }
         _ => {
             println!("unknown command: {command}. Type /help for commands.");

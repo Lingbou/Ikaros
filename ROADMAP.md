@@ -106,20 +106,35 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   requires shell policy for the test matrix; `edit` is the only ordinary
   workflow mode that may apply a candidate patch. `self_modify` must stay on the
   dedicated self-modify approval path, not ordinary `code workflow`.
-- Expand the first-pass `CodingTurnContext` into a full dirty-state and
-  instruction boundary before relying on it for autonomous self-modification or
-  long-running coding sessions. The current git baseline already records HEAD,
-  branch/detached state, clean/dirty/not-git/unknown state, and
-  staged/unstaged/untracked flags.
+- Keep the coding instruction boundary explicit. The current context records
+  HEAD, branch/detached state, clean/dirty/not-git/unknown state, staged/
+  unstaged/untracked flags, user-provided instructions, and workspace
+  instruction files from `IKAROS.md` and `.ikaros/instructions.md`.
 - Keep hardening patch handling beyond add/update/delete/move: the current
   parser rejects malformed hunk ranges, quoted/space-truncated paths, ambiguous
-  anchors, already-applied hunks, and no-mutation malformed diffs; broader
-  fuzzing can continue as the parser surface grows.
-- Use the mock-model patch/test/review loop as the replay contract for the next
-  real-provider coding loop. The current loop can replay multi-iteration
-  scripted patches through session events, but provider-generated follow-up
-  patches, cancellation, budget handling, and approval replay remain future
-  hardening.
+  anchors, already-applied hunks, generated malformed corpus cases, generated
+  line-update roundtrips, and no-mutation malformed diffs; broader fuzzing can
+  continue as the parser surface grows.
+- Keep the provider-backed loop replayable. `code workflow --model-loop` now
+  uses the configured model provider to produce strict JSON candidate patches,
+  applies approved patches through `ExecutionEnv`, feeds test evidence into
+  follow-up model requests, and records model request/response, budget,
+  cancellation, patch, test, review, and loop-stop events in the session
+  timeline.
+- Keep terminal-first coding commands as thin routes into that workflow:
+  `code plan`, `code apply`, `code test`, `code review`, and `code rollback`
+  share approval behavior, test evidence, turn diff tracking, and persisted
+  replay. Rollback reconstructs the reverse diff from a prior turn's durable
+  `diff_updated` event and submits it as a new approved edit turn. The chat REPL
+  `/code ...` wrapper now routes to the same commands instead of introducing a
+  second control plane.
+- Route coding git status snapshots through the session process boundary. The
+  sync context constructor only consumes local fixture state or returns unknown;
+  live workflow execution uses `ExecutionEnv` / `ProcessRunner`.
+- Future work should focus on combined provider/shell/write approval display,
+  running provider-call cancellation UI, richer readable terminal event output,
+  readline/history/multiline/Ctrl-C interaction, and deeper property/fuzz
+  coverage rather than adding a second coding control plane.
 - Keep `debug coding-turn` aligned with the session timeline so coding replay
   can be inspected without reading ad hoc report files.
 
@@ -150,10 +165,10 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Product Surface
 
 - Improve the terminal-first interactive experience beyond the current basic
-  `ikaros chat` REPL: readline/history, multiline input, cleaner streaming
-  output, visible tool/approval/context status, cancellation, session resume,
-  and coding commands should become the primary pre-MVP user surface before a
-  web UI.
+  `ikaros chat` REPL and `/code ...` wrapper: readline/history, multiline
+  input, cleaner streaming output, visible tool/approval/context/coding status,
+  cancellation, and session resume should become the primary pre-MVP user
+  surface before a web UI.
 - Improve voice and body integration beyond provider/status contracts.
 - Add optional remote sync only after local state, audit, and conflict behavior are well defined.
 - Define remote or distributed subagent worker boundaries before introducing multi-node execution.

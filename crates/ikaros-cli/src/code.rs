@@ -5,14 +5,16 @@ use crate::{
     session_and_registry_for_instance, skill_env,
 };
 use anyhow::{Context, Result};
-use clap::Subcommand;
+use clap::{Parser, Subcommand};
 use ikaros_core::{IkarosPaths, ToolResult, redact_secrets};
-use ikaros_harness::{AuditEvent, ExecutionSession, SkillRegistry};
+use ikaros_harness::{AuditEvent, CancellationToken, ExecutionSession, SkillRegistry};
 use ikaros_models::{
     ModelMessage, ModelRequest, ModelRequestOptions, ModelUsageLedger,
     governed_provider_from_config,
 };
-use ikaros_session::{SessionId, SessionSource, SqliteSessionStore, TurnId};
+use ikaros_session::{
+    AgentEventKind, SessionId, SessionSource, SessionStore, SqliteSessionStore, TurnId,
+};
 use ikaros_skills::{CodingSessionConfig, builtin_registry};
 use serde_json::json;
 use std::{
@@ -26,6 +28,55 @@ pub(crate) enum CodeCommand {
         objective: String,
         #[arg(long)]
         diff: Option<String>,
+        #[arg(long)]
+        model_loop: bool,
+        #[arg(long = "max-iterations")]
+        max_iterations: Option<usize>,
+        #[arg(long = "model-token-budget")]
+        model_token_budget: Option<u32>,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        turn_id: Option<String>,
+    },
+    Apply {
+        objective: String,
+        #[arg(long)]
+        diff: String,
+        #[arg(long)]
+        run_tests: bool,
+        #[arg(long)]
+        model_loop: bool,
+        #[arg(long = "max-iterations")]
+        max_iterations: Option<usize>,
+        #[arg(long = "model-token-budget")]
+        model_token_budget: Option<u32>,
+        #[arg(long = "test-command")]
+        test_commands: Vec<String>,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        turn_id: Option<String>,
+    },
+    Test {
+        objective: Option<String>,
+        #[arg(long = "test-command")]
+        test_commands: Vec<String>,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        turn_id: Option<String>,
+    },
+    Rollback {
+        session_id: String,
+        #[arg(long)]
+        turn_id: String,
+        #[arg(long = "rollback-turn-id")]
+        rollback_turn_id: Option<String>,
+        #[arg(long)]
+        run_tests: bool,
+        #[arg(long = "test-command")]
+        test_commands: Vec<String>,
     },
     GuardedEdit {
         objective: String,
@@ -49,6 +100,12 @@ pub(crate) enum CodeCommand {
         apply_patch: bool,
         #[arg(long)]
         run_tests: bool,
+        #[arg(long)]
+        model_loop: bool,
+        #[arg(long = "max-iterations")]
+        max_iterations: Option<usize>,
+        #[arg(long = "model-token-budget")]
+        model_token_budget: Option<u32>,
         #[arg(long = "test-command")]
         test_commands: Vec<String>,
         #[arg(long)]
@@ -65,7 +122,26 @@ pub(crate) enum CodeCommand {
         test_analysis_json: Option<String>,
         #[arg(long = "model-notes")]
         model_notes: bool,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        turn_id: Option<String>,
     },
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "code")]
+struct InteractiveCodeCli {
+    #[command(subcommand)]
+    command: CodeCommand,
+}
+
+pub(crate) fn parse_interactive_code_command(input: &str) -> Result<CodeCommand> {
+    let args = split_interactive_code_line(input)?;
+    let cli = InteractiveCodeCli::try_parse_from(
+        std::iter::once("code").chain(args.iter().map(String::as_str)),
+    )?;
+    Ok(cli.command)
 }
 
 pub(crate) async fn code_command(
@@ -76,17 +152,129 @@ pub(crate) async fn code_command(
 ) -> Result<()> {
     let (session, registry) = session_and_registry(paths, workspace, agent_override)?;
     let (result, model_usage_path) = match command {
-        CodeCommand::Plan { objective, diff } => {
-            let mut input = json!({"objective": objective, "plan_only": true});
-            if let Some(diff) = diff {
-                input["diff"] = json!(diff);
-            }
-            (
-                session
-                    .execute_skill(&registry, "code_edit_guarded", input)
-                    .await?,
-                None,
+        CodeCommand::Plan {
+            objective,
+            diff,
+            model_loop,
+            max_iterations,
+            model_token_budget,
+            session_id,
+            turn_id,
+        } => {
+            run_coding_workflow_command(
+                paths,
+                workspace,
+                agent_override,
+                CodingWorkflowCommandInput {
+                    objective,
+                    mode: "plan".into(),
+                    diff,
+                    apply_patch: false,
+                    run_tests: false,
+                    model_loop,
+                    max_iterations,
+                    model_token_budget,
+                    test_commands: Vec::new(),
+                    session_id,
+                    turn_id,
+                    test_analysis_json: None,
+                },
             )
+            .await?
+        }
+        CodeCommand::Apply {
+            objective,
+            diff,
+            run_tests,
+            model_loop,
+            max_iterations,
+            model_token_budget,
+            test_commands,
+            session_id,
+            turn_id,
+        } => {
+            run_coding_workflow_command(
+                paths,
+                workspace,
+                agent_override,
+                CodingWorkflowCommandInput {
+                    objective,
+                    mode: "edit".into(),
+                    diff: Some(diff),
+                    apply_patch: true,
+                    run_tests,
+                    model_loop,
+                    max_iterations,
+                    model_token_budget,
+                    test_commands,
+                    session_id,
+                    turn_id,
+                    test_analysis_json: None,
+                },
+            )
+            .await?
+        }
+        CodeCommand::Test {
+            objective,
+            test_commands,
+            session_id,
+            turn_id,
+        } => {
+            run_coding_workflow_command(
+                paths,
+                workspace,
+                agent_override,
+                CodingWorkflowCommandInput {
+                    objective: objective.unwrap_or_else(|| "run coding test matrix".into()),
+                    mode: "test".into(),
+                    diff: None,
+                    apply_patch: false,
+                    run_tests: true,
+                    model_loop: false,
+                    max_iterations: None,
+                    model_token_budget: None,
+                    test_commands,
+                    session_id,
+                    turn_id,
+                    test_analysis_json: None,
+                },
+            )
+            .await?
+        }
+        CodeCommand::Rollback {
+            session_id,
+            turn_id,
+            rollback_turn_id,
+            run_tests,
+            test_commands,
+        } => {
+            let diff = rollback_diff_for_coding_turn(
+                paths,
+                workspace,
+                agent_override,
+                &session_id,
+                &turn_id,
+            )?;
+            run_coding_workflow_command(
+                paths,
+                workspace,
+                agent_override,
+                CodingWorkflowCommandInput {
+                    objective: format!("rollback coding turn {turn_id}"),
+                    mode: "edit".into(),
+                    diff: Some(diff),
+                    apply_patch: true,
+                    run_tests,
+                    model_loop: false,
+                    max_iterations: None,
+                    model_token_budget: None,
+                    test_commands,
+                    session_id: Some(session_id),
+                    turn_id: rollback_turn_id.or_else(|| Some(format!("rollback-{turn_id}"))),
+                    test_analysis_json: None,
+                },
+            )
+            .await?
         }
         CodeCommand::GuardedEdit { objective, diff } => {
             let mut input = json!({"objective": objective});
@@ -127,58 +315,78 @@ pub(crate) async fn code_command(
             mode,
             apply_patch,
             run_tests,
+            model_loop,
+            max_iterations,
+            model_token_budget,
             test_commands,
             session_id,
             turn_id,
             test_analysis_json,
         } => {
-            let (session, registry, session_id, turn_id) =
-                coding_session_and_registry(paths, workspace, agent_override, session_id, turn_id)?;
-            let mut input = json!({
-                "objective": objective,
-                "mode": mode,
-                "apply_patch": apply_patch,
-                "run_tests": run_tests,
-                "session_id": session_id.as_str(),
-                "turn_id": turn_id.as_str(),
-            });
-            if let Some(diff) = diff {
-                input["diff"] = json!(diff);
-            }
-            if !test_commands.is_empty() {
-                input["test_commands"] = json!(test_commands);
-            }
-            if let Some(test_analysis_json) = test_analysis_json {
-                input["test_analysis"] = serde_json::from_str(&test_analysis_json)
-                    .with_context(|| "failed to parse --test-analysis-json")?;
-            }
-            (
-                session
-                    .execute_skill(&registry, "code_workflow", input)
-                    .await?,
-                None,
+            run_coding_workflow_command(
+                paths,
+                workspace,
+                agent_override,
+                CodingWorkflowCommandInput {
+                    objective,
+                    mode,
+                    diff,
+                    apply_patch,
+                    run_tests,
+                    model_loop,
+                    max_iterations,
+                    model_token_budget,
+                    test_commands,
+                    session_id,
+                    turn_id,
+                    test_analysis_json,
+                },
             )
+            .await?
         }
         CodeCommand::Review {
             diff,
             test_analysis_json,
             model_notes,
+            session_id,
+            turn_id,
         } => {
             let diff = resolve_code_diff(&session, &registry, diff).await?;
-            let mut input = json!({"diff": diff});
-            if let Some(test_analysis_json) = test_analysis_json {
-                input["test_analysis"] = serde_json::from_str(&test_analysis_json)
-                    .with_context(|| "failed to parse --test-analysis-json")?;
-            }
-            let mut result = session
-                .execute_skill(&registry, "code_review", input)
-                .await?;
-            let model_usage_path = if model_notes {
-                Some(append_model_code_review_notes(&diff, &mut result, paths, &session).await?)
+            if model_notes {
+                let mut input = json!({"diff": diff});
+                if let Some(test_analysis_json) = test_analysis_json {
+                    input["test_analysis"] = serde_json::from_str(&test_analysis_json)
+                        .with_context(|| "failed to parse --test-analysis-json")?;
+                }
+                let mut result = session
+                    .execute_skill(&registry, "code_review", input)
+                    .await?;
+                let model_usage_path = Some(
+                    append_model_code_review_notes(&diff, &mut result, paths, &session).await?,
+                );
+                (result, model_usage_path)
             } else {
-                None
-            };
-            (result, model_usage_path)
+                run_coding_workflow_command(
+                    paths,
+                    workspace,
+                    agent_override,
+                    CodingWorkflowCommandInput {
+                        objective: "review current coding diff".into(),
+                        mode: "review".into(),
+                        diff: Some(diff),
+                        apply_patch: false,
+                        run_tests: false,
+                        model_loop: false,
+                        max_iterations: None,
+                        model_token_budget: None,
+                        test_commands: Vec::new(),
+                        session_id,
+                        turn_id,
+                        test_analysis_json,
+                    },
+                )
+                .await?
+            }
         }
     };
     print_skill_result(&result)?;
@@ -193,12 +401,120 @@ pub(crate) async fn code_command(
     Ok(())
 }
 
-fn coding_session_and_registry(
+fn split_interactive_code_line(input: &str) -> Result<Vec<String>> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            ch if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if escaped {
+        anyhow::bail!("unterminated escape in /code command");
+    }
+    if quote.is_some() {
+        anyhow::bail!("unterminated quote in /code command");
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
+}
+
+struct CodingWorkflowCommandInput {
+    objective: String,
+    mode: String,
+    diff: Option<String>,
+    apply_patch: bool,
+    run_tests: bool,
+    model_loop: bool,
+    max_iterations: Option<usize>,
+    model_token_budget: Option<u32>,
+    test_commands: Vec<String>,
+    session_id: Option<String>,
+    turn_id: Option<String>,
+    test_analysis_json: Option<String>,
+}
+
+async fn run_coding_workflow_command(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+    command: CodingWorkflowCommandInput,
+) -> Result<(ToolResult, Option<PathBuf>)> {
+    let (session, registry, session_id, turn_id) = coding_session_and_registry_for_workflow(
+        paths,
+        workspace,
+        agent_override,
+        command.session_id,
+        command.turn_id,
+        command.model_loop,
+    )?;
+    let mut input = json!({
+        "objective": command.objective,
+        "mode": command.mode,
+        "apply_patch": command.apply_patch,
+        "run_tests": command.run_tests,
+        "model_loop": command.model_loop,
+        "session_id": session_id.as_str(),
+        "turn_id": turn_id.as_str(),
+    });
+    if let Some(max_iterations) = command.max_iterations {
+        input["max_iterations"] = json!(max_iterations);
+    }
+    if let Some(model_token_budget) = command.model_token_budget {
+        input["model_token_budget"] = json!(model_token_budget);
+    }
+    if let Some(diff) = command.diff {
+        input["diff"] = json!(diff);
+    }
+    if !command.test_commands.is_empty() {
+        input["test_commands"] = json!(command.test_commands);
+    }
+    if let Some(test_analysis_json) = command.test_analysis_json {
+        input["test_analysis"] = serde_json::from_str(&test_analysis_json)
+            .with_context(|| "failed to parse --test-analysis-json")?;
+    }
+    Ok((
+        session
+            .execute_skill(&registry, "code_workflow", input)
+            .await?,
+        None,
+    ))
+}
+
+pub(crate) fn coding_session_and_registry_for_workflow(
     paths: &IkarosPaths,
     workspace: &Path,
     agent_override: Option<&str>,
     session_id: Option<String>,
     turn_id: Option<String>,
+    include_model_provider: bool,
 ) -> Result<(ExecutionSession, SkillRegistry, SessionId, TurnId)> {
     let config = ikaros_core::IkarosConfig::load(&paths.config)?;
     let agent = resolve_agent_instance(&config, agent_override, workspace, &paths.home)?;
@@ -206,6 +522,15 @@ fn coding_session_and_registry(
     let session_id = session_id.map(SessionId::from).unwrap_or_default();
     let turn_id = turn_id.map(TurnId::from).unwrap_or_default();
     let mut env = skill_env(paths, &agent.workspace, &config)?;
+    let coding_model_provider = if include_model_provider {
+        Some(Arc::from(governed_provider_from_config(
+            &config.model.default,
+            &config.providers.model,
+            &paths.audit_dir,
+        )?))
+    } else {
+        None
+    };
     env.coding_session = Some(CodingSessionConfig {
         store: Arc::new(SqliteSessionStore::new(&agent.state_dir)),
         session_id: session_id.clone(),
@@ -213,8 +538,143 @@ fn coding_session_and_registry(
         source: SessionSource::Cli,
         agent_id: Some(agent.agent_id.clone()),
         workspace: Some(agent.workspace.clone()),
+        model_provider: coding_model_provider,
+        cancellation: CancellationToken::new(),
     });
     Ok((session, builtin_registry(env), session_id, turn_id))
+}
+
+fn rollback_diff_for_coding_turn(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<String> {
+    let config = ikaros_core::IkarosConfig::load(&paths.config)?;
+    let agent = resolve_agent_instance(&config, agent_override, workspace, &paths.home)?;
+    let store = SqliteSessionStore::new(&agent.state_dir);
+    let session_id = SessionId::from(session_id.to_owned());
+    let turn_id = TurnId::from(turn_id.to_owned());
+    let replay = store
+        .replay_session(&session_id)?
+        .with_context(|| format!("coding session not found: {}", session_id.as_str()))?;
+    let diff = replay
+        .agent_events
+        .iter()
+        .filter(|event| event.turn_id == turn_id)
+        .filter(|event| matches!(event.kind, AgentEventKind::CodingTurn))
+        .filter(|event| event.payload["kind"] == "diff_updated")
+        .filter_map(|event| event.payload["payload"]["unified_diff"].as_str())
+        .next_back()
+        .with_context(|| {
+            format!(
+                "coding turn {} has no rollbackable diff_updated event",
+                turn_id.as_str()
+            )
+        })?;
+    reverse_unified_diff(diff)
+}
+
+fn reverse_unified_diff(diff: &str) -> Result<String> {
+    let mut reversed = Vec::new();
+    let mut pending_source_header: Option<String> = None;
+    let mut change_group = Vec::<String>::new();
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            let mut parts = rest.split_whitespace();
+            let Some(left) = parts.next() else {
+                anyhow::bail!("invalid diff --git header");
+            };
+            let Some(right) = parts.next() else {
+                anyhow::bail!("invalid diff --git header");
+            };
+            reversed.push(format!("diff --git {right} {left}"));
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("rename from ") {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            reversed.push(format!("rename to {path}"));
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("rename to ") {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            reversed.push(format!("rename from {path}"));
+            continue;
+        }
+        if line.starts_with("--- ") {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            pending_source_header = Some(line.replacen("--- ", "+++ ", 1));
+            continue;
+        }
+        if line.starts_with("+++ ") {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            reversed.push(line.replacen("+++ ", "--- ", 1));
+            if let Some(source) = pending_source_header.take() {
+                reversed.push(source);
+            }
+            continue;
+        }
+        if line.starts_with("@@ ") {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            reversed.push(reverse_hunk_header(line)?);
+            continue;
+        }
+        if line.starts_with('+') || line.starts_with('-') {
+            change_group.push(line.to_owned());
+        } else {
+            flush_reversed_change_group(&mut reversed, &mut change_group);
+            reversed.push(line.to_owned());
+        }
+    }
+    flush_reversed_change_group(&mut reversed, &mut change_group);
+    if pending_source_header.is_some() {
+        anyhow::bail!("invalid unified diff: missing +++ header");
+    }
+    Ok(format!("{}\n", reversed.join("\n")))
+}
+
+fn flush_reversed_change_group(output: &mut Vec<String>, group: &mut Vec<String>) {
+    if group.is_empty() {
+        return;
+    }
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for line in group.drain(..) {
+        if let Some(rest) = line.strip_prefix('+') {
+            added.push(rest.to_owned());
+        } else if let Some(rest) = line.strip_prefix('-') {
+            removed.push(rest.to_owned());
+        }
+    }
+    output.extend(added.into_iter().map(|line| format!("-{line}")));
+    output.extend(removed.into_iter().map(|line| format!("+{line}")));
+}
+
+fn reverse_hunk_header(line: &str) -> Result<String> {
+    let Some(rest) = line.strip_prefix("@@ ") else {
+        anyhow::bail!("invalid hunk header");
+    };
+    let Some((ranges, suffix)) = rest.split_once(" @@") else {
+        anyhow::bail!("invalid hunk header");
+    };
+    let mut parts = ranges.split_whitespace();
+    let Some(old_range) = parts.next() else {
+        anyhow::bail!("invalid hunk header");
+    };
+    let Some(new_range) = parts.next() else {
+        anyhow::bail!("invalid hunk header");
+    };
+    if parts.next().is_some() || !old_range.starts_with('-') || !new_range.starts_with('+') {
+        anyhow::bail!("invalid hunk header ranges");
+    }
+    Ok(format!(
+        "@@ -{} +{} @@{}",
+        &new_range[1..],
+        &old_range[1..],
+        suffix
+    ))
 }
 
 async fn resolve_code_diff(
@@ -341,5 +801,50 @@ mod tests {
         assert!(prompt.contains("[REDACTED_SECRET]"));
         assert!(prompt.contains("[TRUNCATED]"));
         assert!(!prompt.contains("abc123"));
+    }
+
+    #[test]
+    fn reverse_unified_diff_swaps_headers_hunks_and_lines() {
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-old
++new
+";
+        let reversed = reverse_unified_diff(diff).expect("reverse diff");
+        assert!(reversed.contains("diff --git b/src/lib.rs a/src/lib.rs"));
+        assert!(reversed.contains("--- b/src/lib.rs\n+++ a/src/lib.rs"));
+        assert!(reversed.contains("@@ -1 +1 @@"));
+        assert!(reversed.contains("-new\n+old"));
+    }
+
+    #[test]
+    fn interactive_code_parser_supports_quoted_objective() {
+        let command = parse_interactive_code_command(
+            r#"plan "prepare quoted objective" --session-id chat-code-session --turn-id chat-code-turn"#,
+        )
+        .expect("parse /code command");
+        match command {
+            CodeCommand::Plan {
+                objective,
+                session_id,
+                turn_id,
+                ..
+            } => {
+                assert_eq!(objective, "prepare quoted objective");
+                assert_eq!(session_id.as_deref(), Some("chat-code-session"));
+                assert_eq!(turn_id.as_deref(), Some("chat-code-turn"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interactive_code_parser_rejects_unterminated_quote() {
+        let error = parse_interactive_code_command(r#"plan "missing end"#)
+            .expect_err("unterminated quote should fail");
+        assert!(error.to_string().contains("unterminated quote"));
     }
 }

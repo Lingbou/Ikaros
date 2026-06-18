@@ -227,6 +227,29 @@ impl ProcessRunner for SelfModifyTrackingEnv {
     }
 }
 
+#[derive(Debug)]
+struct GitStatusProcessEnv {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ProcessRunner for GitStatusProcessEnv {
+    fn run_process<'a>(
+        &'a self,
+        request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<ProcessOutput>> + Send + 'a>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            assert_eq!(request.command, "git");
+            assert_eq!(request.args, vec!["status", "--porcelain=v1", "--branch"]);
+            Ok(ProcessOutput {
+                status: 0,
+                stdout: "## main\n M tracked.rs\n?? new.rs\n".into(),
+                stderr: String::new(),
+            })
+        })
+    }
+}
+
 #[test]
 fn scans_rust_repo_without_temp() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -558,6 +581,45 @@ fn coding_turn_context_classifies_git_dirty_state_without_shelling_out() {
     assert!(context.git.has_untracked_files);
 }
 
+#[tokio::test]
+async fn coding_turn_context_reads_git_status_through_process_runner() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join(".git/refs/heads")).expect("git refs");
+    fs::write(temp.path().join(".git/HEAD"), "ref: refs/heads/main\n").expect("head");
+    fs::write(
+        temp.path().join(".git/refs/heads/main"),
+        "1111111111111111111111111111111111111111\n",
+    )
+    .expect("ref");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let process_runner = GitStatusProcessEnv {
+        calls: calls.clone(),
+    };
+
+    let context = CodingTurnContext::from_workspace_with_process(
+        CodingTurnContextInput {
+            workspace_root: temp.path().to_path_buf(),
+            objective: "classify dirty state through env".into(),
+            mode: CodingMode::Edit,
+            session_id: None,
+            turn_id: None,
+            instructions: Vec::new(),
+            permission_profile: CodingPermissionProfile::default(),
+            test_commands: Vec::new(),
+        },
+        &process_runner,
+    )
+    .await
+    .expect("context");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(context.git.branch.as_deref(), Some("main"));
+    assert_eq!(context.git.dirty, CodingDirtyState::Dirty);
+    assert!(!context.git.has_staged_changes);
+    assert!(context.git.has_unstaged_changes);
+    assert!(context.git.has_untracked_files);
+}
+
 #[test]
 fn coding_turn_context_marks_detached_and_non_git_workspaces() {
     let detached = tempfile::tempdir().expect("detached tempdir");
@@ -808,6 +870,54 @@ fn guarded_patch_malformed_diff_does_not_mutate_files() {
             fs::read_to_string(temp.path().join("lib.rs")).expect("lib"),
             "old\n"
         );
+    }
+}
+
+#[test]
+fn guarded_patch_parser_rejects_generated_malformed_corpus_without_panic() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("lib.rs");
+    let original = "line0\nline1\nline2\n";
+    fs::write(&source, original).expect("lib");
+    fs::write(temp.path().join("other.rs"), "other\n").expect("other");
+
+    let path_cases = [
+        "diff --git a/../escape.rs b/../escape.rs\n--- a/../escape.rs\n+++ b/../escape.rs\n@@ -1 +1 @@\n-old\n+new\n",
+        "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-line0\n+lineX\ndiff --git a/other.rs b/lib.rs\n--- a/other.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-other\n+otherX\n",
+        "diff --git a/lib.rs b//tmp/escape.rs\n--- a/lib.rs\n+++ /tmp/escape.rs\n@@ -1 +1 @@\n-line0\n+lineX\n",
+    ];
+    for diff in path_cases {
+        let result = std::panic::catch_unwind(|| {
+            GuardedPatchApplier::apply_unified_diff_checked(temp.path(), diff)
+        });
+        assert!(result.is_ok(), "parser must not panic for path corpus");
+        assert!(result.expect("catch unwind").is_err());
+        assert_eq!(fs::read_to_string(&source).expect("lib"), original);
+    }
+
+    for seed in 0..128 {
+        fs::write(&source, original).expect("reset lib");
+        let hunk = match seed % 4 {
+            0 => format!("@@ -{} +{} @@\n", seed + 1000, seed + 1000),
+            1 => format!("@@ -x{} +{} @@\n", seed, seed),
+            2 => format!("@@ -{},{} +{},{} @@\n", seed + 5, seed + 3, seed, seed + 1),
+            _ => format!("@@ -{} +abc{} @@\n", seed + 1, seed),
+        };
+        let diff = format!(
+            "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n{hunk}-line0\n+line{seed}\n"
+        );
+        let result = std::panic::catch_unwind(|| {
+            GuardedPatchApplier::apply_unified_diff_checked(temp.path(), &diff)
+        });
+        assert!(
+            result.is_ok(),
+            "parser must not panic for generated corpus seed {seed}"
+        );
+        assert!(
+            result.expect("catch unwind").is_err(),
+            "seed {seed} should fail"
+        );
+        assert_eq!(fs::read_to_string(&source).expect("lib"), original);
     }
 }
 

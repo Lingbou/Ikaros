@@ -140,7 +140,6 @@ impl ExecutionSession {
                         summary: format!("approved skill {} failed", skill.name()),
                     };
                     self.audit_tool_result(skill.name(), &result)?;
-                    self.approvals.mark_executed(approval_id, result)?;
                     return Err(error);
                 }
             }

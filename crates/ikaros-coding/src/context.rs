@@ -2,11 +2,11 @@
 
 use crate::TestCommand;
 use ikaros_core::{AgentPermission, IkarosError, Result, redact_secrets};
+use ikaros_harness::{ProcessRequest, ProcessRunner};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,7 +150,25 @@ impl CodingTurnContext {
     pub fn from_workspace(input: CodingTurnContextInput) -> Result<Self> {
         let workspace_root = canonical_workspace_root(&input.workspace_root)?;
         let git = CodingGitState::from_workspace(&workspace_root)?;
-        Ok(Self {
+        Ok(Self::from_parts(input, workspace_root, git))
+    }
+
+    pub async fn from_workspace_with_process(
+        input: CodingTurnContextInput,
+        process_runner: &dyn ProcessRunner,
+    ) -> Result<Self> {
+        let workspace_root = canonical_workspace_root(&input.workspace_root)?;
+        let git =
+            CodingGitState::from_workspace_with_process(&workspace_root, process_runner).await?;
+        Ok(Self::from_parts(input, workspace_root, git))
+    }
+
+    fn from_parts(
+        input: CodingTurnContextInput,
+        workspace_root: PathBuf,
+        git: CodingGitState,
+    ) -> Self {
+        Self {
             workspace_root,
             objective: redact_secrets(&input.objective),
             mode: input.mode,
@@ -164,7 +182,7 @@ impl CodingTurnContext {
             permission_profile: input.permission_profile,
             test_commands: input.test_commands,
             git,
-        })
+        }
     }
 }
 
@@ -189,20 +207,18 @@ pub struct CodingGitState {
 
 impl CodingGitState {
     pub fn from_workspace(workspace_root: &Path) -> Result<Self> {
+        Self::from_workspace_with_status(workspace_root, read_git_status)
+    }
+
+    pub async fn from_workspace_with_process(
+        workspace_root: &Path,
+        process_runner: &dyn ProcessRunner,
+    ) -> Result<Self> {
         let Some(git_root) = find_git_root(workspace_root)? else {
-            return Ok(Self {
-                git_root: None,
-                head: None,
-                branch: None,
-                detached: false,
-                dirty: CodingDirtyState::NotGit,
-                has_staged_changes: false,
-                has_unstaged_changes: false,
-                has_untracked_files: false,
-            });
+            return Ok(not_git_state());
         };
         let head_info = read_git_head(&git_root)?;
-        let status = read_git_status(&git_root)?;
+        let status = read_git_status_with_process(&git_root, process_runner).await?;
         Ok(Self {
             git_root: Some(git_root),
             head: head_info.oid,
@@ -213,6 +229,40 @@ impl CodingGitState {
             has_unstaged_changes: status.has_unstaged_changes,
             has_untracked_files: status.has_untracked_files,
         })
+    }
+
+    fn from_workspace_with_status(
+        workspace_root: &Path,
+        status_reader: impl FnOnce(&Path) -> Result<GitStatusInfo>,
+    ) -> Result<Self> {
+        let Some(git_root) = find_git_root(workspace_root)? else {
+            return Ok(not_git_state());
+        };
+        let head_info = read_git_head(&git_root)?;
+        let status = status_reader(&git_root)?;
+        Ok(Self {
+            git_root: Some(git_root),
+            head: head_info.oid,
+            branch: status.branch.or(head_info.branch),
+            detached: status.detached || head_info.detached,
+            dirty: status.dirty,
+            has_staged_changes: status.has_staged_changes,
+            has_unstaged_changes: status.has_unstaged_changes,
+            has_untracked_files: status.has_untracked_files,
+        })
+    }
+}
+
+fn not_git_state() -> CodingGitState {
+    CodingGitState {
+        git_root: None,
+        head: None,
+        branch: None,
+        detached: false,
+        dirty: CodingDirtyState::NotGit,
+        has_staged_changes: false,
+        has_unstaged_changes: false,
+        has_untracked_files: false,
     }
 }
 
@@ -334,21 +384,39 @@ fn read_git_status(git_root: &Path) -> Result<GitStatusInfo> {
         return Ok(parse_git_status_porcelain(&output));
     }
 
-    let output = Command::new("git")
-        .arg("status")
-        .arg("--porcelain=v1")
-        .arg("--branch")
-        .current_dir(git_root)
-        .output();
+    Ok(unknown_git_status())
+}
+
+async fn read_git_status_with_process(
+    git_root: &Path,
+    process_runner: &dyn ProcessRunner,
+) -> Result<GitStatusInfo> {
+    let git_dir = git_directory(git_root)?;
+    let fixture = git_dir.join("status_porcelain_v1");
+    if fixture.exists() {
+        let output =
+            fs::read_to_string(&fixture).map_err(|source| IkarosError::io(&fixture, source))?;
+        return Ok(parse_git_status_porcelain(&output));
+    }
+
+    let output = process_runner
+        .run_process(
+            ProcessRequest::program(
+                "git",
+                vec!["status".into(), "--porcelain=v1".into(), "--branch".into()],
+                git_root,
+            )
+            .with_timeout_ms(5_000)
+            .with_max_output_bytes(64 * 1024),
+        )
+        .await;
     let Ok(output) = output else {
         return Ok(unknown_git_status());
     };
-    if !output.status.success() {
+    if output.status != 0 {
         return Ok(unknown_git_status());
     }
-    Ok(parse_git_status_porcelain(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(parse_git_status_porcelain(&output.stdout))
 }
 
 fn parse_git_status_porcelain(output: &str) -> GitStatusInfo {

@@ -215,11 +215,12 @@ diff --git a/src/lib.rs b/src/lib.rs
 +pub fn add(a: i32, b: i32) -> i32 { a.saturating_add(b) }
 ";
     let plan = env.run(["code", "plan", "make add safer", "--diff", diff]);
-    assert!(plan.contains("summary: guarded code edit plan prepared"));
-    assert!(plan.contains("\"requires_approval\": true"));
+    assert!(plan.contains("summary: coding turn completed"));
+    assert!(plan.contains("\"kind\": \"repo_scanned\""));
+    assert!(plan.contains("\"kind\": \"final_report_prepared\""));
 
     let review = env.run(["code", "review", "--diff", diff]);
-    assert!(review.contains("summary: code review complete"));
+    assert!(review.contains("summary: coding turn completed"));
     assert!(review.contains("\"changed_files\""));
     assert!(review.contains("No test analysis provided"));
 
@@ -320,6 +321,130 @@ diff --git a/src/lib.rs b/src/lib.rs
 }
 
 #[test]
+fn terminal_first_coding_commands_share_turn_timeline_and_rollback() {
+    let env = TestHome::new();
+    env.init();
+    install_smoke_rust_crate(&env.workspace);
+
+    let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn add(a: i32, b: i32) -> i32 { a + b }
++pub fn add(a: i32, b: i32) -> i32 { a.saturating_add(b) }
+";
+    let plan = env.run([
+        "code",
+        "plan",
+        "prepare terminal coding plan",
+        "--diff",
+        diff,
+        "--session-id",
+        "terminal-code-session",
+        "--turn-id",
+        "terminal-plan-turn",
+    ]);
+    assert!(plan.contains("summary: coding turn completed"));
+    assert!(plan.contains("\"plan_prepared\""));
+
+    let test = env.run([
+        "code",
+        "test",
+        "run terminal coding checks",
+        "--test-command",
+        "cargo test",
+        "--session-id",
+        "terminal-code-session",
+        "--turn-id",
+        "terminal-test-turn",
+    ]);
+    assert!(test.contains("summary: coding turn completed"));
+    assert!(test.contains("\"test_evidence_recorded\""));
+    assert!(test.contains("\"category\": \"Passed\""));
+
+    let requested = env.run([
+        "code",
+        "apply",
+        "apply terminal patch",
+        "--diff",
+        diff,
+        "--session-id",
+        "terminal-code-session",
+        "--turn-id",
+        "terminal-apply-turn",
+    ]);
+    assert!(requested.contains("\"decision\": \"ask_user\""));
+    let approval_id = parse_approval_id(&requested);
+    let approved = env.run(["approval", "approve", &approval_id]);
+    assert!(approved.contains("summary: coding turn completed"));
+    assert!(approved.contains("\"patch_applied\""));
+    assert!(
+        fs::read_to_string(env.workspace.join("src/lib.rs"))
+            .expect("patched lib")
+            .contains("a.saturating_add(b)")
+    );
+
+    let rollback_requested = env.run([
+        "code",
+        "rollback",
+        "terminal-code-session",
+        "--turn-id",
+        "terminal-apply-turn",
+        "--rollback-turn-id",
+        "terminal-rollback-turn",
+    ]);
+    assert!(rollback_requested.contains("\"decision\": \"ask_user\""));
+    let rollback_approval_id = parse_approval_id(&rollback_requested);
+    let rollback = env.run(["approval", "approve", &rollback_approval_id]);
+    assert!(rollback.contains("summary: coding turn completed"));
+    assert!(rollback.contains("\"patch_applied\""));
+    assert!(
+        fs::read_to_string(env.workspace.join("src/lib.rs"))
+            .expect("rolled back lib")
+            .contains("a + b")
+    );
+
+    let debug = env.run([
+        "debug",
+        "coding-turn",
+        "terminal-code-session",
+        "--turn-id",
+        "terminal-rollback-turn",
+    ]);
+    assert!(debug.contains("\"patch_applied\""));
+    assert!(debug.contains("\"loop_terminated\""));
+}
+
+#[test]
+fn chat_repl_code_slash_command_uses_coding_turn_timeline() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat"],
+        "/code plan \"prepare chat slash coding plan\" --session-id chat-code-session --turn-id chat-code-turn\n/quit\n",
+    );
+    assert!(output.contains("commands:") || output.contains("Ikaros chat using provider="));
+    assert!(output.contains("summary: coding turn completed"));
+    assert!(output.contains("\"plan_prepared\""));
+
+    let debug = env.run([
+        "debug",
+        "coding-turn",
+        "chat-code-session",
+        "--turn-id",
+        "chat-code-turn",
+    ]);
+    assert!(debug.contains("\"session_id\": \"chat-code-session\""));
+    assert!(debug.contains("\"turn_id\": \"chat-code-turn\""));
+    assert!(debug.contains("\"plan_prepared\""));
+    assert!(debug.contains("\"final_report_prepared\""));
+}
+
+#[test]
 fn coding_workflow_persists_debuggable_turn_timeline() {
     let env = TestHome::new();
     env.init();
@@ -359,5 +484,48 @@ diff --git a/src/lib.rs b/src/lib.rs
     assert!(debug.contains("\"event_count\""));
     assert!(debug.contains("\"patch_skipped\""));
     assert!(debug.contains("\"review_started\""));
+    assert!(debug.contains("\"final_report_prepared\""));
+}
+
+#[test]
+fn coding_workflow_model_loop_requires_approval_and_replays_mock_provider_turn() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let requested = env.run([
+        "code",
+        "workflow",
+        "prepare provider-backed coding turn",
+        "--mode",
+        "plan",
+        "--model-loop",
+        "--max-iterations",
+        "1",
+        "--session-id",
+        "coding-model-session",
+        "--turn-id",
+        "coding-model-turn",
+    ]);
+    assert!(requested.contains("\"decision\": \"ask_user\""));
+    let approval_id = parse_approval_id(&requested);
+
+    let approved = env.run(["approval", "approve", &approval_id]);
+    assert!(approved.contains("summary: coding turn completed"));
+    assert!(approved.contains("\"model_request_prepared\""));
+    assert!(approved.contains("\"model_response_received\""));
+    assert!(approved.contains("\"status\": \"passed\""));
+    assert!(approved.contains("\"loop_terminated\""));
+
+    let debug = env.run([
+        "debug",
+        "coding-turn",
+        "coding-model-session",
+        "--turn-id",
+        "coding-model-turn",
+    ]);
+    assert!(debug.contains("\"model_request_prepared\""));
+    assert!(debug.contains("\"model_response_received\""));
     assert!(debug.contains("\"final_report_prepared\""));
 }

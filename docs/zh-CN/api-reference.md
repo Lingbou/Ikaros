@@ -30,7 +30,9 @@ ikaros chat --history-search "query"
 ```
 
 不传 `--message` 时，`ikaros chat` 会进入当前交互式 chat REPL。它支持 `/help`、
-`/agents`、`/agent <profile>`、`/status` 和 `/quit` 这类 slash command。
+`/agents`、`/agent <profile>`、`/status`、`/code <plan|apply|test|review|rollback> ...`
+和 `/quit` 这类 slash command。`/code` 是同一套受控 `ikaros code` workflow 的薄包装，
+也会把 coding turn evidence 写入 `state.db`。
 
 Chat message 可以包含本地 context reference，例如 `@file:path:line-line`、`@folder:path`、`@git:rev`、`@diff` 和 `@staged`。这些 reference 会在当前 workspace 下解析，并写入 session context diff。`@url:` 只解析，不抓取。
 
@@ -162,17 +164,23 @@ ikaros skill run example.tool --input-json '{"message":"hello"}'
 ikaros repo scan
 ikaros test infer
 ikaros test run --command "cargo test"
-ikaros code plan "add focused tests"
-ikaros code workflow "prepare guarded patch" --diff "<unified diff>"
-ikaros code workflow "apply candidate patch" --mode edit --diff "<unified diff>" --apply-patch
-ikaros code workflow "run focused tests" --mode test --run-tests --test-command "cargo test -p ikaros-coding"
-ikaros code workflow "persist replay evidence" --session-id <session-id> --turn-id <turn-id>
-ikaros code review
+ikaros code plan "add focused tests" --diff "<unified diff>" --session-id <session-id> --turn-id <turn-id>
+ikaros code apply "apply candidate patch" --diff "<unified diff>" --session-id <session-id> --turn-id <turn-id>
+ikaros code test "run focused tests" --test-command "cargo test -p ikaros-coding" --session-id <session-id> --turn-id <turn-id>
+ikaros code review --diff "<unified diff>" --session-id <session-id> --turn-id <turn-id>
+ikaros code rollback <session-id> --turn-id <turn-id> --rollback-turn-id <rollback-turn-id>
+ikaros code workflow "provider loop" --mode edit --model-loop --apply-patch --run-tests --max-iterations 2 --test-command "cargo test"
 ikaros code iterate
 ikaros code guarded-edit "apply approved patch" --diff "<unified diff>"
 ```
 
-`code workflow` 会构造 `CodingTurnContext`、repo map、change plan、可选 patch
+`code plan`、`code apply`、`code test`、`code review` 和 `code rollback` 是
+terminal-first coding 命令。它们只是同一个受治理 `code workflow` turn 的薄路由，
+因此共享审批行为、`ExecutionEnv` 写入、test-matrix evidence 和持久化
+`CodingTurn` replay。`code rollback` 会从 `state.db` 读取目标 turn 最后一个
+`diff_updated` event，构造反向 unified diff，并作为新的审批 edit turn 提交。
+
+`code workflow` 仍是完整底层入口。它会构造 `CodingTurnContext`、repo map、change plan、可选 patch
 attempt、turn diff、test-matrix evidence、review、iteration plan、loop report 和
 final report。它支持 `--mode plan|edit|review|test|self_modify`。Mode policy 是显式的：
 `plan`/`review` 偏只读，`test` 可以运行 test matrix，`edit` 只有在设置
@@ -180,7 +188,13 @@ final report。它支持 `--mode plan|edit|review|test|self_modify`。Mode polic
 审批路径前会被普通 workflow 拒绝。Context 会记录 git baseline，包括 HEAD、
 branch/detached 状态、clean/dirty/not-git/unknown 状态，以及
 staged/unstaged/untracked 标记。传入 session/turn id 时，coding event 会写入
-`state.db`，可用 `ikaros debug coding-turn` 查询。
+`state.db`，可用 `ikaros debug coding-turn` 查询。设置 `--model-loop` 时，
+workflow 会使用配置的 model provider 请求严格 JSON candidate patch；审批后的执行路径会把
+model request/response metadata、token budget stop、cancellation stop、patch
+attempt、test evidence、review finding 和 loop termination 都写成可 replay 的
+coding event。`--max-iterations` 限制为 `1..=8`；`--model-token-budget` 会在预计
+request 超过剩余 coding-loop budget 时于 provider call 前停止。存在 `IKAROS.md` 和
+`.ikaros/instructions.md` 时，workspace instruction 会自动进入 coding context。
 
 Service manager 模板：
 

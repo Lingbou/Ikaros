@@ -192,8 +192,16 @@ State ownership:
   `test` may run the test matrix through the harness process path, `edit` may
   apply an explicitly requested candidate patch, and `self_modify` is rejected
   by ordinary `code workflow` until it enters the dedicated self-modify approval
-  path. When a coding session is configured, its `CodingTurn` events and custom
-  session entries are persisted into `state.db` for `debug coding-turn`.
+  path. Workspace instructions are loaded from `IKAROS.md` and
+  `.ikaros/instructions.md` and redacted before entering prompts or events.
+  With `--model-loop`, the configured model provider returns strict JSON
+  candidate patches; approved execution records model request/response metadata,
+  token-budget stops, cancellation stops, patch attempts, test evidence, review,
+  and loop termination into `state.db` for `debug coding-turn`. The
+  terminal-first `code plan`, `code apply`, `code test`, `code review`, and
+  `code rollback` commands route into this same workflow. Git status snapshots
+  are collected through the session `ProcessRunner` path when a fixture is not
+  present.
 - Tool lifecycle uses typed events: `ToolCallStarted`,
   `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and
   `ToolCallCancelled`. Approval events carry tool anchors so UI, replay, and
@@ -209,14 +217,16 @@ State ownership:
   but unstarted calls are reported as cancelled, not executed.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.
-- The current coding workflow is still not a full Codex-style real-provider
-  coding agent. It now has deterministic and mock-model patch/test/review loop
-  fixtures, multi-iteration session replay evidence, test-matrix events, and
+- The current coding workflow is now a provider-backed controlled loop, but it
+  is still pre-MVP. It has deterministic, mock-model, and provider-loop replay
+  fixtures, multi-iteration patch/test/review evidence, test-matrix events, and
   parser hardening for malformed ranges, quoted/space-truncated paths,
-  ambiguous anchors, and already-applied hunks. Provider-generated follow-up
-  patches, cancellation, budget handling, approval replay semantics, and routing
-  git/shell snapshots through the same process/environment boundary remain
-  future hardening.
+  ambiguous anchors, already-applied hunks, generated malformed corpus cases,
+  and generated line-update roundtrips. Terminal-first coding commands are
+  available from both `ikaros code ...` and the chat REPL `/code ...` wrapper,
+  including rollback from persisted turn diff evidence. Combined provider/shell/write
+  approval display, running provider-call cancellation UI, and deeper
+  property/fuzz coverage remain future hardening.
 
 ## Invariants
 

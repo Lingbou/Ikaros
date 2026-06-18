@@ -31,7 +31,9 @@ ikaros chat --history-search "query"
 
 Running `ikaros chat` without `--message` starts the current interactive chat
 REPL. It supports slash commands such as `/help`, `/agents`, `/agent <profile>`,
-`/status`, and `/quit`.
+`/status`, `/code <plan|apply|test|review|rollback> ...`, and `/quit`.
+The `/code` command is a thin wrapper over the same governed `ikaros code`
+workflow and writes coding turn evidence to `state.db`.
 
 Chat messages may include local context references such as `@file:path:line-line`,
 `@folder:path`, `@git:rev`, `@diff`, and `@staged`. These references are
@@ -184,17 +186,25 @@ Coding helpers:
 ikaros repo scan
 ikaros test infer
 ikaros test run --command "cargo test"
-ikaros code plan "add focused tests"
-ikaros code workflow "prepare guarded patch" --diff "<unified diff>"
-ikaros code workflow "apply candidate patch" --mode edit --diff "<unified diff>" --apply-patch
-ikaros code workflow "run focused tests" --mode test --run-tests --test-command "cargo test -p ikaros-coding"
-ikaros code workflow "persist replay evidence" --session-id <session-id> --turn-id <turn-id>
-ikaros code review
+ikaros code plan "add focused tests" --diff "<unified diff>" --session-id <session-id> --turn-id <turn-id>
+ikaros code apply "apply candidate patch" --diff "<unified diff>" --session-id <session-id> --turn-id <turn-id>
+ikaros code test "run focused tests" --test-command "cargo test -p ikaros-coding" --session-id <session-id> --turn-id <turn-id>
+ikaros code review --diff "<unified diff>" --session-id <session-id> --turn-id <turn-id>
+ikaros code rollback <session-id> --turn-id <turn-id> --rollback-turn-id <rollback-turn-id>
+ikaros code workflow "provider loop" --mode edit --model-loop --apply-patch --run-tests --max-iterations 2 --test-command "cargo test"
 ikaros code iterate
 ikaros code guarded-edit "apply approved patch" --diff "<unified diff>"
 ```
 
-`code workflow` builds a `CodingTurnContext`, repo map, change plan, optional
+`code plan`, `code apply`, `code test`, `code review`, and `code rollback` are
+the terminal-first coding commands. They are thin routes into the same governed
+`code workflow` turn, so they share approval behavior, `ExecutionEnv` writes,
+test-matrix evidence, and persisted `CodingTurn` replay. `code rollback` reads
+the target turn's last `diff_updated` event from `state.db`, constructs the
+reverse unified diff, and submits it as a new approved edit turn.
+
+`code workflow` remains the full low-level surface. It builds a
+`CodingTurnContext`, repo map, change plan, optional
 patch attempt, turn diff, test-matrix evidence, review, iteration plan, loop
 report, and final report. It supports `--mode plan|edit|review|test|self_modify`.
 The mode policy is explicit: `plan`/`review` are read-oriented, `test` can run
@@ -204,7 +214,15 @@ self-modify approval path is used. The context captures a git baseline including
 HEAD, branch/detached state, clean/dirty/not-git/unknown state, and
 staged/unstaged/untracked flags when available. When session and turn ids are
 present, coding events are persisted into `state.db` and can be inspected with
-`ikaros debug coding-turn`.
+`ikaros debug coding-turn`. With `--model-loop`, the workflow uses the
+configured model provider to request strict JSON candidate patches. The approved
+execution path records model request/response metadata, token-budget stops,
+cancellation stops, patch attempts, test evidence, review findings, and loop
+termination as replayable coding events. `--max-iterations` is bounded to
+`1..=8`; `--model-token-budget` stops before a provider request when the
+estimated request would exceed the remaining coding-loop budget. Workspace
+instructions are loaded from `IKAROS.md` and `.ikaros/instructions.md` when
+present.
 
 Service-manager templates:
 

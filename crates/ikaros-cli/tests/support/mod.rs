@@ -46,6 +46,14 @@ impl TestHome {
         run_ikaros_failure(&self.home, &self.workspace, args)
     }
 
+    pub fn run_with_stdin<I, S>(&self, args: I, stdin: &str) -> String
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        run_ikaros_with_stdin(&self.home, &self.workspace, args, stdin)
+    }
+
     pub fn init(&self) -> String {
         self.run(["init"])
     }
@@ -140,6 +148,48 @@ where
         stderr
     );
     format!("{stdout}{stderr}")
+}
+
+fn run_ikaros_with_stdin<I, S>(home: &Path, workspace: &Path, args: I, stdin: &str) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ikaros"))
+        .arg("--ikaros-home")
+        .arg(home)
+        .arg("--workspace")
+        .arg(workspace)
+        .env_remove("IKAROS_RUN_LIVE_MODEL_TESTS")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ikaros with stdin");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write ikaros stdin");
+    let output = child.wait_with_output().expect("wait ikaros stdin");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "ikaros exited with {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        stdout,
+        stderr
+    );
+    assert!(
+        !stdout.contains("sk-") && !stderr.contains("sk-"),
+        "CLI smoke output must not contain secret-like keys\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    stdout
 }
 
 pub fn spawn_ikaros<I, S>(home: &Path, workspace: &Path, args: I) -> Child

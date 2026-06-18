@@ -163,7 +163,8 @@ pub(crate) async fn chat_command(
                 &mut runtime,
                 &options,
                 &usage_ledger,
-            )?;
+            )
+            .await?;
             continue;
         }
         if input.is_empty() {

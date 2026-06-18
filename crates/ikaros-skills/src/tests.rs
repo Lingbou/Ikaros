@@ -12,6 +12,7 @@ use ikaros_memory::{
     MemoryCandidateStatus, MemoryKind, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
     WorkingMemoryRecord,
 };
+use ikaros_models::{ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, TokenUsage};
 use ikaros_rag::{LocalRagStore, RagQuery, RagStore};
 use ikaros_session::{
     AgentEventKind, SessionEntryKind, SessionId, SessionSource, SessionStore, SqliteSessionStore,
@@ -39,6 +40,15 @@ struct TrackingEnv {
 
 struct TestProcessEnv {
     calls: Arc<AtomicUsize>,
+}
+
+struct SequentialTestProcessEnv {
+    calls: Arc<AtomicUsize>,
+}
+
+struct ScriptedCodingModelProvider {
+    calls: Arc<AtomicUsize>,
+    responses: Vec<String>,
 }
 
 impl FileSystem for TrackingEnv {
@@ -267,6 +277,160 @@ impl ExecutionEnv for TestProcessEnv {
                 .await
         })
     }
+}
+
+impl FileSystem for SequentialTestProcessEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        LocalExecutionEnv.path_metadata(path)
+    }
+
+    fn read_to_string<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        LocalExecutionEnv.read_to_string(path)
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        LocalExecutionEnv.read_bytes(path)
+    }
+
+    fn write_string<'a>(
+        &'a self,
+        path: &'a Path,
+        content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.write_string(path, content)
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.write_bytes(path, content)
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.create_dir_all(path)
+    }
+
+    fn read_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        LocalExecutionEnv.read_dir(path)
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.remove_file(path)
+    }
+}
+
+impl ProcessRunner for SequentialTestProcessEnv {
+    fn run_process<'a>(
+        &'a self,
+        request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput>> + Send + 'a>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            assert_eq!(request.command, "cargo");
+            assert_eq!(request.args, vec!["test"]);
+            let status = if call == 0 { 101 } else { 0 };
+            Ok(ProcessOutput {
+                status,
+                stdout: if status == 0 {
+                    "test result: ok. 1 passed".into()
+                } else {
+                    "test result: FAILED. expected 3".into()
+                },
+                stderr: String::new(),
+            })
+        })
+    }
+}
+
+impl NetworkEgress for SequentialTestProcessEnv {
+    fn send_network_request<'a>(
+        &'a self,
+        request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        LocalExecutionEnv.send_network_request(request)
+    }
+}
+
+impl ExecutionEnv for SequentialTestProcessEnv {
+    fn execute_skill<'a>(
+        &'a self,
+        skill: Arc<dyn Skill>,
+        input: serde_json::Value,
+        session: &'a ExecutionSession,
+    ) -> Pin<Box<dyn Future<Output = Result<SkillOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            skill
+                .execute(
+                    input,
+                    SkillContext {
+                        session: session.clone(),
+                    },
+                )
+                .await
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for ScriptedCodingModelProvider {
+    fn name(&self) -> &str {
+        "scripted-coding-model"
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::default()
+    }
+
+    async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        let content = self.responses.get(index).cloned().unwrap_or_else(|| {
+            r#"{"candidate_diff": null, "final_answer": "no more patches", "stop": true}"#.into()
+        });
+        let prompt_tokens = request
+            .messages
+            .iter()
+            .map(|message| test_estimate_tokens(&message.content))
+            .sum::<u32>();
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "scripted".into(),
+            content: content.clone(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage {
+                prompt_tokens: Some(prompt_tokens),
+                completion_tokens: Some(test_estimate_tokens(&content)),
+                total_tokens: None,
+            },
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
+fn test_estimate_tokens(text: &str) -> u32 {
+    if text.trim().is_empty() {
+        return 0;
+    }
+    ((text.chars().count() as u32).saturating_add(3) / 4).max(1)
 }
 
 fn test_env(root: &Path, workspace: &Path) -> SkillEnvironment {
@@ -1486,6 +1650,8 @@ async fn code_workflow_persists_coding_turn_timeline_to_session_store() {
             source: SessionSource::Test,
             agent_id: Some("coding-agent".into()),
             workspace: Some(workspace.clone()),
+            model_provider: None,
+            cancellation: ikaros_harness::CancellationToken::new(),
         }),
         ..test_env(temp.path(), &workspace)
     });
@@ -1563,6 +1729,8 @@ async fn code_workflow_replay_fixture_preserves_coding_turn_event_order() {
             source: SessionSource::Test,
             agent_id: Some("coding-agent".into()),
             workspace: Some(workspace.clone()),
+            model_provider: None,
+            cancellation: ikaros_harness::CancellationToken::new(),
         }),
         ..test_env(temp.path(), &workspace)
     });
@@ -1702,6 +1870,8 @@ diff --git a/lib.rs b/lib.rs
             source: SessionSource::Test,
             agent_id: Some("mock-coding-agent".into()),
             workspace: Some(workspace.clone()),
+            model_provider: None,
+            cancellation: ikaros_harness::CancellationToken::new(),
         }),
         &report,
     )
@@ -1763,6 +1933,8 @@ async fn code_workflow_run_tests_records_process_evidence_in_coding_timeline() {
             source: SessionSource::Test,
             agent_id: None,
             workspace: Some(workspace.clone()),
+            model_provider: None,
+            cancellation: ikaros_harness::CancellationToken::new(),
         }),
         ..test_env(temp.path(), &workspace)
     });
@@ -1828,6 +2000,8 @@ async fn code_workflow_run_tests_executes_test_matrix_and_persists_each_result()
             source: SessionSource::Test,
             agent_id: None,
             workspace: Some(workspace.clone()),
+            model_provider: None,
+            cancellation: ikaros_harness::CancellationToken::new(),
         }),
         ..test_env(temp.path(), &workspace)
     });
@@ -1880,6 +2054,411 @@ async fn code_workflow_run_tests_executes_test_matrix_and_persists_each_result()
         })
         .count();
     assert_eq!(test_events, 2);
+}
+
+#[tokio::test]
+async fn code_workflow_model_loop_requires_approval_before_calling_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("lib.rs"), "pub fn value() -> i32 { 1 }\n").expect("lib");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(ScriptedCodingModelProvider {
+        calls: model_calls.clone(),
+        responses: vec![r#"{"candidate_diff": "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n", "final_answer": "patch ready", "stop": false}"#.into()],
+    });
+    let registry = builtin_registry(SkillEnvironment {
+        coding_session: Some(CodingSessionConfig {
+            store: Arc::new(SqliteSessionStore::new(temp.path().join("agent-state"))),
+            session_id: SessionId::from("model-approval-session"),
+            turn_id: TurnId::from("model-approval-turn"),
+            source: SessionSource::Test,
+            agent_id: Some("coding-agent".into()),
+            workspace: Some(workspace.clone()),
+            model_provider: Some(model),
+            cancellation: ikaros_harness::CancellationToken::new(),
+        }),
+        ..test_env(temp.path(), &workspace)
+    });
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "model loop must not run before approval",
+                "mode": "edit",
+                "model_loop": true,
+                "apply_patch": true,
+                "max_iterations": 1,
+            }),
+        )
+        .await
+        .expect("request");
+
+    assert!(!requested.ok);
+    assert_eq!(requested.output["decision"], json!("ask_user"));
+    assert_eq!(model_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        fs::read_to_string(workspace.join("lib.rs")).expect("lib unchanged"),
+        "pub fn value() -> i32 { 1 }\n"
+    );
+}
+
+#[tokio::test]
+async fn code_workflow_model_loop_applies_followup_patch_and_persists_replay() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("lib.rs"), "pub fn value() -> i32 { 1 }\n").expect("lib");
+    let store = Arc::new(SqliteSessionStore::new(temp.path().join("agent-state")));
+    let session_id = SessionId::from("model-loop-session");
+    let turn_id = TurnId::from("model-loop-turn");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let process_calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(ScriptedCodingModelProvider {
+        calls: model_calls.clone(),
+        responses: vec![
+            r#"{"candidate_diff": "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n", "final_answer": "first patch", "stop": false}"#.into(),
+            r#"{"candidate_diff": "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 2 }\n+pub fn value() -> i32 { 3 }\n", "final_answer": "follow-up patch", "stop": false}"#.into(),
+        ],
+    });
+    let registry = builtin_registry(SkillEnvironment {
+        coding_session: Some(CodingSessionConfig {
+            store: store.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            source: SessionSource::Test,
+            agent_id: Some("coding-agent".into()),
+            workspace: Some(workspace.clone()),
+            model_provider: Some(model),
+            cancellation: ikaros_harness::CancellationToken::new(),
+        }),
+        ..test_env(temp.path(), &workspace)
+    });
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit")).with_execution_env(
+        Arc::new(SequentialTestProcessEnv {
+            calls: process_calls.clone(),
+        }),
+    );
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "make value return three",
+                "mode": "edit",
+                "model_loop": true,
+                "apply_patch": true,
+                "run_tests": true,
+                "max_iterations": 2,
+                "test_commands": [{"command": "cargo test", "reason": "scripted focused test"}],
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+            }),
+        )
+        .await
+        .expect("request");
+    assert!(!requested.ok);
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("approval id");
+    session
+        .decide_approval(approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+
+    let executed = session
+        .execute_approved_skill(&registry, approval_id)
+        .await
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(process_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(executed.output["loop_report"]["status"], json!("passed"));
+    assert_eq!(executed.output["loop_report"]["iterations"], json!(2));
+    assert_eq!(
+        fs::read_to_string(workspace.join("lib.rs")).expect("lib updated"),
+        "pub fn value() -> i32 { 3 }\n"
+    );
+
+    let replay = store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("session replay");
+    let event_kinds = replay
+        .agent_events
+        .iter()
+        .filter(|event| {
+            event.turn_id == turn_id && matches!(event.kind, AgentEventKind::CodingTurn)
+        })
+        .map(|event| event.payload["kind"].as_str().unwrap_or("").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "model_request_prepared")
+            .count(),
+        2
+    );
+    assert_eq!(
+        event_kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "model_response_received")
+            .count(),
+        2
+    );
+    assert_eq!(
+        event_kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "patch_applied")
+            .count(),
+        2
+    );
+    assert_eq!(
+        event_kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "test_evidence_recorded")
+            .count(),
+        2
+    );
+    assert!(replay.agent_events.iter().any(|event| {
+        event.turn_id == turn_id
+            && matches!(event.kind, AgentEventKind::CodingTurn)
+            && event.payload["kind"] == json!("loop_terminated")
+            && event.payload["payload"]["status"] == json!("passed")
+    }));
+}
+
+#[tokio::test]
+async fn code_workflow_model_loop_budget_limit_stops_before_provider_call() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("lib.rs"), "pub fn value() -> i32 { 1 }\n").expect("lib");
+    let store = Arc::new(SqliteSessionStore::new(temp.path().join("agent-state")));
+    let session_id = SessionId::from("model-budget-session");
+    let turn_id = TurnId::from("model-budget-turn");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(ScriptedCodingModelProvider {
+        calls: model_calls.clone(),
+        responses: vec![
+            r#"{"candidate_diff": null, "final_answer": "unused", "stop": true}"#.into(),
+        ],
+    });
+    let registry = builtin_registry(SkillEnvironment {
+        coding_session: Some(CodingSessionConfig {
+            store: store.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            source: SessionSource::Test,
+            agent_id: Some("coding-agent".into()),
+            workspace: Some(workspace.clone()),
+            model_provider: Some(model),
+            cancellation: ikaros_harness::CancellationToken::new(),
+        }),
+        ..test_env(temp.path(), &workspace)
+    });
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "budget must stop model call",
+                "mode": "plan",
+                "model_loop": true,
+                "max_iterations": 1,
+                "model_token_budget": 1,
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+            }),
+        )
+        .await
+        .expect("request");
+    assert!(!requested.ok);
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("network approval");
+    session
+        .decide_approval(approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+    let executed = session
+        .execute_approved_skill(&registry, approval_id)
+        .await
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        executed.output["loop_report"]["status"],
+        json!("budget_exceeded")
+    );
+    let replay = store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("session replay");
+    assert!(replay.agent_events.iter().any(|event| {
+        event.turn_id == turn_id
+            && matches!(event.kind, AgentEventKind::CodingTurn)
+            && event.payload["kind"] == json!("model_budget_exceeded")
+    }));
+}
+
+#[tokio::test]
+async fn code_workflow_model_loop_honors_cancelled_token_before_provider_call() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("lib.rs"), "pub fn value() -> i32 { 1 }\n").expect("lib");
+    let store = Arc::new(SqliteSessionStore::new(temp.path().join("agent-state")));
+    let session_id = SessionId::from("model-cancel-session");
+    let turn_id = TurnId::from("model-cancel-turn");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let cancellation = ikaros_harness::CancellationToken::new();
+    cancellation.cancel();
+    let model = Arc::new(ScriptedCodingModelProvider {
+        calls: model_calls.clone(),
+        responses: vec![
+            r#"{"candidate_diff": null, "final_answer": "unused", "stop": true}"#.into(),
+        ],
+    });
+    let registry = builtin_registry(SkillEnvironment {
+        coding_session: Some(CodingSessionConfig {
+            store: store.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            source: SessionSource::Test,
+            agent_id: Some("coding-agent".into()),
+            workspace: Some(workspace.clone()),
+            model_provider: Some(model),
+            cancellation,
+        }),
+        ..test_env(temp.path(), &workspace)
+    });
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "cancel before provider",
+                "mode": "plan",
+                "model_loop": true,
+                "max_iterations": 1,
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+            }),
+        )
+        .await
+        .expect("request");
+    assert!(!requested.ok);
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("network approval");
+    session
+        .decide_approval(approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+    let executed = session
+        .execute_approved_skill(&registry, approval_id)
+        .await
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(executed.output["loop_report"]["status"], json!("cancelled"));
+    let replay = store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("session replay");
+    assert!(replay.agent_events.iter().any(|event| {
+        event.turn_id == turn_id
+            && matches!(event.kind, AgentEventKind::CodingTurn)
+            && event.payload["kind"] == json!("coding_loop_cancelled")
+    }));
+}
+
+#[tokio::test]
+async fn code_workflow_model_loop_loads_ikaros_instruction_sources() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(workspace.join(".ikaros")).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("lib.rs"), "pub fn value() -> i32 { 1 }\n").expect("lib");
+    fs::write(
+        workspace.join("IKAROS.md"),
+        "Use focused tests. Never expose token=abc123.",
+    )
+    .expect("instructions");
+    fs::write(
+        workspace.join(".ikaros/instructions.md"),
+        "Prefer guarded patches.",
+    )
+    .expect("local instructions");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(ScriptedCodingModelProvider {
+        calls: model_calls.clone(),
+        responses: vec![
+            r#"{"candidate_diff": null, "final_answer": "noted", "stop": true}"#.into(),
+        ],
+    });
+    let registry = builtin_registry(SkillEnvironment {
+        coding_session: Some(CodingSessionConfig {
+            store: Arc::new(SqliteSessionStore::new(temp.path().join("agent-state"))),
+            session_id: SessionId::from("instruction-session"),
+            turn_id: TurnId::from("instruction-turn"),
+            source: SessionSource::Test,
+            agent_id: Some("coding-agent".into()),
+            workspace: Some(workspace.clone()),
+            model_provider: Some(model),
+            cancellation: ikaros_harness::CancellationToken::new(),
+        }),
+        ..test_env(temp.path(), &workspace)
+    });
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "load instruction sources",
+                "mode": "plan",
+                "model_loop": true,
+                "max_iterations": 1,
+            }),
+        )
+        .await
+        .expect("request");
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("network approval");
+    session
+        .decide_approval(approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+    let executed = session
+        .execute_approved_skill(&registry, approval_id)
+        .await
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    let instructions = executed.output["context"]["instructions"]
+        .as_array()
+        .expect("instructions");
+    assert_eq!(instructions.len(), 2);
+    let rendered = serde_json::to_string(instructions).expect("instructions json");
+    assert!(rendered.contains("IKAROS.md"));
+    assert!(rendered.contains(".ikaros/instructions.md"));
+    assert!(rendered.contains("[REDACTED_SECRET]"));
+    assert!(!rendered.contains("abc123"));
 }
 
 #[tokio::test]

@@ -12,13 +12,17 @@ use ikaros_coding::{
     DeterministicCodingRuntime, DiffSummarizer, GuardedPatchApplier, PatchIterationPlanner,
     RepoScanner, TestCommand, TestFailureAnalysis, TestFailureAnalyzer, TestRunnerPlan,
 };
-use ikaros_core::{IkarosError, Result, RiskLevel};
+use ikaros_core::{IkarosError, Result, RiskLevel, redact_secrets};
 use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSource, SessionEntry, SessionEntryKind, SessionRecord,
 };
 use serde_json::{Value, json};
 use std::path::Path;
+
+mod model_loop;
+
+use model_loop::{load_workspace_coding_instructions, run_provider_coding_loop};
 
 #[derive(Debug, Clone)]
 pub struct TaskSummarizeSkill;
@@ -353,6 +357,9 @@ impl Skill for CodeWorkflowSkill {
                 "diff": {"type": "string"},
                 "apply_patch": {"type": "boolean"},
                 "run_tests": {"type": "boolean"},
+                "model_loop": {"type": "boolean"},
+                "max_iterations": {"type": "integer", "minimum": 1, "maximum": 8},
+                "model_token_budget": {"type": "integer", "minimum": 1},
                 "test_analysis": {"type": "object"},
                 "test_commands": {
                     "type": "array",
@@ -385,6 +392,7 @@ impl Skill for CodeWorkflowSkill {
         let mode = parse_coding_mode_lossy(input);
         let apply_patch = code_workflow_apply_patch_requested(input);
         let runs_tests = code_workflow_runs_tests(input);
+        let model_loop = code_workflow_model_loop_requested(input);
         let capabilities = CodingModeCapabilities::for_mode(mode);
         let invalid_request = capabilities
             .validate_request(apply_patch, runs_tests)
@@ -400,6 +408,8 @@ impl Skill for CodeWorkflowSkill {
                 RiskLevel::LocalWrite
             } else if runs_tests {
                 RiskLevel::ShellRead
+            } else if model_loop {
+                RiskLevel::Network
             } else {
                 self.risk_level()
             },
@@ -420,6 +430,9 @@ impl Skill for CodeWorkflowSkill {
             .get("apply_patch")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        let model_loop = code_workflow_model_loop_requested(&input);
+        let max_iterations = parse_max_iterations(&input)?;
+        let model_token_budget = parse_model_token_budget(&input)?;
         let runs_tests = code_workflow_runs_tests(&input);
         CodingModeCapabilities::for_mode(mode).validate_request(apply_patch, runs_tests)?;
         let mut test_matrix = Vec::new();
@@ -429,39 +442,66 @@ impl Skill for CodeWorkflowSkill {
             .map(|value| serde_json::from_value::<TestFailureAnalysis>(value.clone()))
             .transpose()?;
         let test_commands = parse_test_commands(input.get("test_commands"))?;
-        if runs_tests {
+        if runs_tests && !model_loop {
             test_matrix = run_coding_test_matrix(&test_commands, &ctx).await?;
             test_analysis = primary_test_analysis(&test_matrix);
         }
-        let instructions = parse_string_array(input.get("instructions"), "instructions")?;
-        let context = CodingTurnContext::from_workspace(CodingTurnContextInput {
-            workspace_root: ctx.session.sandbox.workspace_root.clone(),
-            objective,
-            mode,
-            instructions,
-            test_commands,
-            session_id: input
-                .get("session_id")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            turn_id: input
-                .get("turn_id")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            permission_profile: CodingPermissionProfile::default(),
-        })?;
-        let report = DeterministicCodingRuntime
-            .run_turn_with_env(
-                CodingTurnInput {
-                    context,
-                    candidate_diff: diff,
-                    apply_patch,
-                    test_matrix,
-                    test_analysis,
-                },
-                ctx.session.env.as_ref(),
+        let mut instructions = load_workspace_coding_instructions(&ctx).await?;
+        instructions.extend(parse_string_array(
+            input.get("instructions"),
+            "instructions",
+        )?);
+        let context = CodingTurnContext::from_workspace_with_process(
+            CodingTurnContextInput {
+                workspace_root: ctx.session.sandbox.workspace_root.clone(),
+                objective,
+                mode,
+                instructions,
+                test_commands,
+                session_id: input
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                turn_id: input
+                    .get("turn_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                permission_profile: CodingPermissionProfile::default(),
+            },
+            ctx.session.env.as_ref(),
+        )
+        .await?;
+        let turn_input = CodingTurnInput {
+            context,
+            candidate_diff: diff,
+            apply_patch,
+            test_matrix,
+            test_analysis,
+        };
+        let report = if model_loop {
+            let coding_session = self.coding_session.as_ref().ok_or_else(|| {
+                IkarosError::Message("model_loop requires a configured coding session".into())
+            })?;
+            let provider = coding_session.model_provider.clone().ok_or_else(|| {
+                IkarosError::Message(
+                    "model_loop requires a configured coding model provider".into(),
+                )
+            })?;
+            run_provider_coding_loop(
+                turn_input,
+                provider,
+                &ctx,
+                runs_tests,
+                max_iterations,
+                model_token_budget,
+                coding_session.cancellation.clone(),
             )
-            .await?;
+            .await?
+        } else {
+            DeterministicCodingRuntime
+                .run_turn_with_env(turn_input, ctx.session.env.as_ref())
+                .await?
+        };
         persist_coding_turn_report(self.coding_session.as_ref(), &report)?;
         Ok(SkillOutput::new("coding turn completed", json!(report)))
     }
@@ -494,6 +534,16 @@ async fn run_coding_test_matrix(
         ));
     }
     Ok(matrix)
+}
+
+fn bounded_redacted_text(text: &str, max_chars: usize) -> String {
+    let redacted = redact_secrets(text);
+    let mut chars = redacted.chars();
+    let mut output = chars.by_ref().take(max_chars.max(1)).collect::<String>();
+    if chars.next().is_some() {
+        output.push_str("\n[TRUNCATED]");
+    }
+    output
 }
 
 fn primary_test_analysis(test_matrix: &[TestFailureAnalysis]) -> Option<TestFailureAnalysis> {
@@ -568,6 +618,9 @@ fn code_workflow_apply_patch_requested(input: &serde_json::Value) -> bool {
         .get("apply_patch")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    if code_workflow_model_loop_requested(input) {
+        return apply_patch;
+    }
     let has_diff = input
         .get("diff")
         .and_then(serde_json::Value::as_str)
@@ -576,11 +629,48 @@ fn code_workflow_apply_patch_requested(input: &serde_json::Value) -> bool {
     apply_patch && has_diff
 }
 
+fn code_workflow_model_loop_requested(input: &serde_json::Value) -> bool {
+    input
+        .get("model_loop")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn code_workflow_runs_tests(input: &serde_json::Value) -> bool {
     input
         .get("run_tests")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn parse_max_iterations(input: &serde_json::Value) -> Result<usize> {
+    let Some(value) = input.get("max_iterations") else {
+        return Ok(1);
+    };
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| IkarosError::Message("max_iterations must be a positive integer".into()))?;
+    if raw == 0 || raw > 8 {
+        return Err(IkarosError::Message(
+            "max_iterations must be between 1 and 8".into(),
+        ));
+    }
+    Ok(raw as usize)
+}
+
+fn parse_model_token_budget(input: &serde_json::Value) -> Result<Option<u32>> {
+    let Some(value) = input.get("model_token_budget") else {
+        return Ok(None);
+    };
+    let raw = value.as_u64().ok_or_else(|| {
+        IkarosError::Message("model_token_budget must be a positive integer".into())
+    })?;
+    if raw == 0 || raw > u32::MAX as u64 {
+        return Err(IkarosError::Message(
+            "model_token_budget must be between 1 and u32::MAX".into(),
+        ));
+    }
+    Ok(Some(raw as u32))
 }
 
 fn parse_test_commands(value: Option<&serde_json::Value>) -> Result<Vec<TestCommand>> {

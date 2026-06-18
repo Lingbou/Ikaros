@@ -628,6 +628,95 @@ async fn approved_request_executes_and_marks_record_executed() {
 }
 
 #[tokio::test]
+async fn failed_approved_replay_remains_retryable() {
+    #[derive(Debug)]
+    struct FlakyApprovedSkill {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Skill for FlakyApprovedSkill {
+        fn name(&self) -> &'static str {
+            "flaky_approved"
+        }
+
+        fn description(&self) -> &'static str {
+            "test retryable approved replay failure"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({})
+        }
+
+        fn risk_level(&self) -> RiskLevel {
+            RiskLevel::LocalWrite
+        }
+
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: SkillContext,
+        ) -> Result<SkillOutput> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                return Err(IkarosError::Message("transient provider failure".into()));
+            }
+            Ok(SkillOutput::new(
+                "flaky approved replay succeeded",
+                json!({"attempt": attempt + 1}),
+            ))
+        }
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    let mut registry = SkillRegistry::new();
+    registry.register(FlakyApprovedSkill {
+        attempts: attempts.clone(),
+    });
+
+    let result = session
+        .execute_skill(&registry, "flaky_approved", json!({"path": "marker.txt"}))
+        .await
+        .expect("approval request");
+    let approval_id = result.output["approval_id"]
+        .as_str()
+        .expect("approval id")
+        .to_owned();
+    session
+        .decide_approval(&approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+
+    let error = session
+        .execute_approved_skill(&registry, &approval_id)
+        .await
+        .expect_err("first replay should fail");
+    assert!(error.to_string().contains("transient provider failure"));
+    let record = session
+        .approvals
+        .get(&approval_id)
+        .expect("get")
+        .expect("record");
+    assert_eq!(record.status, ApprovalStatus::Approved);
+
+    let approved = session
+        .execute_approved_skill(&registry, &approval_id)
+        .await
+        .expect("second replay should retry");
+    assert!(approved.ok);
+    assert_eq!(approved.output["attempt"], json!(2));
+    let record = session
+        .approvals
+        .get(&approval_id)
+        .expect("get")
+        .expect("record");
+    assert_eq!(record.status, ApprovalStatus::Executed);
+}
+
+#[tokio::test]
 async fn approved_request_replays_original_execution_input() {
     #[derive(Debug)]
     struct InputCheckingSkill;

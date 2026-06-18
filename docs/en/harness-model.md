@@ -54,13 +54,20 @@ by default it is a safe-read plan/review path, but its policy risk upgrades to
 shell-read when `run_tests` is requested in `test`/`edit`, and to local-write
 only when an explicit candidate patch is applied in `edit` mode. `self_modify`
 is rejected by ordinary `code_workflow` until it enters the dedicated
-self-modify approval path. It builds the repo map, change plan, optional patch
-attempt, turn diff, test-matrix evidence, review, iteration plan, loop report,
-final report, and optional session replay evidence. Patch application in
-`code_workflow` and `code_edit_guarded` both go through the
-session `ExecutionEnv` filesystem interface rather than calling host filesystem
-APIs from the skill. `code_edit_guarded` remains the direct approval-gated patch
-entry point for applying a provided unified diff.
+self-modify approval path. `--model-loop` always contacts the configured model
+provider after approval. Today the policy request still carries one risk label:
+model-only loops are network risk, test loops are shell-read risk, and patch
+application is local-write risk. Combined provider + shell/write approval
+display remains a hardening item. The workflow builds the repo map, change plan,
+optional patch attempt, turn diff,
+test-matrix evidence, review, iteration plan, loop report, final report, and
+optional session replay evidence. Patch application in `code_workflow` and
+`code_edit_guarded` both go through the session `ExecutionEnv` filesystem
+interface rather than calling host filesystem APIs from the skill. Approved
+`code_workflow` replay uses the coding registry again, so provider-backed loops
+keep their session id, turn id, provider, budget, cancellation, and event
+persistence boundary. `code_edit_guarded` remains the direct approval-gated
+patch entry point for applying a provided unified diff.
 
 Skill descriptors also carry runtime scheduling metadata:
 

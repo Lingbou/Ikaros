@@ -65,6 +65,9 @@ pub enum CodingLoopStatus {
     AwaitingFollowUpPatch,
     PatchFailed,
     ReviewBlocked,
+    BudgetExceeded,
+    Cancelled,
+    ApprovalPending,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +91,11 @@ pub enum CodingTurnEventKind {
     ContextPrepared,
     GitBaselineCaptured,
     LoopIterationStarted,
+    ModelRequestPrepared,
+    ModelResponseReceived,
+    ModelResponseInvalid,
+    ModelBudgetExceeded,
+    CodingLoopCancelled,
     RepoScanned,
     PlanPrepared,
     PatchSkipped,
@@ -476,7 +484,7 @@ impl MockModelCodingRuntime {
 }
 
 impl CodingTurnEvent {
-    fn new(
+    pub fn new(
         kind: CodingTurnEventKind,
         summary: impl Into<String>,
         payload: serde_json::Value,

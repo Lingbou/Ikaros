@@ -63,6 +63,11 @@ impl ModelProvider for MockModelProvider {
             && last.contains("Guarded Patch Iteration")
         {
             "Mock model review:\nResidual Risks: inspect the heuristic findings and changed files for behavior gaps.\nFocused Tests: run the narrowest affected test/check command, then workspace checks if risk remains.\nGuarded Patch Iteration: address high-severity findings first, regenerate the diff through guarded edit approval, and rerun review.".into()
+        } else if last.contains("Return strict JSON only:")
+            && last.contains("\"candidate_diff\"")
+            && last.contains("\"final_answer\"")
+        {
+            r#"{"candidate_diff":null,"final_answer":"mock coding provider stopped without a patch","stop":true}"#.into()
         } else {
             format!(
                 "Mock Ikaros plan: acknowledge task, evaluate policy, execute safe skills, audit result. Input: {last}"

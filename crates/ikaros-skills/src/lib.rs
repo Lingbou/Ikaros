@@ -17,8 +17,9 @@ pub use coding::{
 };
 pub use fs::{FsReadSkill, FsWriteGuardedSkill, ListDirSkill};
 use ikaros_core::{RagConfig, RemoteProviderConfig};
-use ikaros_harness::SkillRegistry;
+use ikaros_harness::{CancellationToken, SkillRegistry};
 use ikaros_memory::LocalMemoryStore;
+use ikaros_models::ModelProvider;
 use ikaros_rag::LocalRagStore;
 use ikaros_session::{SessionId, SessionSource, SessionStore, TurnId};
 use ikaros_voice::VoiceProviderConfig;
@@ -44,6 +45,8 @@ pub struct CodingSessionConfig {
     pub source: SessionSource,
     pub agent_id: Option<String>,
     pub workspace: Option<PathBuf>,
+    pub model_provider: Option<Arc<dyn ModelProvider>>,
+    pub cancellation: CancellationToken,
 }
 
 impl std::fmt::Debug for CodingSessionConfig {
@@ -54,6 +57,11 @@ impl std::fmt::Debug for CodingSessionConfig {
             .field("source", &self.source)
             .field("agent_id", &self.agent_id)
             .field("workspace", &self.workspace)
+            .field(
+                "model_provider",
+                &self.model_provider.as_ref().map(|p| p.name()),
+            )
+            .field("cancelled", &self.cancellation.is_cancelled())
             .finish_non_exhaustive()
     }
 }

@@ -58,7 +58,12 @@ cargo run -p ikaros-cli -- memory working prune
 cargo run -p ikaros-cli -- rag ingest docs --scope project
 cargo run -p ikaros-cli -- rag search "harness policy"
 cargo run -p ikaros-cli -- task run "summarize this repository" --dry-run
-cargo run -p ikaros-cli -- code workflow "review a candidate patch" --diff "<unified diff>"
+cargo run -p ikaros-cli -- code plan "review a candidate patch" --diff "<unified diff>"
+cargo run -p ikaros-cli -- code apply "apply candidate patch" --diff "<unified diff>"
+cargo run -p ikaros-cli -- code test "run focused tests" --test-command "cargo test"
+cargo run -p ikaros-cli -- code rollback <session-id> --turn-id <turn-id>
+cargo run -p ikaros-cli -- code workflow "provider coding loop" --mode edit --model-loop --apply-patch --run-tests --max-iterations 2 --test-command "cargo test"
+cargo run -p ikaros-cli -- chat # then: /code plan "review a candidate patch"
 cargo run -p ikaros-cli -- debug context-diff <session-id>
 cargo run -p ikaros-cli -- debug memory-lifecycle <session-id>
 cargo run -p ikaros-cli -- debug coding-turn <session-id>
