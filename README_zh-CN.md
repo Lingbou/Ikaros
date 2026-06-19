@@ -4,7 +4,7 @@
 
 Ikaros 是一个早期阶段的本地优先 agent runtime，使用 Rust 编写。它把 persona、记忆、RAG、模型提供方、工具执行、策略审批和审计日志分开，便于维护和扩展。
 
-这个仓库目前是一个 pre-MVP 本地 runtime，适合本地开发和实验。它还不是稳定产品，也不承诺稳定 API。生成配置使用本地存储和协议级 provider 设置；远程模型、embedding、TTS 和 ASR 调用会在本地填好 `api_key`、`base_url` 和 `model` 之前直接报错。
+这个仓库目前是一个 pre-MVP 本地 runtime，适合本地开发和实验。它还不是稳定产品，也不承诺稳定 API。生成配置使用本地存储、远程聊天模型 provider 占位、本地 hash embedding 和 mock 语音 provider；远程 provider 调用会在本地填好对应的 `api_key`、`base_url` 和 `model` 之前直接报错。
 
 ## 能做什么
 
@@ -86,20 +86,16 @@ rag:
   embedding_provider: hash
 ```
 
-不要把真实 API key 写进这个仓库。远程 provider 应在 `~/.ikaros/config.yaml` 或其他 `IKAROS_HOME/config.yaml` 中配置。生成的配置会把第三方 provider 设置放在文件最上方：
+不要把真实 API key 写进这个仓库。远程 provider 应在 `~/.ikaros/config.yaml` 或其他 `IKAROS_HOME/config.yaml` 中配置。生成的配置会把初期需要填写的三个聊天模型设置放在文件顶部附近：
 
 ```yaml
 providers:
   model:
     api_key: "replace-with-your-model-key"
     base_url: "https://api.example.com/v1"
-  embedding:
-    api_key: "replace-with-your-embedding-key"
-    base_url: "https://api.example.com/v1"
 
 model:
   default:
-    provider: openai-compatible
     model: provider-model-id
 ```
 

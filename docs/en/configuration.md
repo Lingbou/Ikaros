@@ -17,24 +17,18 @@ Do not put real API keys in docs, tests, examples, or tracked files. A local
 untracked `IKAROS_HOME/config.yaml` may store third-party API keys directly for
 ordinary runs and smoke tests.
 
-`ikaros init` puts external-resource settings at the top of the file. Every
-remote API-backed provider has both an `api_key` and a `base_url`; model names
-stay in the feature section that sends the request.
+`ikaros init` keeps the initial chat model settings near the top of the file.
+Fill these three values first for ordinary remote model usage:
 
 ```yaml
 providers:
   model:
     api_key: ""
     base_url: ""
-  embedding:
-    api_key: ""
-    base_url: ""
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
-    api_key: ""
-    base_url: ""
+
+model:
+  default:
+    model: ""
 ```
 
 `providers.*` is a schema-only credentials and endpoint section. It is not
