@@ -73,6 +73,54 @@ fn jsonl_ingest_persists_hash_embeddings_for_redacted_chunks() {
 }
 
 #[test]
+fn content_based_ingest_works_for_jsonl_and_sqlite_backends() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let sources = vec![IngestSourceFile {
+        source_path: temp.path().join("doc.md"),
+        content: "env sourced searchable text".into(),
+        modified_at: Some("2026-06-17T00:00:00Z".into()),
+    }];
+
+    let jsonl = LocalRagIndex::new(temp.path().join("jsonl"));
+    let sqlite = SqliteRagIndex::new(temp.path().join("sqlite"));
+    let jsonl_report = jsonl
+        .ingest_sources_with_embedding(
+            sources.clone(),
+            IngestOptions::default(),
+            &HashEmbeddingProvider,
+        )
+        .expect("jsonl source ingest");
+    let sqlite_report = sqlite
+        .ingest_sources_with_embedding(sources, IngestOptions::default(), &HashEmbeddingProvider)
+        .expect("sqlite source ingest");
+
+    assert_eq!(jsonl_report.files_indexed, 1);
+    assert_eq!(sqlite_report.files_indexed, 1);
+    assert_eq!(
+        jsonl
+            .search(RagQuery {
+                query: "searchable".into(),
+                top_k: 1,
+                scope: Some("project".into()),
+            })
+            .expect("jsonl search")
+            .len(),
+        1
+    );
+    assert_eq!(
+        sqlite
+            .search(RagQuery {
+                query: "searchable".into(),
+                top_k: 1,
+                scope: Some("project".into()),
+            })
+            .expect("sqlite search")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn jsonl_reingest_reports_chunks_written_this_run() {
     let temp = tempfile::tempdir().expect("tempdir");
     let doc = temp.path().join("doc.md");

@@ -259,7 +259,7 @@ impl AgentProfile {
                 "Operate as the default local implementation agent. Use harnessed tools and keep writes approval-aware."
                     .into(),
             memory_context: true,
-            rag_context: true,
+            rag_context: false,
             workspace_writes: AgentPermission::Ask,
             shell: AgentPermission::Allow,
             network: AgentPermission::Ask,
@@ -274,7 +274,7 @@ impl AgentProfile {
                 "Operate in read-only planning mode. Prefer analysis, design notes, and explicit implementation plans; do not request file edits."
                     .into(),
             memory_context: true,
-            rag_context: true,
+            rag_context: false,
             workspace_writes: AgentPermission::Deny,
             shell: AgentPermission::Ask,
             network: AgentPermission::Ask,
@@ -289,7 +289,7 @@ impl AgentProfile {
                 "Operate as a general-purpose research agent. Gather local context first and keep recommendations grounded in available evidence."
                     .into(),
             memory_context: true,
-            rag_context: true,
+            rag_context: false,
             workspace_writes: AgentPermission::Ask,
             shell: AgentPermission::Ask,
             network: AgentPermission::Ask,

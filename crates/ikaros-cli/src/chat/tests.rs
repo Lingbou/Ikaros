@@ -63,7 +63,7 @@ fn interactive_chat_status_reports_active_runtime() {
     assert!(status.contains("stream=true"));
     assert!(status.contains("history_context_limit=3"));
     assert!(status.contains("history_summary_limit=12"));
-    assert!(status.contains("context_char_budget=8000"));
+    assert!(status.contains("context_token_budget=2000"));
     assert!(status.contains("relationship_learning=true"));
     assert!(status.contains("agent_loop=true"));
     assert!(status.contains("scope=repo"));

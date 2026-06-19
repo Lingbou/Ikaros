@@ -15,6 +15,8 @@ The default runtime is `harness-agent-loop`, and the default OpenAI-compatible t
 - `generate(request)`: returns one `ModelResponse`.
 - `stream(request)`: returns a `ModelStream` with text chunks, normalized tool
   calls, final metadata, and typed `ModelStreamEvent` entries.
+- `context_profile()`: returns provider-aware context-window metadata used by
+  runtime context budgeting.
 
 `ModelRequest` carries messages, typed request options, and optional tool
 definitions. Request options include output caps, sampling fields, stop
@@ -24,6 +26,14 @@ request fields. The configured provider owns the actual model name.
 calls. `ModelStreamEvent` is the stream protocol consumed by the runtime event
 layer; `chunks` and `tool_calls` remain as aggregate fields for existing
 callers.
+
+`ModelContextProfile` records the context window, default output-token
+reservation, tokenizer kind, and metadata source. Runtime uses it to cap
+`ContextBudget` before context assembly and to choose a context token estimator.
+OpenAI-compatible and mock providers have deterministic local estimators;
+Anthropic and Ollama currently select explicit fallback estimators. This is not
+a full provider registry yet; cost, health, cooldown, fallback chains, and exact
+provider-native tokenizer libraries are still future work.
 
 Providers must not:
 

@@ -20,11 +20,25 @@ struct InterceptEnv {
 }
 
 impl FileSystem for InterceptEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        LocalExecutionEnv.path_metadata(path)
+    }
+
     fn read_to_string<'a>(
         &'a self,
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
         LocalExecutionEnv.read_to_string(path)
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        LocalExecutionEnv.read_bytes(path)
     }
 
     fn write_string<'a>(
@@ -33,6 +47,14 @@ impl FileSystem for InterceptEnv {
         content: String,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         LocalExecutionEnv.write_string(path, content)
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.write_bytes(path, content)
     }
 
     fn create_dir_all<'a>(
@@ -47,6 +69,13 @@ impl FileSystem for InterceptEnv {
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         LocalExecutionEnv.read_dir(path)
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        LocalExecutionEnv.remove_file(path)
     }
 }
 
@@ -216,6 +245,84 @@ async fn execution_session_routes_skill_execution_through_env() {
         .map(|event| event.kind)
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec!["tool_call", "policy_decision", "tool_result"]);
+}
+
+#[tokio::test]
+async fn execution_session_env_allows_workspace_write() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    let path = workspace.join("notes").join("inside.txt");
+
+    session
+        .env
+        .write_string(&path, "inside".into())
+        .await
+        .expect("workspace write should be allowed");
+
+    assert_eq!(fs::read_to_string(path).expect("inside file"), "inside");
+}
+
+#[tokio::test]
+async fn execution_session_env_denies_workspace_external_writes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&outside).expect("outside");
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    let path = outside.join("owned.txt");
+
+    let error = session
+        .env
+        .write_string(&path, "outside".into())
+        .await
+        .expect_err("workspace-external write should be rejected");
+
+    assert!(matches!(error, IkarosError::OutOfScope(_)));
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn execution_session_env_denies_process_cwd_outside_workspace() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&outside).expect("outside");
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    let request = ProcessRequest::program("ikaros-command-that-must-not-run", Vec::new(), &outside);
+
+    let error = session
+        .env
+        .run_process(request)
+        .await
+        .expect_err("workspace-external cwd should be rejected before spawn");
+
+    assert!(matches!(error, IkarosError::OutOfScope(_)));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn execution_session_env_denies_symlink_write_escape() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&outside).expect("outside");
+    std::os::unix::fs::symlink(&outside, workspace.join("linked-outside")).expect("symlink");
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    let path = workspace.join("linked-outside").join("owned.txt");
+
+    let error = session
+        .env
+        .write_string(&path, "outside".into())
+        .await
+        .expect_err("symlink write escape should be rejected");
+
+    assert!(matches!(error, IkarosError::OutOfScope(_)));
+    assert!(!outside.join("owned.txt").exists());
 }
 
 #[cfg(target_os = "linux")]

@@ -12,6 +12,10 @@ pub(crate) fn filter_records(records: Vec<MemoryRecord>, query: &MemoryQuery) ->
                     .scope
                     .as_ref()
                     .is_none_or(|scope| &record.scope == scope)
+                && query
+                    .perspective
+                    .as_ref()
+                    .is_none_or(|perspective| record.perspective.as_ref() == Some(perspective))
                 && needle.as_ref().is_none_or(|text| {
                     record.content.to_ascii_lowercase().contains(text)
                         || record

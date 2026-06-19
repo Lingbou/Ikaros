@@ -7,6 +7,7 @@ use crate::{
 };
 use ikaros_core::{IkarosConfig, IkarosPaths, Result, Task};
 use ikaros_harness::{AuditEvent, CancellationToken, ExecutionOptions};
+use ikaros_session::SessionSource;
 use serde_json::json;
 use std::path::Path;
 
@@ -50,8 +51,13 @@ async fn run_agent_loop_handoff(
     config: &IkarosConfig,
     agent: ikaros_core::ResolvedAgentProfile,
     task_text: String,
-    options: TaskRunOptions,
+    mut options: TaskRunOptions,
 ) -> Result<AgentHandoffReport> {
+    if options.session_source.is_none() {
+        options.session_source = Some(SessionSource::Subagent {
+            parent_agent_id: "agent_handoff".into(),
+        });
+    }
     let execution = execute_task_text_with_options(
         task_text,
         options.clone(),

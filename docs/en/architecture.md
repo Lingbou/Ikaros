@@ -19,31 +19,41 @@ calling context, persistent state, or user-visible behavior changes.
   tool, approval, memory lifecycle, audit anchor, context, error, and turn-end
   milestones.
 - Session store: the append-only session, turn, event, approval, and replay
-  persistence boundary. The current implementation is local SQLite with FTS5
-  and trigram indexes for session entry search.
+  persistence boundary, including durable continuation queue records. The
+  current implementation is local SQLite with FTS5 and trigram indexes for
+  session entry search.
+- Context bundle: the token-budgeted set of context sections used for a turn,
+  plus parsed references and a diff explaining what was added, removed, or
+  compressed.
+- Coding turn context: the workspace, git state, mode, permission profile,
+  instructions, test commands, and session/turn identity used by the controlled
+  coding workflow.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
   session policy, auth scope, and route bindings.
-- Context source: history, memory, RAG, relationship, or persona data that may be
-  assembled into a model turn.
+- Context source: references, history, memory, RAG, relationship, or persona
+  data that may be assembled into a model turn.
 
 ## Crates
 
 - `ikaros-core`: shared config, paths, task types, redaction, errors, agent profiles, and the `AgentInstance` identity model.
 - `ikaros-session`: `SessionId`, `TurnId`, typed `AgentEvent`, append-only
   session entries, `SessionStore`, `SessionWriter`, SQLite `state.db`, and
-  replay/search/branch reads.
-- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, and `ContextEngine`.
+  replay/search/branch/continuation reads.
+- `ikaros-context`: context bundles, sections, references, provider-aware
+  token budgets, quota-based compaction, and context diffs.
+- `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, `AgentHarness`, and context orchestration.
 - `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
-- `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle, and provider registry metadata.
+- `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle,
+  memory policy/journal primitives, and provider registry metadata.
 - `ikaros-rag`: local file ingestion, chunk storage, retrieval, and embedding providers.
-- `ikaros-models`: `ModelProvider`, `ModelTransport`, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, usage logging, and request governance.
+- `ikaros-models`: `ModelProvider`, `ModelTransport`, model context profiles, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, usage logging, and request governance.
 - `ikaros-gateway`: local inbox/outbox store plus built-in `GatewayFrame` protocol types.
 - `ikaros-voice`: mock and OpenAI-compatible TTS/ASR providers.
 - `ikaros-skills`: built-in skills exposed through the harness.
 - `ikaros-cli`: command-line interface and terminal rendering.
 - `ikaros-body`: body/status/frame contracts and simple renderers.
-- `ikaros-automation`, `ikaros-service`, `ikaros-coding`, and `ikaros-soul`: focused support crates for their named domains.
+- `ikaros-automation`, `ikaros-service`, `ikaros-coding`, and `ikaros-soul`: focused support crates for their named domains. `ikaros-coding` owns repo scan, guarded patching, structured patch failures, turn diff tracking, code review, coding turn reports, self-modify records, and test-command analysis.
 
 ## Runtime Flow
 
@@ -52,16 +62,32 @@ Most entry points follow the same path:
 1. CLI or workers resolve `IKAROS_HOME`, workspace, config, and agent id/profile.
 2. Runtime resolves an `AgentInstance` with `agent_id`, profile overlay, workspace, state dir, session policy, auth scope, and route bindings.
 3. Runtime builds stores, provider adapters, the skill registry, context engine, and harness session.
-4. Model turns run through `AgentRuntime`; the default implementation is `HarnessAgentRuntime`.
-   Runtime emits typed `AgentEvent` records. Callers may attach an
-   `AgentEventSink` to persist those records in `ikaros-session`, while existing
-   CLI and worker callers can still use the final report.
+4. Model turns run through `AgentRuntime`; the default implementation is
+   `HarnessAgentRuntime`. Chat and task agent-loop entry points wrap it in
+   `AgentHarness`, which owns phase, caller-provided turn ids, and durable
+   continuation queue handling when a `SessionStore` is available. Gateway task
+   drains, scheduled task execution, and agent-loop handoff now call the
+   session-aware task agent-loop path with explicit session id, turn id, and
+   source metadata. Runtime emits typed `AgentEvent` records. Callers may attach
+   an `AgentEventSink` to persist those records in `ikaros-session`, while
+   existing CLI and worker callers can still use the final report.
 5. Tool dispatch must go through `ExecutionSession` and `ExecutionEnv`; runtime code should not touch host APIs directly.
 6. The harness evaluates policy, records audit events, and either executes, asks for approval, or denies.
 7. Runtime reduces the same turn path into stable reports for CLI, body,
    schedule, gateway, chat, or agent callers.
 
-Chat, task execution, scheduled jobs, gateway drains, and agent handoffs reuse this path.
+Chat and task agent-loop execution now use the stateful harness path. Gateway
+task drain, scheduled task execution, and agent-loop handoff also enter that path
+with explicit session source metadata, so their agent-loop events and
+continuation state can land in the same `state.db` timeline as their
+gateway/schedule evidence.
+The durable continuation queue is a recovery and replay boundary, not yet a
+full scheduler. It now records leases, attempt counts, status reasons, requeue
+status, terminal status, cancellation request/acknowledgement evidence,
+worker-lease timeout summaries, and user-facing debug query data. Running
+durable message continuations poll for external cancellation, but configurable
+worker coordination, tool-result continuations, and scheduler-grade terminal
+accounting are still runtime hardening work.
 
 ## Agent Identity
 
@@ -96,18 +122,19 @@ State ownership:
 
 - `state.db`: session metadata, append-only session entries, persisted
   chat/agent-loop events, gateway and schedule evidence, approval records,
-  FTS5/trigram search indexes, branch/compact/retry markers, and replay data.
+  durable continuation queue records, FTS5/trigram search indexes,
+  branch/compact/retry markers, coding turn events, and replay data.
   Built-in chat turns write user/assistant entries through a turn-scoped
   `SessionWriter` transaction. Gateway and schedule workers also map their
   request/result/delivery evidence into the same store. Memory lifecycle and
   audit logs still keep their own stores, with selected session evidence rather
   than full prompt-bearing duplication.
-- `memory/`: local memory records and memory provider registry metadata.
+- `memory/`: local memory records, memory policy journal data, and memory provider registry metadata.
 - `chat/`: chat history and session summaries.
 - `rag/`: local RAG files, chunks, and embedding indexes.
 - `audit/`: policy decisions, approval records, usage logs, and migration backups.
 - `automation/`: schedule metadata and delivery reports.
-- `gateway/`: inbox/outbox records for local message routing.
+- `gateway/`: inbox/outbox records and sibling lock files for local message routing.
 - `skills/`: locally installed plugins and marketplace metadata.
 - `agents/`: per-agent state directories when instances use the default state root.
 
@@ -128,11 +155,68 @@ State ownership:
   event, and a failed turn-end event for replay/debug callers.
 - `session_id` identifies persisted timelines. `task_id` is task/report
   metadata and must not be used as an implicit session fallback.
-- `ContextEngine` owns ingest, assemble, compact, and after_turn; memory, history, RAG, and relationship data are context sources.
-- `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks.
+- Context primitives live in `ikaros-context`. Runtime chat assembles
+  relationship, explicit references, history, memory, and RAG into a
+  provider-aware token-budgeted `ContextBundle`. Provider metadata caps the
+  usable context window and selects the token estimator. OpenAI-compatible and
+  mock providers have deterministic local adapters; Anthropic and Ollama still
+  use explicit fallback adapters until exact native tokenizer libraries are
+  wired in.
+- `ContextReference` currently parses and locally resolves safe references:
+  `@file:path:line-line`, `@folder:path`, `@git:rev`, `@diff`, and `@staged`.
+  Paths must stay under the workspace. `@url:` is parsed but not fetched until
+  network policy is wired into context assembly.
+- Context assembly emits a `ContextDiff` agent event for the turn. The payload
+  includes the budget, sections, parsed references, and added/removed/compressed
+  token estimates.
+- Context compaction protects relationship facts and explicit references. If
+  protected context cannot fit the model-derived budget, the turn fails with a
+  context-limit error instead of silently dropping the requested context.
+- `MemoryProvider` exposes turn_start, prefetch, sync_turn, pre_compress, session_switch, and delegation_observation lifecycle hooks. The trait does not hide default noop methods; callers that need no memory side effect must choose `NoopMemoryProvider` explicitly.
+- `MemoryScore`, `MemoryPolicy`, and `MemoryJournal` belong to `ikaros-memory`.
+  Runtime chat records `sync_turn` working-memory append/skipped-write
+  decisions. When a lifecycle report references affected core memory scopes, it
+  applies configured promote/demote/forget/quota policy actions and records
+  those decisions in the same journal. Ordinary turn summaries are not promoted
+  into long-term `Task` memory.
+- Relationship memory is `MemoryKind::Relationship` in `ikaros-memory`; the
+  relationship CLI is a convenience façade over the memory store, not a second
+  memory system.
 - Tool execution belongs to the harness and `ExecutionEnv`, not the model provider or UI.
+- Coding workflow execution is a governed harness skill. It builds a
+  `CodingTurnContext`, git baseline, repo map, change plan, optional patch
+  attempt, turn diff, test matrix evidence, review, iteration plan, loop report,
+  and final report. The git baseline records HEAD, branch/detached state,
+  clean/dirty/not-git/unknown state, and staged/unstaged/untracked flags when
+  available. The mode policy is explicit: `plan` and `review` stay read-only,
+  `test` may run the test matrix through the harness process path, `edit` may
+  apply an explicitly requested candidate patch, and `self_modify` is rejected
+  by ordinary `code workflow` until it enters the dedicated self-modify approval
+  path. When a coding session is configured, its `CodingTurn` events and custom
+  session entries are persisted into `state.db` for `debug coding-turn`.
+- Tool lifecycle uses typed events: `ToolCallStarted`,
+  `ToolCallOutputDelta`, `ToolCallCompleted`, `ToolCallFailed`, and
+  `ToolCallCancelled`. Approval events carry tool anchors so UI, replay, and
+  audit views can line up the request with the tool invocation.
+- Agent-loop observer hooks cover provider request/response and tool start/end
+  boundaries. Hook payloads are redacted metadata; typed events and persisted
+  session timelines remain the durable observation surface.
+- Tool scheduling is descriptor-driven. Adjacent parallel tool calls may run
+  concurrently, sequential calls run alone, and per-tool timeout failures are
+  reported through the same lifecycle event stream with structured timeout
+  metadata. Cancellation is checked before and while awaiting provider requests,
+  before planned tool calls start, and while tool futures are in flight; planned
+  but unstarted calls are reported as cancelled, not executed.
 - Gateway protocol types live inside `ikaros-gateway`; there is no separate protocol crate.
 - Self-modification is a separate approval-gated path, not an ordinary write permission.
+- The current coding workflow is still not a full Codex-style real-provider
+  coding agent. It now has deterministic and mock-model patch/test/review loop
+  fixtures, multi-iteration session replay evidence, test-matrix events, and
+  parser hardening for malformed ranges, quoted/space-truncated paths,
+  ambiguous anchors, and already-applied hunks. Provider-generated follow-up
+  patches, cancellation, budget handling, approval replay semantics, and routing
+  git/shell snapshots through the same process/environment boundary remain
+  future hardening.
 
 ## Invariants
 

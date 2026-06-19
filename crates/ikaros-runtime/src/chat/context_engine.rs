@@ -2,18 +2,26 @@
 
 use super::{
     context::{
-        apply_context_char_budget, chat_context_char_count, context_lookup_is_safe_read,
-        extract_memory_context, extract_rag_context,
+        context_lookup_is_safe_read, extract_projection_context, extract_rag_context,
+        extract_retrieved_memory_context, extract_working_memory_context, redact_chat_context,
     },
     history::ChatHistoryStore,
     types::{ChatContext, ChatRunOptions},
 };
 use crate::{relationship_context_lines, relationship_snapshot_from_session};
-use ikaros_core::{ResolvedAgentProfile, Result};
+use ikaros_context::{
+    ContextBudget, ContextCompressedSection, ContextDiff, ContextReference, ContextTokenEstimator,
+    ContextTokenizerKind, TokenEstimator, TrajectoryCompressor, parse_context_references,
+    resolve_context_references,
+};
+use ikaros_core::{IkarosError, ResolvedAgentProfile, Result};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_models::{ModelContextProfile, ModelTokenizerKind};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{future::Future, pin::Pin};
+use std::{future::Future, path::Path, pin::Pin};
+
+pub use ikaros_context::ContextBundle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextEvent {
@@ -28,24 +36,35 @@ pub struct ContextAssembleInput<'a> {
     pub session: &'a ExecutionSession,
     pub registry: &'a SkillRegistry,
     pub options: &'a ChatRunOptions,
+    pub model_context: Option<&'a ModelContextProfile>,
+    pub reserved_system_tokens: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextBundle {
-    pub context: ChatContext,
+pub struct ContextModelBudget<'a> {
+    pub model_context: &'a ModelContextProfile,
+    pub reserved_system_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompactInput {
     pub context: ChatContext,
-    pub budget: usize,
+    pub budget: ContextBudget,
+    pub tokenizer: ContextTokenizerKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompactReport {
-    pub before_chars: usize,
-    pub after_chars: usize,
+    pub before_tokens: usize,
+    pub after_tokens: usize,
     pub context: ChatContext,
+    pub diff: ContextDiff,
+    pub budget: ContextBudget,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressed_sections: Vec<ContextCompressedSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,13 +92,20 @@ pub trait ContextEngine: Send + Sync {
         input: CompactInput,
     ) -> Pin<Box<dyn Future<Output = Result<CompactReport>> + 'a>> {
         Box::pin(async move {
-            let before_chars = chat_context_char_count(&input.context);
-            let context = apply_context_char_budget(input.context, input.budget);
-            let after_chars = chat_context_char_count(&context);
+            let estimator = input.tokenizer.estimator();
+            let before = input.context;
+            let compressed = TrajectoryCompressor::default()
+                .compress(before.clone(), input.budget, &estimator)
+                .map_err(|error| IkarosError::Message(error.to_string()))?;
             Ok(CompactReport {
-                before_chars,
-                after_chars,
-                context,
+                before_tokens: compressed.before_tokens,
+                after_tokens: compressed.after_tokens,
+                context: compressed.context,
+                diff: compressed.diff,
+                budget: compressed.budget,
+                compressed_sections: compressed.compressed_sections,
+                summary: compressed.summary,
+                continuation_prompt: compressed.continuation_prompt,
             })
         })
     }
@@ -102,10 +128,16 @@ impl ContextEngine for LocalChatContextEngine {
     ) -> Pin<Box<dyn Future<Output = Result<ContextBundle>> + 'a>> {
         Box::pin(async move {
             let options = input.options;
+            let estimator = context_estimator_for_input(&input);
             if options.no_context {
-                return Ok(ContextBundle {
-                    context: ChatContext::default(),
-                });
+                let context = ChatContext::default();
+                return Ok(ContextBundle::from_context(
+                    context.clone(),
+                    context,
+                    ContextBudget::unbounded(estimator.name()),
+                    Vec::new(),
+                    &estimator,
+                ));
             }
 
             let mut context = ChatContext::default();
@@ -128,16 +160,32 @@ impl ContextEngine for LocalChatContextEngine {
                 options,
             )
             .await?;
+            let references = assemble_reference_context(
+                &mut context,
+                input.input,
+                &input.session.sandbox.workspace_root,
+            )?;
 
+            let context = redact_chat_context(context);
             let compacted = self
                 .compact(CompactInput {
-                    context,
-                    budget: options.context_char_budget,
+                    context: context.clone(),
+                    budget: context_budget_for_input(&input, estimator.name()),
+                    tokenizer: estimator.kind(),
                 })
                 .await?;
-            Ok(ContextBundle {
-                context: compacted.context,
-            })
+            let mut bundle = ContextBundle::from_context(
+                context,
+                compacted.context,
+                compacted.budget,
+                references,
+                &estimator,
+            );
+            bundle.diff = compacted.diff;
+            bundle.compressed_sections = compacted.compressed_sections;
+            bundle.compression_summary = compacted.summary;
+            bundle.continuation_prompt = compacted.continuation_prompt;
+            Ok(bundle)
         })
     }
 }
@@ -168,6 +216,20 @@ pub async fn build_chat_context_with_engine(
     registry: &SkillRegistry,
     options: &ChatRunOptions,
 ) -> Result<ChatContext> {
+    let bundle =
+        build_chat_context_bundle_with_engine(engine, input, agent, session, registry, options)
+            .await?;
+    Ok(bundle.context)
+}
+
+pub async fn build_chat_context_bundle_with_engine(
+    engine: &dyn ContextEngine,
+    input: &str,
+    agent: &ResolvedAgentProfile,
+    session: &ExecutionSession,
+    registry: &SkillRegistry,
+    options: &ChatRunOptions,
+) -> Result<ContextBundle> {
     let bundle = engine
         .assemble(ContextAssembleInput {
             input,
@@ -175,9 +237,81 @@ pub async fn build_chat_context_with_engine(
             session,
             registry,
             options,
+            model_context: None,
+            reserved_system_tokens: 0,
         })
         .await?;
-    Ok(bundle.context)
+    Ok(bundle)
+}
+
+pub async fn build_chat_context_bundle_with_model_context(
+    engine: &dyn ContextEngine,
+    input: &str,
+    agent: &ResolvedAgentProfile,
+    session: &ExecutionSession,
+    registry: &SkillRegistry,
+    options: &ChatRunOptions,
+    model_budget: ContextModelBudget<'_>,
+) -> Result<ContextBundle> {
+    let bundle = engine
+        .assemble(ContextAssembleInput {
+            input,
+            agent,
+            session,
+            registry,
+            options,
+            model_context: Some(model_budget.model_context),
+            reserved_system_tokens: model_budget.reserved_system_tokens,
+        })
+        .await?;
+    Ok(bundle)
+}
+
+fn context_budget_for_input(
+    input: &ContextAssembleInput<'_>,
+    estimator: impl Into<String>,
+) -> ContextBudget {
+    let requested = input.options.context_token_budget;
+    let Some(model_context) = input.model_context else {
+        return ContextBudget::new(requested, estimator);
+    };
+    let available = model_context
+        .available_context_tokens(input.reserved_system_tokens)
+        .max(1) as usize;
+    let max_tokens = if requested == 0 {
+        available
+    } else {
+        requested.min(available)
+    };
+    ContextBudget::new(max_tokens, estimator).with_model_window(
+        requested,
+        model_context.context_window,
+        model_context.default_output_tokens,
+        input.reserved_system_tokens,
+        model_context.source.clone(),
+    )
+}
+
+pub fn context_estimator_for_model(
+    model_context: Option<&ModelContextProfile>,
+) -> ContextTokenEstimator {
+    context_tokenizer_for_model(model_context).estimator()
+}
+
+pub fn context_tokenizer_for_model(
+    model_context: Option<&ModelContextProfile>,
+) -> ContextTokenizerKind {
+    match model_context.map(|context| context.tokenizer) {
+        Some(ModelTokenizerKind::OpenAiCompatible) => ContextTokenizerKind::OpenAiCompatible,
+        Some(ModelTokenizerKind::Anthropic) => ContextTokenizerKind::AnthropicFallback,
+        Some(ModelTokenizerKind::Ollama) => ContextTokenizerKind::OllamaFallback,
+        Some(ModelTokenizerKind::Mock) => ContextTokenizerKind::Mock,
+        Some(ModelTokenizerKind::Heuristic) | None => ContextTokenizerKind::Heuristic,
+    }
+}
+
+fn context_estimator_for_input(input: &ContextAssembleInput<'_>) -> ContextTokenEstimator {
+    context_estimator_for_model(input.model_context)
 }
 
 fn assemble_history_context(context: &mut ChatContext, options: &ChatRunOptions) -> Result<()> {
@@ -221,6 +355,59 @@ async fn assemble_memory_context(
     .await?;
     context.relationship = relationship_context_lines(&relationship, options.memory_limit);
 
+    if context_lookup_is_safe_read(registry, "memory_projection") {
+        let mut projection_input = json!({
+            "user_scope": "default",
+        });
+        let mut projection_audit_input = json!({
+            "user_scope": "default",
+        });
+        if let Some(scope) = &options.scope {
+            projection_input["project_scope"] = json!(scope);
+            projection_audit_input["project_scope"] = json!(scope);
+        }
+        let result = session
+            .execute_read_skill_with_audit_input(
+                registry,
+                "memory_projection",
+                projection_input,
+                projection_audit_input,
+            )
+            .await?;
+        if result.ok {
+            context
+                .memory_projection
+                .extend(extract_projection_context(&result.output));
+        }
+    }
+
+    if let Some(session_id) = &options.session_id
+        && context_lookup_is_safe_read(registry, "working_memory_list")
+    {
+        let result = session
+            .execute_read_skill_with_audit_input(
+                registry,
+                "working_memory_list",
+                json!({
+                    "session_id": session_id,
+                    "limit": options.memory_limit,
+                }),
+                json!({
+                    "session_id": "<redacted chat session>",
+                    "limit": options.memory_limit,
+                }),
+            )
+            .await?;
+        if result.ok {
+            context
+                .working_memory
+                .extend(extract_working_memory_context(
+                    &result.output,
+                    options.memory_limit,
+                ));
+        }
+    }
+
     let mut memory_input = json!({
         "query": input,
         "limit": options.memory_limit,
@@ -242,9 +429,25 @@ async fn assemble_memory_context(
         )
         .await?;
     if result.ok {
-        context.memory = extract_memory_context(&result.output, options.memory_limit);
+        context
+            .retrieved_memory
+            .extend(extract_retrieved_memory_context(
+                &result.output,
+                options.memory_limit,
+            ));
     }
     Ok(())
+}
+
+fn assemble_reference_context(
+    context: &mut ChatContext,
+    input: &str,
+    workspace_root: &Path,
+) -> Result<Vec<ContextReference>> {
+    let references = parse_context_references(input);
+    context.references = resolve_context_references(&references, workspace_root)
+        .map_err(|error| IkarosError::Message(error.to_string()))?;
+    Ok(references)
 }
 
 async fn assemble_rag_context(

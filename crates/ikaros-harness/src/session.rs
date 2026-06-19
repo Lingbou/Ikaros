@@ -3,7 +3,7 @@
 use crate::{
     ApprovalLog, ApprovalPolicy, AuditEvent, AuditLog, DefaultPolicyEngine, PolicyEngine,
     PolicyRequest, SandboxProfile,
-    execution_env::{ExecutionEnv, LocalExecutionEnv},
+    execution_env::{ExecutionEnv, WorkspaceExecutionEnv},
     policy::PolicyEvaluation,
 };
 use ikaros_core::{AgentInstance, ResolvedAgentProfile, Result, ToolResult};
@@ -25,10 +25,11 @@ pub struct ExecutionSession {
 impl ExecutionSession {
     pub fn new(workspace_root: impl Into<PathBuf>, audit_dir: impl Into<PathBuf>) -> Self {
         let audit_dir = audit_dir.into();
+        let workspace_root = workspace_root.into();
         Self {
-            sandbox: SandboxProfile::new(workspace_root),
+            sandbox: SandboxProfile::new(&workspace_root),
             policy: Arc::new(DefaultPolicyEngine),
-            env: Arc::new(LocalExecutionEnv),
+            env: Arc::new(WorkspaceExecutionEnv::local(workspace_root)),
             approvals: ApprovalPolicy::with_log(ApprovalLog::new(&audit_dir)),
             audit: AuditLog::new(audit_dir),
         }

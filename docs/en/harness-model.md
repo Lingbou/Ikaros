@@ -49,6 +49,32 @@ instead of mutating global state.
 
 Safe-read skills may pass redacted audit input while executing with the real local input. Chat uses this for local memory/RAG lookup so the audit log does not store full user prompts.
 
+Coding has two harness paths. `code_workflow` is the controlled turn workflow:
+by default it is a safe-read plan/review path, but its policy risk upgrades to
+shell-read when `run_tests` is requested in `test`/`edit`, and to local-write
+only when an explicit candidate patch is applied in `edit` mode. `self_modify`
+is rejected by ordinary `code_workflow` until it enters the dedicated
+self-modify approval path. It builds the repo map, change plan, optional patch
+attempt, turn diff, test-matrix evidence, review, iteration plan, loop report,
+final report, and optional session replay evidence. Patch application in
+`code_workflow` and `code_edit_guarded` both go through the
+session `ExecutionEnv` filesystem interface rather than calling host filesystem
+APIs from the skill. `code_edit_guarded` remains the direct approval-gated patch
+entry point for applying a provided unified diff.
+
+Skill descriptors also carry runtime scheduling metadata:
+
+- `execution_mode = parallel`: eligible to run in the same batch as adjacent
+  parallel calls from one model response.
+- `execution_mode = sequential`: must run alone and preserve strict ordering.
+- `timeout_ms`: optional per-tool runtime timeout. Timeout returns a failed tool
+  result and is reflected in lifecycle events.
+
+Safe read and shell read descriptors default to `parallel`. Write, network,
+remote, destructive, secret, and self-modification risk descriptors default to
+`sequential`. The model provider sees only the callable tool schema; scheduling
+metadata belongs to the runtime/harness boundary.
+
 ## Policy Decisions
 
 Policy returns one of three effective states:
@@ -69,11 +95,28 @@ workspace, skill, risk, input, and agent identity that were approved.
 
 `ExecutionEnv` narrows host operations into three interfaces:
 
-- `FileSystem`: read/write files, create directories, list directories.
+- `FileSystem`: read path metadata, read/write text and bytes, create directories, list directories.
 - `ProcessRunner`: run structured process requests.
 - `NetworkEgress`: network egress requests.
 
-The MVP default implementation is `LocalExecutionEnv`. Filesystem skills, shell commands, coding helpers, RAG maintenance, voice output, and command-backed plugins should use session/env instead of calling host APIs directly.
+The default session environment is `WorkspaceExecutionEnv`, a scoped wrapper
+around the local backend. `LocalExecutionEnv` remains the raw host backend used
+by tests and future environment implementations; normal runtime sessions should
+not attach it directly unless they intentionally want to bypass workspace
+scoping.
+
+`WorkspaceExecutionEnv` resolves relative paths against the session workspace.
+Filesystem writes, byte writes, directory creation, file removal, and process
+working directories must stay under the workspace root. The scope check uses both
+lexical normalization and canonical existing-path anchors, so `..` paths and
+symlink escapes cannot turn an approved workspace operation into an external
+host write. Read APIs also resolve relative paths from the workspace, but read
+authorization still belongs to the skill policy or reference resolver; the
+environment wrapper alone should not be treated as a complete read sandbox.
+Filesystem skills, shell commands, coding helpers, RAG maintenance,
+voice output, voice ASR audio reads, self-modify workspace reads/writes/checks,
+and command-backed plugins should use session/env instead of calling host APIs
+directly.
 
 `ProcessRequest` has two modes:
 
@@ -96,7 +139,7 @@ code.
 - `shell_guarded` no longer executes arbitrary shell strings; it accepts only allowlisted test/check commands and runs them as program + args.
 - `git_status` and `git_diff` are fixed structured commands.
 - `run_tests` reuses the same test/check allowlist.
-- Command-backed plugins do not execute through a shell; manifest `program` must be relative and must canonicalize under the plugin directory.
+- Command-backed plugins do not execute through a shell; manifest `program` must be relative and must canonicalize under the plugin directory. The resolved program is executed with the session workspace as cwd, not the plugin installation directory.
 - Plugin manifests reject abnormal timeouts, too many args, oversized args, and control characters.
 - Plugin runtime limits stdin, stdout/stderr, and timeout, then redacts output before audit/reporting.
 

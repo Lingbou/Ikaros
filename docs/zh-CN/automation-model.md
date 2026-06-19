@@ -38,7 +38,10 @@ ikaros schedule delete <id>
 
 ## 执行
 
-Due job 会转换为 runtime task report，并通过确定性的 harness task runner 执行。Policy、approval、audit logging、memory write 和 agent profile overlay 仍然适用。
+Due job 会通过 session-aware task agent-loop path 转换为 runtime task execution。
+Scheduler 会提供 schedule 派生的 session id、turn id 和 session source，因此 typed
+event 可以和 schedule request/result/delivery evidence 落在同一个 `state.db` timeline
+中。Policy、approval、audit logging、memory write 和 agent profile overlay 仍然适用。
 
 默认 delivery 写入脱敏后的本地 Markdown report。`--delivery local-file` 和 `--delivery gateway-outbox` 可以重复传入，用来选择一个或两个投递目标。
 

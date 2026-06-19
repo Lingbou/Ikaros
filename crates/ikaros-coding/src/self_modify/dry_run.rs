@@ -2,7 +2,7 @@
 
 use super::{
     SelfModifyDryRunReport, SelfModifyStore,
-    diff::{diff_file_paths, diff_matches_single_target},
+    diff::{diff_file_paths, diff_matches_single_target, workspace_relative_path},
 };
 use crate::{CodeReviewAssistant, DiffSummarizer};
 use ikaros_core::{IkarosError, Result, contains_secret_like, redact_secrets};
@@ -46,10 +46,7 @@ impl SelfModifyStore {
             apply_available: false,
             manual_apply_available: true,
             ok_to_request_approval,
-            target_path: target_path
-                .strip_prefix(&self.workspace_root)
-                .unwrap_or(target_path)
-                .to_path_buf(),
+            target_path: workspace_relative_path(target_path, &self.workspace_root),
             diff_summary,
             changed_files,
             findings: review.findings,

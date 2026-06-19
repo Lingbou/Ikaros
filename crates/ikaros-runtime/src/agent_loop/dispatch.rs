@@ -8,27 +8,74 @@ use ikaros_harness::{
 };
 use ikaros_models::ModelMessage;
 use serde_json::json;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use tokio::time::{Duration, timeout};
 
 pub(super) async fn dispatch_agent_loop_tool_call(
     session: &ExecutionSession,
     registry: &SkillRegistry,
     iteration: u32,
     call: AgentLoopToolCall,
+    timeout_ms: Option<u64>,
 ) -> AgentLoopToolResult {
     let name = redact_secrets(&call.name);
-    match session
-        .execute_skill(registry, &call.name, call.input.clone())
-        .await
-    {
+    let started_at = OffsetDateTime::now_utc();
+    let execution = session.execute_skill(registry, &call.name, call.input.clone());
+    let result = match timeout_ms {
+        Some(timeout_ms) if timeout_ms > 0 => {
+            match timeout(Duration::from_millis(timeout_ms), execution).await {
+                Ok(result) => result,
+                Err(_) => {
+                    return timed_out_agent_loop_tool_result(
+                        iteration, name, timeout_ms, started_at,
+                    );
+                }
+            }
+        }
+        _ => execution.await,
+    };
+    match result {
         Ok(result) => agent_loop_tool_result_from_tool_result(iteration, name, result),
         Err(error) => AgentLoopToolResult {
             iteration,
             name,
+            harness_call_id: None,
             ok: false,
             summary: redact_secrets(&error.to_string()),
             output: json!({"error": redact_secrets(&error.to_string())}),
         },
     }
+}
+
+fn timed_out_agent_loop_tool_result(
+    iteration: u32,
+    name: String,
+    timeout_ms: u64,
+    started_at: OffsetDateTime,
+) -> AgentLoopToolResult {
+    let ended_at = OffsetDateTime::now_utc();
+    let summary = format!("tool {name} timed out after {timeout_ms} ms");
+    AgentLoopToolResult {
+        iteration,
+        name,
+        harness_call_id: None,
+        ok: false,
+        summary: redact_secrets(&summary),
+        output: json!({
+            "error": redact_secrets(&summary),
+            "timeout": {
+                "kind": "tool",
+                "reason": "tool_timeout",
+                "timeout_ms": timeout_ms,
+                "started_at": format_rfc3339(started_at),
+                "ended_at": format_rfc3339(ended_at),
+            }
+        }),
+    }
+}
+
+fn format_rfc3339(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
 }
 
 pub(super) fn observe_agent_loop_tool_result(
@@ -72,8 +119,17 @@ pub(super) fn stop_reason_from_tool_result(
         _ if result.output.get("approval_id").is_some() => {
             Some(AgentLoopStopReason::WaitingForApproval)
         }
+        _ if tool_result_cancelled(result) => Some(AgentLoopStopReason::Cancelled),
         _ => None,
     }
+}
+
+pub(super) fn tool_result_cancelled(result: &AgentLoopToolResult) -> bool {
+    result
+        .output
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 pub(super) fn model_message_for_tool_result(
@@ -98,6 +154,7 @@ fn agent_loop_tool_result_from_tool_result(
     AgentLoopToolResult {
         iteration,
         name,
+        harness_call_id: Some(result.call_id),
         ok: result.ok,
         summary: redact_secrets(&result.summary),
         output: redact_json(result.output),
@@ -128,8 +185,10 @@ fn audit_agent_loop_guardrail(
 }
 
 fn should_observe_agent_loop_result(result: &AgentLoopToolResult) -> bool {
-    result.ok
-        || (result.output.get("approval_id").is_none() && result.output.get("decision").is_none())
+    !tool_result_cancelled(result)
+        && (result.ok
+            || (result.output.get("approval_id").is_none()
+                && result.output.get("decision").is_none()))
 }
 
 fn render_tool_result_message(result: &AgentLoopToolResult) -> String {

@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fs, path::Path};
 
 use super::{
-    IkarosConfig, MemoryConfig, ModelConfig, RagConfig, RemoteProviderConfig, SelfModifyConfig,
-    VoiceProviderConfig,
+    IkarosConfig, MemoryConfig, MemoryPolicyConfig, ModelConfig, RagConfig, RemoteProviderConfig,
+    SelfModifyConfig, VoiceProviderConfig,
 };
 
 pub(crate) fn load_yaml_shape_checked(raw: &str) -> Result<IkarosConfig> {
@@ -350,11 +350,27 @@ fn validate_model_shape(value: &yaml_serde::Value, report: &mut ConfigValidation
 }
 
 fn validate_memory_shape(value: &yaml_serde::Value, report: &mut ConfigValidationReport) {
-    let Some(map) =
-        check_mapping_shape(value, "memory", &["backend", "external_providers"], report)
-    else {
+    let Some(map) = check_mapping_shape(
+        value,
+        "memory",
+        &["backend", "policy", "external_providers"],
+        report,
+    ) else {
         return;
     };
+    if let Some(policy) = mapping_get(map, "policy") {
+        check_mapping_shape(
+            policy,
+            "memory.policy",
+            &[
+                "promote_threshold",
+                "demote_threshold",
+                "forget_threshold",
+                "max_records_per_scope",
+            ],
+            report,
+        );
+    }
     if let Some(external) = mapping_get(map, "external_providers") {
         validate_sequence_mapping_shape(
             external,
@@ -729,6 +745,7 @@ fn validate_policy_config(
 
 fn validate_memory_config(config: &MemoryConfig, report: &mut ConfigValidationReport) {
     validate_local_backend("memory.backend", &config.backend, report);
+    validate_memory_policy_config(&config.policy, report);
     let enabled = config
         .external_providers
         .iter()
@@ -757,6 +774,48 @@ fn validate_memory_config(config: &MemoryConfig, report: &mut ConfigValidationRe
         if let Some(endpoint) = &provider.endpoint {
             validate_url(format!("{path}.endpoint"), endpoint, report);
         }
+    }
+}
+
+fn validate_memory_policy_config(config: &MemoryPolicyConfig, report: &mut ConfigValidationReport) {
+    validate_threshold(
+        "memory.policy.promote_threshold",
+        config.promote_threshold,
+        report,
+    );
+    validate_threshold(
+        "memory.policy.demote_threshold",
+        config.demote_threshold,
+        report,
+    );
+    validate_threshold(
+        "memory.policy.forget_threshold",
+        config.forget_threshold,
+        report,
+    );
+    if config.forget_threshold > config.demote_threshold {
+        report.error(
+            "memory.policy.forget_threshold",
+            "must be less than or equal to demote_threshold",
+        );
+    }
+    if config.demote_threshold > config.promote_threshold {
+        report.error(
+            "memory.policy.demote_threshold",
+            "must be less than or equal to promote_threshold",
+        );
+    }
+    if config.max_records_per_scope == 0 {
+        report.error(
+            "memory.policy.max_records_per_scope",
+            "must be greater than zero",
+        );
+    }
+}
+
+fn validate_threshold(path: &str, value: f32, report: &mut ConfigValidationReport) {
+    if !(0.0..=1.0).contains(&value) {
+        report.error(path, "must be between 0.0 and 1.0");
     }
 }
 

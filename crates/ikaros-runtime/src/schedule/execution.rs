@@ -6,7 +6,7 @@ use crate::session::{
     append_runtime_session_event, delivery_payload, runtime_session_target, schedule_session_id,
     schedule_session_source, schedule_turn_id, upsert_runtime_session,
 };
-use crate::{execute_task_for_automation, task_report_summary};
+use crate::{TaskRunOptions, execute_task_text_with_options, task_report_summary};
 use ikaros_automation::{LocalScheduleStore, ScheduledJob};
 use ikaros_core::{IkarosPaths, Result, TaskState, redact_secrets};
 use ikaros_harness::TaskExecutionReport;
@@ -22,8 +22,18 @@ pub async fn run_scheduled_job(
     agent_override: Option<&str>,
 ) -> Result<ScheduledJobRunReport> {
     let agent = job.agent.as_deref().or(agent_override);
-    match execute_task_for_automation(job.task.clone(), paths, workspace, agent).await {
-        Ok(report) => {
+    let session_id = schedule_session_id(&job.id);
+    let turn_id = schedule_turn_id(&job.id);
+    let task_options = TaskRunOptions::agent_loop(false).with_session(
+        session_id.to_string(),
+        turn_id.to_string(),
+        schedule_session_source(&job.id),
+    );
+    match execute_task_text_with_options(job.task.clone(), task_options, paths, workspace, agent)
+        .await
+    {
+        Ok(execution) => {
+            let report = execution.report;
             let summary = task_report_summary(
                 &report,
                 format!("completed {} scheduled step(s)", report.steps.len()),
@@ -116,7 +126,7 @@ fn record_scheduled_job_session(input: ScheduledJobSessionInput<'_>) -> Result<(
         .map(|report| report.task_id.as_str())
         .or_else(|| input.update.map(|update| update.ran_at.as_str()))
         .unwrap_or(input.job.id.as_str());
-    let turn_id = schedule_turn_id(run_id);
+    let turn_id = schedule_turn_id(&input.job.id);
     append_runtime_session_event(
         &target,
         &session_id,

@@ -34,6 +34,7 @@
 
 - [记忆模型](memory-model.md)
 - [记忆 Provider](memory-providers.md)
+- [Context 引擎](context-engine.md)
 - [RAG 模型](rag-model.md)
 - [模型 Provider](model-providers.md)
 - [语音 Provider](voice-providers.md)

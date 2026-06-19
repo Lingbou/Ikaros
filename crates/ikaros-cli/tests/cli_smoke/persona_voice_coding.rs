@@ -2,7 +2,9 @@
 
 use std::fs;
 
-use crate::support::{TestHome, install_smoke_rust_crate, parse_approval_id};
+use crate::support::{
+    TestHome, install_smoke_rust_crate, json_path_ends_with, parse_approval_id, skill_output_json,
+};
 
 #[test]
 fn persona_and_relationship_paths_are_local_audited_and_searchable() {
@@ -63,10 +65,10 @@ fn persona_and_relationship_paths_are_local_audited_and_searchable() {
         "I prefer concise companionship updates.",
         "--no-context",
     ]);
-    assert!(learned.contains("learned=1"));
-    let learned_relationship = env.run(["relationship", "show", "--scope", "default"]);
-    assert!(learned_relationship.contains("User preference: concise companionship updates"));
-    assert!(learned_relationship.contains("tags=relationship,chat-learned"));
+    assert!(learned.contains("relationship_candidates_created=1"));
+    let pending_candidate = env.run(["memory", "candidate", "list", "--status", "pending"]);
+    assert!(pending_candidate.contains("User preference: concise companionship updates"));
+    assert!(pending_candidate.contains("\"kind\": \"Relationship\""));
 
     let disabled_learning = env.run([
         "chat",
@@ -75,7 +77,7 @@ fn persona_and_relationship_paths_are_local_audited_and_searchable() {
         "--no-context",
         "--no-relationship-learning",
     ]);
-    assert!(disabled_learning.contains("learned=0"));
+    assert!(disabled_learning.contains("relationship_candidates_created=0"));
 }
 
 #[test]
@@ -183,8 +185,18 @@ fn engineering_assistant_read_only_paths_run_on_temp_rust_crate() {
 
     let repo = env.run(["repo", "scan"]);
     assert!(repo.contains("summary: repo scanned"));
-    assert!(repo.contains("Cargo.toml"));
-    assert!(repo.contains("src/lib.rs"));
+    let repo_json = skill_output_json(&repo);
+    let files = repo_json["files"].as_array().expect("repo files");
+    assert!(files.iter().any(|file| {
+        file["path"]
+            .as_str()
+            .is_some_and(|path| json_path_ends_with(path, &["Cargo.toml"]))
+    }));
+    assert!(files.iter().any(|file| {
+        file["path"]
+            .as_str()
+            .is_some_and(|path| json_path_ends_with(path, &["src", "lib.rs"]))
+    }));
 
     let inferred = env.run(["test", "infer"]);
     assert!(inferred.contains("cargo test --workspace --all-features"));
@@ -216,6 +228,13 @@ diff --git a/src/lib.rs b/src/lib.rs
     assert!(iteration.contains("\"ready_for_approval\": false"));
     assert!(iteration.contains("cargo test --workspace --all-features"));
 
+    let workflow = env.run(["code", "workflow", "prepare patch", "--diff", diff]);
+    assert!(workflow.contains("summary: coding turn completed"));
+    assert!(workflow.contains("\"kind\": \"repo_scanned\""));
+    assert!(workflow.contains("\"kind\": \"final_report_prepared\""));
+    assert!(workflow.contains("\"requires_guarded_edit\":"));
+    assert!(!workflow.contains("abc123"));
+
     let proposal = env.run([
         "self-modify",
         "propose",
@@ -241,8 +260,14 @@ diff --git a/src/lib.rs b/src/lib.rs
         .expect("proposal id");
 
     let proposals = env.run(["self-modify", "list"]);
-    assert!(proposals.contains("\"change_kind\": \"runtime_patch\""));
-    assert!(proposals.contains("\"target_path\": \"src/lib.rs\""));
+    let proposals_json = skill_output_json(&proposals);
+    let proposals = proposals_json.as_array().expect("self-modify proposals");
+    assert!(proposals.iter().any(|proposal| {
+        proposal["change_kind"] == "runtime_patch"
+            && proposal["target_path"]
+                .as_str()
+                .is_some_and(|path| json_path_ends_with(path, &["src", "lib.rs"]))
+    }));
 
     let heartbeat = env.run(["self-modify", "heartbeat"]);
     assert!(heartbeat.contains("\"status\": \"manual_apply_only\""));
@@ -292,4 +317,47 @@ diff --git a/src/lib.rs b/src/lib.rs
             .expect("restored")
             .contains("a + b")
     );
+}
+
+#[test]
+fn coding_workflow_persists_debuggable_turn_timeline() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+    let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn add(a: i32, b: i32) -> i32 { a + b }
++pub fn add(a: i32, b: i32) -> i32 { a.saturating_add(b) }
+";
+
+    let workflow = env.run([
+        "code",
+        "workflow",
+        "prepare persistent coding timeline",
+        "--session-id",
+        "coding-cli-session",
+        "--turn-id",
+        "coding-cli-turn",
+        "--diff",
+        diff,
+    ]);
+    assert!(workflow.contains("summary: coding turn completed"));
+
+    let debug = env.run([
+        "debug",
+        "coding-turn",
+        "coding-cli-session",
+        "--turn-id",
+        "coding-cli-turn",
+    ]);
+    assert!(debug.contains("\"session_id\": \"coding-cli-session\""));
+    assert!(debug.contains("\"turn_id\": \"coding-cli-turn\""));
+    assert!(debug.contains("\"event_count\""));
+    assert!(debug.contains("\"patch_skipped\""));
+    assert!(debug.contains("\"review_started\""));
+    assert!(debug.contains("\"final_report_prepared\""));
 }

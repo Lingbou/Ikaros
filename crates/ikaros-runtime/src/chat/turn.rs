@@ -1,31 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    context::chat_context_char_count,
     context_engine::{
-        ContextEngine, ContextEvent, LocalChatContextEngine, TurnRecord,
-        build_chat_context_with_engine,
+        ContextBundle, ContextEngine, ContextEvent, ContextModelBudget, LocalChatContextEngine,
+        TurnRecord, build_chat_context_bundle_with_model_context, context_estimator_for_model,
     },
     history::{
         ChatHistoryAppend, ChatHistoryStore, build_chat_history_record_with_turn_id,
         new_chat_session_id,
     },
-    learning::learn_relationships_from_chat,
+    learning::create_relationship_candidates_from_chat,
     prompt::{render_chat_system_prompt, render_persona_agent_context},
     types::{ChatMessageResult, ChatRunOptions, ChatTurnReport},
 };
 use crate::{
-    AgentEventSink, AgentLoopInput, AgentLoopOptions, noop_agent_event_sink,
-    run_agent_loop_with_events,
+    AgentEventSink, AgentHarness, AgentHarnessConfig, AgentLoopOptions, HarnessAgentRuntime,
+    noop_agent_event_sink,
 };
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
+use ikaros_context::TokenEstimator;
 use ikaros_core::{
-    ContextBuilder, IkarosConfig, IkarosError, IkarosPaths, ResolvedAgentProfile, Result,
-    redact_secrets,
+    ContextBuilder, IkarosConfig, IkarosError, IkarosPaths, MemoryPolicyConfig,
+    ResolvedAgentProfile, Result, redact_secrets,
 };
 use ikaros_harness::GuardrailConfig;
 use ikaros_harness::{AuditEvent, ExecutionSession, SkillRegistry};
-use ikaros_memory::{LocalMemoryStore, MemoryProvider, MemoryTurnRecord, MemoryTurnStart};
+use ikaros_memory::{
+    JsonlMemoryJournal, LocalMemoryStore, MemoryJournal, MemoryJournalAction, MemoryJournalEntry,
+    MemoryKind, MemoryLifecycleRecordRef, MemoryLifecycleReport, MemoryPolicy,
+    MemoryPolicyDecision, MemoryPolicyEngine, MemoryProvider, MemoryQuery, MemoryRecord,
+    MemoryTurnRecord, MemoryTurnStart, add_policy_tag,
+};
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse,
     ModelStreamEvent, ModelUsageLedger, governed_provider_from_config,
@@ -80,7 +85,9 @@ pub async fn run_chat_message(
         .with_source(session_source)
         .with_agent_id(agent_instance.agent_id.clone())
         .with_workspace(agent_instance.workspace.clone());
-    memory_provider.turn_start(MemoryTurnStart {
+    let memory_journal = JsonlMemoryJournal::new(&paths.memory_dir);
+    let memory_policy = memory_policy_from_config(&config.memory.policy);
+    let turn_start_report = memory_provider.turn_start(MemoryTurnStart {
         session_id: options.session_id.clone(),
         agent_id: Some(agent_instance.agent_id.clone()),
         user_input: redact_secrets(message),
@@ -115,36 +122,49 @@ pub async fn run_chat_message(
             return Err(error);
         }
     };
-    if let Err(error) = memory_provider.sync_turn(MemoryTurnRecord {
+    emit_memory_lifecycle_report(
+        &event_sink,
+        &SessionId::from(chat_session_id.clone()),
+        &turn_id,
+        &agent_instance.agent_id,
+        &chat_session_id,
+        &turn_start_report,
+    )?;
+    let sync_report = match memory_provider.sync_turn(MemoryTurnRecord {
         session_id: report.chat_session_id.clone(),
+        turn_id: Some(turn_id.to_string()),
         agent_id: Some(agent_instance.agent_id.clone()),
         user_input: redact_secrets(message),
         assistant_output: report.response.content.clone(),
     }) {
-        let _ = emit_chat_failure_event(
-            &event_sink,
-            &SessionId::from(chat_session_id.clone()),
-            &turn_id,
-            "memory_sync",
-            &error,
-        );
-        if event_sink.commit().is_err() {
-            let _ = event_sink.rollback();
+        Ok(report) => report,
+        Err(error) => {
+            let _ = emit_chat_failure_event(
+                &event_sink,
+                &SessionId::from(chat_session_id.clone()),
+                &turn_id,
+                "memory_sync",
+                &error,
+            );
+            if event_sink.commit().is_err() {
+                let _ = event_sink.rollback();
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
-    emit_chat_lifecycle_event(
+    };
+    emit_memory_lifecycle_report(
         &event_sink,
         &SessionId::from(chat_session_id.clone()),
         &turn_id,
-        AgentEventSource::Memory,
-        AgentEventKind::MemoryLifecycle,
-        json!({
-            "phase": "sync_turn",
-            "status": "ok",
-            "agent_id": &agent_instance.agent_id,
-            "session_id": &chat_session_id,
-        }),
+        &agent_instance.agent_id,
+        &chat_session_id,
+        &sync_report,
+    )?;
+    apply_runtime_memory_policy(
+        &memory_provider,
+        &memory_journal,
+        &memory_policy,
+        &sync_report,
     )?;
     emit_chat_lifecycle_event(
         &event_sink,
@@ -179,7 +199,8 @@ pub async fn run_chat_message(
         streamed: report.streamed,
         stream_chunks: report.stream_chunks,
         relationship_hits: report.relationship_hits,
-        relationship_learned: report.relationship_learned,
+        relationship_candidates_created: report.relationship_candidates_created,
+        reference_hits: report.reference_hits,
         history_hits: report.history_hits,
         memory_hits: report.memory_hits,
         rag_hits: report.rag_hits,
@@ -290,6 +311,10 @@ pub async fn run_chat_turn_with_events(
         )?;
     }
     let context_engine = LocalChatContextEngine;
+    let model_context = provider.context_profile();
+    let persona_context = render_persona_agent_context(persona, agent);
+    let context_estimator = context_estimator_for_model(Some(&model_context));
+    let reserved_system_tokens = context_estimator.estimate_tokens(&persona_context) as u32;
     if let Err(error) = context_engine
         .ingest(ContextEvent {
             kind: "user_input".into(),
@@ -308,13 +333,17 @@ pub async fn run_chat_turn_with_events(
         );
         return Err(error);
     }
-    let chat_context = match build_chat_context_with_engine(
+    let context_bundle = match build_chat_context_bundle_with_model_context(
         &context_engine,
         input,
         agent,
         session,
         registry,
         options,
+        ContextModelBudget {
+            model_context: &model_context,
+            reserved_system_tokens,
+        },
     )
     .await
     {
@@ -331,13 +360,59 @@ pub async fn run_chat_turn_with_events(
             return Err(error);
         }
     };
-    let context_chars = chat_context_char_count(&chat_context);
+    let chat_context = context_bundle.context.clone();
+    let context_tokens = context_bundle.budget.used_tokens;
+    emit_chat_event(
+        &mut single_call_events,
+        event_sink,
+        &session_id,
+        &turn_id,
+        AgentEventSource::Context,
+        AgentEventKind::ContextDiff,
+        json!({
+            "budget": &context_bundle.budget,
+            "diff": &context_bundle.diff,
+            "compressed_sections": &context_bundle.compressed_sections,
+            "compression_summary": &context_bundle.compression_summary,
+            "continuation_prompt": &context_bundle.continuation_prompt,
+            "references": &context_bundle.references,
+            "sections": &context_bundle.sections,
+        }),
+    )?;
+    let assistant_parent_entry_id = append_context_compaction_session_entry(
+        event_options.session_sink,
+        &session_id,
+        &turn_id,
+        user_entry_id.clone(),
+        &context_bundle,
+    )?
+    .or(user_entry_id);
+    if !context_bundle.compressed_sections.is_empty() {
+        emit_chat_event(
+            &mut single_call_events,
+            event_sink,
+            &session_id,
+            &turn_id,
+            AgentEventSource::Context,
+            AgentEventKind::ContextCompacted,
+            json!({
+                "summary": &context_bundle.compression_summary,
+                "continuation_prompt": &context_bundle.continuation_prompt,
+                "compressed_sections": &context_bundle.compressed_sections,
+                "budget": &context_bundle.budget,
+            }),
+        )?;
+    }
     let runtime_context = ContextBuilder::new()
-        .persona_context(render_persona_agent_context(persona, agent))
+        .persona_context(persona_context)
         .relationship_context(chat_context.relationship.clone())
+        .reference_context(chat_context.references.clone())
         .chat_history_context(chat_context.history.clone())
-        .memory_context(chat_context.memory.clone())
+        .memory_projection_context(chat_context.memory_projection.clone())
+        .working_memory_context(chat_context.working_memory.clone())
+        .retrieved_memory_context(chat_context.retrieved_memory.clone())
         .rag_context(chat_context.rag.clone())
+        .context_continuation_prompt(context_bundle.continuation_prompt.clone())
         .build();
     let system_prompt = render_chat_system_prompt(&runtime_context);
     if let Err(error) = session.audit.append(AuditEvent::new(
@@ -345,12 +420,13 @@ pub async fn run_chat_turn_with_events(
         None,
         "chat context built from persona, memory, and RAG",
         json!({
-            "memory_hits": chat_context.memory.len(),
+            "memory_hits": chat_context.memory_hits(),
             "relationship_hits": chat_context.relationship.len(),
+            "reference_hits": chat_context.references.len(),
             "history_hits": chat_context.history.len(),
             "rag_hits": chat_context.rag.len(),
-            "context_chars": context_chars,
-            "context_char_budget": options.context_char_budget,
+            "context_tokens": context_tokens,
+            "context_budget": &context_bundle.budget,
             "history_context_limit": options.history_context_limit,
             "history_summary_limit": options.history_summary_limit,
             "provider": provider.name(),
@@ -370,7 +446,7 @@ pub async fn run_chat_turn_with_events(
     }
     let context_signal = if chat_context.relationship.is_empty()
         && chat_context.history.is_empty()
-        && chat_context.memory.is_empty()
+        && chat_context.memory_hits() == 0
         && chat_context.rag.is_empty()
     {
         RuntimeSignal::Planning
@@ -382,8 +458,9 @@ pub async fn run_chat_turn_with_events(
         context_signal,
         "chat context prepared",
         json!({
-            "memory_hits": chat_context.memory.len(),
+            "memory_hits": chat_context.memory_hits(),
             "relationship_hits": chat_context.relationship.len(),
+            "reference_hits": chat_context.references.len(),
             "history_hits": chat_context.history.len(),
             "rag_hits": chat_context.rag.len(),
             "agent": &agent.name,
@@ -400,26 +477,30 @@ pub async fn run_chat_turn_with_events(
         return Err(error);
     }
     let (response, streamed, stream_chunks) = if options.agent_loop {
-        let loop_report = run_agent_loop_with_events(
-            AgentLoopInput {
-                session_id: Some(chat_session_id.clone()),
-                turn_id: Some(turn_id.to_string()),
+        let runtime = HarnessAgentRuntime;
+        let mut harness = AgentHarness::new(
+            AgentHarnessConfig {
+                session_id: SessionId::from(chat_session_id.clone()),
+                turn_id: Some(turn_id.clone()),
                 task_id: None,
                 system_prompt,
-                user_input: input.into(),
+                options: AgentLoopOptions {
+                    max_iterations: 4,
+                    request_options: ModelRequestOptions::default(),
+                    stream: options.stream,
+                    guardrails: GuardrailConfig::default(),
+                    cancellation: Default::default(),
+                    hooks: None,
+                },
             },
+            &runtime,
             provider,
             session,
             registry,
             event_sink,
-            AgentLoopOptions {
-                max_iterations: 4,
-                request_options: ModelRequestOptions::default(),
-                stream: options.stream,
-                guardrails: GuardrailConfig::default(),
-            },
-        )
-        .await?;
+        );
+        let harness_turn = harness.run_turn(input).await?;
+        let loop_report = harness_turn.report;
         let response = ModelResponse {
             provider: loop_report.provider,
             model: loop_report.model,
@@ -557,21 +638,29 @@ pub async fn run_chat_turn_with_events(
             return Err(error);
         }
     };
-    let relationship_learned =
-        match learn_relationships_from_chat(input, session, registry, options).await {
-            Ok(count) => count,
-            Err(error) => {
-                let _ = emit_chat_failure_events(
-                    &mut single_call_events,
-                    event_sink,
-                    &session_id,
-                    &turn_id,
-                    "relationship_learning",
-                    &error,
-                );
-                return Err(error);
-            }
-        };
+    let relationship_candidates_created = match create_relationship_candidates_from_chat(
+        input,
+        &chat_session_id,
+        turn_id.as_str(),
+        session,
+        registry,
+        options,
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let _ = emit_chat_failure_events(
+                &mut single_call_events,
+                event_sink,
+                &session_id,
+                &turn_id,
+                "relationship_candidate_creation",
+                &error,
+            );
+            return Err(error);
+        }
+    };
     if let Err(error) = context_engine
         .after_turn(TurnRecord {
             session_id: Some(chat_session_id.clone()),
@@ -594,13 +683,14 @@ pub async fn run_chat_turn_with_events(
         session_sink: event_options.session_sink,
         session_id: &session_id,
         turn_id: &turn_id,
-        user_entry_id,
+        user_entry_id: assistant_parent_entry_id,
         agent: &agent.name,
         response: &response,
         streamed,
         stats: ChatSessionEntryStats {
             relationship_hits: chat_context.relationship.len(),
-            memory_hits: chat_context.memory.len(),
+            reference_hits: chat_context.references.len(),
+            memory_hits: chat_context.memory_hits(),
             rag_hits: chat_context.rag.len(),
         },
     }) {
@@ -627,7 +717,8 @@ pub async fn run_chat_turn_with_events(
                 "model": &response.model,
                 "streamed": streamed,
                 "relationship_hits": chat_context.relationship.len(),
-                "memory_hits": chat_context.memory.len(),
+                "reference_hits": chat_context.references.len(),
+                "memory_hits": chat_context.memory_hits(),
                 "rag_hits": chat_context.rag.len(),
             }),
         )?;
@@ -646,7 +737,7 @@ pub async fn run_chat_turn_with_events(
                 user_message: input,
                 assistant_message: &response.content,
                 relationship_hits: chat_context.relationship.len(),
-                memory_hits: chat_context.memory.len(),
+                memory_hits: chat_context.memory_hits(),
                 rag_hits: chat_context.rag.len(),
             },
         )?;
@@ -695,9 +786,10 @@ pub async fn run_chat_turn_with_events(
         streamed,
         stream_chunks,
         relationship_hits: chat_context.relationship.len(),
-        relationship_learned,
+        relationship_candidates_created,
+        reference_hits: chat_context.references.len(),
         history_hits: chat_context.history.len(),
-        memory_hits: chat_context.memory.len(),
+        memory_hits: chat_context.memory_hits(),
         rag_hits: chat_context.rag.len(),
         chat_history_path,
         chat_session_id,
@@ -706,6 +798,7 @@ pub async fn run_chat_turn_with_events(
 
 struct ChatSessionEntryStats {
     relationship_hits: usize,
+    reference_hits: usize,
     memory_hits: usize,
     rag_hits: usize,
 }
@@ -747,6 +840,43 @@ fn append_chat_user_session_entry(
     Ok(Some(entry_id))
 }
 
+fn append_context_compaction_session_entry(
+    session_sink: Option<&PersistingAgentTurnSink>,
+    session_id: &SessionId,
+    turn_id: &TurnId,
+    parent_entry_id: Option<SessionEntryId>,
+    bundle: &ContextBundle,
+) -> Result<Option<SessionEntryId>> {
+    if bundle.compressed_sections.is_empty() {
+        return Ok(None);
+    }
+    let Some(session_sink) = session_sink else {
+        return Ok(None);
+    };
+    let Some(parent_entry_id) = parent_entry_id else {
+        return Ok(None);
+    };
+    let summary = bundle
+        .compression_summary
+        .clone()
+        .unwrap_or_else(|| "context compacted to fit model budget".into());
+    let mut entry = SessionEntry::new(session_id.clone(), SessionEntryKind::Compaction);
+    entry.parent_entry_id = Some(parent_entry_id);
+    entry.turn_id = Some(turn_id.clone());
+    entry.visible_text = Some(summary.clone());
+    entry.payload = json!({
+        "operation": "context_compaction",
+        "summary": summary,
+        "continuation_prompt": &bundle.continuation_prompt,
+        "budget": &bundle.budget,
+        "diff": &bundle.diff,
+        "compressed_sections": &bundle.compressed_sections,
+    });
+    let entry_id = entry.entry_id.clone();
+    session_sink.append_entry(&entry)?;
+    Ok(Some(entry_id))
+}
+
 fn append_chat_assistant_session_entry(input: ChatAssistantEntryInput<'_>) -> Result<()> {
     let Some(session_sink) = input.session_sink else {
         return Ok(());
@@ -765,6 +895,7 @@ fn append_chat_assistant_session_entry(input: ChatAssistantEntryInput<'_>) -> Re
         "streamed": input.streamed,
         "content": redacted_assistant,
         "relationship_hits": input.stats.relationship_hits,
+        "reference_hits": input.stats.reference_hits,
         "memory_hits": input.stats.memory_hits,
         "rag_hits": input.stats.rag_hits,
         "usage": &input.response.usage,
@@ -811,6 +942,245 @@ fn emit_chat_lifecycle_event(
         kind,
         payload,
     ))
+}
+
+fn emit_memory_lifecycle_report(
+    sink: &dyn AgentEventSink,
+    session_id: &SessionId,
+    turn_id: &TurnId,
+    agent_id: &str,
+    chat_session_id: &str,
+    report: &MemoryLifecycleReport,
+) -> Result<()> {
+    emit_chat_lifecycle_event(
+        sink,
+        session_id,
+        turn_id,
+        AgentEventSource::Memory,
+        AgentEventKind::MemoryLifecycle,
+        json!({
+            "phase": &report.phase,
+            "status": "ok",
+            "agent_id": agent_id,
+            "session_id": chat_session_id,
+            "records_read": report.records_read,
+            "records_written": report.records_written,
+            "source_ref": &report.source_ref,
+            "notes": &report.notes,
+            "report": report,
+        }),
+    )
+}
+
+fn memory_policy_from_config(config: &MemoryPolicyConfig) -> MemoryPolicy {
+    MemoryPolicy {
+        promote_threshold: config.promote_threshold,
+        demote_threshold: config.demote_threshold,
+        forget_threshold: config.forget_threshold,
+        max_records_per_scope: config.max_records_per_scope,
+    }
+}
+
+fn apply_runtime_memory_policy(
+    provider: &dyn MemoryProvider,
+    journal: &dyn MemoryJournal,
+    policy: &MemoryPolicy,
+    report: &MemoryLifecycleReport,
+) -> Result<Vec<MemoryJournalEntry>> {
+    let mut entries = append_memory_sync_journal(provider, journal, policy, report)?;
+    if report.phase != "sync_turn" {
+        return Ok(entries);
+    }
+    let engine = MemoryPolicyEngine::new(policy.clone());
+    let trigger_ref = report.source_ref.clone();
+    let mut affected_scopes = Vec::<(MemoryKind, String)>::new();
+
+    for record_ref in &report.records {
+        push_affected_scope(
+            &mut affected_scopes,
+            record_ref.kind.clone(),
+            &record_ref.scope,
+        );
+    }
+    for (kind, scope) in affected_scopes {
+        let mut records_in_scope = scope_records(provider, kind.clone(), &scope)?;
+        for record in records_in_scope.clone() {
+            if let Some(decision) = engine.classify_record(&record, &records_in_scope) {
+                if decision.action == MemoryJournalAction::Promote
+                    || decision.action == MemoryJournalAction::Demote
+                {
+                    let tag = match decision.action {
+                        MemoryJournalAction::Promote => "policy-promoted",
+                        MemoryJournalAction::Demote => "policy-demoted",
+                        _ => unreachable!(),
+                    };
+                    provider.update(&record.id, None, Some(add_policy_tag(&record.tags, tag)))?;
+                } else if decision.action == MemoryJournalAction::Forget {
+                    provider.delete_by_id(&record.id)?;
+                }
+                entries.push(append_memory_decision_journal(
+                    journal,
+                    &record,
+                    decision,
+                    trigger_ref.clone().or_else(|| record.source_ref.clone()),
+                )?);
+            }
+        }
+
+        records_in_scope = scope_records(provider, kind, &scope)?;
+        for (record, score) in engine.quota_victims(&records_in_scope) {
+            provider.delete_by_id(&record.id)?;
+            entries.push(append_memory_decision_journal(
+                journal,
+                &record,
+                MemoryPolicyDecision {
+                    action: MemoryJournalAction::Forget,
+                    score,
+                    reason: "quota removed lower score memory".into(),
+                },
+                trigger_ref.clone().or_else(|| record.source_ref.clone()),
+            )?);
+        }
+    }
+
+    Ok(entries)
+}
+
+fn append_memory_sync_journal(
+    provider: &dyn MemoryProvider,
+    journal: &dyn MemoryJournal,
+    policy: &MemoryPolicy,
+    report: &MemoryLifecycleReport,
+) -> Result<Vec<MemoryJournalEntry>> {
+    if report.phase != "sync_turn" {
+        return Ok(Vec::new());
+    }
+    let skipped_note = report
+        .notes
+        .iter()
+        .find(|note| note.to_ascii_lowercase().contains("skipped"));
+    if report.records_written > 0 {
+        let mut entries = Vec::new();
+        if report
+            .notes
+            .iter()
+            .any(|note| note == "working_memory_written")
+        {
+            let mut entry = MemoryJournalEntry::new(
+                MemoryJournalAction::Append,
+                "sync_turn wrote working memory",
+            )?;
+            if let Some(source_ref) = report.source_ref.clone() {
+                entry = entry.with_source_ref(source_ref)?;
+            }
+            entries.push(journal.append(entry)?);
+        }
+        for record_ref in &report.records {
+            let Some(record) = find_memory_record(provider, record_ref)? else {
+                continue;
+            };
+            let scope_records = scope_records(provider, record.kind.clone(), &record.scope)?;
+            let score =
+                MemoryPolicyEngine::new(policy.clone()).score_record(&record, &scope_records);
+            entries.push(append_memory_entry_journal(
+                journal,
+                MemoryJournalAction::Append,
+                "sync_turn wrote core memory record",
+                &record,
+                Some(score),
+                record
+                    .source_ref
+                    .clone()
+                    .or_else(|| report.source_ref.clone()),
+            )?);
+        }
+        return Ok(entries);
+    }
+    if let Some(note) = skipped_note {
+        let reason = if note.to_ascii_lowercase().contains("redacted")
+            || note.to_ascii_lowercase().contains("secret")
+        {
+            "sync_turn skipped because redaction marker was present".to_owned()
+        } else {
+            format!("sync_turn {note}")
+        };
+        let mut entry = MemoryJournalEntry::new(MemoryJournalAction::Skip, reason)?;
+        if let Some(source_ref) = report.source_ref.clone() {
+            entry = entry.with_source_ref(source_ref)?;
+        }
+        return journal.append(entry).map(|entry| vec![entry]);
+    }
+    Ok(Vec::new())
+}
+
+fn append_memory_decision_journal(
+    journal: &dyn MemoryJournal,
+    record: &MemoryRecord,
+    decision: MemoryPolicyDecision,
+    source_ref: Option<ikaros_memory::MemoryRef>,
+) -> Result<MemoryJournalEntry> {
+    append_memory_entry_journal(
+        journal,
+        decision.action,
+        decision.reason,
+        record,
+        Some(decision.score),
+        source_ref,
+    )
+}
+
+fn append_memory_entry_journal(
+    journal: &dyn MemoryJournal,
+    action: MemoryJournalAction,
+    reason: impl Into<String>,
+    record: &MemoryRecord,
+    score: Option<ikaros_memory::MemoryScore>,
+    source_ref: Option<ikaros_memory::MemoryRef>,
+) -> Result<MemoryJournalEntry> {
+    let mut entry = MemoryJournalEntry::new(action, reason)?.with_memory(
+        &record.id,
+        record.kind.clone(),
+        &record.scope,
+    )?;
+    if let Some(score) = score {
+        entry = entry.with_score(score);
+    }
+    if let Some(source_ref) = source_ref {
+        entry = entry.with_source_ref(source_ref)?;
+    }
+    journal.append(entry)
+}
+
+fn find_memory_record(
+    provider: &dyn MemoryProvider,
+    record_ref: &MemoryLifecycleRecordRef,
+) -> Result<Option<MemoryRecord>> {
+    Ok(
+        scope_records(provider, record_ref.kind.clone(), &record_ref.scope)?
+            .into_iter()
+            .find(|record| record.id == record_ref.id),
+    )
+}
+
+fn scope_records(
+    provider: &dyn MemoryProvider,
+    kind: MemoryKind,
+    scope: &str,
+) -> Result<Vec<MemoryRecord>> {
+    provider.search(MemoryQuery {
+        kind: Some(kind),
+        scope: Some(scope.to_owned()),
+        perspective: None,
+        text: None,
+        limit: Some(usize::MAX),
+    })
+}
+
+fn push_affected_scope(scopes: &mut Vec<(MemoryKind, String)>, kind: MemoryKind, scope: &str) {
+    let item = (kind, scope.to_owned());
+    if !scopes.contains(&item) {
+        scopes.push(item);
+    }
 }
 
 fn redacted_chat_error(error: IkarosError) -> IkarosError {

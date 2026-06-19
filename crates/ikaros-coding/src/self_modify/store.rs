@@ -2,8 +2,10 @@
 
 use super::{
     SelfModifyChangeKind, SelfModifyHeartbeatReport, SelfModifyOperationRecord, SelfModifyProposal,
+    diff::workspace_relative_path,
 };
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
+use ikaros_harness::FileSystem as ExecutionFileSystem;
 use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
@@ -33,6 +35,7 @@ impl SelfModifyStore {
         self.store_dir.join("operations.jsonl")
     }
 
+    #[cfg(test)]
     pub fn propose(
         &self,
         change_kind: SelfModifyChangeKind,
@@ -51,10 +54,39 @@ impl SelfModifyStore {
             created_at: now_rfc3339()?,
             proposer_task_id: proposer_task_id.map(|value| redact_secrets(&value)),
             change_kind,
-            target_path: target_path
-                .strip_prefix(&self.workspace_root)
-                .unwrap_or(&target_path)
-                .to_path_buf(),
+            target_path: workspace_relative_path(&target_path, &self.workspace_root),
+            unified_diff: redact_secrets(unified_diff),
+            dry_run_report,
+            rollback_plan,
+        };
+        self.append(&proposal)?;
+        Ok(proposal)
+    }
+
+    pub async fn propose_with_env(
+        &self,
+        change_kind: SelfModifyChangeKind,
+        target_path: impl AsRef<Path>,
+        unified_diff: &str,
+        proposer_task_id: Option<String>,
+        file_system: &dyn ExecutionFileSystem,
+    ) -> Result<SelfModifyProposal> {
+        let target_path = self
+            .resolve_target_with_env(target_path.as_ref(), file_system)
+            .await?;
+        fs::create_dir_all(&self.store_dir)
+            .map_err(|source| IkarosError::io(&self.store_dir, source))?;
+        let id = Uuid::new_v4().to_string();
+        let rollback_plan = self
+            .write_rollback_snapshot_with_env(&id, &target_path, file_system)
+            .await?;
+        let dry_run_report = self.dry_run_report(&target_path, unified_diff)?;
+        let proposal = SelfModifyProposal {
+            id,
+            created_at: now_rfc3339()?,
+            proposer_task_id: proposer_task_id.map(|value| redact_secrets(&value)),
+            change_kind,
+            target_path: workspace_relative_path(&target_path, &self.workspace_root),
             unified_diff: redact_secrets(unified_diff),
             dry_run_report,
             rollback_plan,

@@ -37,7 +37,7 @@ ikaros relationship remember "Prefer short updates" --scope user
 ikaros relationship show --scope user
 ```
 
-Chat 可以在脱敏和去重后学习明确偏好。使用 `--no-relationship-learning` 可在单轮中关闭。
+Chat 可以在脱敏和去重后提取明确偏好，但自动观察会先进入 memory candidate inbox。使用 `--no-relationship-learning` 可在单轮中关闭 candidate 创建。
 
 ## 边界
 

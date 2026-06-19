@@ -80,8 +80,15 @@ pub(crate) async fn self_modify_command(
     let store = SelfModifyStore::new(workspace, paths.home.join("self-modify"));
     match command {
         SelfModifyCommand::Propose(args) => {
-            let proposal =
-                store.propose(args.kind.into(), &args.target, &args.diff, args.task_id)?;
+            let proposal = store
+                .propose_with_env(
+                    args.kind.into(),
+                    &args.target,
+                    &args.diff,
+                    args.task_id,
+                    &*session.env,
+                )
+                .await?;
             session.audit.append(AuditEvent::new(
                 "self_modify_proposal",
                 None,
@@ -169,9 +176,25 @@ pub(crate) async fn self_modify_command(
             }
             ensure_approval_workspace(&record.request.workspace_root, workspace, &approval_id)?;
             let report = match if check_commands.is_empty() {
-                store.apply_approved_with_config(&proposal_id, &approval_id, &config.self_modify)
+                store
+                    .apply_approved_with_config_and_env(
+                        &proposal_id,
+                        &approval_id,
+                        &config.self_modify,
+                        &*session.env,
+                        &*session.env,
+                    )
+                    .await
             } else {
-                store.apply_approved_with_checks(&proposal_id, &approval_id, &check_commands)
+                store
+                    .apply_approved_with_checks_and_env(
+                        &proposal_id,
+                        &approval_id,
+                        &check_commands,
+                        &*session.env,
+                        &*session.env,
+                    )
+                    .await
             } {
                 Ok(report) => report,
                 Err(error) => {
@@ -221,7 +244,7 @@ pub(crate) async fn self_modify_command(
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         SelfModifyCommand::Rollback { proposal_id } => {
-            let report = store.rollback(&proposal_id)?;
+            let report = store.rollback_with_env(&proposal_id, &*session.env).await?;
             session.audit.append(AuditEvent::new(
                 "self_modify_rollback",
                 None,

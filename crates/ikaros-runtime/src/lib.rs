@@ -2,6 +2,7 @@
 //! Runtime coordination over config, harness sessions, skills, and task execution.
 
 mod agent;
+mod agent_harness;
 mod agent_loop;
 mod body;
 mod chat;
@@ -19,11 +20,16 @@ pub use agent::{
     AgentHandoffReport, AgentPoolItemReport, AgentPoolReport, AgentPoolTask, run_agent_handoff,
     run_agent_handoff_with_options, run_agent_pool, run_agent_pool_with_options,
 };
+pub use agent_harness::{
+    AgentHarness, AgentHarnessConfig, AgentHarnessMessage, AgentHarnessPendingCounts,
+    AgentHarnessPhase, AgentHarnessTurn,
+};
 pub use agent_loop::{
-    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopInput, AgentLoopOptions,
-    AgentLoopReport, AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolCallDiagnostic,
-    AgentLoopToolCallParseStrategy, AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime,
-    HarnessAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink, run_agent_loop,
+    AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopHookEvent,
+    AgentLoopHooks, AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
+    AgentLoopToolCall, AgentLoopToolCallDiagnostic, AgentLoopToolCallParseStrategy,
+    AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime, HarnessAgentRuntime,
+    RecordingAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink, run_agent_loop,
     run_agent_loop_with_events,
 };
 pub use body::{
@@ -33,10 +39,11 @@ pub use body::{
 pub use chat::{
     ChatContext, ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, ChatMessageResult,
     ChatRunOptions, ChatTurnEventOptions, ChatTurnReport, CompactInput, CompactReport,
-    ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent,
-    DEFAULT_CHAT_CONTEXT_CHAR_BUDGET, LocalChatContextEngine, TurnRecord, build_chat_context,
-    build_chat_context_with_engine, context_lookup_is_safe_read, extract_memory_context,
-    extract_rag_context, new_chat_session_id, render_chat_system_prompt,
+    ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent, ContextModelBudget,
+    DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, LocalChatContextEngine, TurnRecord, build_chat_context,
+    build_chat_context_bundle_with_engine, build_chat_context_bundle_with_model_context,
+    build_chat_context_with_engine, context_lookup_is_safe_read, extract_rag_context,
+    extract_retrieved_memory_context, new_chat_session_id, render_chat_system_prompt,
     render_persona_agent_context, run_chat_message, run_chat_turn, run_chat_turn_with_events,
 };
 pub use diagnostics::{

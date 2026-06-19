@@ -16,8 +16,8 @@ pub use approval::{
 };
 pub use audit::{AuditEvent, AuditLog, AuditRotationPolicy};
 pub use execution_env::{
-    ExecutionEnv, FileSystem, LocalExecutionEnv, NetworkEgress, NetworkEgressRequest,
-    NetworkEgressResponse, ProcessOutput, ProcessRequest, ProcessRunner,
+    ExecutionEnv, FileMetadata, FileSystem, LocalExecutionEnv, NetworkEgress, NetworkEgressRequest,
+    NetworkEgressResponse, ProcessOutput, ProcessRequest, ProcessRunner, WorkspaceExecutionEnv,
 };
 pub use guardrails::{
     GuardrailConfig, GuardrailDecision, GuardrailObservation, GuardrailSignal, GuardrailSignalKind,
@@ -40,7 +40,7 @@ pub use policy::{
 pub use session::ExecutionSession;
 pub use skill::{
     Skill, SkillBundle, SkillContext, SkillDescriptor, SkillDescriptorKind, SkillOutput,
-    SkillRegistry, TaskGraph, ToolRegistry,
+    SkillRegistry, TaskGraph, ToolExecutionMode, ToolRegistry,
 };
 pub use task_runner::{
     CancellationToken, ExecutablePlanStep, ExecutionOptions, PlanStepStatus, StepExecutionRecord,

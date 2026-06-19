@@ -127,7 +127,7 @@ pub(super) fn format_interactive_chat_status(
     history_store: &ChatHistoryStore,
 ) -> String {
     format!(
-        "agent={} mode={} emotion={} memory_context={} rag_context={} history_context_limit={} history_summary_limit={} context_char_budget={} relationship_learning={} agent_loop={} stream={} no_context={} scope={} chat_session={} audit={} model_usage={} chat_history={}",
+        "agent={} mode={} emotion={} memory_context={} rag_context={} history_context_limit={} history_summary_limit={} context_token_budget={} relationship_learning={} agent_loop={} stream={} no_context={} scope={} chat_session={} audit={} model_usage={} chat_history={}",
         redact_secrets(&agent.name),
         agent.mode(),
         redact_secrets(emotion),
@@ -135,7 +135,7 @@ pub(super) fn format_interactive_chat_status(
         agent.profile.rag_context,
         options.history_context_limit,
         options.history_summary_limit,
-        options.context_char_budget,
+        options.context_token_budget,
         options.relationship_learning,
         options.agent_loop,
         options.stream,

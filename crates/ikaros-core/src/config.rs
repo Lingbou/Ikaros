@@ -109,8 +109,9 @@ agent:
       persona_overlay: "Operate as the default local implementation agent. Use harnessed tools and keep writes approval-aware."
       # Include local memory context in turns started by this profile.
       memory_context: true
-      # Include local RAG context in turns started by this profile.
-      rag_context: true
+      # Include local RAG reference snippets automatically. Keep false for ordinary chat;
+      # enable per profile or pass --rag-top-k when a turn needs cited local references.
+      rag_context: false
       # Workspace write policy: allow, ask, or deny.
       workspace_writes: ask
       # Shell policy: allow, ask, or deny.
@@ -126,8 +127,8 @@ agent:
       persona_overlay: "Operate in read-only planning mode. Prefer analysis, design notes, and explicit implementation plans; do not request file edits."
       # Include local memory context in planning turns.
       memory_context: true
-      # Include local RAG context in planning turns.
-      rag_context: true
+      # Include local RAG reference snippets automatically.
+      rag_context: false
       # Planning should not write to the workspace by default.
       workspace_writes: deny
       # Shell policy for planning.
@@ -143,8 +144,8 @@ agent:
       persona_overlay: "Operate as a general-purpose research agent. Gather local context first and keep recommendations grounded in available evidence."
       # Include local memory context in general turns.
       memory_context: true
-      # Include local RAG context in general turns.
-      rag_context: true
+      # Include local RAG reference snippets automatically.
+      rag_context: false
       # Workspace write policy for general turns.
       workspace_writes: ask
       # Shell policy for general turns.
@@ -179,6 +180,15 @@ policy:
 memory:
   # Local memory backend: jsonl or sqlite.
   backend: jsonl
+  policy:
+    # Combined score at or above this threshold gets a promote journal action.
+    promote_threshold: 0.75
+    # Combined score at or below this threshold gets a demote journal action.
+    demote_threshold: 0.35
+    # Combined score at or below this threshold gets a forget journal action.
+    forget_threshold: 0.15
+    # Maximum records retained per memory kind/scope before quota eviction.
+    max_records_per_scope: 2000
   # Only one external memory provider may be enabled at a time.
   # external_providers:
   #   - id: team-memory
@@ -603,12 +613,57 @@ memory:
         );
     }
 
-    fn line_number(lines: &[&str], needle: &str) -> usize {
-        lines
-            .iter()
-            .position(|line| *line == needle)
-            .map(|index| index + 1)
-            .unwrap_or_else(|| panic!("missing generated config line: {needle}"))
+    #[test]
+    fn config_validation_rejects_invalid_memory_policy() {
+        let report = IkarosConfig::validate_yaml(
+            r#"
+providers:
+  model:
+    api_key: model-secret
+    base_url: https://api.example/v1
+
+model:
+  default:
+    provider: openai-compatible
+    runtime: harness-agent-loop
+    transport: openai-compatible-chat-completions
+    model: example-chat
+
+rag:
+  embedding_provider: hash
+
+voice:
+  tts:
+    provider: mock
+  asr:
+    provider: mock
+
+memory:
+  policy:
+    promote_threshold: 1.2
+    demote_threshold: 0.8
+    forget_threshold: 0.9
+    max_records_per_scope: 0
+"#,
+        )
+        .expect("validate");
+
+        assert!(report.errors.iter().any(|issue| {
+            issue.path == "memory.policy.promote_threshold"
+                && issue.message.contains("between 0.0 and 1.0")
+        }));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|issue| issue.path == "memory.policy.forget_threshold")
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|issue| issue.path == "memory.policy.max_records_per_scope")
+        );
     }
 }
 
@@ -692,10 +747,11 @@ impl Default for PolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MemoryConfig {
     pub backend: String,
+    pub policy: MemoryPolicyConfig,
     pub external_providers: Vec<ExternalMemoryProviderConfig>,
 }
 
@@ -703,7 +759,28 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             backend: "jsonl".into(),
+            policy: MemoryPolicyConfig::default(),
             external_providers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MemoryPolicyConfig {
+    pub promote_threshold: f32,
+    pub demote_threshold: f32,
+    pub forget_threshold: f32,
+    pub max_records_per_scope: usize,
+}
+
+impl Default for MemoryPolicyConfig {
+    fn default() -> Self {
+        Self {
+            promote_threshold: 0.75,
+            demote_threshold: 0.35,
+            forget_threshold: 0.15,
+            max_records_per_scope: 2_000,
         }
     }
 }

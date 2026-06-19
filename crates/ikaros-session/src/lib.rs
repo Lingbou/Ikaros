@@ -13,8 +13,10 @@ pub use sqlite::SqliteSessionStore;
 pub use store::{SessionStore, SessionWriter};
 pub use types::{
     AgentEvent, AgentEventId, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId,
-    AgentTurnId, ApprovalRecord, ApprovalStatus, EventId, SessionBranch, SessionBranchSummaryInput,
-    SessionCompactionInput, SessionEntry, SessionEntryId, SessionEntryKind, SessionId,
-    SessionRecord, SessionReplay, SessionRetryInput, SessionSearchHit, SessionSearchIndex,
-    SessionSearchQuery, SessionSource, TurnId,
+    AgentTurnId, ApprovalRecord, ApprovalStatus, ContinuationId, EventId, SessionBranch,
+    SessionBranchSummaryInput, SessionCompactionInput, SessionContinuation,
+    SessionContinuationClaim, SessionContinuationInput, SessionContinuationKind,
+    SessionContinuationStatus, SessionContinuationStatusReason, SessionEntry, SessionEntryId,
+    SessionEntryKind, SessionId, SessionRecord, SessionReplay, SessionRetryInput, SessionSearchHit,
+    SessionSearchIndex, SessionSearchQuery, SessionSource, TurnId,
 };

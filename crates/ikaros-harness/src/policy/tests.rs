@@ -136,6 +136,32 @@ fn denies_destructive_command_and_git_commit() {
 }
 
 #[test]
+fn allows_explicit_local_memory_maintenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let sandbox = SandboxProfile::new(temp.path());
+    for action in [
+        "memory_append",
+        "memory_update",
+        "memory_delete",
+        "memory_candidate_create",
+    ] {
+        let request = PolicyRequest {
+            action: action.into(),
+            risk: RiskLevel::DatabaseWrite,
+            path: None,
+            command: None,
+            is_write: true,
+        };
+        let decision = DefaultPolicyEngine.evaluate(&request, &sandbox);
+        assert_eq!(
+            decision.decision,
+            PolicyDecision::Allow,
+            "{action} should be treated as explicit local memory maintenance"
+        );
+    }
+}
+
+#[test]
 fn denies_self_modify_even_for_permissive_agent() {
     let temp = tempfile::tempdir().expect("tempdir");
     let agent = ResolvedAgentProfile {

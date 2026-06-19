@@ -2,8 +2,9 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent,
-    ModelToolCall, ModelToolDefinition, ReasoningEffort, TokenUsage,
+    ModelContextProfile, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream,
+    ModelStreamEvent, ModelTokenizerKind, ModelToolCall, ModelToolDefinition, ReasoningEffort,
+    TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{
@@ -95,6 +96,15 @@ impl ModelTransport for AnthropicProvider {
 impl ModelProvider for AnthropicProvider {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::new(
+            anthropic_context_window(&self.model),
+            anthropic_default_max_tokens(&self.model),
+            ModelTokenizerKind::Anthropic,
+            "anthropic",
+        )
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -595,6 +605,20 @@ fn anthropic_default_max_tokens(model: &str) -> u32 {
         .max_by_key(|(needle, _)| needle.len())
         .map(|(_, limit)| *limit)
         .unwrap_or(ANTHROPIC_DEFAULT_OUTPUT_LIMIT)
+}
+
+fn anthropic_context_window(model: &str) -> u32 {
+    let model = model.to_ascii_lowercase().replace('.', "-");
+    if model.contains("claude") {
+        return 200_000;
+    }
+    if model.contains("minimax") {
+        return 1_000_000;
+    }
+    if model.contains("qwen3") {
+        return 128_000;
+    }
+    200_000
 }
 
 fn supports_adaptive_thinking(model: &str) -> bool {

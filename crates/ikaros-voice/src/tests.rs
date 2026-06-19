@@ -2,7 +2,6 @@
 
 use super::*;
 use ikaros_core::{RemoteProviderConfig, VoiceProviderConfig};
-use std::path::PathBuf;
 
 #[tokio::test]
 async fn mock_tts_redacts_text_preview() {
@@ -24,7 +23,8 @@ async fn mock_tts_redacts_text_preview() {
 async fn mock_asr_does_not_echo_audio_path() {
     let transcript = MockAsrProvider
         .transcribe(AsrRequest {
-            audio_path: PathBuf::from("secret-audio.wav"),
+            audio: b"mock audio".to_vec(),
+            file_name: Some("secret-audio.wav".into()),
             format: Some(AudioFormat::Wav),
             sample_rate_hz: Some(16_000),
             language: Some("en".into()),
@@ -33,6 +33,22 @@ async fn mock_asr_does_not_echo_audio_path() {
         .expect("asr");
     assert_eq!(transcript.text, "mock transcript");
     assert!(!transcript.text.contains("secret-audio.wav"));
+}
+
+#[test]
+fn asr_request_serialization_omits_audio_bytes_and_file_name() {
+    let serialized = serde_json::to_value(AsrRequest {
+        audio: b"secret audio bytes".to_vec(),
+        file_name: Some("secret-audio.wav".into()),
+        format: Some(AudioFormat::Wav),
+        sample_rate_hz: Some(16_000),
+        language: Some("en".into()),
+    })
+    .expect("serialize asr request");
+
+    assert!(serialized.get("audio").is_none());
+    assert!(serialized.get("file_name").is_none());
+    assert!(!serialized.to_string().contains("secret"));
 }
 
 #[test]

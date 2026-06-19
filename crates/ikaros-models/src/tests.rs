@@ -1381,3 +1381,36 @@ fn parses_openai_compatible_native_tool_calls() {
     );
     assert_eq!(response.usage.total_tokens, Some(7));
 }
+
+#[test]
+fn provider_context_profiles_are_provider_aware() {
+    let kimi = OpenAiCompatProfile::MoonshotKimi.context_profile("kimi-k2.6");
+    assert_eq!(kimi.context_window, 128_000);
+    assert_eq!(kimi.default_output_tokens, 32_000);
+    assert_eq!(kimi.tokenizer, ModelTokenizerKind::OpenAiCompatible);
+
+    let gemini = OpenAiCompatProfile::GeminiOpenAi.context_profile("gemini-2.5-pro");
+    assert_eq!(gemini.context_window, 1_048_576);
+    assert_eq!(gemini.default_output_tokens, 8_192);
+
+    let mock = MockModelProvider::default().context_profile();
+    assert_eq!(mock.context_window, 8_192);
+    assert_eq!(mock.default_output_tokens, 1_024);
+    assert_eq!(mock.tokenizer, ModelTokenizerKind::Mock);
+}
+
+#[test]
+fn governed_provider_delegates_context_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let provider = GovernedModelProvider::new(
+        Box::new(MockModelProvider::default()),
+        ModelUsageLedger::new(temp.path()),
+        ModelRuntimeLimits::default(),
+    );
+
+    assert_eq!(
+        provider.context_profile().tokenizer,
+        ModelTokenizerKind::Mock
+    );
+    assert_eq!(provider.context_profile().context_window, 8_192);
+}

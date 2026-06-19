@@ -2,7 +2,10 @@
 
 use super::super::types::{RuntimeTaskPlan, TaskRunOptions};
 use super::reporting::{audit_agent_loop_task_report, task_execution_report_from_agent_loop};
-use crate::agent_loop::{AgentLoopInput, AgentLoopOptions, AgentLoopReport, run_agent_loop};
+use crate::{
+    AgentHarness, AgentHarnessConfig, AgentLoopOptions, AgentLoopReport, HarnessAgentRuntime,
+    session::runtime_session_target,
+};
 use ikaros_core::{
     IkarosConfig, IkarosPaths, Plan, PlanStep, ResolvedAgentProfile, Result, RiskLevel,
     redact_secrets,
@@ -11,8 +14,10 @@ use ikaros_harness::{
     AuditEvent, ExecutionSession, GuardrailConfig, SkillRegistry, TaskExecutionReport,
 };
 use ikaros_models::{ModelRequestOptions, governed_provider_from_config};
+use ikaros_session::{PersistingAgentTurnSink, SessionId, SessionSource, TurnId};
 use ikaros_soul::{PersonaProfile, load_or_default};
 use serde_json::json;
+use std::sync::Arc;
 
 pub(super) fn agent_loop_task_plan(task_id: &str) -> RuntimeTaskPlan {
     RuntimeTaskPlan {
@@ -59,29 +64,64 @@ pub(super) async fn execute_agent_loop_task(
             "max_iterations": input.options.loop_max_iterations.max(1),
         }),
     )?)?;
-    let loop_report = run_agent_loop(
-        AgentLoopInput {
-            session_id: Some(input.task_id.to_owned()),
-            turn_id: None,
+    let runtime = HarnessAgentRuntime;
+    let target = runtime_session_target(
+        input.paths,
+        &input.session.sandbox.workspace_root,
+        Some(&input.agent.name),
+    )?;
+    let session_id = SessionId::from(
+        input
+            .options
+            .session_id
+            .clone()
+            .unwrap_or_else(|| input.task_id.to_owned()),
+    );
+    let turn_id = input.options.turn_id.clone().map(TurnId::from);
+    let session_source = input
+        .options
+        .session_source
+        .clone()
+        .unwrap_or(SessionSource::Runtime);
+    let session_store: Arc<dyn ikaros_session::SessionStore> = Arc::new(target.store.clone());
+    let event_sink = PersistingAgentTurnSink::new(session_store)
+        .with_source(session_source)
+        .with_agent_id(target.agent_id.clone())
+        .with_workspace(target.workspace.clone());
+    let mut harness = AgentHarness::new(
+        AgentHarnessConfig {
+            session_id: session_id.clone(),
+            turn_id,
             task_id: Some(input.task_id.to_owned()),
             system_prompt: render_task_agent_loop_system_prompt(
                 input.agent,
                 &persona,
                 input.options.dry_run,
             ),
-            user_input: input.task_text.to_owned(),
+            options: AgentLoopOptions {
+                max_iterations: input.options.loop_max_iterations.max(1),
+                request_options: ModelRequestOptions::default(),
+                stream: false,
+                guardrails: GuardrailConfig::default(),
+                cancellation: Default::default(),
+                hooks: None,
+            },
         },
+        &runtime,
         provider.as_ref(),
         input.session,
         input.registry,
-        AgentLoopOptions {
-            max_iterations: input.options.loop_max_iterations.max(1),
-            request_options: ModelRequestOptions::default(),
-            stream: false,
-            guardrails: GuardrailConfig::default(),
-        },
+        &event_sink,
     )
-    .await?;
+    .with_continuation_store(&target.store);
+    let loop_report = match harness.run_turn(input.task_text.to_owned()).await {
+        Ok(turn) => turn.report,
+        Err(error) => {
+            let _ = event_sink.rollback();
+            return Err(error);
+        }
+    };
+    event_sink.commit()?;
     let report = task_execution_report_from_agent_loop(
         input.task_id,
         &loop_report,

@@ -30,10 +30,31 @@ pub struct SkillDescriptor {
     pub risk_level: RiskLevel,
     pub kind: SkillDescriptorKind,
     pub disable_model_invocation: bool,
+    pub execution_mode: ToolExecutionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_files: Vec<PathBuf>,
+}
+
+impl SkillDescriptor {
+    pub fn from_skill<S: Skill + ?Sized>(skill: &S) -> Self {
+        let risk_level = skill.risk_level();
+        Self {
+            name: skill.name().into(),
+            description: skill.description().into(),
+            input_schema: skill.input_schema(),
+            risk_level: risk_level.clone(),
+            kind: SkillDescriptorKind::ExecutableTool,
+            disable_model_invocation: false,
+            execution_mode: ToolExecutionMode::default_for_risk(&risk_level),
+            timeout_ms: None,
+            provenance: None,
+            support_files: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +62,36 @@ pub struct SkillDescriptor {
 pub enum SkillDescriptorKind {
     ExecutableTool,
     PromptSkill,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionMode {
+    Parallel,
+    Sequential,
+}
+
+impl ToolExecutionMode {
+    pub fn default_for_risk(risk: &RiskLevel) -> Self {
+        match risk {
+            RiskLevel::SafeRead | RiskLevel::ShellRead => Self::Parallel,
+            RiskLevel::LocalWrite
+            | RiskLevel::ShellWrite
+            | RiskLevel::Network
+            | RiskLevel::DatabaseWrite
+            | RiskLevel::RemoteServer
+            | RiskLevel::Destructive
+            | RiskLevel::SecretAccess
+            | RiskLevel::SelfModify => Self::Sequential,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Parallel => "parallel",
+            Self::Sequential => "sequential",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,16 +133,7 @@ pub trait Skill: Send + Sync {
     fn input_schema(&self) -> serde_json::Value;
     fn risk_level(&self) -> RiskLevel;
     fn descriptor(&self) -> SkillDescriptor {
-        SkillDescriptor {
-            name: self.name().into(),
-            description: self.description().into(),
-            input_schema: self.input_schema(),
-            risk_level: self.risk_level(),
-            kind: SkillDescriptorKind::ExecutableTool,
-            disable_model_invocation: false,
-            provenance: None,
-            support_files: Vec::new(),
-        }
+        SkillDescriptor::from_skill(self)
     }
     fn policy_request(&self, input: &serde_json::Value, workspace_root: &Path) -> PolicyRequest {
         PolicyRequest {

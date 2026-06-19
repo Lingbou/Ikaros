@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    AgentEvent, ApprovalRecord, SessionBranch, SessionBranchSummaryInput, SessionCompactionInput,
-    SessionEntry, SessionEntryId, SessionId, SessionRecord, SessionReplay, SessionRetryInput,
-    SessionSearchHit, SessionSearchQuery,
+    AgentEvent, ApprovalRecord, ContinuationId, SessionBranch, SessionBranchSummaryInput,
+    SessionCompactionInput, SessionContinuation, SessionContinuationClaim,
+    SessionContinuationInput, SessionEntry, SessionEntryId, SessionId, SessionRecord,
+    SessionReplay, SessionRetryInput, SessionSearchHit, SessionSearchQuery,
 };
 use ikaros_core::Result;
 use time::OffsetDateTime;
@@ -42,6 +43,34 @@ pub trait SessionStore: Send + Sync {
         self.append_retry_marker(input)
     }
     fn search_entries(&self, query: &SessionSearchQuery) -> Result<Vec<SessionSearchHit>>;
+    fn enqueue_continuation(&self, input: &SessionContinuationInput)
+    -> Result<SessionContinuation>;
+    fn claim_next_continuation(
+        &self,
+        claim: &SessionContinuationClaim,
+    ) -> Result<Option<SessionContinuation>>;
+    fn complete_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        payload: serde_json::Value,
+    ) -> Result<Option<SessionContinuation>>;
+    fn fail_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        error: &str,
+    ) -> Result<Option<SessionContinuation>>;
+    fn cancel_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        reason: &str,
+    ) -> Result<Option<SessionContinuation>>;
+    fn requeue_continuation(
+        &self,
+        continuation_id: &ContinuationId,
+        reason: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<SessionContinuation>>;
+    fn continuations(&self, session_id: &SessionId) -> Result<Vec<SessionContinuation>>;
     fn agent_events(&self, session_id: &SessionId) -> Result<Vec<AgentEvent>>;
     fn approval_record(&self, approval_id: &str) -> Result<Option<ApprovalRecord>>;
     fn approvals(&self, session_id: &SessionId) -> Result<Vec<ApprovalRecord>>;

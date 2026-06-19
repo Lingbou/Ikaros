@@ -40,6 +40,7 @@ pages.
 
 - [Memory model](memory-model.md)
 - [Memory providers](memory-providers.md)
+- [Context engine](context-engine.md)
 - [RAG model](rag-model.md)
 - [Model providers](model-providers.md)
 - [Voice providers](voice-providers.md)

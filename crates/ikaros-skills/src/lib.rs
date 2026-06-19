@@ -12,16 +12,20 @@ mod support;
 mod voice;
 
 pub use coding::{
-    CodeEditGuardedSkill, CodeIterateSkill, CodeReviewSkill, RepoScanSkill, RunTestsSkill,
-    TaskSummarizeSkill,
+    CodeEditGuardedSkill, CodeIterateSkill, CodeReviewSkill, CodeWorkflowSkill, RepoScanSkill,
+    RunTestsSkill, TaskSummarizeSkill,
 };
 pub use fs::{FsReadSkill, FsWriteGuardedSkill, ListDirSkill};
 use ikaros_core::{RagConfig, RemoteProviderConfig};
 use ikaros_harness::SkillRegistry;
 use ikaros_memory::LocalMemoryStore;
 use ikaros_rag::LocalRagStore;
+use ikaros_session::{SessionId, SessionSource, SessionStore, TurnId};
 use ikaros_voice::VoiceProviderConfig;
-pub use memory::{MemoryAppendSkill, MemoryDeleteSkill, MemorySearchSkill, MemoryUpdateSkill};
+pub use memory::{
+    MemoryAppendSkill, MemoryCandidateCreateSkill, MemoryDeleteSkill, MemoryProjectionSkill,
+    MemorySearchSkill, MemoryUpdateSkill, WorkingMemoryListSkill,
+};
 pub use persona::PersonaLoadSkill;
 pub use plugin::PluginCommandRunSkill;
 pub use rag::{
@@ -29,8 +33,30 @@ pub use rag::{
     RagStaleSkill,
 };
 pub use shell::{GitDiffSkill, GitStatusSkill, ShellGuardedSkill};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 pub use voice::{VoiceAsrSkill, VoiceTtsSkill};
+
+#[derive(Clone)]
+pub struct CodingSessionConfig {
+    pub store: Arc<dyn SessionStore>,
+    pub session_id: SessionId,
+    pub turn_id: TurnId,
+    pub source: SessionSource,
+    pub agent_id: Option<String>,
+    pub workspace: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for CodingSessionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodingSessionConfig")
+            .field("session_id", &self.session_id)
+            .field("turn_id", &self.turn_id)
+            .field("source", &self.source)
+            .field("agent_id", &self.agent_id)
+            .field("workspace", &self.workspace)
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SkillEnvironment {
@@ -45,6 +71,7 @@ pub struct SkillEnvironment {
     pub voice_tts_provider: RemoteProviderConfig,
     pub voice_asr: VoiceProviderConfig,
     pub voice_asr_provider: RemoteProviderConfig,
+    pub coding_session: Option<CodingSessionConfig>,
 }
 
 pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
@@ -57,6 +84,9 @@ pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     registry.register(GitDiffSkill);
     registry.register(MemoryAppendSkill::new(env.memory_store.clone()));
     registry.register(MemorySearchSkill::new(env.memory_store.clone()));
+    registry.register(MemoryCandidateCreateSkill::new(env.memory_store.clone()));
+    registry.register(MemoryProjectionSkill::new(env.memory_store.clone()));
+    registry.register(WorkingMemoryListSkill::new(env.memory_store.clone()));
     registry.register(MemoryUpdateSkill::new(env.memory_store.clone()));
     registry.register(MemoryDeleteSkill::new(env.memory_store.clone()));
     registry.register(PersonaLoadSkill::new(env.persona_path));
@@ -74,6 +104,7 @@ pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     registry.register(CodeEditGuardedSkill);
     registry.register(CodeReviewSkill);
     registry.register(CodeIterateSkill);
+    registry.register(CodeWorkflowSkill::new(env.coding_session.clone()));
     registry.register(RagIngestSkill::new(
         env.rag_index.clone(),
         env.rag_config.clone(),

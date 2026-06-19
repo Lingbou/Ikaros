@@ -111,7 +111,6 @@ struct ResolvedPluginCommand {
     command: PluginCommandManifest,
     qualified_name: String,
     program: PathBuf,
-    cwd: PathBuf,
 }
 
 impl ResolvedPluginCommand {
@@ -146,19 +145,18 @@ impl PluginCommandRunSkill {
                 plugin.path.display()
             ))
         })?;
-        let (program, cwd) = resolve_plugin_program(plugin_root, &command.program)?;
+        let program = resolve_plugin_program(plugin_root, &command.program)?;
         Ok(ResolvedPluginCommand {
             plugin: plugin.clone(),
             skill: skill.clone(),
             command,
             qualified_name: format!("{}.{}", plugin.manifest.name, skill.name),
             program,
-            cwd,
         })
     }
 }
 
-fn resolve_plugin_program(plugin_root: &Path, program: &Path) -> Result<(PathBuf, PathBuf)> {
+fn resolve_plugin_program(plugin_root: &Path, program: &Path) -> Result<PathBuf> {
     if program.as_os_str().is_empty()
         || program.is_absolute()
         || program.components().any(|component| {
@@ -189,7 +187,7 @@ fn resolve_plugin_program(plugin_root: &Path, program: &Path) -> Result<(PathBuf
             program.display()
         )));
     }
-    Ok((program, plugin_root))
+    Ok(program)
 }
 
 async fn run_plugin_command(
@@ -211,7 +209,7 @@ async fn run_plugin_command(
     let request = ProcessRequest::program(
         resolved.program.display().to_string(),
         resolved.command.args.clone(),
-        &resolved.cwd,
+        &ctx.session.sandbox.workspace_root,
     )
     .with_stdin(stdin)
     .with_timeout_ms(timeout_ms)

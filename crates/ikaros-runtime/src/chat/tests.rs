@@ -2,10 +2,17 @@
 
 use super::*;
 use async_trait::async_trait;
+use ikaros_context::{
+    HeuristicTokenEstimator, TokenEstimator, apply_context_token_budget, chat_context_token_count,
+};
 use ikaros_core::{
     AgentProfile, ContextBuilder, IkarosError, IkarosPaths, RagConfig, ResolvedAgentProfile, Result,
 };
-use ikaros_models::{ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent};
+use ikaros_memory::{JsonlMemoryCandidateStore, MemoryCandidateStatus};
+use ikaros_models::{
+    ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent,
+    ModelTokenizerKind,
+};
 use ikaros_session::{
     AgentEventKind, PersistingAgentTurnSink, SessionEntryKind, SessionId, SessionSource,
     SessionStore, SqliteSessionStore,
@@ -29,6 +36,31 @@ impl ModelProvider for FailingProvider {
     }
 }
 
+#[derive(Debug)]
+struct TinyWindowProvider;
+
+#[async_trait]
+impl ModelProvider for TinyWindowProvider {
+    fn name(&self) -> &str {
+        "tiny-window"
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::new(96, 32, ModelTokenizerKind::Mock, "tiny-window")
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "tiny-window-model".into(),
+            content: "ok".into(),
+            tool_calls: Vec::new(),
+            usage: Default::default(),
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
 #[test]
 fn chat_context_extractors_redact_values() {
     let memory = serde_json::json!([
@@ -38,17 +70,23 @@ fn chat_context_extractors_redact_values() {
             "content": "Relationship context should be handled separately"
         },
         {
+            "kind": "Task",
+            "scope": "session",
+            "content": "Turn summary should stay in episode history"
+        },
+        {
             "kind": "Project",
             "scope": "repo",
             "content": "Prefer local RAG and never expose token=abc123"
         }
     ]);
-    let memory_context = extract_memory_context(&memory, 5);
-    assert_eq!(memory_context.len(), 1);
-    assert!(memory_context[0].contains("[Project/repo]"));
-    assert!(!memory_context[0].contains("Relationship context"));
-    assert!(!memory_context[0].contains("abc123"));
-    assert!(memory_context[0].contains("[REDACTED_SECRET]"));
+    let retrieved_memory = extract_retrieved_memory_context(&memory, 5);
+    assert_eq!(retrieved_memory.len(), 1);
+    assert!(retrieved_memory[0].contains("[Project/repo]"));
+    assert!(!retrieved_memory[0].contains("Relationship context"));
+    assert!(!retrieved_memory[0].contains("Turn summary"));
+    assert!(!retrieved_memory[0].contains("abc123"));
+    assert!(retrieved_memory[0].contains("[REDACTED_SECRET]"));
 
     let rag = serde_json::json!([
         {
@@ -63,22 +101,41 @@ fn chat_context_extractors_redact_values() {
 }
 
 #[test]
+fn chat_defaults_do_not_auto_inject_rag() {
+    assert_eq!(ChatRunOptions::default().rag_top_k, 0);
+}
+
+#[test]
 fn chat_system_prompt_uses_context_and_redacts() {
     let context = ContextBuilder::new()
         .persona_context("Persona token=abc123")
         .relationship_context(vec!["Relationship prefers concise updates".into()])
+        .reference_context(vec!["Reference src/lib.rs".into()])
         .chat_history_context(vec!["Earlier user asked for a quiet status".into()])
-        .memory_context(vec!["Memory sk-not-real".into()])
+        .memory_projection_context(vec!["Projection says: concise updates".into()])
+        .working_memory_context(vec!["Working memory sk-not-real".into()])
+        .retrieved_memory_context(vec!["Retrieved memory from search".into()])
         .rag_context(vec!["RAG safe citation".into()])
+        .context_continuation_prompt(Some(
+            "Compacted sections: history. Do not invent omitted details.".into(),
+        ))
         .build();
     let prompt = render_chat_system_prompt(&context);
     assert!(prompt.contains("Local relationship context"));
     assert!(prompt.contains("Relationship prefers concise updates"));
+    assert!(prompt.contains("Local reference context"));
+    assert!(prompt.contains("Reference src/lib.rs"));
     assert!(prompt.contains("Local chat history context"));
     assert!(prompt.contains("Earlier user asked for a quiet status"));
-    assert!(prompt.contains("Local memory context"));
+    assert!(prompt.contains("Accepted memory projection"));
+    assert!(prompt.contains("Projection says: concise updates"));
+    assert!(prompt.contains("Session working memory"));
+    assert!(prompt.contains("Retrieved memory context"));
+    assert!(prompt.contains("Retrieved memory from search"));
     assert!(prompt.contains("Local RAG context"));
     assert!(prompt.contains("RAG safe citation"));
+    assert!(prompt.contains("Context compression notice"));
+    assert!(prompt.contains("Compacted sections: history"));
     assert!(!prompt.contains("abc123"));
     assert!(!prompt.contains("sk-not-real"));
     assert!(prompt.contains("[REDACTED_SECRET]"));
@@ -101,37 +158,131 @@ fn persona_agent_context_includes_profile_overlay_and_redacts() {
 }
 
 #[test]
-fn chat_context_budget_preserves_priority_and_truncates() {
+fn chat_context_budget_preserves_priority_and_omits_low_sections() {
     let context = ChatContext {
         relationship: vec!["rel".into()],
+        references: vec!["ref".into()],
         history: vec!["hist".into()],
-        memory: vec!["memory-context-is-long-enough-to-truncate".into()],
+        retrieved_memory: vec!["memory-context-is-long-enough-to-truncate".into()],
         rag: vec!["rag should be omitted".into()],
+        ..ChatContext::default()
     };
 
-    let budgeted = super::context::apply_context_char_budget(context, 32);
+    let estimator = HeuristicTokenEstimator;
+    let budgeted =
+        apply_context_token_budget(super::context::redact_chat_context(context), 12, &estimator);
 
     assert_eq!(budgeted.relationship, vec!["rel"]);
+    assert_eq!(budgeted.references, vec!["ref"]);
     assert_eq!(budgeted.history, vec!["hist"]);
-    assert_eq!(budgeted.memory.len(), 1);
-    assert!(budgeted.memory[0].contains("[truncated]"));
+    assert!(budgeted.retrieved_memory.is_empty());
     assert!(budgeted.rag.is_empty());
-    assert!(super::context::chat_context_char_count(&budgeted) <= 32);
+    assert!(chat_context_token_count(&budgeted, &estimator) <= 12);
 }
 
 #[test]
 fn chat_context_budget_zero_keeps_context_unbounded() {
     let context = ChatContext {
         relationship: vec!["rel".into()],
+        references: vec!["ref".into()],
         history: vec!["hist".into()],
-        memory: vec!["memory".into()],
+        memory_projection: vec!["projection".into()],
+        working_memory: vec!["working".into()],
+        retrieved_memory: vec!["memory".into()],
         rag: vec!["rag".into()],
     };
 
     assert_eq!(
-        super::context::apply_context_char_budget(context.clone(), 0),
+        apply_context_token_budget(
+            super::context::redact_chat_context(context.clone()),
+            0,
+            &HeuristicTokenEstimator,
+        ),
         context
     );
+}
+
+#[test]
+fn model_tokenizer_kind_selects_context_estimator() {
+    use super::context_engine::context_estimator_for_model;
+
+    let openai = ModelContextProfile::new(
+        128_000,
+        4_096,
+        ModelTokenizerKind::OpenAiCompatible,
+        "openai-compatible",
+    );
+    let anthropic =
+        ModelContextProfile::new(200_000, 8_192, ModelTokenizerKind::Anthropic, "anthropic");
+    let ollama = ModelContextProfile::new(32_768, 2_048, ModelTokenizerKind::Ollama, "ollama");
+    let mock = ModelContextProfile::new(8_192, 1_024, ModelTokenizerKind::Mock, "mock");
+
+    assert_eq!(
+        context_estimator_for_model(Some(&openai)).name(),
+        "openai-compatible-chatml-v1"
+    );
+    assert_eq!(
+        context_estimator_for_model(Some(&anthropic)).name(),
+        "anthropic-fallback-heuristic-v1"
+    );
+    assert_eq!(
+        context_estimator_for_model(Some(&ollama)).name(),
+        "ollama-fallback-heuristic-v1"
+    );
+    assert_eq!(
+        context_estimator_for_model(Some(&mock)).name(),
+        "mock-tokenizer-v1"
+    );
+    assert_eq!(context_estimator_for_model(None).name(), "heuristic-v1");
+}
+
+#[tokio::test]
+async fn provider_context_window_caps_chat_context_budget() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("notes.md"),
+        "alpha reference line\nbeta reference line\ngamma reference line\n",
+    )
+    .expect("reference");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let model_context = ModelContextProfile::new(96, 32, ModelTokenizerKind::Mock, "tiny-test");
+    let bundle = build_chat_context_bundle_with_model_context(
+        &LocalChatContextEngine,
+        "use @file:notes.md",
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions {
+            context_token_budget: 2_000,
+            ..ChatRunOptions::default()
+        },
+        ContextModelBudget {
+            model_context: &model_context,
+            reserved_system_tokens: 16,
+        },
+    )
+    .await
+    .expect("context bundle");
+
+    assert_eq!(bundle.budget.max_tokens, 48);
+    assert_eq!(bundle.budget.estimator, "mock-tokenizer-v1");
+    assert_eq!(bundle.budget.requested_tokens, Some(2_000));
+    assert_eq!(bundle.budget.context_window, Some(96));
+    assert_eq!(bundle.budget.reserved_output_tokens, Some(32));
+    assert_eq!(bundle.budget.reserved_system_tokens, Some(16));
+    assert_eq!(bundle.budget.source.as_deref(), Some("tiny-test"));
+    assert!(bundle.budget.used_tokens <= bundle.budget.max_tokens);
 }
 
 #[test]
@@ -240,12 +391,120 @@ fn relationship_learning_extracts_clear_preferences_and_redacts() {
     );
     assert!(
         super::learning::extract_relationship_memory_candidates(
+            "I want you to only inspect docs in this turn. 我希望你这次不要跑测试。"
+        )
+        .is_empty(),
+        "short-lived instructions belong in working memory or candidates, not core relationship memory"
+    );
+    assert!(
+        super::learning::extract_relationship_memory_candidates(
             "我喜欢安静一点的回复。请记住我偏好本地优先。"
         )
         .iter()
         .any(|candidate| candidate.contains("User preference: 安静一点的回复"))
     );
     assert!(super::learning::extract_relationship_memory_candidates("hello world").is_empty());
+}
+
+#[tokio::test]
+async fn chat_context_uses_projection_and_working_memory_without_task_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let memory =
+        ikaros_memory::LocalMemoryStore::new(temp.path().join("memory"), "jsonl").expect("memory");
+    ikaros_memory::MemoryStore::append(
+        &memory,
+        ikaros_memory::MemoryRecord::new(
+            ikaros_memory::MemoryKind::User,
+            "default",
+            "User preference: concise status",
+        )
+        .expect("user memory"),
+    )
+    .expect("append user");
+    ikaros_memory::MemoryStore::append(
+        &memory,
+        ikaros_memory::MemoryRecord::new(
+            ikaros_memory::MemoryKind::Project,
+            "repo",
+            "Working convention: memory and RAG stay separate",
+        )
+        .expect("project memory"),
+    )
+    .expect("append project");
+    ikaros_memory::MemoryStore::append(
+        &memory,
+        ikaros_memory::MemoryRecord::new(
+            ikaros_memory::MemoryKind::Task,
+            "chat-session",
+            "Turn summary\nuser: one-off task",
+        )
+        .expect("task memory")
+        .with_tags(vec!["turn-summary".into()]),
+    )
+    .expect("append task");
+    ikaros_memory::JsonlWorkingMemoryStore::new(temp.path().join("memory"))
+        .append(
+            ikaros_memory::WorkingMemoryRecord::new(
+                "chat-session",
+                ikaros_memory::MemoryKind::Task,
+                "chat-session",
+                "Current task goal: keep runtime context local-first",
+                Some(24),
+            )
+            .expect("working memory"),
+        )
+        .expect("append working");
+
+    let registry = ikaros_skills::builtin_registry(ikaros_skills::SkillEnvironment {
+        workspace_root: workspace.clone(),
+        memory_store: memory,
+        rag_index: ikaros_rag::LocalRagStore::new(temp.path().join("rag"), "jsonl").expect("rag"),
+        rag_config: RagConfig {
+            embedding_provider: "hash".into(),
+            ..RagConfig::default()
+        },
+        rag_provider: ikaros_core::RemoteProviderConfig::default(),
+        persona_path: temp.path().join("persona.md"),
+        skills_dir: temp.path().join("skills"),
+        voice_tts: ikaros_voice::VoiceProviderConfig::mock_tts(),
+        voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
+        voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
+        voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
+        coding_session: None,
+    });
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let mut profile = AgentProfile::build();
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "build".into(),
+        profile,
+    };
+
+    let context = build_chat_context(
+        "continue",
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions {
+            session_id: Some("chat-session".into()),
+            scope: Some("repo".into()),
+            memory_limit: 5,
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect("context");
+
+    let projection = context.memory_projection.join("\n");
+    let working = context.working_memory.join("\n");
+    let retrieved = context.retrieved_memory.join("\n");
+    assert!(projection.contains("concise status"));
+    assert!(projection.contains("memory and RAG stay separate"));
+    assert!(working.contains("Current task goal"));
+    assert!(!retrieved.contains("one-off task"));
 }
 
 #[test]
@@ -269,13 +528,14 @@ fn cloud_rag_is_not_used_for_redacted_safe_read_chat_lookup() {
         voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
         voice_asr: ikaros_voice::VoiceProviderConfig::mock_asr(),
         voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
+        coding_session: None,
     });
 
     assert!(!context_lookup_is_safe_read(&registry, "rag_search"));
 }
 
 #[tokio::test]
-async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences() {
+async fn run_chat_message_creates_relationship_candidate_from_clear_user_preferences() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("home");
     let workspace = temp.path().join("workspace");
@@ -296,8 +556,21 @@ async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences
     .await
     .expect("first chat");
     assert_eq!(first.relationship_hits, 0);
-    assert_eq!(first.relationship_learned, 1);
+    assert_eq!(first.relationship_candidates_created, 1);
     assert_eq!(first.emotion, EmotionState::Satisfied);
+    let candidate_store = JsonlMemoryCandidateStore::new(&paths.memory_dir);
+    let pending = candidate_store
+        .list(ikaros_memory::MemoryCandidateQuery {
+            status: Some(MemoryCandidateStatus::Pending),
+            ..ikaros_memory::MemoryCandidateQuery::default()
+        })
+        .expect("pending candidates");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].scope, "default");
+    assert_eq!(
+        pending[0].content,
+        "User preference: concise progress updates"
+    );
 
     let duplicate = run_chat_message(
         "I prefer concise progress updates.",
@@ -311,17 +584,13 @@ async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences
     )
     .await
     .expect("duplicate chat");
-    assert_eq!(duplicate.relationship_learned, 0);
+    assert_eq!(duplicate.relationship_candidates_created, 0);
 
     let snapshot =
         crate::relationship_snapshot(&paths, &workspace, Some("build"), Some("default"), 5)
             .await
             .expect("relationship snapshot");
-    assert_eq!(snapshot.notes.len(), 1);
-    assert_eq!(
-        snapshot.notes[0].content,
-        "User preference: concise progress updates"
-    );
+    assert!(snapshot.notes.is_empty());
 
     let disabled = run_chat_message(
         "Call me Ikaros friend.",
@@ -336,7 +605,7 @@ async fn run_chat_message_learns_relationship_memory_from_clear_user_preferences
     )
     .await
     .expect("disabled learning chat");
-    assert_eq!(disabled.relationship_learned, 0);
+    assert_eq!(disabled.relationship_candidates_created, 0);
 }
 
 #[tokio::test]
@@ -378,7 +647,7 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
     assert!(!result.content.is_empty());
     assert!(!result.content.contains("abc123"));
     assert_eq!(result.relationship_hits, 1);
-    assert_eq!(result.relationship_learned, 0);
+    assert_eq!(result.relationship_candidates_created, 0);
     assert_eq!(result.history_hits, 0);
     assert!(result.audit_path.exists());
     assert!(result.model_usage_path.exists());
@@ -400,7 +669,7 @@ async fn run_chat_message_uses_explicit_mock_provider_for_offline_runtime_paths(
     assert_eq!(second.chat_session_id, result.chat_session_id);
     assert_eq!(second.history_hits, 1);
     assert_eq!(second.relationship_hits, 1);
-    assert_eq!(second.relationship_learned, 0);
+    assert_eq!(second.relationship_candidates_created, 0);
     assert_eq!(second.emotion, EmotionState::Satisfied);
 
     let isolated = run_chat_message(
@@ -544,7 +813,7 @@ async fn run_chat_message_persists_single_call_chat_timeline() {
     .expect("single-call chat");
 
     assert_eq!(result.provider, "mock");
-    assert_eq!(result.relationship_learned, 0);
+    assert_eq!(result.relationship_candidates_created, 0);
     let history = ChatHistoryStore::new(&paths.home)
         .read_all()
         .expect("chat history");
@@ -642,6 +911,236 @@ async fn run_chat_message_persists_single_call_chat_timeline() {
     let replay_json = serde_json::to_string(&replay).expect("replay json");
     assert!(!replay_json.contains("abc123"));
     assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn run_chat_message_resolves_file_reference_and_persists_context_diff() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("notes.md"),
+        "alpha reference line\nbeta reference line\ngamma omitted\n",
+    )
+    .expect("write reference");
+    let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
+
+    let result = run_chat_message(
+        "answer using @file:notes.md:1-2",
+        &paths,
+        &workspace,
+        Some("build"),
+        ChatRunOptions {
+            agent_loop: false,
+            relationship_learning: false,
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect("chat with reference");
+
+    assert_eq!(result.reference_hits, 1);
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let replay = session_store
+        .replay_session(&SessionId::from(result.chat_session_id))
+        .expect("session replay")
+        .expect("persisted chat session");
+    let context_event = replay
+        .agent_events
+        .iter()
+        .find(|event| matches!(event.kind, AgentEventKind::ContextDiff))
+        .expect("context diff event");
+    assert_eq!(
+        context_event.payload["references"][0]["raw"].as_str(),
+        Some("@file:notes.md:1-2")
+    );
+    assert_eq!(
+        context_event.payload["budget"]["source"].as_str(),
+        Some("mock")
+    );
+    assert_eq!(
+        context_event.payload["budget"]["estimator"].as_str(),
+        Some("mock-tokenizer-v1")
+    );
+    assert_eq!(
+        context_event.payload["budget"]["context_window"].as_u64(),
+        Some(8_192)
+    );
+    let sections = context_event.payload["sections"]
+        .as_array()
+        .expect("sections");
+    assert!(sections.iter().any(|section| {
+        section["kind"].as_str() == Some("references")
+            && section["lines"][0]
+                .as_str()
+                .is_some_and(|line| line.contains("alpha reference line"))
+    }));
+    assert!(
+        context_event.payload["diff"]["after_tokens"]
+            .as_u64()
+            .is_some_and(|tokens| tokens > 0)
+    );
+}
+
+#[tokio::test]
+async fn tiny_context_window_persists_compaction_entry_and_event() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let history_store = ChatHistoryStore::new_with_backend(temp.path(), "jsonl").expect("history");
+    for index in 0..18 {
+        history_store
+            .append(&chat_history_record(
+                "tiny-context-session",
+                &format!(
+                    "older turn {index} with enough repeated words to exceed the tiny context window"
+                ),
+            ))
+            .expect("append history");
+    }
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let session_store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(temp.path()));
+    let sink = PersistingAgentTurnSink::new(session_store.clone())
+        .with_source(SessionSource::Cli)
+        .with_agent_id("plan")
+        .with_workspace(&workspace);
+
+    run_chat_turn_with_events(
+        "summarize the previous discussion",
+        &persona,
+        &TinyWindowProvider,
+        &agent,
+        &execution,
+        &registry,
+        ChatTurnEventOptions {
+            options: &ChatRunOptions {
+                agent_loop: false,
+                relationship_learning: false,
+                session_id: Some("tiny-context-session".into()),
+                chat_history_path: Some(history_store.path().to_path_buf()),
+                chat_history_backend: Some(history_store.backend_name().into()),
+                history_context_limit: 18,
+                history_summary_limit: 0,
+                ..ChatRunOptions::default()
+            },
+            event_sink: &sink,
+            session_sink: Some(&sink),
+            parent_entry_id: None,
+            turn_id: None,
+        },
+    )
+    .await
+    .expect("chat turn");
+    sink.commit().expect("commit");
+
+    let replay = session_store
+        .replay_session(&SessionId::from("tiny-context-session"))
+        .expect("replay")
+        .expect("session");
+    assert!(
+        replay
+            .entries
+            .iter()
+            .any(|entry| entry.kind == SessionEntryKind::Compaction)
+    );
+    let compaction_entry = replay
+        .entries
+        .iter()
+        .find(|entry| entry.kind == SessionEntryKind::Compaction)
+        .expect("compaction entry");
+    assert!(
+        compaction_entry.payload["continuation_prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("do not invent omitted details"))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::ContextCompacted))
+    );
+    let compaction_event = replay
+        .agent_events
+        .iter()
+        .find(|event| matches!(event.kind, AgentEventKind::ContextCompacted))
+        .expect("compaction event");
+    assert!(
+        compaction_event.payload["continuation_prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("Compacted sections"))
+    );
+}
+
+#[tokio::test]
+async fn oversized_explicit_reference_fails_context_assembly() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(
+        workspace.join("huge.md"),
+        (0..48)
+            .map(|index| {
+                format!(
+                    "protected reference line {index} must not be silently removed from context"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("reference");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let session_store: Arc<dyn SessionStore> = Arc::new(SqliteSessionStore::new(temp.path()));
+    let sink = PersistingAgentTurnSink::new(session_store)
+        .with_source(SessionSource::Cli)
+        .with_agent_id("plan")
+        .with_workspace(&workspace);
+
+    let error = run_chat_turn_with_events(
+        "summarize @file:huge.md",
+        &persona,
+        &TinyWindowProvider,
+        &agent,
+        &execution,
+        &registry,
+        ChatTurnEventOptions {
+            options: &ChatRunOptions {
+                agent_loop: false,
+                relationship_learning: false,
+                session_id: Some("huge-reference-session".into()),
+                ..ChatRunOptions::default()
+            },
+            event_sink: &sink,
+            session_sink: Some(&sink),
+            parent_entry_id: None,
+            turn_id: None,
+        },
+    )
+    .await
+    .expect_err("oversized protected reference should fail");
+
+    assert!(error.to_string().contains("context limit exceeded"));
 }
 
 #[tokio::test]

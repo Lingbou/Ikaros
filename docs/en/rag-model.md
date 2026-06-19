@@ -55,6 +55,14 @@ RAG ingestion:
 - can detect stale files
 - can delete by scope or source path
 
+Model-facing `rag_ingest` and `rag_reindex` skills walk workspace paths and read
+file text through the session `ExecutionEnv` filesystem interface. The RAG
+backend receives already-read source text plus metadata and is responsible for
+index storage, embedding, search, stale checks, and deletion.
+`rag_stale` reads indexed source metadata from the backend, then checks current
+workspace metadata through `ExecutionEnv`; it does not let the tool path inspect
+host files outside the harness boundary.
+
 Common commands:
 
 ```bash
@@ -92,4 +100,7 @@ content, citation metadata, score, and embedding provider.
 
 ## Chat Context
 
-Automatic chat context lookup uses SafeRead local RAG. Cloud embedding is explicit through `ikaros rag` commands rather than automatic chat retrieval.
+Chat does not inject RAG by default. Local RAG can be added to a turn when a
+profile enables `rag_context` and the request uses a nonzero `--rag-top-k`, or
+when the user calls `ikaros rag search` directly. Cloud embedding remains an
+explicit RAG command path rather than background chat retrieval.

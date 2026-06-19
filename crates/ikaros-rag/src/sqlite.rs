@@ -5,7 +5,10 @@ use crate::{
     embedding::EmbeddingProvider,
     files::{canonical_or_self, chunk_text, collect_files, path_to_string, system_time_to_rfc3339},
     jsonl::search_chunks,
-    types::{IngestOptions, IngestReport, RagChunk, RagHit, RagQuery, RagStore},
+    types::{
+        IngestOptions, IngestReport, IngestSourceFile, RagChunk, RagHit, RagIndexedFile, RagQuery,
+        RagStore,
+    },
 };
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
 use rusqlite::{Connection, params};
@@ -139,10 +142,32 @@ impl SqliteRagIndex {
     ) -> Result<IngestReport> {
         let mut files = Vec::new();
         collect_files(path, &mut files)?;
+        let mut sources = Vec::new();
+        for file in files {
+            let text = match fs::read_to_string(&file) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+            let metadata = fs::metadata(&file).map_err(|source| IkarosError::io(&file, source))?;
+            sources.push(IngestSourceFile {
+                source_path: file,
+                content: text,
+                modified_at: metadata.modified().ok().and_then(system_time_to_rfc3339),
+            });
+        }
+        self.ingest_sources_with_embedding(sources, options, embedding_provider)
+    }
+
+    pub fn ingest_sources_with_embedding(
+        &self,
+        sources: Vec<IngestSourceFile>,
+        options: IngestOptions,
+        embedding_provider: &dyn EmbeddingProvider,
+    ) -> Result<IngestReport> {
         let conn = self.open()?;
-        let canonical_targets = files
+        let canonical_targets = sources
             .iter()
-            .map(|file| path_to_string(&canonical_or_self(file)))
+            .map(|source| path_to_string(&canonical_or_self(&source.source_path)))
             .collect::<BTreeSet<_>>();
         for target in &canonical_targets {
             conn.execute(
@@ -159,17 +184,12 @@ impl SqliteRagIndex {
 
         let mut indexed_files = 0;
         let mut chunks_indexed = 0;
-        for file in &files {
-            let text = match fs::read_to_string(file) {
-                Ok(text) => text,
-                Err(_) => continue,
-            };
-            let metadata = fs::metadata(file).map_err(|source| IkarosError::io(file, source))?;
-            let modified_at = metadata.modified().ok().and_then(system_time_to_rfc3339);
+        let files_seen = sources.len();
+        for source in sources {
             let document_id = Uuid::new_v4().to_string();
             let indexed_at = now_rfc3339()?;
-            let canonical_path = path_to_string(&canonical_or_self(file));
-            let source_path = path_to_string(file);
+            let canonical_path = path_to_string(&canonical_or_self(&source.source_path));
+            let source_path = path_to_string(&source.source_path);
             conn.execute(
                 "INSERT INTO rag_documents (id, source_path, canonical_path, scope, indexed_at, modified_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -179,13 +199,15 @@ impl SqliteRagIndex {
                     &canonical_path,
                     &options.scope,
                     &indexed_at,
-                    &modified_at,
+                    &source.modified_at,
                 ],
             )
             .map_err(|source| sqlite_error(&self.path, source))?;
 
             let mut file_chunk_count = 0;
-            for (line_start, line_end, content) in chunk_text(&text, options.max_chunk_lines) {
+            for (line_start, line_end, content) in
+                chunk_text(&source.content, options.max_chunk_lines)
+            {
                 let chunk_id = Uuid::new_v4().to_string();
                 let content = redact_secrets(&content);
                 let embedding = serde_json::to_string(&embedding_provider.embed(&content)?)?;
@@ -205,7 +227,7 @@ impl SqliteRagIndex {
                         provider,
                         &embedding,
                         &indexed_at,
-                        &modified_at,
+                        &source.modified_at,
                     ],
                 )
                 .map_err(|source| sqlite_error(&self.path, source))?;
@@ -218,7 +240,7 @@ impl SqliteRagIndex {
         }
 
         Ok(IngestReport {
-            files_seen: files.len(),
+            files_seen,
             files_indexed: indexed_files,
             chunks_indexed,
         })
@@ -267,6 +289,35 @@ impl RagStore for SqliteRagIndex {
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
         Ok(deleted)
+    }
+
+    fn indexed_files(&self) -> Result<Vec<RagIndexedFile>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let conn = self.open()?;
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT source_path, modified_at FROM rag_documents")
+            .map_err(|source| sqlite_error(&self.path, source))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RagIndexedFile {
+                    source_path: PathBuf::from(row.get::<_, String>(0)?),
+                    modified_at: row.get::<_, Option<String>>(1)?,
+                })
+            })
+            .map_err(|source| sqlite_error(&self.path, source))?;
+        let mut files = Vec::new();
+        for row in rows {
+            files.push(row.map_err(|source| sqlite_error(&self.path, source))?);
+        }
+        files.sort_by(|left, right| {
+            left.source_path
+                .cmp(&right.source_path)
+                .then_with(|| left.modified_at.cmp(&right.modified_at))
+        });
+        files.dedup();
+        Ok(files)
     }
 
     fn stale_files(&self) -> Result<Vec<PathBuf>> {

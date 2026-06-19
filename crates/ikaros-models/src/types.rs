@@ -211,6 +211,58 @@ impl TokenUsage {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelContextProfile {
+    pub context_window: u32,
+    pub default_output_tokens: u32,
+    pub tokenizer: ModelTokenizerKind,
+    pub source: String,
+}
+
+impl ModelContextProfile {
+    pub fn new(
+        context_window: u32,
+        default_output_tokens: u32,
+        tokenizer: ModelTokenizerKind,
+        source: impl Into<String>,
+    ) -> Self {
+        Self {
+            context_window,
+            default_output_tokens,
+            tokenizer,
+            source: source.into(),
+        }
+    }
+
+    pub fn available_context_tokens(&self, reserved_system_tokens: u32) -> u32 {
+        self.context_window
+            .saturating_sub(self.default_output_tokens)
+            .saturating_sub(reserved_system_tokens)
+    }
+}
+
+impl Default for ModelContextProfile {
+    fn default() -> Self {
+        Self::new(
+            128_000,
+            4_096,
+            ModelTokenizerKind::Heuristic,
+            "model-provider-default",
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTokenizerKind {
+    #[default]
+    Heuristic,
+    OpenAiCompatible,
+    Anthropic,
+    Ollama,
+    Mock,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelResponse {
     pub provider: String,
@@ -331,6 +383,9 @@ pub trait ModelProvider: Send + Sync {
     fn name(&self) -> &str;
     fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
         request.estimated_tokens()
+    }
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::default()
     }
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse>;
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {

@@ -36,6 +36,10 @@ ikaros self-modify heartbeat
 - Failed pre-checks stop before mutation.
 - Failed post-checks trigger rollback.
 - Operations are recorded under local self-modify state.
+- Workspace target reads, approved patch writes, rollback writes, and check
+  processes execute through the session `ExecutionEnv`. The local self-modify
+  JSONL files and rollback snapshots are control-plane state, not a direct
+  workspace mutation path.
 
 ## State
 

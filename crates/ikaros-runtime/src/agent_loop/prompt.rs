@@ -17,6 +17,8 @@ pub fn agent_loop_tool_definitions(registry: &SkillRegistry) -> Vec<AgentLoopToo
                 description: descriptor.description,
                 input_schema: redact_json(descriptor.input_schema),
                 risk: descriptor.risk_level,
+                execution_mode: descriptor.execution_mode,
+                timeout_ms: descriptor.timeout_ms,
             })
         })
         .collect::<Vec<_>>();

@@ -36,6 +36,9 @@ ikaros self-modify heartbeat
 - Pre-check 失败会在 mutation 前停止。
 - Post-check 失败会触发 rollback。
 - Operation 记录在本地 self-modify state。
+- Workspace target 读取、审批后的 patch 写入、rollback 写回和 check 进程都会通过
+  session `ExecutionEnv` 执行。本地 self-modify JSONL 文件和 rollback snapshot
+  是控制面状态，不是直接修改 workspace 的旁路。
 
 ## 状态
 

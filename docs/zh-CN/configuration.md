@@ -54,15 +54,17 @@ agent:
       shell: allow
       network: ask
       memory_context: true
-      rag_context: true
+      rag_context: false
     plan:
       mode: plan
       workspace_writes: deny
       shell: ask
       network: ask
       memory_context: true
-      rag_context: true
+      rag_context: false
 ```
+
+普通 chat 建议保持 `rag_context` 为 false。只有当前 turn 需要带 citation 的本地 reference snippet 时，再在 profile 中启用或传入 `--rag-top-k`。
 
 使用 profile：
 
@@ -124,6 +126,11 @@ JSONL 是默认后端。较大的本地 store 可以使用 SQLite：
 ```yaml
 memory:
   backend: sqlite
+  policy:
+    promote_threshold: 0.75
+    demote_threshold: 0.35
+    forget_threshold: 0.15
+    max_records_per_scope: 2000
 
 chat_history:
   backend: sqlite
@@ -132,6 +139,13 @@ rag:
   backend: sqlite
   embedding_provider: hash
 ```
+
+Memory policy 字段：
+
+- `promote_threshold`：综合分数达到或超过该值时，记录 `promote` action，并给 record 标记 policy-promoted。
+- `demote_threshold`：综合分数低于或等于该值时，记录 `demote` action，并给 record 标记 policy-demoted。
+- `forget_threshold`：综合分数低于或等于该值时，记录 `forget` action，并删除低分 record。
+- `max_records_per_scope`：每个 kind/scope 的保留上限。某轮写入导致 scope 超限时，会删除最低分 record，并以 quota reason 记录为 `forget` action。
 
 主要本地路径：
 

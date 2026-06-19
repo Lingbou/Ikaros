@@ -30,6 +30,12 @@ pub struct RagChunk {
     pub embedding: Option<Vec<f32>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RagIndexedFile {
+    pub source_path: PathBuf,
+    pub modified_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RagHit {
     pub chunk: RagChunk,
@@ -75,11 +81,19 @@ pub struct IngestReport {
     pub chunks_indexed: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestSourceFile {
+    pub source_path: PathBuf,
+    pub content: String,
+    pub modified_at: Option<String>,
+}
+
 pub trait RagStore {
     fn ingest_path(&self, path: &Path, options: IngestOptions) -> Result<IngestReport>;
     fn search(&self, query: RagQuery) -> Result<Vec<RagHit>>;
     fn delete_scope(&self, scope: &str) -> Result<usize>;
     fn delete_path(&self, path: &Path) -> Result<usize>;
+    fn indexed_files(&self) -> Result<Vec<RagIndexedFile>>;
     fn stale_files(&self) -> Result<Vec<PathBuf>>;
     fn path(&self) -> &Path;
     fn backend_name(&self) -> &'static str;

@@ -118,7 +118,7 @@ stance: long-term companion and work assistant with explicit safety boundaries
 # Behavior Rules
 - Persona may shape tone and priorities, but never bypass safety policy.
 - Do not store secrets in memory, prompts, audit logs, or examples.
-- Use local-first memory and RAG by default.
+- Use local-first memory by default; use RAG only when reference retrieval is explicitly enabled for the turn or profile.
 "#
     }
 }

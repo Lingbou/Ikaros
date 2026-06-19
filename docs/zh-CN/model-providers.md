@@ -14,8 +14,11 @@
 
 - `generate(request)`：返回一个 `ModelResponse`。
 - `stream(request)`：返回包含文本 chunk、标准化 tool call、最终元数据和 typed `ModelStreamEvent` 的 `ModelStream`。
+- `context_profile()`：返回 provider-aware context-window metadata，供 runtime context budget 使用。
 
 `ModelRequest` 携带 messages、类型化 request options 和可选 tool definition。Request options 包括输出上限、sampling 字段、stop sequence、reasoning 控制，以及用于 provider-specific 请求字段的 `extra_body` object。实际模型名由已配置的 provider 持有。`ModelResponse` 携带 provider、model、content、usage 和标准化 tool call。`ModelStreamEvent` 是 runtime event 层消费的 stream 协议；`chunks` 和 `tool_calls` 仍作为聚合字段保留给现有调用方。
+
+`ModelContextProfile` 记录 context window、默认输出 token 预留、tokenizer kind 和 metadata source。Runtime 会在 context assembly 前用它收窄 `ContextBudget`，并选择 context token estimator。OpenAI-compatible 和 mock provider 已有本地确定性 estimator；Anthropic 和 Ollama 当前选择显式 fallback estimator。这还不是完整 provider registry；cost、health、cooldown、fallback chain 和精确 provider-native tokenizer library 仍是后续工作。
 
 Provider 不应：
 

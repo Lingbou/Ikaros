@@ -84,6 +84,7 @@ pub(crate) async fn agent_command(
                     dry_run: args.dry_run,
                     agent_loop: args.agent_loop,
                     loop_max_iterations: args.loop_max_iterations,
+                    ..TaskRunOptions::default()
                 },
             )
             .await?;
@@ -118,6 +119,7 @@ pub(crate) async fn agent_command(
                     dry_run: args.dry_run,
                     agent_loop: args.agent_loop,
                     loop_max_iterations: args.loop_max_iterations,
+                    ..TaskRunOptions::default()
                 },
                 args.concurrency,
             )

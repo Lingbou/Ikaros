@@ -84,7 +84,7 @@ impl PolicyEngine for DefaultPolicyEngine {
 
         if matches!(
             request.action.as_str(),
-            "memory_append" | "memory_update" | "memory_delete"
+            "memory_append" | "memory_update" | "memory_delete" | "memory_candidate_create"
         ) && matches!(request.risk, RiskLevel::DatabaseWrite)
         {
             return allow("explicit local memory maintenance is allowed after secret detection");

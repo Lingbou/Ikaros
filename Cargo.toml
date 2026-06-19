@@ -4,6 +4,7 @@ members = [
   "crates/ikaros-automation",
   "crates/ikaros-cli",
   "crates/ikaros-coding",
+  "crates/ikaros-context",
   "crates/ikaros-core",
   "crates/ikaros-gateway",
   "crates/ikaros-harness",
@@ -32,15 +33,15 @@ anyhow = "1.0"
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
+fs2 = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
-rustix = { version = "1.1", features = ["fs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.10"
 thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
-tokio = { version = "1.38", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
+tokio = { version = "1.38", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -3,6 +3,7 @@
 use super::{AgentPoolTask, run_agent_handoff, run_agent_handoff_with_options, run_agent_pool};
 use crate::task::TaskRunOptions;
 use ikaros_core::{IkarosPaths, TaskState};
+use ikaros_session::{AgentEventKind, SessionId, SessionSource, SessionStore, SqliteSessionStore};
 
 #[tokio::test]
 async fn agent_handoff_records_audit_event() {
@@ -111,6 +112,33 @@ async fn agent_handoff_can_use_agent_loop() {
     assert!(audit.contains("\"kind\":\"agent_loop_start\""));
     assert!(audit.contains("\"kind\":\"agent_handoff\""));
     assert!(audit.contains("\"agent_loop\":true"));
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let replay = session_store
+        .replay_session(&SessionId::from(report.task_id.as_str()))
+        .expect("replay")
+        .expect("handoff session");
+    assert!(matches!(
+        replay.session.source,
+        SessionSource::Subagent { .. }
+    ));
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnStart))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+    assert!(replay.agent_events.iter().any(|event| matches!(
+        event.kind,
+        AgentEventKind::UserMessage
+    ) && event.payload["content"].as_str()
+        == Some("inspect runtime")));
 }
 
 fn write_offline_mock_config(paths: &IkarosPaths) {

@@ -2,8 +2,8 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelProvider, ModelRequest, ModelResponse, ModelStream, TokenUsage, chunk_text,
-    estimate_tokens,
+    ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStream,
+    ModelTokenizerKind, TokenUsage, chunk_text, estimate_tokens,
 };
 use async_trait::async_trait;
 use ikaros_core::{Result, redact_secrets};
@@ -47,6 +47,10 @@ impl ModelTransport for MockModelProvider {
 impl ModelProvider for MockModelProvider {
     fn name(&self) -> &str {
         "mock"
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::new(8_192, 1_024, ModelTokenizerKind::Mock, "mock")
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {

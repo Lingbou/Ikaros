@@ -2,7 +2,7 @@
 
 use crate::{
     AgentEvent, AgentEventSink, ApprovalRecord, SessionEntry, SessionId, SessionRecord,
-    SessionSource, SessionStore, SessionWriter, TurnId,
+    SessionSource, SessionStore, TurnId,
 };
 use ikaros_core::{IkarosError, Result};
 use std::{
@@ -84,7 +84,20 @@ pub struct PersistingAgentTurnSink {
     source: SessionSource,
     agent_id: Option<String>,
     workspace: Option<PathBuf>,
-    writer: Mutex<Option<Box<dyn SessionWriter>>>,
+    buffer: Mutex<Option<BufferedTurn>>,
+}
+
+struct BufferedTurn {
+    session_id: SessionId,
+    turn_id: TurnId,
+    started_at: time::OffsetDateTime,
+    items: Vec<BufferedTurnItem>,
+}
+
+enum BufferedTurnItem {
+    Entry(SessionEntry),
+    AgentEvent(AgentEvent),
+    Approval(ApprovalRecord),
 }
 
 impl PersistingAgentTurnSink {
@@ -94,7 +107,7 @@ impl PersistingAgentTurnSink {
             source: SessionSource::Runtime,
             agent_id: None,
             workspace: None,
-            writer: Mutex::new(None),
+            buffer: Mutex::new(None),
         }
     }
 
@@ -114,75 +127,105 @@ impl PersistingAgentTurnSink {
     }
 
     pub fn commit(&self) -> Result<()> {
-        let Some(writer) = self.lock_writer()?.take() else {
+        let Some(buffer) = self.lock_buffer()?.take() else {
             return Ok(());
         };
+        let mut session = SessionRecord::new(buffer.session_id.clone(), self.source.clone());
+        session.started_at = buffer.started_at;
+        session.agent_id = self.agent_id.clone();
+        session.workspace = self.workspace.clone();
+        let mut writer = self.store.begin_turn(&session, &buffer.turn_id)?;
+        for item in buffer.items {
+            match item {
+                BufferedTurnItem::Entry(entry) => writer.append_entry(&entry)?,
+                BufferedTurnItem::AgentEvent(event) => writer.append_agent_event(&event)?,
+                BufferedTurnItem::Approval(approval) => writer.append_approval(&approval)?,
+            }
+        }
         writer.commit()
     }
 
     pub fn rollback(&self) -> Result<()> {
-        let Some(writer) = self.lock_writer()?.take() else {
-            return Ok(());
-        };
-        writer.rollback()
+        let _ = self.lock_buffer()?.take();
+        Ok(())
     }
 
     pub fn append_entry(&self, entry: &SessionEntry) -> Result<()> {
         let turn_id = entry.turn_id.as_ref().ok_or_else(|| {
             IkarosError::Message("session turn sink requires entry turn_id".into())
         })?;
-        let mut writer = self.lock_writer()?;
-        self.ensure_writer(&mut writer, &entry.session_id, turn_id, entry.at)?;
-        writer
+        let mut buffer = self.lock_buffer()?;
+        self.ensure_buffer(&mut buffer, &entry.session_id, turn_id, entry.at)?;
+        buffer
             .as_mut()
-            .expect("writer initialized")
-            .append_entry(entry)
+            .expect("buffer initialized")
+            .items
+            .push(BufferedTurnItem::Entry(entry.clone()));
+        Ok(())
     }
 
     pub fn append_approval(&self, approval: &ApprovalRecord) -> Result<()> {
         let turn_id = approval.turn_id.as_ref().ok_or_else(|| {
             IkarosError::Message("session turn sink requires approval turn_id".into())
         })?;
-        let mut writer = self.lock_writer()?;
-        self.ensure_writer(&mut writer, &approval.session_id, turn_id, approval.at)?;
-        writer
+        let mut buffer = self.lock_buffer()?;
+        self.ensure_buffer(&mut buffer, &approval.session_id, turn_id, approval.at)?;
+        buffer
             .as_mut()
-            .expect("writer initialized")
-            .append_approval(approval)
+            .expect("buffer initialized")
+            .items
+            .push(BufferedTurnItem::Approval(approval.clone()));
+        Ok(())
     }
 
-    fn lock_writer(&self) -> Result<MutexGuard<'_, Option<Box<dyn SessionWriter>>>> {
-        self.writer
+    fn lock_buffer(&self) -> Result<MutexGuard<'_, Option<BufferedTurn>>> {
+        self.buffer
             .lock()
-            .map_err(|_| IkarosError::Message("session turn writer lock is poisoned".into()))
+            .map_err(|_| IkarosError::Message("session turn buffer lock is poisoned".into()))
     }
 
-    fn ensure_writer(
+    fn ensure_buffer(
         &self,
-        writer: &mut Option<Box<dyn SessionWriter>>,
+        buffer: &mut Option<BufferedTurn>,
         session_id: &SessionId,
         turn_id: &TurnId,
         started_at: time::OffsetDateTime,
     ) -> Result<()> {
-        if writer.is_none() {
-            let mut session = SessionRecord::new(session_id.clone(), self.source.clone());
-            session.started_at = started_at;
-            session.agent_id = self.agent_id.clone();
-            session.workspace = self.workspace.clone();
-            *writer = Some(self.store.begin_turn(&session, turn_id)?);
+        if let Some(buffer) = buffer.as_ref() {
+            if &buffer.session_id != session_id {
+                return Err(IkarosError::Message(format!(
+                    "session turn sink expected session {}, got {}",
+                    buffer.session_id, session_id
+                )));
+            }
+            if &buffer.turn_id != turn_id {
+                return Err(IkarosError::Message(format!(
+                    "session turn sink expected turn {}, got {}",
+                    buffer.turn_id, turn_id
+                )));
+            }
+            return Ok(());
         }
+        *buffer = Some(BufferedTurn {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            started_at,
+            items: Vec::new(),
+        });
         Ok(())
     }
 }
 
 impl AgentEventSink for PersistingAgentTurnSink {
     fn emit(&self, event: &AgentEvent) -> Result<()> {
-        let mut writer = self.lock_writer()?;
-        self.ensure_writer(&mut writer, &event.session_id, &event.turn_id, event.at)?;
-        writer
+        let mut buffer = self.lock_buffer()?;
+        self.ensure_buffer(&mut buffer, &event.session_id, &event.turn_id, event.at)?;
+        buffer
             .as_mut()
-            .expect("writer initialized")
-            .append_agent_event(event)
+            .expect("buffer initialized")
+            .items
+            .push(BufferedTurnItem::AgentEvent(event.clone()));
+        Ok(())
     }
 
     fn emit_approval(&self, approval: &ApprovalRecord) -> Result<()> {
