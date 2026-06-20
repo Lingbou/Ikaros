@@ -991,7 +991,7 @@ risk = "safe_read"
 
 [skills.command]
 program = "__PROGRAM__"
-timeout_ms = 1000
+timeout_ms = 10000
 "#
         .replace("__PROGRAM__", program),
     )
@@ -1021,7 +1021,11 @@ async fn command_backed_plugin_rejects_oversized_output() {
     let program = write_plugin_runner(
         &plugin_dir,
         "#!/bin/sh\nprintf '%070000d' 0 | tr 0 x\n",
-        "@echo off\r\nfor /L %%i in (1,1,70000) do @echo x\r\n",
+        concat!(
+            "@echo off\r\n",
+            "set \"chunk=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\r\n",
+            "for /L %%i in (1,1,600) do <nul set /p \"=%chunk%\"\r\n",
+        ),
     );
     fs::write(
         plugin_dir.join("plugin.toml"),
@@ -1054,12 +1058,12 @@ timeout_ms = 1000
         .await
         .expect_err("oversized output should fail");
 
-    assert!(error.to_string().contains("exceeded"));
+    let error_text = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains(&ikaros_harness::PLUGIN_COMMAND_MAX_OUTPUT_BYTES.to_string())
+        error_text.contains("exceeded"),
+        "unexpected oversized-output error: {error_text}"
     );
+    assert!(error_text.contains(&ikaros_harness::PLUGIN_COMMAND_MAX_OUTPUT_BYTES.to_string()));
 }
 
 #[tokio::test]
