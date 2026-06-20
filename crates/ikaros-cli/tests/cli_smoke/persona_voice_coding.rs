@@ -448,6 +448,386 @@ fn chat_repl_code_slash_command_uses_coding_turn_timeline() {
 }
 
 #[test]
+fn chat_workbench_timeline_groups_coding_diff_test_and_review_cells() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "coding-group-session"],
+        "/code plan \"prepare grouped coding cells\" --diff \"diff --git a/src/lib.rs b/src/lib.rs\" --session-id coding-group-session --turn-id coding-group-plan\n/code test \"run grouped coding checks\" --test-command \"cargo test\" --session-id coding-group-session --turn-id coding-group-test\n/code review --diff \"diff --git a/src/lib.rs b/src/lib.rs\" --session-id coding-group-session --turn-id coding-group-review\n/timeline\n/quit\n",
+    );
+
+    assert!(output.contains("coding_group: progress"));
+    assert!(output.contains("coding_group: diff"));
+    assert!(output.contains("coding_group: test"));
+    assert!(output.contains("coding_group: review"));
+    assert!(output.contains("cell kind=coding title=coding diff"));
+    assert!(output.contains("cell kind=coding title=coding review"));
+}
+
+#[test]
+fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "workbench-status-session"],
+        "/help\n/status\n/session status\n/provider\n/provider health\n/provider matrix --live\n/gateway\n/tasks\n/approval\n/timeline\n/quit\n",
+    );
+
+    assert!(output.contains("/session status|resume|history"));
+    assert!(output.contains("/provider [inspect|health [--live]|matrix [--live]]"));
+    assert!(output.contains("/gateway"));
+    assert!(output.contains("/tasks"));
+    assert!(output.contains("/approval"));
+    assert!(output.contains("workbench_session: workbench-status-session"));
+    assert!(output.contains("status_model: provider=mock"));
+    assert!(output.contains("status_workspace:"));
+    assert!(output.contains("status_policy:"));
+    assert!(output.contains("status_gateway_pending: 0"));
+    assert!(output.contains("status_approvals_pending: 0"));
+    assert!(output.contains("status_continuations: 0"));
+    assert!(output.contains("provider: mock"));
+    assert!(output.contains("health: Unknown"));
+    assert!(output.contains("provider_matrix: live=true"));
+    assert!(output.contains("live_probe=ok"));
+    assert!(output.contains("gateway_pending: 0"));
+    assert!(output.contains("tasks_enabled: 0"));
+    assert!(output.contains("approvals_pending: 0"));
+    assert!(output.contains("workbench_evidence: kind=provider"));
+    assert!(output.contains("workbench_evidence: kind=gateway"));
+    assert!(output.contains("workbench_evidence: kind=tasks"));
+    assert!(output.contains("timeline: found"));
+    assert!(output.contains("workbench provider status queried"));
+}
+
+#[test]
+fn chat_workbench_exposes_session_aliases_model_context_memory_rag_diff_and_timeline() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "workbench-alias-session"],
+        "/help\n/sessions\n/model\n/new\n/resume alias-session\n/status\n/context\n/memory\n/rag\n/diff\n/timeline\n/replay\n/debug\n/clear\n/quit\n",
+    );
+
+    assert!(output.contains("/sessions"));
+    assert!(output.contains("/resume <session>"));
+    assert!(output.contains("/model"));
+    assert!(output.contains("/diff"));
+    assert!(output.contains("sessions: 0"));
+    assert!(output.contains("provider: mock"));
+    assert!(output.contains("session_new:"));
+    assert!(output.contains("session_resumed: alias-session"));
+    assert!(output.contains("workbench_session: alias-session"));
+    assert!(output.contains("context_session: alias-session"));
+    assert!(output.contains("memory_backend:"));
+    assert!(output.contains("rag_backend:"));
+    assert!(output.contains("diff_status:"));
+    assert!(output.contains("timeline: not_found"));
+    assert!(output.contains("replay: not_found"));
+    assert!(output.contains("debug: not_found"));
+    assert!(output.contains("screen_cleared: true"));
+}
+
+#[test]
+fn chat_workbench_lists_and_suggests_slash_commands() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "command-catalog-session"],
+        "/commands sess\n/sesions\n/quit\n",
+    );
+
+    assert!(output.contains("commands_query: sess"));
+    assert!(output.contains("/sessions"));
+    assert!(output.contains("/session"));
+    assert!(output.contains("/resume"));
+    assert!(output.contains("unknown command: /sesions"));
+    assert!(output.contains("did_you_mean: /sessions"));
+}
+
+#[test]
+fn chat_workbench_lists_file_and_context_mentions() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "mention-workbench-session"],
+        "/mentions lib\n/mentions diff\n/quit\n",
+    );
+
+    assert!(output.contains("mentions_query: lib"));
+    assert!(output.contains("@file:src/lib.rs"));
+    assert!(output.contains("@folder:src"));
+    assert!(output.contains("mentions_query: diff"));
+    assert!(output.contains("@diff"));
+    assert!(output.contains("@staged"));
+    assert!(output.contains("@git:HEAD"));
+}
+
+#[test]
+fn tui_and_default_entry_open_the_same_workbench() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let tui = env.run_with_stdin(["tui", "--chat-session", "tui-session"], "/status\n/quit\n");
+    assert!(tui.contains("Type /help for commands."));
+    assert!(tui.contains("workbench_session: tui-session"));
+
+    let default_entry = env.run_with_stdin(std::iter::empty::<&str>(), "/status\n/quit\n");
+    assert!(default_entry.contains("Type /help for commands."));
+    assert!(default_entry.contains("workbench_session:"));
+}
+
+#[test]
+fn chat_workbench_multiline_and_session_resume_write_one_history_turn() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "initial-workbench-session"],
+        "/session resume resumed-workbench-session\n/multi\nfirst workbench line\nsecond workbench line\n.\n/quit\n",
+    );
+
+    assert!(output.contains("session_resumed: resumed-workbench-session"));
+    assert!(output.contains("multiline: end with a single '.' line"));
+    assert!(output.contains("context:"));
+
+    let history = env.run([
+        "chat",
+        "--history",
+        "--history-session",
+        "resumed-workbench-session",
+    ]);
+    assert!(history.contains("records: 1"));
+    assert!(history.contains("first workbench line"));
+    assert!(history.contains("second workbench line"));
+
+    let workbench_history =
+        fs::read_to_string(env.home.join("workbench").join("history.txt")).expect("history");
+    assert!(workbench_history.contains("first workbench line"));
+    assert!(workbench_history.contains("second workbench line"));
+}
+
+#[test]
+fn chat_workbench_bracketed_paste_writes_one_history_turn() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "paste-workbench-session"],
+        "\u{1b}[200~first pasted line\nsecond pasted line\n\u{1b}[201~\n/quit\n",
+    );
+
+    assert!(output.contains("bracketed_paste: accepted"));
+    assert!(output.contains("chat_turn: completed"));
+
+    let history = env.run([
+        "chat",
+        "--history",
+        "--history-session",
+        "paste-workbench-session",
+    ]);
+    assert!(history.contains("records: 1"));
+    assert!(history.contains("first pasted line"));
+    assert!(history.contains("second pasted line"));
+}
+
+#[test]
+fn chat_workbench_drains_pending_input_queue_after_turn() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "queue-workbench-session"],
+        "/queue queued follow up\n/queue\nfirst turn before queue\n/quit\n",
+    );
+
+    assert!(output.contains("pending_input_queued: 1"));
+    assert!(output.contains("pending_inputs: 1"));
+    assert!(output.contains("pending_input: running index=1 total=1"));
+    assert!(output.contains("queued follow up"));
+
+    let history = env.run([
+        "chat",
+        "--history",
+        "--history-session",
+        "queue-workbench-session",
+    ]);
+    assert!(history.contains("records: 2"));
+    assert!(history.contains("first turn before queue"));
+    assert!(history.contains("queued follow up"));
+}
+
+#[test]
+fn chat_workbench_defaults_to_streaming_and_prints_terminal_turn_events() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "stream-workbench-session"],
+        "hello streamed workbench\n/quit\n",
+    );
+
+    assert!(output.contains("stream=true"));
+    assert!(output.contains("chat_turn: started"));
+    assert!(output.contains("chat_stream: start"));
+    assert!(output.contains("chat_stream: done"));
+    assert!(output.contains("chat_turn: completed"));
+    assert!(output.contains("stream_chunks:"));
+    assert!(output.contains("Mock Ikaros plan"));
+}
+
+#[test]
+fn chat_workbench_timeline_shows_cells_after_a_turn() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "timeline-workbench-session"],
+        "show timeline cells\n/timeline\n/quit\n",
+    );
+
+    assert!(output.contains("timeline: found"));
+    assert!(output.contains("entries:"));
+    assert!(output.contains("agent_events:"));
+    assert!(output.contains("recent_entries:"));
+    assert!(output.contains("recent_events:"));
+    assert!(output.contains("cell kind=session"));
+    assert!(output.contains("cell kind=model"));
+}
+
+#[test]
+fn chat_workbench_trace_shows_session_spans_without_prompt_or_secret_leak() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "trace-workbench-session"],
+        "trace this workbench turn with token=abc123\n/trace\n/quit\n",
+    );
+
+    assert!(output.contains("/trace"));
+    assert!(output.contains("trace: found"));
+    assert!(output.contains("trace_spans:"));
+    assert!(output.contains("trace_event_counts:"));
+    assert!(output.contains("context="));
+    assert!(output.contains("model="));
+    assert!(output.contains("cell kind=session title=trace span"));
+    let trace_section = output
+        .split("trace_command: /trace")
+        .nth(1)
+        .expect("trace output section");
+    assert!(!trace_section.contains("abc123"));
+    assert!(!trace_section.contains("trace this workbench turn"));
+}
+
+#[test]
+fn chat_workbench_long_session_soak_keeps_trace_and_history_replayable() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "soak-workbench-session"],
+        "soak turn 1 token=abc123\nsoak turn 2 token=abc123\nsoak turn 3 token=abc123\nsoak turn 4 token=abc123\nsoak turn 5 token=abc123\n/trace\n/timeline\n/quit\n",
+    );
+
+    assert!(output.contains("trace: found"));
+    assert!(output.contains("trace_spans: 5"));
+    assert!(output.contains("timeline: found"));
+    assert!(output.contains("agent_events:"));
+
+    let history = env.run([
+        "chat",
+        "--history",
+        "--history-session",
+        "soak-workbench-session",
+    ]);
+    assert!(history.contains("records: 5"));
+    assert!(history.contains("[REDACTED_SECRET]"));
+    assert!(!history.contains("abc123"));
+
+    let trace = env.run(["debug", "trace", "soak-workbench-session"]);
+    let trace_json: serde_json::Value = serde_json::from_str(&trace).expect("trace json");
+    assert_eq!(trace_json["format"], "ikaros-trace-v1");
+    assert_eq!(
+        trace_json["turn_spans"]
+            .as_array()
+            .expect("turn spans array")
+            .len(),
+        5
+    );
+    assert!(!trace.contains("abc123"));
+    assert!(!trace.contains("soak turn 1"));
+}
+
+#[test]
+fn chat_workbench_context_and_memory_show_timeline_cells() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "visible-context-session"],
+        "I prefer timeline-visible memory. Please inspect @file:src/lib.rs\n/context\n/memory\n/quit\n",
+    );
+
+    assert!(output.contains("context_timeline_events:"));
+    assert!(output.contains("cell kind=context"));
+    assert!(output.contains("memory_timeline_events:"));
+    assert!(output.contains("cell kind=memory"));
+}
+
+#[test]
+fn chat_workbench_fork_appends_branch_summary_to_session_tree() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "fork-workbench-session"],
+        "prepare a branchable timeline\n/fork try alternate implementation\n/timeline\n/quit\n",
+    );
+
+    assert!(output.contains("session_forked: fork-workbench-session"));
+    assert!(output.contains("fork_parent_entry:"));
+    assert!(output.contains("fork_entry:"));
+    assert!(output.contains("timeline: found"));
+    assert!(output.contains("entry BranchSummary"));
+    assert!(output.contains("try alternate implementation"));
+}
+
+#[test]
 fn coding_workflow_persists_debuggable_turn_timeline() {
     let env = TestHome::new();
     env.init();
@@ -541,4 +921,28 @@ fn coding_workflow_model_loop_requires_approval_and_replays_mock_provider_turn()
     assert!(debug.contains("\"model_request_prepared\""));
     assert!(debug.contains("\"model_response_received\""));
     assert!(debug.contains("\"final_report_prepared\""));
+}
+
+#[test]
+fn chat_workbench_approval_overlay_renders_combined_risk_context() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    install_smoke_rust_crate(&env.workspace);
+
+    let output = env.run_with_stdin(
+        ["chat", "--chat-session", "approval-overlay-session"],
+        "/code plan \"prepare approval overlay\" --model-loop --max-iterations 1 --session-id approval-overlay-session --turn-id approval-overlay-turn\n/approval\n/quit\n",
+    );
+
+    assert!(output.contains("\"decision\": \"ask_user\""));
+    assert!(output.contains("approval_overlay:"));
+    assert!(output.contains("approval_item:"));
+    assert!(output.contains("provider_call: true"));
+    assert!(output.contains("workspace_write: false"));
+    assert!(output.contains("shell: false"));
+    assert!(output.contains("network:"));
+    assert!(output.contains("session: approval-overlay-session turn=approval-overlay-turn"));
+    assert!(output.contains("diff_size:"));
+    assert!(output.contains("replay: ikaros approval approve"));
 }

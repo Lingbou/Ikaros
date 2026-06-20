@@ -200,6 +200,53 @@ fn local_memory_and_message_gateway_smoke_paths_run_offline() {
 }
 
 #[test]
+fn gateway_status_exposes_thread_resume_without_secret_leak() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+
+    let sent = env.run([
+        "message",
+        "send",
+        "--kind",
+        "chat",
+        "--source",
+        "telegram",
+        "--account",
+        "account-1",
+        "--peer",
+        "peer-1",
+        "--thread",
+        "thread-1",
+        "--message-id",
+        "message-1",
+        "--idempotency-key",
+        "idem-token=abc123",
+        "gateway resume token=abc123",
+    ]);
+    assert!(sent.contains("enqueued:"));
+    assert!(!sent.contains("abc123"));
+
+    let status = env.run(["message", "status"]);
+    assert!(status.contains("gateway_status:"));
+    assert!(status.contains("gateway_sessions: 1"));
+    assert!(status.contains("gateway_session:"));
+    assert!(status.contains("source=telegram"));
+    assert!(status.contains("thread=thread-1"));
+    assert!(status.contains("resume: ikaros chat --chat-session gateway-"));
+    assert!(!status.contains("abc123"));
+
+    let workbench = env.run_with_stdin(
+        ["chat", "--chat-session", "gateway-status-workbench"],
+        "/gateway\n/quit\n",
+    );
+    assert!(workbench.contains("gateway_sessions: 1"));
+    assert!(workbench.contains("gateway_session:"));
+    assert!(workbench.contains("resume: ikaros chat --chat-session gateway-"));
+    assert!(!workbench.contains("abc123"));
+}
+
+#[test]
 fn memory_cli_filters_observer_subject_perspective() {
     let env = TestHome::new();
     env.init();
@@ -560,6 +607,71 @@ fn debug_context_and_memory_lifecycle_queries_session_timeline() {
     ]);
     assert!(memory_turn.contains("\"phase\": \"sync_turn\""));
     assert!(!memory_turn.contains("abc123"));
+}
+
+#[test]
+fn debug_trace_exports_session_spans_without_prompt_or_secret_leak() {
+    let env = TestHome::new();
+    env.init();
+    env.use_offline_mock_config();
+    fs::write(env.workspace.join("trace.md"), "trace reference\n").expect("trace reference");
+
+    let chat = env.run([
+        "chat",
+        "--message",
+        "trace this turn with @file:trace.md token=abc123",
+        "--no-agent-loop",
+    ]);
+    let session_id = chat
+        .lines()
+        .find_map(|line| line.strip_prefix("chat_session: "))
+        .expect("chat session id");
+
+    let trace = env.run(["debug", "trace", session_id]);
+    let trace_json: serde_json::Value = serde_json::from_str(&trace).expect("trace json");
+
+    assert_eq!(trace_json["format"], "ikaros-trace-v1");
+    assert_eq!(trace_json["session_id"], session_id);
+    assert!(
+        trace_json["turn_spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty())
+    );
+    assert!(
+        trace_json["event_counts"]["context"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    assert!(
+        trace_json["event_counts"]["model"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    assert!(
+        trace_json["ordered_events"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["category"] == "memory"))
+    );
+    assert!(!trace.contains("abc123"));
+    assert!(!trace.contains("trace this turn"));
+
+    let turn_id = trace_json["turn_spans"][0]["turn_id"]
+        .as_str()
+        .expect("turn id")
+        .to_owned();
+    let turn_trace = env.run(["debug", "trace", session_id, "--turn-id", &turn_id]);
+    let turn_trace_json: serde_json::Value =
+        serde_json::from_str(&turn_trace).expect("turn trace json");
+    assert_eq!(
+        turn_trace_json["turn_spans"]
+            .as_array()
+            .expect("turn spans array")
+            .len(),
+        1
+    );
+
+    let missing = env.run_failure(["debug", "trace", session_id, "--turn-id", "missing-turn"]);
+    assert!(missing.contains("turn not found"));
 }
 
 #[test]

@@ -8,6 +8,10 @@ use ikaros_context::{
 use ikaros_core::{
     AgentProfile, ContextBuilder, IkarosError, IkarosPaths, RagConfig, ResolvedAgentProfile, Result,
 };
+use ikaros_harness::{
+    CancellationToken, GovernedNetworkEgress, LocalExecutionEnv, NetworkEgress,
+    NetworkEgressPolicy, NetworkEgressRequest, NetworkEgressResponse, NetworkedExecutionEnv,
+};
 use ikaros_memory::{JsonlMemoryCandidateStore, MemoryCandidateStatus};
 use ikaros_models::{
     ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent,
@@ -18,7 +22,15 @@ use ikaros_session::{
     SessionStore, SqliteSessionStore,
 };
 use ikaros_soul::{EmotionState, PersonaLoader};
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 #[derive(Debug)]
 struct FailingProvider;
@@ -33,6 +45,30 @@ impl ModelProvider for FailingProvider {
         Err(IkarosError::Message(
             "provider failed with token=abc123".into(),
         ))
+    }
+}
+
+#[derive(Debug, Default)]
+struct CountingProvider {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ModelProvider for CountingProvider {
+    fn name(&self) -> &str {
+        "counting"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "counting-model".into(),
+            content: "should not be called".into(),
+            tool_calls: Vec::new(),
+            usage: Default::default(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -57,6 +93,23 @@ impl ModelProvider for TinyWindowProvider {
             tool_calls: Vec::new(),
             usage: Default::default(),
             diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct FixtureNetworkEgress;
+
+impl NetworkEgress for FixtureNetworkEgress {
+    fn send_network_request<'a>(
+        &'a self,
+        request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(NetworkEgressResponse {
+                status: 200,
+                body: format!("fetched {} with remote docs token=abc123", request.url),
+            })
         })
     }
 }
@@ -283,6 +336,92 @@ async fn provider_context_window_caps_chat_context_budget() {
     assert_eq!(bundle.budget.reserved_system_tokens, Some(16));
     assert_eq!(bundle.budget.source.as_deref(), Some("tiny-test"));
     assert!(bundle.budget.used_tokens <= bundle.budget.max_tokens);
+}
+
+#[tokio::test]
+async fn url_context_reference_uses_execution_env_network_egress() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let network = GovernedNetworkEgress::new(
+        NetworkEgressPolicy::allow_hosts(["docs.example".into()]),
+        Arc::new(FixtureNetworkEgress),
+    );
+    let execution =
+        ikaros_harness::ExecutionSession::new(&workspace, &audit).with_execution_env(Arc::new(
+            NetworkedExecutionEnv::new(Arc::new(LocalExecutionEnv), Arc::new(network)),
+        ));
+    let registry = ikaros_harness::SkillRegistry::new();
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let model_context = ModelContextProfile::new(512, 32, ModelTokenizerKind::Mock, "url-test");
+    let bundle = build_chat_context_bundle_with_model_context(
+        &LocalChatContextEngine,
+        "inspect @url:https://docs.example/guide?token=abc123",
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions::default(),
+        ContextModelBudget {
+            model_context: &model_context,
+            reserved_system_tokens: 16,
+        },
+    )
+    .await
+    .expect("url context bundle");
+
+    let references = bundle.context.references.join("\n");
+    assert!(references.contains("[reference/url]"));
+    assert!(references.contains("status=200"));
+    assert!(references.contains("remote docs"));
+    assert!(!references.contains("abc123"));
+    assert!(references.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn url_context_reference_denied_by_execution_env_network_policy() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit).with_execution_env(
+        Arc::new(NetworkedExecutionEnv::new(
+            Arc::new(LocalExecutionEnv),
+            Arc::new(GovernedNetworkEgress::deny_by_default()),
+        )),
+    );
+    let registry = ikaros_harness::SkillRegistry::new();
+    let mut profile = AgentProfile::plan();
+    profile.memory_context = false;
+    profile.rag_context = false;
+    let agent = ResolvedAgentProfile {
+        name: "plan".into(),
+        profile,
+    };
+    let model_context = ModelContextProfile::new(512, 32, ModelTokenizerKind::Mock, "url-test");
+    let error = build_chat_context_bundle_with_model_context(
+        &LocalChatContextEngine,
+        "inspect @url:https://blocked.example/guide",
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions::default(),
+        ContextModelBudget {
+            model_context: &model_context,
+            reserved_system_tokens: 16,
+        },
+    )
+    .await
+    .expect_err("url context should respect deny policy");
+
+    assert!(error.to_string().contains("network egress denied"));
+    assert!(!error.to_string().contains("abc123"));
 }
 
 #[test]
@@ -1224,6 +1363,45 @@ async fn failed_single_call_provider_turn_is_replayable() {
     let replay_json = serde_json::to_string(&replay).expect("replay json");
     assert!(!replay_json.contains("abc123"));
     assert!(replay_json.contains("[REDACTED_SECRET]"));
+}
+
+#[tokio::test]
+async fn single_call_chat_cancellation_skips_provider_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let audit = temp.path().join("audit");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let execution = ikaros_harness::ExecutionSession::new(&workspace, &audit);
+    let registry = ikaros_harness::SkillRegistry::new();
+    let persona = PersonaLoader::parse(PersonaLoader::default_markdown()).expect("persona");
+    let agent = ResolvedAgentProfile {
+        name: "build".into(),
+        profile: AgentProfile::build(),
+    };
+    let provider = CountingProvider::default();
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let error = run_chat_turn(
+        "cancel before provider",
+        &persona,
+        &provider,
+        &agent,
+        &execution,
+        &registry,
+        &ChatRunOptions {
+            agent_loop: false,
+            no_context: true,
+            session_id: Some("cancelled-single-call-session".into()),
+            cancellation,
+            ..ChatRunOptions::default()
+        },
+    )
+    .await
+    .expect_err("cancelled chat should fail before provider request");
+
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

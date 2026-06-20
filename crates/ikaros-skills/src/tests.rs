@@ -1154,6 +1154,55 @@ timeout_ms = 1000
 }
 
 #[tokio::test]
+async fn command_backed_plugin_runs_with_plugin_directory_as_cwd() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path();
+    let plugin_dir = temp.path().join("skills/hello");
+    fs::create_dir_all(&plugin_dir).expect("plugin dir");
+    let program = write_plugin_runner(
+        &plugin_dir,
+        "#!/bin/sh\nbasename \"$PWD\"\n",
+        "@echo off\r\nfor %%I in (.) do echo %%~nxI\r\n",
+    );
+    fs::write(
+        plugin_dir.join("plugin.toml"),
+        r#"
+name = "hello"
+version = "0.1.0"
+description = "Command-backed plugin."
+
+[[skills]]
+name = "cwd"
+description = "Report plugin cwd."
+risk = "safe_read"
+
+[skills.command]
+program = "__PROGRAM__"
+timeout_ms = 1000
+"#
+        .replace("__PROGRAM__", program),
+    )
+    .expect("manifest");
+    let registry = builtin_registry(test_env(temp.path(), workspace));
+    let session = ExecutionSession::new(workspace, temp.path().join("audit"));
+
+    let result = session
+        .execute_skill(
+            &registry,
+            "plugin_command_run",
+            json!({"name": "hello.cwd", "input": {}}),
+        )
+        .await
+        .expect("plugin run");
+
+    assert_eq!(result.output["status"], json!(0));
+    assert_eq!(
+        result.output["stdout"].as_str().unwrap_or("").trim(),
+        "hello"
+    );
+}
+
+#[tokio::test]
 async fn command_backed_plugin_rejects_oversized_stdin() {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace = temp.path();

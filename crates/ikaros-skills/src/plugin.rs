@@ -110,6 +110,7 @@ struct ResolvedPluginCommand {
     skill: PluginSkillManifest,
     command: PluginCommandManifest,
     qualified_name: String,
+    plugin_root: PathBuf,
     program: PathBuf,
 }
 
@@ -146,11 +147,14 @@ impl PluginCommandRunSkill {
             ))
         })?;
         let program = resolve_plugin_program(plugin_root, &command.program)?;
+        let plugin_root =
+            fs::canonicalize(plugin_root).map_err(|source| IkarosError::io(plugin_root, source))?;
         Ok(ResolvedPluginCommand {
             plugin: plugin.clone(),
             skill: skill.clone(),
             command,
             qualified_name: format!("{}.{}", plugin.manifest.name, skill.name),
+            plugin_root,
             program,
         })
     }
@@ -209,8 +213,9 @@ async fn run_plugin_command(
     let request = ProcessRequest::program(
         resolved.program.display().to_string(),
         resolved.command.args.clone(),
-        &ctx.session.sandbox.workspace_root,
+        &resolved.plugin_root,
     )
+    .with_plugin_cwd_scope()
     .with_stdin(stdin)
     .with_timeout_ms(timeout_ms)
     .with_max_output_bytes(PLUGIN_COMMAND_MAX_OUTPUT_BYTES);

@@ -4,9 +4,12 @@ mod webhook;
 
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
-use ikaros_core::IkarosPaths;
-use ikaros_gateway::{GatewayMessageKind, GatewayMessageStatus, GatewayRoute, LocalGatewayStore};
-use ikaros_runtime::{drain_gateway_messages, run_gateway_worker_tick};
+use ikaros_core::{IkarosPaths, redact_secrets};
+use ikaros_gateway::{
+    GatewayMessage, GatewayMessageKind, GatewayMessageStatus, GatewayRoute, GatewaySessionSource,
+    LocalGatewayStore,
+};
+use ikaros_runtime::{drain_gateway_messages, gateway_session_id, run_gateway_worker_tick};
 use std::{path::Path, time::Duration};
 use tokio::time::sleep;
 use webhook::{MessageWebhook, serve_message_webhook};
@@ -14,6 +17,7 @@ use webhook::{MessageWebhook, serve_message_webhook};
 #[derive(Debug, Subcommand)]
 pub(crate) enum MessageCommand {
     Send(MessageSend),
+    Status,
     List {
         #[arg(long)]
         all: bool,
@@ -39,6 +43,16 @@ pub(crate) struct MessageSend {
     kind: MessageKindArg,
     #[arg(long, default_value = "cli")]
     source: String,
+    #[arg(long)]
+    account: Option<String>,
+    #[arg(long)]
+    peer: Option<String>,
+    #[arg(long)]
+    thread: Option<String>,
+    #[arg(long = "message-id")]
+    message_id: Option<String>,
+    #[arg(long = "idempotency-key")]
+    idempotency_key: Option<String>,
     #[arg(long, value_name = "PROFILE")]
     profile: Option<String>,
 }
@@ -81,15 +95,31 @@ pub(crate) async fn message_command(
             let agent = args
                 .profile
                 .or_else(|| agent_override.map(ToOwned::to_owned));
-            let message = store.enqueue(GatewayRoute::new(
-                args.source,
-                args.kind.into(),
-                args.content,
-                agent,
-            ))?;
+            let mut route =
+                GatewayRoute::new(args.source.clone(), args.kind.into(), args.content, agent);
+            if args.account.is_some()
+                || args.peer.is_some()
+                || args.thread.is_some()
+                || args.message_id.is_some()
+            {
+                route = route.with_session_source(GatewaySessionSource {
+                    channel: args.source,
+                    account: args.account,
+                    peer: args.peer,
+                    thread: args.thread,
+                    message_id: args.message_id,
+                });
+            }
+            if let Some(key) = args.idempotency_key {
+                route = route.with_idempotency_key(key);
+            }
+            let message = store.enqueue(route)?;
             println!("enqueued: {}", message.id);
             println!("{}", serde_json::to_string_pretty(&message)?);
             println!("gateway_inbox: {}", store.inbox_path().display());
+        }
+        MessageCommand::Status => {
+            print_gateway_status(&store)?;
         }
         MessageCommand::List { all } => {
             let messages = store
@@ -130,6 +160,72 @@ pub(crate) async fn message_command(
         MessageCommand::Webhook(args) => serve_message_webhook(args, paths)?,
     }
     Ok(())
+}
+
+fn print_gateway_status(store: &LocalGatewayStore) -> Result<()> {
+    let messages = store.list()?;
+    let deliveries = store.deliveries()?;
+    let pending = messages
+        .iter()
+        .filter(|message| message.status == GatewayMessageStatus::Pending)
+        .count();
+    let processing = messages
+        .iter()
+        .filter(|message| message.status == GatewayMessageStatus::Processing)
+        .count();
+    let processed = messages
+        .iter()
+        .filter(|message| message.status == GatewayMessageStatus::Processed)
+        .count();
+    let failed = messages
+        .iter()
+        .filter(|message| message.status == GatewayMessageStatus::Failed)
+        .count();
+    println!("gateway_status:");
+    println!("gateway_inbox: {}", store.inbox_path().display());
+    println!("gateway_outbox: {}", store.outbox_path().display());
+    println!("gateway_pending: {pending}");
+    println!("gateway_processing: {processing}");
+    println!("gateway_processed: {processed}");
+    println!("gateway_failed: {failed}");
+    println!("gateway_deliveries: {}", deliveries.len());
+    print_gateway_sessions(&messages);
+    Ok(())
+}
+
+fn print_gateway_sessions(messages: &[GatewayMessage]) {
+    let mut sessions = messages
+        .iter()
+        .map(|message| {
+            let session_id = gateway_session_id(message);
+            (
+                session_id.to_string(),
+                message.source.as_str(),
+                message
+                    .session_source
+                    .as_ref()
+                    .and_then(|source| source.thread.as_deref())
+                    .unwrap_or(message.id.as_str()),
+                message,
+            )
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by(|left, right| left.0.cmp(&right.0));
+    sessions.dedup_by(|left, right| left.0 == right.0);
+    println!("gateway_sessions: {}", sessions.len());
+    for (session_id, source, thread, message) in sessions.into_iter().rev().take(5) {
+        println!(
+            "gateway_session: session={} source={} thread={} last_status={:?}",
+            redact_secrets(&session_id),
+            redact_secrets(source),
+            redact_secrets(thread),
+            message.status
+        );
+        println!(
+            "  resume: ikaros chat --chat-session {} --message \"...\"",
+            redact_secrets(&session_id)
+        );
+    }
 }
 
 async fn run_message_worker(

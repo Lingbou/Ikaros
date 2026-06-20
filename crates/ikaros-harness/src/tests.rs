@@ -4,6 +4,8 @@ use crate::*;
 use async_trait::async_trait;
 use ikaros_core::{PolicyDecision, RiskLevel};
 use serde_json::json;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeMap,
     fs,
@@ -188,6 +190,85 @@ async fn workspace_env_denies_reading_symlink_escape() {
         .expect_err("symlink escape denied");
 
     assert!(matches!(error, ikaros_core::IkarosError::OutOfScope(_)));
+}
+
+#[tokio::test]
+async fn workspace_env_allows_explicit_plugin_cwd_only_for_plugin_programs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    let plugin_dir = temp.path().join("skills/hello");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&plugin_dir).expect("plugin");
+    let runner = plugin_dir.join(if cfg!(windows) {
+        "runner.cmd"
+    } else {
+        "runner.sh"
+    });
+    fs::write(
+        &runner,
+        if cfg!(windows) {
+            "@echo off\r\nfor %%I in (.) do echo %%~nxI\r\n"
+        } else {
+            "#!/bin/sh\nbasename \"$PWD\"\n"
+        },
+    )
+    .expect("runner");
+    #[cfg(unix)]
+    fs::set_permissions(&runner, {
+        let mut permissions = fs::metadata(&runner).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        permissions
+    })
+    .expect("chmod");
+    let env = WorkspaceExecutionEnv::local(&workspace);
+
+    let denied = env
+        .run_process(ProcessRequest::program(
+            runner.display().to_string(),
+            vec![],
+            &plugin_dir,
+        ))
+        .await
+        .expect_err("default workspace process scope denies plugin cwd");
+    assert!(matches!(denied, ikaros_core::IkarosError::OutOfScope(_)));
+
+    let allowed = env
+        .run_process(
+            ProcessRequest::program(runner.display().to_string(), vec![], &plugin_dir)
+                .with_plugin_cwd_scope(),
+        )
+        .await
+        .expect("plugin cwd allowed");
+    assert_eq!(allowed.stdout.trim(), "hello");
+
+    let outside_program = workspace.join(if cfg!(windows) { "tool.cmd" } else { "tool.sh" });
+    fs::write(
+        &outside_program,
+        if cfg!(windows) {
+            "@echo off\r\necho outside\r\n"
+        } else {
+            "#!/bin/sh\necho outside\n"
+        },
+    )
+    .expect("outside");
+    #[cfg(unix)]
+    fs::set_permissions(&outside_program, {
+        let mut permissions = fs::metadata(&outside_program)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        permissions
+    })
+    .expect("chmod");
+
+    let rejected = env
+        .run_process(
+            ProcessRequest::program(outside_program.display().to_string(), vec![], &plugin_dir)
+                .with_plugin_cwd_scope(),
+        )
+        .await
+        .expect_err("plugin cwd scope rejects program outside plugin cwd");
+    assert!(matches!(rejected, ikaros_core::IkarosError::OutOfScope(_)));
 }
 
 #[tokio::test]

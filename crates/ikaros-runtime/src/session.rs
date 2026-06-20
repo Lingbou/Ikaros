@@ -99,7 +99,7 @@ pub(crate) fn append_runtime_session_event(
     ))
 }
 
-pub(crate) fn gateway_session_id(message: &GatewayMessage) -> SessionId {
+pub fn gateway_session_id(message: &GatewayMessage) -> SessionId {
     if let Some(source) = &message.session_source {
         return SessionId::from(format!(
             "gateway-{}",

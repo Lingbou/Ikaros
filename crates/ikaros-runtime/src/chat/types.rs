@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub use ikaros_context::{ChatContext, DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET};
+use ikaros_harness::CancellationToken;
 use ikaros_models::ModelResponse;
 use ikaros_session::SessionSource;
 use ikaros_soul::EmotionState;
@@ -23,6 +24,8 @@ pub struct ChatRunOptions {
     pub session_source: Option<SessionSource>,
     pub chat_history_path: Option<PathBuf>,
     pub chat_history_backend: Option<String>,
+    #[serde(skip)]
+    pub cancellation: CancellationToken,
 }
 
 impl Default for ChatRunOptions {
@@ -42,6 +45,7 @@ impl Default for ChatRunOptions {
             session_source: None,
             chat_history_path: None,
             chat_history_backend: None,
+            cancellation: CancellationToken::new(),
         }
     }
 }

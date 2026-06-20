@@ -10,16 +10,16 @@ use super::{
 };
 use crate::{relationship_context_lines, relationship_snapshot_from_session};
 use ikaros_context::{
-    ContextBudget, ContextCompressedSection, ContextDiff, ContextReference, ContextTokenEstimator,
-    ContextTokenizerKind, TokenEstimator, TrajectoryCompressor, parse_context_references,
-    resolve_context_references,
+    ContextBudget, ContextCompressedSection, ContextDiff, ContextReference, ContextReferenceKind,
+    ContextTokenEstimator, ContextTokenizerKind, TokenEstimator, TrajectoryCompressor,
+    parse_context_references, resolve_context_reference,
 };
-use ikaros_core::{IkarosError, ResolvedAgentProfile, Result};
-use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_core::{IkarosError, ResolvedAgentProfile, Result, redact_secrets};
+use ikaros_harness::{ExecutionSession, NetworkEgressRequest, SkillRegistry};
 use ikaros_models::{ModelContextProfile, ModelTokenizerKind};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{future::Future, path::Path, pin::Pin};
+use std::{future::Future, pin::Pin};
 
 pub use ikaros_context::ContextBundle;
 
@@ -160,11 +160,8 @@ impl ContextEngine for LocalChatContextEngine {
                 options,
             )
             .await?;
-            let references = assemble_reference_context(
-                &mut context,
-                input.input,
-                &input.session.sandbox.workspace_root,
-            )?;
+            let references =
+                assemble_reference_context(&mut context, input.input, input.session).await?;
 
             let context = redact_chat_context(context);
             let compacted = self
@@ -439,15 +436,50 @@ async fn assemble_memory_context(
     Ok(())
 }
 
-fn assemble_reference_context(
+async fn assemble_reference_context(
     context: &mut ChatContext,
     input: &str,
-    workspace_root: &Path,
+    session: &ExecutionSession,
 ) -> Result<Vec<ContextReference>> {
     let references = parse_context_references(input);
-    context.references = resolve_context_references(&references, workspace_root)
-        .map_err(|error| IkarosError::Message(error.to_string()))?;
+    let mut resolved = Vec::with_capacity(references.len());
+    for reference in &references {
+        let reference_text = match &reference.kind {
+            ContextReferenceKind::Url { url } => resolve_url_reference(url, session).await?,
+            _ => resolve_context_reference(reference, &session.sandbox.workspace_root)
+                .map_err(|error| IkarosError::Message(error.to_string()))?,
+        };
+        resolved.push(reference_text);
+    }
+    context.references = resolved;
     Ok(references)
+}
+
+async fn resolve_url_reference(url: &str, session: &ExecutionSession) -> Result<String> {
+    let response = session
+        .env
+        .send_network_request(NetworkEgressRequest {
+            method: "GET".into(),
+            url: url.into(),
+            headers: Default::default(),
+            body: None,
+        })
+        .await?;
+    let body = truncate_url_reference_body(&redact_secrets(&response.body));
+    Ok(redact_secrets(&format!(
+        "[reference/url] {url} status={}\n{}",
+        response.status, body
+    )))
+}
+
+fn truncate_url_reference_body(body: &str) -> String {
+    const MAX_CHARS: usize = 16 * 1024;
+    let mut chars = body.chars();
+    let mut truncated = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        truncated.push_str("\n[reference/url] truncated");
+    }
+    truncated
 }
 
 async fn assemble_rag_context(

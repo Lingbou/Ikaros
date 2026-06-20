@@ -219,6 +219,29 @@ impl WorkspaceExecutionEnv {
         }
         Ok(())
     }
+
+    fn ensure_plugin_process_request(&self, request: &ProcessRequest) -> Result<PathBuf> {
+        if request.use_shell {
+            return Err(IkarosError::OutOfScope(request.cwd.clone()));
+        }
+        let cwd = fs::canonicalize(&request.cwd)
+            .map_err(|source| IkarosError::io(&request.cwd, source))?;
+        if !cwd.is_dir() {
+            return Err(IkarosError::OutOfScope(request.cwd.clone()));
+        }
+        let command = Path::new(&request.command);
+        let command = if command.is_absolute() {
+            command.to_path_buf()
+        } else {
+            cwd.join(command)
+        };
+        let command =
+            fs::canonicalize(&command).map_err(|source| IkarosError::io(&command, source))?;
+        if !command.starts_with(&cwd) {
+            return Err(IkarosError::OutOfScope(command));
+        }
+        Ok(cwd)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,7 +343,10 @@ impl ProcessRunner for WorkspaceExecutionEnv {
         mut request: ProcessRequest,
     ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput>> + Send + 'a>> {
         Box::pin(async move {
-            request.cwd = self.ensure_existing_workspace_path(&request.cwd)?;
+            request.cwd = match request.cwd_scope {
+                ProcessCwdScope::Workspace => self.ensure_existing_workspace_path(&request.cwd)?,
+                ProcessCwdScope::Plugin => self.ensure_plugin_process_request(&request)?,
+            };
             self.inner.run_process(request).await
         })
     }
@@ -561,6 +587,8 @@ pub struct ProcessRequest {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub use_shell: bool,
+    #[serde(default, skip_serializing_if = "ProcessCwdScope::is_workspace")]
+    pub cwd_scope: ProcessCwdScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -576,6 +604,7 @@ impl ProcessRequest {
             args: Vec::new(),
             cwd: cwd.into(),
             use_shell: true,
+            cwd_scope: ProcessCwdScope::Workspace,
             stdin: None,
             timeout_ms: None,
             max_output_bytes: None,
@@ -588,6 +617,7 @@ impl ProcessRequest {
             args,
             cwd: cwd.into(),
             use_shell: false,
+            cwd_scope: ProcessCwdScope::Workspace,
             stdin: None,
             timeout_ms: None,
             max_output_bytes: None,
@@ -607,6 +637,25 @@ impl ProcessRequest {
     pub fn with_max_output_bytes(mut self, max_output_bytes: usize) -> Self {
         self.max_output_bytes = Some(max_output_bytes);
         self
+    }
+
+    pub fn with_plugin_cwd_scope(mut self) -> Self {
+        self.cwd_scope = ProcessCwdScope::Plugin;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessCwdScope {
+    #[default]
+    Workspace,
+    Plugin,
+}
+
+impl ProcessCwdScope {
+    fn is_workspace(&self) -> bool {
+        matches!(self, Self::Workspace)
     }
 }
 

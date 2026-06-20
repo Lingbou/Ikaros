@@ -18,8 +18,8 @@ pub use approval::{
 pub use audit::{AuditEvent, AuditLog, AuditRotationPolicy};
 pub use execution_env::{
     DryRunExecutionEnv, ExecutionEnv, FileMetadata, FileSystem, LocalExecutionEnv, NetworkEgress,
-    NetworkEgressRequest, NetworkEgressResponse, NetworkedExecutionEnv, ProcessOutput,
-    ProcessRequest, ProcessRunner, WorkspaceExecutionEnv,
+    NetworkEgressRequest, NetworkEgressResponse, NetworkedExecutionEnv, ProcessCwdScope,
+    ProcessOutput, ProcessRequest, ProcessRunner, WorkspaceExecutionEnv,
 };
 pub use guardrails::{
     GuardrailConfig, GuardrailDecision, GuardrailObservation, GuardrailSignal, GuardrailSignalKind,

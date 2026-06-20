@@ -77,6 +77,7 @@ pub use schedule::{
     ScheduleDeliveryReport, ScheduleWorkerTickReport, ScheduledJobRunReport, run_due_jobs,
     run_schedule_worker_tick, run_scheduled_job,
 };
+pub use session::gateway_session_id;
 pub use session::record_approval_resolution;
 pub use task::{
     RuntimeTaskExecution, RuntimeTaskPlan, TaskRunOptions, build_task_plan,

@@ -32,7 +32,7 @@ use ikaros_memory::{
     MemoryTurnRecord, MemoryTurnStart, add_policy_tag,
 };
 use ikaros_models::{
-    ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse,
+    ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse, ModelStream,
     ModelStreamEvent, ModelUsageLedger, governed_provider_from_config_with_http_client,
 };
 use ikaros_session::{
@@ -490,7 +490,7 @@ pub async fn run_chat_turn_with_events(
                     request_options: ModelRequestOptions::default(),
                     stream: options.stream,
                     guardrails: GuardrailConfig::default(),
-                    cancellation: Default::default(),
+                    cancellation: options.cancellation.clone(),
                     hooks: None,
                 },
             },
@@ -520,7 +520,7 @@ pub async fn run_chat_turn_with_events(
             options: ModelRequestOptions::default(),
             tools: Vec::new(),
         };
-        let stream = match provider.stream(request).await {
+        let stream = match cancellable_provider_stream(provider, request, options).await {
             Ok(stream) => stream,
             Err(error) => {
                 let error = redacted_chat_error(error);
@@ -564,7 +564,7 @@ pub async fn run_chat_turn_with_events(
             options: ModelRequestOptions::default(),
             tools: Vec::new(),
         };
-        let response = match provider.generate(request).await {
+        let response = match cancellable_provider_generate(provider, request, options).await {
             Ok(response) => response,
             Err(error) => {
                 let error = redacted_chat_error(error);
@@ -1186,6 +1186,46 @@ fn push_affected_scope(scopes: &mut Vec<(MemoryKind, String)>, kind: MemoryKind,
 
 fn redacted_chat_error(error: IkarosError) -> IkarosError {
     IkarosError::Message(redact_secrets(&error.to_string()))
+}
+
+async fn cancellable_provider_stream(
+    provider: &dyn ModelProvider,
+    request: ModelRequest,
+    options: &ChatRunOptions,
+) -> Result<ModelStream> {
+    if options.cancellation.is_cancelled() {
+        return Err(chat_cancelled_error(
+            "provider stream was cancelled before request",
+        ));
+    }
+    tokio::select! {
+        _ = options.cancellation.cancelled() => {
+            Err(chat_cancelled_error("provider stream was cancelled"))
+        }
+        result = provider.stream(request) => result,
+    }
+}
+
+async fn cancellable_provider_generate(
+    provider: &dyn ModelProvider,
+    request: ModelRequest,
+    options: &ChatRunOptions,
+) -> Result<ModelResponse> {
+    if options.cancellation.is_cancelled() {
+        return Err(chat_cancelled_error(
+            "provider request was cancelled before request",
+        ));
+    }
+    tokio::select! {
+        _ = options.cancellation.cancelled() => {
+            Err(chat_cancelled_error("provider request was cancelled"))
+        }
+        result = provider.generate(request) => result,
+    }
+}
+
+fn chat_cancelled_error(message: &str) -> IkarosError {
+    IkarosError::Message(message.into())
 }
 
 fn emit_chat_failure_event(

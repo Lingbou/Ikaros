@@ -42,7 +42,7 @@ struct Cli {
     #[arg(long, global = true, value_name = "PROFILE")]
     agent: Option<String>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -86,6 +86,7 @@ enum Commands {
         command: TaskCommand,
     },
     Chat(ChatArgs),
+    Tui(ChatArgs),
     Fs {
         #[command(subcommand)]
         command: FsCommand,
@@ -163,70 +164,84 @@ pub(crate) async fn run() -> Result<()> {
         .unwrap_or(cli.workspace.clone());
 
     match cli.command {
-        Commands::Init => init(&paths)?,
-        Commands::Config { command } => config_command(command, &paths)?,
-        Commands::Debug { command } => {
+        None => {
+            chat_command(
+                ChatArgs::default(),
+                &paths,
+                &workspace,
+                cli.agent.as_deref(),
+            )
+            .await?
+        }
+        Some(Commands::Init) => init(&paths)?,
+        Some(Commands::Config { command }) => config_command(command, &paths)?,
+        Some(Commands::Debug { command }) => {
             debug_command(command, &paths, &workspace, cli.agent.as_deref())?
         }
-        Commands::Doctor(args) => doctor(args, &paths, &workspace, cli.agent.as_deref())?,
-        Commands::Persona { command } => persona_command(command, &paths)?,
-        Commands::Memory { command } => {
+        Some(Commands::Doctor(args)) => doctor(args, &paths, &workspace, cli.agent.as_deref())?,
+        Some(Commands::Persona { command }) => persona_command(command, &paths)?,
+        Some(Commands::Memory { command }) => {
             memory_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Relationship { command } => {
+        Some(Commands::Relationship { command }) => {
             relationship_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Rag { command } => {
+        Some(Commands::Rag { command }) => {
             rag_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Voice { command } => {
+        Some(Commands::Voice { command }) => {
             voice_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Body { command } => body::body_command(command, &paths, &workspace)?,
-        Commands::Task { command } => {
+        Some(Commands::Body { command }) => body::body_command(command, &paths, &workspace)?,
+        Some(Commands::Task { command }) => {
             task_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Chat(args) => {
+        Some(Commands::Chat(args)) => {
             chat_command(args, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Fs { command } => {
+        Some(Commands::Tui(args)) => {
+            chat_command(args, &paths, &workspace, cli.agent.as_deref()).await?
+        }
+        Some(Commands::Fs { command }) => {
             fs_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Approval { command } => {
+        Some(Commands::Approval { command }) => {
             approval_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Agent { command } => {
+        Some(Commands::Agent { command }) => {
             agent_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Policy { command } => {
+        Some(Commands::Policy { command }) => {
             policy_command(command, &paths, &workspace, cli.agent.as_deref())?
         }
-        Commands::Provider { command } => provider_command(command, &paths, &workspace).await?,
-        Commands::Git { command } => {
+        Some(Commands::Provider { command }) => {
+            provider_command(command, &paths, &workspace).await?
+        }
+        Some(Commands::Git { command }) => {
             git_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Skill { command } => {
+        Some(Commands::Skill { command }) => {
             skill_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Schedule { command } => {
+        Some(Commands::Schedule { command }) => {
             schedule_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Message { command } => {
+        Some(Commands::Message { command }) => {
             message_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Service { command } => {
+        Some(Commands::Service { command }) => {
             service_command(command, &paths, &workspace, cli.agent.as_deref())?
         }
-        Commands::SelfModify { command } => {
+        Some(Commands::SelfModify { command }) => {
             self_modify_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Repo { command } => {
+        Some(Commands::Repo { command }) => {
             repo_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Test { command } => {
+        Some(Commands::Test { command }) => {
             test_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Commands::Code { command } => {
+        Some(Commands::Code { command }) => {
             code_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
     }
@@ -265,18 +280,24 @@ mod tests {
         .expect("agent run");
         assert!(matches!(
             agent_run.command,
-            Commands::Agent {
+            Some(Commands::Agent {
                 command: AgentCommand::Run(_)
-            }
+            })
         ));
 
         let config_validate =
             Cli::try_parse_from(["ikaros", "config", "validate"]).expect("config validate");
         assert!(matches!(
             config_validate.command,
-            Commands::Config {
+            Some(Commands::Config {
                 command: ConfigCommand::Validate
-            }
+            })
         ));
+
+        let no_command = Cli::try_parse_from(["ikaros"]).expect("default workbench");
+        assert!(no_command.command.is_none());
+
+        let tui = Cli::try_parse_from(["ikaros", "tui"]).expect("tui workbench");
+        assert!(matches!(tui.command, Some(Commands::Tui(_))));
     }
 }

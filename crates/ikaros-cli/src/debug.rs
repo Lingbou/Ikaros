@@ -22,6 +22,7 @@ pub(crate) enum DebugCommand {
     MemoryLifecycle(DebugSessionQuery),
     Continuations(DebugSessionQuery),
     CodingTurn(DebugSessionQuery),
+    Trace(DebugSessionQuery),
 }
 
 #[derive(Debug, Args)]
@@ -48,7 +49,224 @@ pub(crate) fn debug_command(
             debug_continuations(args, paths, workspace, agent_override)
         }
         DebugCommand::CodingTurn(args) => debug_coding_turn(args, paths, workspace, agent_override),
+        DebugCommand::Trace(args) => debug_trace(args, paths, workspace, agent_override),
     }
+}
+
+fn debug_trace(
+    args: DebugSessionQuery,
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+) -> Result<()> {
+    let (state_db, replay) = replay_session(paths, workspace, agent_override, &args.session_id)?;
+    let events = filter_turn_events(
+        &replay.agent_events,
+        &args.session_id,
+        args.turn_id.as_deref(),
+    )?;
+    let mut event_counts = BTreeMap::<String, usize>::new();
+    for event in &events {
+        *event_counts
+            .entry(trace_category(event).to_owned())
+            .or_default() += 1;
+    }
+    let mut turn_spans = BTreeMap::<String, TraceTurnSpan>::new();
+    for event in &events {
+        let turn_id = event.turn_id.to_string();
+        let span = turn_spans
+            .entry(turn_id.clone())
+            .or_insert_with(|| TraceTurnSpan::new(turn_id));
+        span.observe_event(event);
+    }
+    for entry in &replay.entries {
+        if args
+            .turn_id
+            .as_deref()
+            .is_some_and(|turn_id| entry.turn_id.as_ref().map(|id| id.as_str()) != Some(turn_id))
+        {
+            continue;
+        }
+        if let Some(turn_id) = entry.turn_id.as_ref() {
+            let span = turn_spans
+                .entry(turn_id.to_string())
+                .or_insert_with(|| TraceTurnSpan::new(turn_id.to_string()));
+            span.entry_count += 1;
+        }
+    }
+    for approval in &replay.approvals {
+        if args
+            .turn_id
+            .as_deref()
+            .is_some_and(|turn_id| approval.turn_id.as_ref().map(|id| id.as_str()) != Some(turn_id))
+        {
+            continue;
+        }
+        if let Some(turn_id) = approval.turn_id.as_ref() {
+            let span = turn_spans
+                .entry(turn_id.to_string())
+                .or_insert_with(|| TraceTurnSpan::new(turn_id.to_string()));
+            span.approval_count += 1;
+        }
+    }
+    if let Some(turn_id) = args.turn_id.as_deref()
+        && turn_spans.is_empty()
+        && !replay_contains_turn(&replay, turn_id)
+    {
+        return Err(anyhow!(
+            "turn not found in session {}: {turn_id}",
+            args.session_id
+        ));
+    }
+    let turn_spans = turn_spans
+        .into_values()
+        .map(TraceTurnSpan::into_json)
+        .collect::<Vec<_>>();
+    let ordered_events = events
+        .into_iter()
+        .map(trace_event_summary)
+        .collect::<Vec<_>>();
+    let output = json!({
+        "format": "ikaros-trace-v1",
+        "session_id": args.session_id,
+        "turn_id": args.turn_id,
+        "state_db": state_db.display().to_string(),
+        "session_source": replay.session.source,
+        "event_counts": event_counts,
+        "turn_spans": turn_spans,
+        "ordered_events": ordered_events,
+    });
+    println!("{}", serde_json::to_string_pretty(&redact_json(output))?);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TraceTurnSpan {
+    turn_id: String,
+    started_at: Option<time::OffsetDateTime>,
+    ended_at: Option<time::OffsetDateTime>,
+    event_counts: BTreeMap<String, usize>,
+    entry_count: usize,
+    approval_count: usize,
+}
+
+impl TraceTurnSpan {
+    fn new(turn_id: String) -> Self {
+        Self {
+            turn_id,
+            started_at: None,
+            ended_at: None,
+            event_counts: BTreeMap::new(),
+            entry_count: 0,
+            approval_count: 0,
+        }
+    }
+
+    fn observe_event(&mut self, event: &AgentEvent) {
+        *self
+            .event_counts
+            .entry(trace_category(event).to_owned())
+            .or_default() += 1;
+        self.started_at = Some(self.started_at.map_or(event.at, |at| at.min(event.at)));
+        self.ended_at = Some(self.ended_at.map_or(event.at, |at| at.max(event.at)));
+    }
+
+    fn into_json(self) -> Value {
+        json!({
+            "turn_id": self.turn_id,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "event_counts": self.event_counts,
+            "entry_count": self.entry_count,
+            "approval_count": self.approval_count,
+        })
+    }
+}
+
+fn trace_event_summary(event: &AgentEvent) -> Value {
+    json!({
+        "event_id": event.event_id,
+        "session_id": event.session_id,
+        "turn_id": event.turn_id,
+        "parent_event_id": event.parent_event_id,
+        "at": event.at,
+        "source": event.source,
+        "category": trace_category(event),
+        "kind": trace_event_kind(event),
+        "model_stream_kind": model_stream_event_kind(&event.kind),
+        "payload_kind": event.payload.get("kind").and_then(Value::as_str),
+        "payload_phase": event.payload.get("phase").and_then(Value::as_str),
+    })
+}
+
+fn trace_category(event: &AgentEvent) -> &'static str {
+    match &event.kind {
+        AgentEventKind::ModelStream(_) => "model",
+        AgentEventKind::ToolCallStarted
+        | AgentEventKind::ToolCallOutputDelta
+        | AgentEventKind::ToolCallCompleted
+        | AgentEventKind::ToolCallFailed
+        | AgentEventKind::ToolCallCancelled => "tool",
+        AgentEventKind::ContextDiff | AgentEventKind::ContextCompacted => "context",
+        AgentEventKind::MemoryLifecycle => "memory",
+        AgentEventKind::CodingTurn => "coding",
+        AgentEventKind::AuditAnchor => "audit",
+        AgentEventKind::ContinuationStarted
+        | AgentEventKind::ContinuationCompleted
+        | AgentEventKind::ContinuationFailed
+        | AgentEventKind::ContinuationCancelled => "continuation",
+        AgentEventKind::ApprovalRequested | AgentEventKind::ApprovalResolved => "approval",
+        AgentEventKind::Error => "error",
+        AgentEventKind::SessionStart
+        | AgentEventKind::TurnStart
+        | AgentEventKind::UserMessage
+        | AgentEventKind::TurnEnd => "session",
+    }
+}
+
+fn trace_event_kind(event: &AgentEvent) -> &'static str {
+    match event.kind {
+        AgentEventKind::SessionStart => "session_start",
+        AgentEventKind::TurnStart => "turn_start",
+        AgentEventKind::UserMessage => "user_message",
+        AgentEventKind::ModelStream(_) => "model_stream",
+        AgentEventKind::ToolCallStarted => "tool_call_started",
+        AgentEventKind::ToolCallOutputDelta => "tool_call_output_delta",
+        AgentEventKind::ToolCallCompleted => "tool_call_completed",
+        AgentEventKind::ToolCallFailed => "tool_call_failed",
+        AgentEventKind::ToolCallCancelled => "tool_call_cancelled",
+        AgentEventKind::ContextDiff => "context_diff",
+        AgentEventKind::ContextCompacted => "context_compacted",
+        AgentEventKind::MemoryLifecycle => "memory_lifecycle",
+        AgentEventKind::CodingTurn => "coding_turn",
+        AgentEventKind::AuditAnchor => "audit_anchor",
+        AgentEventKind::ContinuationStarted => "continuation_started",
+        AgentEventKind::ContinuationCompleted => "continuation_completed",
+        AgentEventKind::ContinuationFailed => "continuation_failed",
+        AgentEventKind::ContinuationCancelled => "continuation_cancelled",
+        AgentEventKind::ApprovalRequested => "approval_requested",
+        AgentEventKind::ApprovalResolved => "approval_resolved",
+        AgentEventKind::TurnEnd => "turn_end",
+        AgentEventKind::Error => "error",
+    }
+}
+
+fn model_stream_event_kind(kind: &AgentEventKind) -> Option<&'static str> {
+    let AgentEventKind::ModelStream(event) = kind else {
+        return None;
+    };
+    Some(match event {
+        ikaros_models::ModelStreamEvent::Start { .. } => "start",
+        ikaros_models::ModelStreamEvent::TextDelta(_) => "text_delta",
+        ikaros_models::ModelStreamEvent::ReasoningDelta(_) => "reasoning_delta",
+        ikaros_models::ModelStreamEvent::ToolCallStart { .. } => "tool_call_start",
+        ikaros_models::ModelStreamEvent::ToolCallDelta { .. } => "tool_call_delta",
+        ikaros_models::ModelStreamEvent::ToolCallEnd { .. } => "tool_call_end",
+        ikaros_models::ModelStreamEvent::RefusalDelta(_) => "refusal_delta",
+        ikaros_models::ModelStreamEvent::Usage(_) => "usage",
+        ikaros_models::ModelStreamEvent::Error { .. } => "error",
+        ikaros_models::ModelStreamEvent::Done => "done",
+    })
 }
 
 fn debug_coding_turn(
