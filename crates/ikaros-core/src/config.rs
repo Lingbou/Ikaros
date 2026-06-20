@@ -64,6 +64,55 @@ providers:
     # Use the same provider base URL as ASR support, or a separate speech service URL.
     base_url: ""
 
+model:
+  default:
+    # Model identifier sent to the provider.
+    model: ""
+    # Provider family: openai-compatible, anthropic, ollama, or mock for tests only.
+    provider: openai-compatible
+    # Agent runtime implementation that owns the turn loop.
+    runtime: harness-agent-loop
+    # Wire protocol used by the provider adapter.
+    transport: openai-compatible-chat-completions
+    # Provider compatibility profile: auto, generic, moonshot-kimi, deepseek,
+    # gemini-openai, openrouter, qwen, or local-openai-compatible.
+    # auto prefers base_url detection, then model-name hints, then generic.
+    compat_profile: auto
+    params:
+      # Maximum output tokens. null means the adapter/profile may choose a provider default.
+      max_tokens: null
+      # Sampling temperature. null means do not send temperature unless a profile requires it.
+      temperature: null
+      # Optional nucleus sampling value. null means do not send top_p.
+      top_p: null
+      # Number of completions to request when supported. null means provider default.
+      n: null
+      # OpenAI-compatible presence penalty. null means provider default.
+      presence_penalty: null
+      # OpenAI-compatible frequency penalty. null means provider default.
+      frequency_penalty: null
+      # Optional deterministic seed when the provider supports it.
+      seed: null
+      # Stop sequences sent to providers that support OpenAI-compatible stop.
+      stop: []
+    reasoning:
+      # true enables provider-native thinking/reasoning when the profile supports it.
+      # false asks the profile to disable it. null leaves the profile default.
+      enabled: null
+      # Reasoning effort: none, minimal, low, medium, high, xhigh, or max.
+      effort: null
+    # Extra JSON object merged into the final provider request body by the adapter.
+    # Put provider-specific non-secret knobs here; secret-like values are redacted in logs.
+    extra_body: {}
+    # Request timeout in milliseconds.
+    timeout_ms: 30000
+    # Provider retry count after the first failed attempt.
+    max_retries: 0
+    # Optional per-minute request budget for model calls.
+    rate_limit_per_minute: 60
+    # Optional daily token budget recorded by the usage ledger.
+    daily_token_budget: 100000
+
 agent:
   # Default agent profile used when no agent or instance is selected explicitly.
   default: build
@@ -136,55 +185,6 @@ agent:
   #       allow_network: ask
   #     route_bindings:
   #       - channel: cli
-
-model:
-  default:
-    # Provider family: openai-compatible, anthropic, ollama, or mock for tests only.
-    provider: openai-compatible
-    # Agent runtime implementation that owns the turn loop.
-    runtime: harness-agent-loop
-    # Wire protocol used by the provider adapter.
-    transport: openai-compatible-chat-completions
-    # Model identifier sent to the provider.
-    model: ""
-    # Provider compatibility profile: auto, generic, moonshot-kimi, deepseek,
-    # gemini-openai, openrouter, qwen, or local-openai-compatible.
-    # auto prefers base_url detection, then model-name hints, then generic.
-    compat_profile: auto
-    params:
-      # Maximum output tokens. null means the adapter/profile may choose a provider default.
-      max_tokens: null
-      # Sampling temperature. null means do not send temperature unless a profile requires it.
-      temperature: null
-      # Optional nucleus sampling value. null means do not send top_p.
-      top_p: null
-      # Number of completions to request when supported. null means provider default.
-      n: null
-      # OpenAI-compatible presence penalty. null means provider default.
-      presence_penalty: null
-      # OpenAI-compatible frequency penalty. null means provider default.
-      frequency_penalty: null
-      # Optional deterministic seed when the provider supports it.
-      seed: null
-      # Stop sequences sent to providers that support OpenAI-compatible stop.
-      stop: []
-    reasoning:
-      # true enables provider-native thinking/reasoning when the profile supports it.
-      # false asks the profile to disable it. null leaves the profile default.
-      enabled: null
-      # Reasoning effort: none, minimal, low, medium, high, xhigh, or max.
-      effort: null
-    # Extra JSON object merged into the final provider request body by the adapter.
-    # Put provider-specific non-secret knobs here; secret-like values are redacted in logs.
-    extra_body: {}
-    # Request timeout in milliseconds.
-    timeout_ms: 30000
-    # Provider retry count after the first failed attempt.
-    max_retries: 0
-    # Optional per-minute request budget for model calls.
-    rate_limit_per_minute: 60
-    # Optional daily token budget recorded by the usage ledger.
-    daily_token_budget: 100000
 
 policy:
   # Default workspace write policy used when a profile does not override it.
@@ -328,6 +328,33 @@ providers:
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("config.yaml");
         IkarosConfig::write_default_config(&path).expect("write");
+
+        let raw = fs::read_to_string(&path).expect("read generated config");
+        let providers_model = raw.find("providers:\n  model:").expect("providers.model");
+        let model_api_key = providers_model
+            + raw[providers_model..]
+                .find("    api_key: \"\"")
+                .expect("providers.model.api_key");
+        let model_base_url = model_api_key
+            + raw[model_api_key..]
+                .find("    base_url: \"\"")
+                .expect("providers.model.base_url");
+        let model_default = raw.find("model:\n  default:").expect("model.default");
+        let model_name = model_default
+            + raw[model_default..]
+                .find("    model: \"\"")
+                .expect("model.default.model");
+        let model_provider = model_default
+            + raw[model_default..]
+                .find("    provider: openai-compatible")
+                .expect("model.default.provider");
+        let agent = raw.find("agent:\n").expect("agent");
+
+        assert!(providers_model < model_default);
+        assert!(model_api_key < model_base_url);
+        assert!(model_base_url < model_name);
+        assert!(model_name < model_provider);
+        assert!(model_default < agent);
 
         let config = IkarosConfig::load(&path).expect("load generated config");
         assert_eq!(config.model.default.provider, "openai-compatible");

@@ -86,7 +86,7 @@ rag:
   embedding_provider: hash
 ```
 
-不要把真实 API key 写进这个仓库。远程 provider 应在 `~/.ikaros/config.yaml` 或其他 `IKAROS_HOME/config.yaml` 中配置。生成的配置会把第三方 provider 设置放在文件最上方：
+不要把真实 API key 写进这个仓库。远程 provider 应在 `~/.ikaros/config.yaml` 或其他 `IKAROS_HOME/config.yaml` 中配置。生成的配置会把模型 key、URL 和聊天模型名放在靠前位置：
 
 ```yaml
 providers:
@@ -99,8 +99,8 @@ providers:
 
 model:
   default:
-    provider: openai-compatible
     model: provider-model-id
+    provider: openai-compatible
 ```
 
 Provider 设置只保存在本地，不进仓库。编辑后运行 `ikaros config validate`。缺 key、URL、模型名、非法 backend、未知字段和 descriptor-only 的外部 memory provider 都会被报告，且不会打印 secret 值。

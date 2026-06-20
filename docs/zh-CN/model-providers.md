@@ -65,8 +65,8 @@ providers:
 
 model:
   default:
-    provider: openai-compatible
     model: provider-model-id
+    provider: openai-compatible
     runtime: harness-agent-loop
     transport: openai-compatible-chat-completions
     compat_profile: auto
@@ -99,8 +99,8 @@ providers:
 
 model:
   default:
-    provider: anthropic
     model: claude-sonnet-4-5
+    provider: anthropic
     transport: anthropic-messages
 ```
 
@@ -115,8 +115,8 @@ providers:
 
 model:
   default:
-    provider: ollama
     model: llama3.2
+    provider: ollama
     transport: ollama-chat
 ```
 

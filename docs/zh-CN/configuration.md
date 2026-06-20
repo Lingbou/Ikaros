@@ -13,7 +13,7 @@ ikaros --ikaros-home /tmp/ikaros-dev doctor
 
 不要把真实 API key 放进文档、测试、示例或 tracked 文件。本地未跟踪的 `IKAROS_HOME/config.yaml` 可以直接保存第三方 API key，用于普通运行和 smoke test。
 
-`ikaros init` 生成的配置把外部资源设置放在文件最上方。每个远程 API provider 都有 `api_key` 和 `base_url`；模型名称放在真正发请求的功能段落里。
+`ikaros init` 生成的配置会把第一次聊天需要填写的字段放在靠前位置：`providers.model.api_key`、`providers.model.base_url` 和 `model.default.model`。每个远程 API provider 都有 `api_key` 和 `base_url`；模型名称放在真正发请求的功能段落里。
 
 ```yaml
 providers:
@@ -29,6 +29,11 @@ providers:
   asr:
     api_key: ""
     base_url: ""
+
+model:
+  default:
+    model: ""
+    provider: openai-compatible
 ```
 
 `providers.*` 是 schema-only 的凭证和 endpoint 区域。它不会被合并进 `model.default`、`rag` 或 `voice` 结构；runtime 会把对应的 provider 设置和选择 provider family、transport、model、timeout、budget 的功能配置一起传给 model、embedding、TTS、ASR factory。
@@ -178,9 +183,9 @@ providers:
 
 model:
   default:
+    model: provider-model-id
     provider: openai-compatible
     transport: openai-compatible-chat-completions
-    model: provider-model-id
     compat_profile: auto
     params:
       max_tokens: null
@@ -239,8 +244,8 @@ providers:
 
 model:
   default:
-    provider: anthropic
     model: claude-sonnet-4-5
+    provider: anthropic
 ```
 
 Anthropic adapter 总会发送正数 `max_tokens`。当 `model.default.reasoning`
@@ -260,8 +265,8 @@ providers:
 
 model:
   default:
-    provider: ollama
     model: llama3.2
+    provider: ollama
 ```
 
 Ollama adapter 会把 `params.max_tokens` 映射为原生 `options.num_predict`，并把显式配置的 `temperature`、`top_p`、`seed` 和 `stop` 放入 `/api/chat` 的 native `options` object。

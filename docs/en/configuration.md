@@ -17,9 +17,11 @@ Do not put real API keys in docs, tests, examples, or tracked files. A local
 untracked `IKAROS_HOME/config.yaml` may store third-party API keys directly for
 ordinary runs and smoke tests.
 
-`ikaros init` puts external-resource settings at the top of the file. Every
-remote API-backed provider has both an `api_key` and a `base_url`; model names
-stay in the feature section that sends the request.
+`ikaros init` puts the first chat setup fields near the top of the file:
+`providers.model.api_key`, `providers.model.base_url`, and
+`model.default.model`. Every remote API-backed provider has both an `api_key`
+and a `base_url`; model names stay in the feature section that sends the
+request.
 
 ```yaml
 providers:
@@ -35,6 +37,11 @@ providers:
   asr:
     api_key: ""
     base_url: ""
+
+model:
+  default:
+    model: ""
+    provider: openai-compatible
 ```
 
 `providers.*` is a schema-only credentials and endpoint section. It is not
@@ -211,9 +218,9 @@ providers:
 
 model:
   default:
+    model: provider-model-id
     provider: openai-compatible
     transport: openai-compatible-chat-completions
-    model: provider-model-id
     compat_profile: auto
     params:
       max_tokens: null
@@ -306,8 +313,8 @@ providers:
 
 model:
   default:
-    provider: anthropic
     model: claude-sonnet-4-5
+    provider: anthropic
 ```
 
 The Anthropic adapter always sends a positive `max_tokens` value. When
@@ -327,8 +334,8 @@ providers:
 
 model:
   default:
-    provider: ollama
     model: llama3.2
+    provider: ollama
 ```
 
 The Ollama adapter maps `params.max_tokens` to native `options.num_predict`.

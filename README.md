@@ -86,7 +86,7 @@ rag:
   embedding_provider: hash
 ```
 
-Real API keys must not be written into this repository. Configure remote providers in `~/.ikaros/config.yaml` or another `IKAROS_HOME/config.yaml`. The generated file puts plaintext third-party provider settings at the top:
+Real API keys must not be written into this repository. Configure remote providers in `~/.ikaros/config.yaml` or another `IKAROS_HOME/config.yaml`. The generated file puts the model key, URL, and chat model near the top:
 
 ```yaml
 providers:
@@ -99,8 +99,8 @@ providers:
 
 model:
   default:
-    provider: openai-compatible
     model: provider-model-id
+    provider: openai-compatible
 ```
 
 Provider settings are local-only and are not kept in the repository. Run `ikaros config validate` after editing the file. Missing keys, URLs, model names, invalid backends, unknown fields, and descriptor-only external memory providers are reported without printing secret values.
