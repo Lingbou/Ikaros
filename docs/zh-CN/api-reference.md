@@ -15,7 +15,17 @@ cargo doc --workspace --all-features --no-deps
 ```bash
 ikaros init
 ikaros doctor
+ikaros provider inspect
+ikaros provider health
+ikaros provider health --live
 ```
+
+`provider inspect` 会读取本地 `IKAROS_HOME/config.yaml` 的 provider 设置，并输出解析后的
+provider descriptor：provider family、model、profile、context window、tokenizer、
+capability、health state 和 cost 字段。它不会调用远端 provider，也不会打印 API key。
+
+`provider health` 读取本地 provider health ledger。`provider health --live` 会通过 runtime
+`NetworkEgress` 发送一个短请求，并记录结果，不会打印 API key。
 
 聊天：
 

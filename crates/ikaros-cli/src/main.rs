@@ -15,6 +15,7 @@ mod memory;
 mod message;
 mod persona;
 mod policy;
+mod provider;
 mod rag;
 mod relationship;
 mod repo;

@@ -45,6 +45,29 @@ ikaros config validate
 
 普通 runtime 加载配置时已经会检查 YAML 形状，并在返回 `IkarosConfig` 前拒绝未知字段。显式 `config validate` 会复用同一套 shape check，并额外校验 provider/runtime/transport/backend 组合、缺失的 key、URL、模型名，以及 descriptor-only 的外部 memory provider。输出只使用 `providers.model.api_key` 这类字段路径说明缺失或非法，不会打印 secret 值。
 
+## 执行边界
+
+Runtime session 会从 `execution` 段创建 `ExecutionEnv`：
+
+```yaml
+execution:
+  network:
+    enabled: true
+    allow_provider_hosts: true
+    allowed_hosts: []
+    timeout_ms: 30000
+  sandbox:
+    backend: local
+    read_scope: workspace
+```
+
+`network.enabled` 打开 HTTP egress backend。网络出口仍然默认拒绝：`allow_provider_hosts`
+会把 `providers.*.base_url` 解析出的精确 host 和本地 Ollama 默认 host 放入 allowlist；
+`allowed_hosts` 用于后续 network-capable tool 的额外精确 host。这里写 host name，不写完整 URL 或 `host:port`。
+
+`sandbox.backend` 支持 `local` 和 `dry-run`。Local session 使用 workspace-scoped
+filesystem/process 环境和受控 HTTP egress。Dry-run session 保留读取能力，但只跳过文件写入和进程执行。网络出口由 `execution.network.enabled` 和 host allowlist 单独控制；如果 dry-run 也必须避免网络副作用，需要把 `network.enabled` 设为 false。`read_scope` 目前固定为 `workspace`；已有路径会 canonicalize，因此读写都会拒绝 symlink 逃逸。
+
 ## Agent Profile
 
 Profile 选择 persona overlay 和普通策略行为：
@@ -168,6 +191,8 @@ Memory policy 字段：
 
 支持的模型 provider 名称包括 `mock`、`openai-compatible`、`anthropic` 和 `ollama`。
 
+Runtime chat、task agent loop 和 provider-backed coding command 的 provider 调用现在都经过 session `NetworkEgress`，不再直接使用裸 HTTP client。用 `ikaros provider health` 查看本地 health ledger，用 `ikaros provider health --live` 执行真实 provider health probe。
+
 OpenAI-compatible 示例：
 
 ```yaml
@@ -197,9 +222,26 @@ model:
     extra_body: {}
     rate_limit_per_minute: 60
     daily_token_budget: 100000
+    max_retries: 2
 ```
 
 Provider 名称表示 adapter family，不表示厂商。任何 Chat Completions-compatible 服务都使用 `openai-compatible`，具体 endpoint 和模型写在 `providers.model.base_url` 和 `model.default.model`。
+
+Ollama 也可以作为本地 embedding provider：
+
+```yaml
+providers:
+  embedding:
+    api_key: ""
+    # 可选。留空时使用 http://127.0.0.1:11434。
+    base_url: ""
+
+rag:
+  embedding_provider: ollama
+  embedding_model: nomic-embed-text
+```
+
+`max_retries` 控制 provider 外层 governance retry policy，用于 rate limit、瞬时服务端错误和 network failure 这类 retryable failure。鉴权、bad request 和 context-limit failure 是 terminal。默认策略使用较短且有上限的指数退避；它和 OpenAI-compatible adapter 内部那次 unsupported-parameter retry 是两套机制。
 
 `compat_profile` 控制 OpenAI-compatible adapter 内部的 provider/model 请求差异。`auto` 会先按 `providers.model.base_url` 匹配，再按模型名 hint 匹配，最后回退到 `generic`。支持显式指定：
 
@@ -293,7 +335,10 @@ rag:
   embedding_model: text-embedding-3-small
 ```
 
-Cloud embedding 使用 OpenAI-compatible 形状，并在 provider 调用前通过 harness 审批。支持的 embedding provider 名称包括 `hash`、`sparse`、`mock` 和 `openai-compatible`。
+Embedding provider 名称包括 `hash`、`sparse`、`mock`、`ollama` 和
+`openai-compatible`。`hash`、`sparse`、`mock` 是本地 deterministic/test adapter。
+`ollama` 调用本地 Ollama `/api/embed` endpoint，不需要 API key。Cloud embedding 使用
+OpenAI-compatible 形状，并在 provider 调用前通过 harness 审批。
 
 外部 memory provider 目前只是 descriptor 元数据。远程 append/search adapter 尚未实现，因此 `ikaros config validate` 会拒绝启用的外部 memory provider。
 

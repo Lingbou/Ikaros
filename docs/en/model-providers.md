@@ -31,9 +31,15 @@ callers.
 reservation, tokenizer kind, and metadata source. Runtime uses it to cap
 `ContextBudget` before context assembly and to choose a context token estimator.
 OpenAI-compatible and mock providers have deterministic local estimators;
-Anthropic and Ollama currently select explicit fallback estimators. This is not
-a full provider registry yet; cost, health, cooldown, fallback chains, and exact
-provider-native tokenizer libraries are still future work.
+Anthropic and Ollama currently select explicit fallback estimators.
+
+`ProviderRegistry` supplies local provider descriptors for inspection and
+runtime planning. A descriptor contains provider family, resolved profile,
+capabilities, context metadata, cost fields, and health state. This registry is
+local metadata: `provider inspect` does not call the remote provider. Runtime
+provider calls write `provider-health.jsonl` health records, enforce durable
+cooldown after repeated retryable failures, and expose a fallback-chain
+`ModelProvider` primitive for ordered backup providers.
 
 Providers must not:
 
@@ -74,6 +80,22 @@ Accepted provider names:
 - Anthropic: `anthropic`
 - Ollama: `ollama`
 - Offline tests: `mock`
+
+Inspect the resolved local descriptor with:
+
+```bash
+ikaros provider inspect
+ikaros provider health
+ikaros provider health --live
+```
+
+The command reads `IKAROS_HOME/config.yaml`, resolves the configured provider
+family/profile, and prints context window, default output reservation,
+tokenizer, capabilities, health state, and cost fields. It redacts model values
+that look secret-like and never prints the API key. `provider health` reads the
+local health ledger. `provider health --live` sends a short real request through
+the session `NetworkEgress` boundary and records success or failure in the same
+ledger.
 
 OpenAI-compatible example:
 
@@ -154,6 +176,11 @@ provider adapters. Config defaults are merged with per-call options before the
 adapter builds a wire payload. Adapter profiles may still omit, rewrite, or add
 fields when the target provider requires a different shape.
 
+Runtime chat, task agent loops, and provider-backed coding workflows construct
+providers with an egress-backed HTTP transport. The provider adapters still own
+wire payloads, but actual network I/O is governed by `ExecutionEnv` host
+allowlists and timeout policy.
+
 ## OpenAI-Compatible Adapter
 
 The OpenAI-compatible adapter owns Chat Completions requests and responses, HTTP client setup, normal completions, SSE stream parsing, tool-call conversion, request profile handling, and the stream tool-call accumulator. It does not own the agent loop.
@@ -215,6 +242,7 @@ The governance wrapper handles:
 - daily token budget estimates
 - prompt-free usage logging
 - streaming response usage recording
+- classified provider errors and retry/backoff for retryable failures
 
 Usage records live under local audit state and contain provider, model, timestamp, and token counts. They do not store prompts.
 
@@ -227,6 +255,13 @@ Daily token-budget checks include configured or per-call output caps. When an
 OpenAI-compatible profile supplies an implicit output cap, such as Kimi's
 `32000` or Qwen/local `65536`, the governance preflight uses that profile
 default so strict profiles are not underestimated.
+
+`model.default.max_retries` controls the governance retry policy around the
+configured provider. Retryable classes are rate-limit, transient server, and
+network failures. Authentication, bad request, and context-limit failures are
+terminal. Backoff is exponential with a capped local default; provider-specific
+unsupported-parameter retries inside an adapter remain separate and are still
+limited to the exact unsupported field.
 
 Failures:
 

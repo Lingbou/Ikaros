@@ -22,9 +22,11 @@ ikaros-skills = { path = "../ikaros-skills" }
 ikaros-soul = { path = "../ikaros-soul" }
 serde.workspace = true
 serde_json.workspace = true
+ring.workspace = true
 rusqlite.workspace = true
 tokio.workspace = true
 time.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

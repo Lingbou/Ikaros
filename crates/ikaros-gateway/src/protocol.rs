@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Protocol frames for long-running Ikaros gateway clients and daemons.
 
-use ikaros_core::redact_secrets;
+use ikaros_core::{IkarosError, Result, redact_secrets};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const GATEWAY_PROTOCOL_VERSION: &str = "ikaros.gateway.v1";
@@ -238,6 +239,98 @@ impl GatewayCapability {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayProtocolPolicy {
+    pub allowed_clients: BTreeSet<String>,
+    pub allowed_channels: BTreeSet<String>,
+    pub required_capabilities: BTreeSet<String>,
+}
+
+impl GatewayProtocolPolicy {
+    pub fn allow_all_local() -> Self {
+        Self::default()
+    }
+
+    pub fn with_allowed_clients(mut self, clients: impl IntoIterator<Item = String>) -> Self {
+        self.allowed_clients = clients
+            .into_iter()
+            .map(|client| client.trim().to_owned())
+            .filter(|client| !client.is_empty())
+            .collect();
+        self
+    }
+
+    pub fn with_allowed_channels(mut self, channels: impl IntoIterator<Item = String>) -> Self {
+        self.allowed_channels = channels
+            .into_iter()
+            .map(|channel| channel.trim().to_ascii_lowercase())
+            .filter(|channel| !channel.is_empty())
+            .collect();
+        self
+    }
+
+    pub fn with_required_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.required_capabilities = capabilities
+            .into_iter()
+            .map(|capability| capability.trim().to_owned())
+            .filter(|capability| !capability.is_empty())
+            .collect();
+        self
+    }
+
+    pub fn validate_frame(&self, frame: &GatewayFrame) -> Result<()> {
+        if frame.protocol != GATEWAY_PROTOCOL_VERSION {
+            return Err(IkarosError::Message(format!(
+                "unsupported gateway protocol version: {}",
+                redact_secrets(&frame.protocol)
+            )));
+        }
+        let channel = frame.source.channel.trim().to_ascii_lowercase();
+        if !self.allowed_channels.is_empty() && !self.allowed_channels.contains(&channel) {
+            return Err(IkarosError::Message(format!(
+                "gateway channel is not allowed: {}",
+                redact_secrets(&frame.source.channel)
+            )));
+        }
+        if let GatewayFramePayload::Connect(connect) = &frame.payload {
+            self.validate_connect(connect)?;
+        }
+        Ok(())
+    }
+
+    fn validate_connect(&self, connect: &GatewayConnect) -> Result<()> {
+        let client_id = connect.identity.client_id.trim();
+        if client_id.is_empty() {
+            return Err(IkarosError::Message(
+                "gateway connect identity client_id is required".into(),
+            ));
+        }
+        if !self.allowed_clients.is_empty() && !self.allowed_clients.contains(client_id) {
+            return Err(IkarosError::Message(format!(
+                "gateway client is not allowed: {}",
+                redact_secrets(client_id)
+            )));
+        }
+        let capabilities = connect
+            .capabilities
+            .iter()
+            .map(|capability| capability.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for required in &self.required_capabilities {
+            if !capabilities.contains(required.as_str()) {
+                return Err(IkarosError::Message(format!(
+                    "gateway client missing required capability: {}",
+                    redact_secrets(required)
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct GatewaySessionSource {
@@ -304,5 +397,36 @@ mod tests {
         assert!(!raw.contains("secret"));
         assert!(!raw.contains("abc123"));
         assert!(raw.contains("[REDACTED_SECRET]"));
+    }
+
+    #[test]
+    fn gateway_protocol_policy_rejects_unknown_client_and_channel() {
+        let policy = GatewayProtocolPolicy::allow_all_local()
+            .with_allowed_clients(["trusted-client".into()])
+            .with_allowed_channels(["control".into()])
+            .with_required_capabilities(["chat".into()]);
+        let frame = GatewayFrame::connect(
+            GatewayClientIdentity::new("token=secret-client"),
+            vec![GatewayCapability::new("chat")],
+        );
+
+        let error = policy.validate_frame(&frame).expect_err("client denied");
+
+        assert!(error.to_string().contains("gateway client is not allowed"));
+        assert!(!error.to_string().contains("secret-client"));
+    }
+
+    #[test]
+    fn gateway_protocol_policy_accepts_allowed_connect() {
+        let policy = GatewayProtocolPolicy::allow_all_local()
+            .with_allowed_clients(["trusted-client".into()])
+            .with_allowed_channels(["control".into()])
+            .with_required_capabilities(["chat".into()]);
+        let frame = GatewayFrame::connect(
+            GatewayClientIdentity::new("trusted-client"),
+            vec![GatewayCapability::new("chat")],
+        );
+
+        policy.validate_frame(&frame).expect("allowed");
     }
 }

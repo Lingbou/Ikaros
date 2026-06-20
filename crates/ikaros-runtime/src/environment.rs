@@ -3,11 +3,15 @@
 use ikaros_core::{
     AgentInstance, IkarosConfig, IkarosError, IkarosPaths, PolicyDecision, ResolvedAgentProfile,
 };
-use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_harness::{
+    DryRunExecutionEnv, ExecutionEnv, ExecutionSession, GovernedNetworkEgress, HttpNetworkEgress,
+    LocalExecutionEnv, NetworkEgressPolicy, NetworkedExecutionEnv, SkillRegistry,
+    WorkspaceExecutionEnv,
+};
 use ikaros_memory::LocalMemoryStore;
 use ikaros_rag::LocalRagStore;
 use ikaros_skills::{SkillEnvironment, builtin_registry};
-use std::path::Path;
+use std::{path::Path, sync::Arc, time::Duration};
 
 pub struct RuntimeHarness {
     pub config: IkarosConfig,
@@ -82,7 +86,8 @@ pub fn session_and_registry_for_agent(
     config: &IkarosConfig,
     agent: &ResolvedAgentProfile,
 ) -> ikaros_core::Result<(ExecutionSession, SkillRegistry)> {
-    let session = ExecutionSession::new_with_agent(workspace, &paths.audit_dir, agent);
+    let session = ExecutionSession::new_with_agent(workspace, &paths.audit_dir, agent)
+        .with_execution_env(runtime_execution_env(config, workspace)?);
     let registry = builtin_registry(skill_environment(paths, workspace, config)?);
     Ok((session, registry))
 }
@@ -93,9 +98,51 @@ pub fn session_and_registry_for_instance(
     agent: &AgentInstance,
 ) -> ikaros_core::Result<(ExecutionSession, SkillRegistry)> {
     let session =
-        ExecutionSession::new_with_agent_instance(&agent.workspace, &paths.audit_dir, agent);
+        ExecutionSession::new_with_agent_instance(&agent.workspace, &paths.audit_dir, agent)
+            .with_execution_env(runtime_execution_env(config, &agent.workspace)?);
     let registry = builtin_registry(skill_environment(paths, &agent.workspace, config)?);
     Ok((session, registry))
+}
+
+pub fn runtime_execution_env(
+    config: &IkarosConfig,
+    workspace: &Path,
+) -> ikaros_core::Result<Arc<dyn ExecutionEnv>> {
+    let local_workspace = Arc::new(WorkspaceExecutionEnv::new(
+        workspace,
+        Arc::new(LocalExecutionEnv),
+    )) as Arc<dyn ExecutionEnv>;
+    let file_process_env: Arc<dyn ExecutionEnv> = match config
+        .execution
+        .sandbox
+        .backend
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "local" => local_workspace,
+        "dry-run" => Arc::new(DryRunExecutionEnv::new(local_workspace)),
+        other => {
+            return Err(IkarosError::Message(format!(
+                "unsupported execution sandbox backend: {other}"
+            )));
+        }
+    };
+    let egress = if config.execution.network.enabled {
+        let hosts = crate::provider_egress_allowed_hosts(config);
+        let policy = NetworkEgressPolicy::allow_hosts(hosts);
+        Arc::new(GovernedNetworkEgress::new(
+            policy,
+            Arc::new(HttpNetworkEgress::new(Duration::from_millis(
+                config.execution.network.timeout_ms,
+            ))?),
+        ))
+    } else {
+        Arc::new(GovernedNetworkEgress::deny_by_default())
+    };
+    Ok(Arc::new(NetworkedExecutionEnv::new(
+        file_process_env,
+        egress,
+    )))
 }
 
 pub fn skill_environment(

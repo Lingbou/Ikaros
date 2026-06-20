@@ -722,6 +722,7 @@ dependencies = [
  "async-trait",
  "flate2",
  "ikaros-core",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -729,6 +730,7 @@ dependencies = [
  "time",
  "tokio",
  "toml",
+ "url",
  "uuid",
 ]
 
@@ -757,6 +759,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "time",
  "tokio",
  "uuid",
 ]
@@ -794,12 +797,14 @@ dependencies = [
  "ikaros-skills",
  "ikaros-soul",
  "ikaros-voice",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "time",
  "tokio",
+ "url",
  "uuid",
 ]
 

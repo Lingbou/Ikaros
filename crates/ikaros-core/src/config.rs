@@ -19,6 +19,7 @@ pub struct IkarosConfig {
     pub chat_history: LocalStoreConfig,
     pub rag: RagConfig,
     pub voice: VoiceConfig,
+    pub execution: ExecutionConfig,
     pub self_modify: SelfModifyConfig,
 }
 
@@ -252,6 +253,23 @@ voice:
     # Provider retry count for ASR calls.
     max_retries: 0
 
+execution:
+  network:
+    # Enable the runtime network egress backend. When true, network calls still
+    # must match allowed hosts below.
+    enabled: true
+    # Automatically allow hosts from providers.*.base_url and local Ollama defaults.
+    allow_provider_hosts: true
+    # Extra exact hosts allowed for tool/plugin/context network egress.
+    allowed_hosts: []
+    # HTTP egress timeout in milliseconds.
+    timeout_ms: 30000
+  sandbox:
+    # Execution backend: local or dry-run.
+    backend: local
+    # Filesystem read scope enforced by ExecutionEnv.
+    read_scope: workspace
+
 # Optional self-modify check profiles override built-in checks by change kind.
 # Commands are still validated against the restricted test/check/lint/build command set.
 # self_modify:
@@ -337,6 +355,10 @@ providers:
         assert!(config.providers.embedding.base_url.is_empty());
         assert_eq!(config.voice.tts.provider, "openai-compatible");
         assert!(config.providers.tts.base_url.is_empty());
+        assert!(config.execution.network.enabled);
+        assert!(config.execution.network.allow_provider_hosts);
+        assert_eq!(config.execution.sandbox.backend, "local");
+        assert_eq!(config.execution.sandbox.read_scope, "workspace");
     }
 
     #[test]
@@ -665,6 +687,51 @@ memory:
                 .any(|issue| issue.path == "memory.policy.max_records_per_scope")
         );
     }
+
+    #[test]
+    fn config_validation_rejects_invalid_execution_boundary_config() {
+        let report = IkarosConfig::validate_yaml(
+            r#"
+model:
+  default:
+    provider: mock
+    runtime: harness-agent-loop
+    transport: mock
+    model: mock-ikaros
+
+rag:
+  embedding_provider: hash
+
+voice:
+  tts:
+    provider: mock
+  asr:
+    provider: mock
+
+execution:
+  network:
+    allowed_hosts:
+      - https://api.example/v1
+    timeout_ms: 0
+  sandbox:
+    backend: docker
+    read_scope: host
+"#,
+        )
+        .expect("validate");
+
+        for path in [
+            "execution.network.allowed_hosts[0]",
+            "execution.network.timeout_ms",
+            "execution.sandbox.backend",
+            "execution.sandbox.read_scope",
+        ] {
+            assert!(
+                report.errors.iter().any(|issue| issue.path == path),
+                "{path} missing from {report:#?}"
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -902,6 +969,49 @@ impl VoiceProviderConfig {
 impl Default for VoiceProviderConfig {
     fn default() -> Self {
         Self::remote_tts()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExecutionConfig {
+    pub network: ExecutionNetworkConfig,
+    pub sandbox: ExecutionSandboxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExecutionNetworkConfig {
+    pub enabled: bool,
+    pub allow_provider_hosts: bool,
+    pub allowed_hosts: Vec<String>,
+    pub timeout_ms: u64,
+}
+
+impl Default for ExecutionNetworkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_provider_hosts: true,
+            allowed_hosts: Vec::new(),
+            timeout_ms: 30_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExecutionSandboxConfig {
+    pub backend: String,
+    pub read_scope: String,
+}
+
+impl Default for ExecutionSandboxConfig {
+    fn default() -> Self {
+        Self {
+            backend: "local".into(),
+            read_scope: "workspace".into(),
+        }
     }
 }
 

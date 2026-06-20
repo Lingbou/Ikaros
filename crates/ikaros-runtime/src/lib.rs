@@ -10,6 +10,7 @@ mod diagnostics;
 mod emotion;
 mod environment;
 mod message;
+mod model_http;
 mod persona;
 mod relationship;
 mod schedule;
@@ -56,13 +57,14 @@ pub use emotion::{
 };
 pub use environment::{
     RuntimeHarness, recent_policy_decisions, resolve_agent, resolve_agent_instance,
-    session_and_registry, session_and_registry_for_agent, session_and_registry_for_instance,
-    skill_environment,
+    runtime_execution_env, session_and_registry, session_and_registry_for_agent,
+    session_and_registry_for_instance, skill_environment,
 };
 pub use message::{
     GatewayDrainContext, GatewayDrainReport, GatewayWorkerTickReport, drain_gateway_message,
     drain_gateway_messages, run_gateway_worker_tick,
 };
+pub use model_http::{EgressModelHttpClient, provider_egress_allowed_hosts};
 pub use persona::{
     PersonaPatch, PersonaWriteReport, render_persona_markdown, reset_persona, update_persona,
 };

@@ -338,6 +338,20 @@ fn openai_compatible_embedding_body_redacts_input() {
 }
 
 #[test]
+fn ollama_embedding_body_redacts_input() {
+    let config = ikaros_core::RagConfig {
+        embedding_provider: "ollama".into(),
+        embedding_model: "nomic-embed-text".into(),
+        ..ikaros_core::RagConfig::default()
+    };
+
+    let body = super::ollama::test_ollama_embedding_request_body(&config, "hello token=abc123");
+
+    assert_eq!(body["model"], "nomic-embed-text");
+    assert_eq!(body["input"], "hello token=[REDACTED_SECRET]");
+}
+
+#[test]
 fn ingests_and_searches_sqlite_index() {
     let temp = tempfile::tempdir().expect("tempdir");
     let doc = temp.path().join("doc.md");

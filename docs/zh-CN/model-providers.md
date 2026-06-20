@@ -18,7 +18,9 @@
 
 `ModelRequest` 携带 messages、类型化 request options 和可选 tool definition。Request options 包括输出上限、sampling 字段、stop sequence、reasoning 控制，以及用于 provider-specific 请求字段的 `extra_body` object。实际模型名由已配置的 provider 持有。`ModelResponse` 携带 provider、model、content、usage 和标准化 tool call。`ModelStreamEvent` 是 runtime event 层消费的 stream 协议；`chunks` 和 `tool_calls` 仍作为聚合字段保留给现有调用方。
 
-`ModelContextProfile` 记录 context window、默认输出 token 预留、tokenizer kind 和 metadata source。Runtime 会在 context assembly 前用它收窄 `ContextBudget`，并选择 context token estimator。OpenAI-compatible 和 mock provider 已有本地确定性 estimator；Anthropic 和 Ollama 当前选择显式 fallback estimator。这还不是完整 provider registry；cost、health、cooldown、fallback chain 和精确 provider-native tokenizer library 仍是后续工作。
+`ModelContextProfile` 记录 context window、默认输出 token 预留、tokenizer kind 和 metadata source。Runtime 会在 context assembly 前用它收窄 `ContextBudget`，并选择 context token estimator。OpenAI-compatible 和 mock provider 已有本地确定性 estimator；Anthropic 和 Ollama 当前选择显式 fallback estimator。
+
+`ProviderRegistry` 会提供本地 provider descriptor，供 inspect 和 runtime 规划使用。Descriptor 包含 provider family、解析后的 profile、capability、context metadata、cost 字段和 health state。这个 registry 是本地 metadata：`provider inspect` 不会调用远端 provider。Runtime provider 调用会写入 `provider-health.jsonl`，连续 retryable failure 后会进入 durable cooldown，并提供按顺序尝试备用 provider 的 fallback-chain `ModelProvider` primitive。
 
 Provider 不应：
 
@@ -55,6 +57,16 @@ Streaming 状态：
 - Ollama：`ollama`
 - 离线测试：`mock`
 
+可以用下面的命令查看当前配置解析出的本地 descriptor：
+
+```bash
+ikaros provider inspect
+ikaros provider health
+ikaros provider health --live
+```
+
+`provider inspect` 读取 `IKAROS_HOME/config.yaml`，解析当前 provider family/profile，并输出 context window、默认输出预留、tokenizer、capability、health state 和 cost 字段。它会脱敏看起来像 secret 的模型值，不打印 API key。`provider health` 读取本地 health ledger；`provider health --live` 会通过 session `NetworkEgress` 发送一个很短的真实请求，并把成功或失败写入同一份 ledger。
+
 OpenAI-compatible 示例：
 
 ```yaml
@@ -88,6 +100,8 @@ model:
 ```
 
 `api_key` 和 `base_url` 存在于本机 `IKAROS_HOME/config.yaml` 的 `providers.model`。不要把真实 key 写入 tracked 文件。Provider 名称表示 adapter family，不应把厂商名编码进 `model.default.provider`。
+
+Runtime chat、task agent-loop 和 provider-backed coding workflow 会用 egress-backed HTTP transport 构造 provider。Provider adapter 仍负责 wire payload，但实际网络 I/O 由 `ExecutionEnv` 的 host allowlist 和 timeout policy 管控。
 
 Anthropic 示例：
 
@@ -158,12 +172,15 @@ Governance wrapper 处理：
 - 每日 token 预算估算
 - 不含 prompt 的用量日志
 - streaming response 的用量记录
+- provider error 分类，以及 retryable failure 的 retry/backoff
 
 用量记录位于本地 audit 状态中，包含 provider、model、timestamp 和 token count，不保存 prompt。
 
 Governance 包裹 provider adapter。它应在 adapter 前看到 request，但不应理解 provider-specific wire format。因此 redaction、rate limiting、daily token budget 和 usage recording 对所有 provider family 一致生效。
 
 每日 token 预算检查会计入配置或 per-call 的输出上限。当 OpenAI-compatible profile 提供隐式输出上限时，例如 Kimi 的 `32000` 或 Qwen/local 的 `65536`，governance preflight 会使用这个 profile 默认值，避免低估 strict profile 的请求成本。
+
+`model.default.max_retries` 会控制配置 provider 外层的 governance retry policy。可重试类别包括 rate-limit、瞬时服务端错误和 network failure。认证错误、bad request 和 context-limit failure 是 terminal。Backoff 使用本地默认的指数退避和上限；adapter 内部针对 unsupported parameter 的精确字段重试仍然是独立机制，并且只移除明确不支持的字段。
 
 失败语义：
 

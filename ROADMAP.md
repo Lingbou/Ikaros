@@ -8,8 +8,12 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Keep agent-loop fallback parsing limited to provider-native tool calls plus the strict documented JSON fallback.
 - Keep `config.yaml` validation current as provider, memory, voice, and runtime fields change.
 - Keep provider-profile compatibility covered with fixture tests and a live smoke matrix for Moonshot/Kimi, DeepSeek, Gemini OpenAI-compatible, OpenRouter, Qwen/DashScope, SiliconFlow, and local OpenAI-compatible servers.
+- Keep provider registry, live health probes, cooldown state, fallback-chain
+  primitives, and provider capability regression tests independent from the
+  agent turn loop.
 - Expand provider stream fixture tests for typed text, reasoning, refusal, tool-call, usage, error, done, and true network-incremental behavior.
-- Expand policy and approval tests for path handling, secret-looking inputs, network calls, plugin execution, and approval replay.
+- Expand policy and approval tests for path handling, secret-looking inputs,
+  governed network egress, plugin execution, and approval replay.
 - Keep approval replay bound to workspace, exact approved input, and agent identity.
 - Keep command-backed plugin tests focused on malicious manifests, path traversal, stdin/output limits, timeout limits, and output redaction.
 - Add clearer migration and backup reports for `doctor --fix`.
@@ -57,6 +61,12 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Keep provider request quirks inside model adapters and compatibility profiles,
   not in the runtime turn loop.
 - Add stricter compatibility tests for provider-specific tool-call differences.
+- Migrate provider HTTP clients and future network-capable skills through the
+  `NetworkEgress` boundary so allowlists, audit, cancellation, and redaction are
+  enforced consistently.
+- Preserve gateway session continuity with digest-derived session ids and keep
+  raw channel/account/peer/thread/message identifiers only as redacted source
+  evidence.
 
 ## Context And Memory
 
@@ -66,7 +76,7 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
   provider-aware token budgets, quota-based compaction, and context diffs.
 - Keep `ModelContextProfile` wired into context budgeting and estimator
   selection. Extend the current deterministic adapters with exact
-  provider-native tokenizer libraries once the provider registry exists.
+  provider-native tokenizer libraries using provider registry metadata.
 - Extend quota-based context assembly with dynamic priority, semantic
   compression, and stricter long-running session diagnostics beyond the current
   `context-diff` debug query.
@@ -149,6 +159,9 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Gateway And Automation
 
 - Evolve the local gateway worker into a long-running daemon with device pairing, capabilities, multi-channel routing, and session continuity across channel threads.
+- Keep `GatewayProtocolPolicy` checks for protocol version, client allowlists,
+  channel allowlists, and required capabilities in front of future daemon
+  adapters.
 - Keep gateway JSONL queue mutations behind portable file locks so local workers
   and external adapters do not corrupt inbox/outbox state.
 - Add external message adapters that only write into the governed local gateway inbox.
@@ -158,10 +171,13 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 ## Execution Environment
 
 - Preserve the workspace-scoped local environment as the baseline contract:
-  writes, removals, directory creation, and process cwd stay under the session
+  reads, writes, removals, directory listing/creation, and process cwd stay under the session
   workspace, including symlink escape checks.
-- Define isolation levels, mount rules, and network-egress behavior before adding non-local execution backends.
-- Add Docker, ssh, and dry-run `ExecutionEnv` backends after the isolation contract is testable.
+- Keep provider HTTP, future network-capable tools, and local probes routed
+  through governed `NetworkEgress`; shell/test commands remain structured and
+  should not be the network escape hatch.
+- Define isolation levels and mount rules before adding Docker and ssh
+  execution backends. Dry-run is the first non-side-effect backend.
 - Route file, process, network, plugin, shell, test, and coding helpers through the environment abstraction.
 
 ## Plugins And Skills

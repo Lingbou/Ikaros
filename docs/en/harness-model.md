@@ -120,14 +120,13 @@ not attach it directly unless they intentionally want to bypass workspace
 scoping.
 
 `WorkspaceExecutionEnv` resolves relative paths against the session workspace.
-Filesystem writes, byte writes, directory creation, file removal, and process
-working directories must stay under the workspace root. The scope check uses both
-lexical normalization and canonical existing-path anchors, so `..` paths and
-symlink escapes cannot turn an approved workspace operation into an external
-host write. Read APIs also resolve relative paths from the workspace, but read
-authorization still belongs to the skill policy or reference resolver; the
-environment wrapper alone should not be treated as a complete read sandbox.
-Filesystem skills, shell commands, coding helpers, RAG maintenance,
+Filesystem reads, writes, byte reads/writes, directory listing/creation, file
+removal, and process working directories must stay under the workspace root. The
+scope check uses both lexical normalization and canonical existing-path anchors,
+so `..` paths and symlink escapes cannot turn an approved workspace operation
+into an external host read or write. Skill policy still decides whether a read is
+allowed, but the env layer now enforces the workspace boundary for existing
+paths. Filesystem skills, shell commands, coding helpers, RAG maintenance,
 voice output, voice ASR audio reads, self-modify workspace reads/writes/checks,
 and command-backed plugins should use session/env instead of calling host APIs
 directly.
@@ -143,10 +142,22 @@ stdout/stderr, supports optional stdin, supports a timeout, and can reject outpu
 that exceeds `max_output_bytes`. A timeout attempts to kill the child before
 returning `command timed out`.
 
-`NetworkEgress` is part of the interface, but the local backend does not provide
-a network implementation. Provider calls that need network access are handled by
-their provider adapters after policy approval, not by arbitrary plugin or shell
-code.
+`NetworkEgress` is part of the interface. Runtime sessions compose the
+workspace-scoped filesystem/process backend with `GovernedNetworkEgress` and
+`HttpNetworkEgress`. The governed wrapper is deny-by-default, allows only exact
+parsed URL hosts from its allowlist, and redacts denied host summaries. Provider
+HTTP adapters receive an egress-backed transport in chat, task agent-loop, and
+provider-backed coding paths. Arbitrary plugin or shell code should not bypass
+the harness to make network requests; model-facing shell commands remain limited
+to structured test/check allowlists.
+
+`execution.sandbox.backend: dry-run` installs a dry-run backend for filesystem
+and process side-effect operations. It preserves workspace reads but skips
+writes and process execution with structured dry-run output. Network egress is
+controlled separately by `execution.network.enabled` and the governed allowlist;
+disable `execution.network.enabled` when a dry-run session must also avoid
+network effects. Docker and ssh isolation are kept as future backend
+implementations rather than being implied by policy metadata.
 
 ## Shell and Plugins
 

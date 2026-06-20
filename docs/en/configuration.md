@@ -63,6 +63,36 @@ memory providers before a remote call is attempted. Validation output uses field
 paths such as `providers.model.api_key`; it reports whether a value is missing
 or invalid but never prints secret values.
 
+## Execution Boundary
+
+Runtime sessions build an `ExecutionEnv` from the `execution` section:
+
+```yaml
+execution:
+  network:
+    enabled: true
+    allow_provider_hosts: true
+    allowed_hosts: []
+    timeout_ms: 30000
+  sandbox:
+    backend: local
+    read_scope: workspace
+```
+
+`network.enabled` turns on the HTTP egress backend. Egress remains
+deny-by-default: `allow_provider_hosts` adds exact hosts parsed from
+`providers.*.base_url` plus local Ollama defaults, and `allowed_hosts` adds
+extra exact host names for future network-capable tools. Use host names only,
+not full URLs or `host:port` strings.
+
+`sandbox.backend` is `local` or `dry-run`. Local sessions use a workspace-scoped
+filesystem/process environment and a governed HTTP egress backend. Dry-run
+sessions keep read access but skip file writes and process execution. Network
+egress is controlled separately by `execution.network.enabled` and the host
+allowlist; set `network.enabled: false` when a dry run must also avoid network
+side effects. `read_scope` is currently fixed to `workspace`; existing paths are
+canonicalized so symlink escapes are rejected for reads and writes.
+
 ## Agent Profiles
 
 Profiles choose persona overlay and ordinary policy behavior:
@@ -201,6 +231,11 @@ until all required fields are configured.
 
 Supported model provider names are `mock`, `openai-compatible`, `anthropic`, and `ollama`.
 
+Provider calls made by runtime chat, task agent loops, and provider-backed
+coding commands now go through session `NetworkEgress`, not a raw HTTP client.
+Use `ikaros provider health` to inspect the local health ledger and
+`ikaros provider health --live` to run a real health probe.
+
 OpenAI-compatible example:
 
 ```yaml
@@ -230,11 +265,18 @@ model:
     extra_body: {}
     rate_limit_per_minute: 60
     daily_token_budget: 100000
+    max_retries: 2
 ```
 
 Provider names are adapter families, not vendor names. Use `openai-compatible`
 for any Chat Completions-compatible service and put the selected endpoint and
 model in `providers.model.base_url` and `model.default.model`.
+
+`max_retries` controls the governance retry policy around retryable provider
+failures such as rate limits, transient server failures, and network failures.
+Authentication, bad request, and context-limit failures are terminal. The
+default uses short capped exponential backoff; this is separate from the
+OpenAI-compatible adapter's single unsupported-parameter retry.
 
 `compat_profile` controls provider/model request quirks inside the
 OpenAI-compatible adapter. `auto` first matches `providers.model.base_url`, then
@@ -331,6 +373,20 @@ model:
     model: llama3.2
 ```
 
+Ollama can also provide local embeddings:
+
+```yaml
+providers:
+  embedding:
+    api_key: ""
+    # Optional. Empty uses http://127.0.0.1:11434.
+    base_url: ""
+
+rag:
+  embedding_provider: ollama
+  embedding_model: nomic-embed-text
+```
+
 The Ollama adapter maps `params.max_tokens` to native `options.num_predict`.
 It also forwards explicitly configured `temperature`, `top_p`, `seed`, and
 `stop` values through the native `/api/chat` `options` object.
@@ -363,9 +419,11 @@ rag:
   embedding_model: text-embedding-3-small
 ```
 
-Cloud embeddings use the OpenAI-compatible shape and require approval through
-the harness before provider calls. Supported embedding provider names are
-`hash`, `sparse`, `mock`, and `openai-compatible`.
+Embedding provider names are `hash`, `sparse`, `mock`, `ollama`, and
+`openai-compatible`. `hash`, `sparse`, and `mock` are local deterministic/test
+adapters. `ollama` calls a local Ollama `/api/embed` endpoint and does not need
+an API key. Cloud embeddings use the OpenAI-compatible shape and require
+approval through the harness before provider calls.
 
 External memory providers are descriptor metadata only in the current runtime.
 `ikaros config validate` rejects enabled external memory providers because

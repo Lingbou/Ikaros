@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use ikaros_core::{PolicyDecision, RiskLevel};
 use serde_json::json;
 use std::{
+    collections::BTreeMap,
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -115,6 +116,106 @@ impl ExecutionEnv for InterceptEnv {
     }
 }
 
+#[tokio::test]
+async fn network_egress_denies_by_default() {
+    let env = GovernedNetworkEgress::deny_by_default();
+    let result = env
+        .send_network_request(NetworkEgressRequest {
+            method: "GET".into(),
+            url: "https://api.example/v1/models".into(),
+            headers: BTreeMap::new(),
+            body: None,
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .expect_err("denied")
+            .to_string()
+            .contains("network egress denied")
+    );
+}
+
+#[tokio::test]
+async fn network_egress_allowlist_matches_host_without_leaking_secret_url() {
+    let policy = NetworkEgressPolicy::allow_hosts(["api.example".into()]);
+
+    assert!(
+        policy
+            .allows("https://api.example/v1/chat?key=sk-secret")
+            .is_ok()
+    );
+
+    let denied = policy
+        .allows("https://evil.example/v1/chat?key=sk-secret")
+        .expect_err("denied");
+    let message = denied.to_string();
+    assert!(message.contains("network egress denied"));
+    assert!(message.contains("evil.example"));
+    assert!(!message.contains("sk-secret"));
+}
+
+#[tokio::test]
+async fn network_egress_does_not_allow_suffix_host_confusion() {
+    let policy = NetworkEgressPolicy::allow_hosts(["api.example".into()]);
+
+    let denied = policy
+        .allows("https://not-api.example/v1/chat")
+        .expect_err("suffix host denied");
+
+    assert!(denied.to_string().contains("network egress denied"));
+}
+
+#[tokio::test]
+async fn workspace_env_denies_reading_symlink_escape() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let secret = temp.path().join("outside-secret.txt");
+    fs::write(&secret, "do not read").expect("secret");
+    let link = workspace.join("secret-link.txt");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&secret, &link).expect("symlink");
+
+    let env = WorkspaceExecutionEnv::local(&workspace);
+    let error = env
+        .read_to_string(Path::new("secret-link.txt"))
+        .await
+        .expect_err("symlink escape denied");
+
+    assert!(matches!(error, ikaros_core::IkarosError::OutOfScope(_)));
+}
+
+#[tokio::test]
+async fn networked_execution_env_routes_network_to_governed_egress() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let transport = Arc::new(CountingNetworkTransport {
+        calls: calls.clone(),
+    });
+    let policy = NetworkEgressPolicy::allow_hosts(["api.example".into()]);
+    let egress = Arc::new(GovernedNetworkEgress::new(policy, transport));
+    let env = NetworkedExecutionEnv::new(Arc::new(LocalExecutionEnv), egress);
+
+    let mut headers = BTreeMap::new();
+    headers.insert("authorization".into(), "Bearer sk-test".into());
+    let response = env
+        .send_network_request(NetworkEgressRequest {
+            method: "POST".into(),
+            url: "https://api.example/v1/chat".into(),
+            headers,
+            body: Some("{\"ok\":true}".into()),
+        })
+        .await
+        .expect("allowed request");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 fn audit_log_records_policy_decision() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -131,6 +232,26 @@ fn audit_log_records_policy_decision() {
     let events = session.audit.read_all().expect("audit");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].decision, Some(PolicyDecision::Deny));
+}
+
+struct CountingNetworkTransport {
+    calls: Arc<AtomicUsize>,
+}
+
+impl NetworkEgress for CountingNetworkTransport {
+    fn send_network_request<'a>(
+        &'a self,
+        _request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        let calls = self.calls.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(NetworkEgressResponse {
+                status: 200,
+                body: "{\"ok\":true}".into(),
+            })
+        })
+    }
 }
 
 #[tokio::test]

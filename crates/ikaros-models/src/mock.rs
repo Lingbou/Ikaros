@@ -49,6 +49,10 @@ impl ModelProvider for MockModelProvider {
         "mock"
     }
 
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     fn context_profile(&self) -> ModelContextProfile {
         ModelContextProfile::new(8_192, 1_024, ModelTokenizerKind::Mock, "mock")
     }

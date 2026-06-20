@@ -7,8 +7,8 @@ mod types;
 
 pub use protocol::{
     GATEWAY_PROTOCOL_VERSION, GatewayCapability, GatewayClientIdentity, GatewayConnect,
-    GatewayEvent, GatewayFrame, GatewayFramePayload, GatewayRequest, GatewayRequestKind,
-    GatewayResponse, GatewaySessionSource,
+    GatewayEvent, GatewayFrame, GatewayFramePayload, GatewayProtocolPolicy, GatewayRequest,
+    GatewayRequestKind, GatewayResponse, GatewaySessionSource,
 };
 pub use store::LocalGatewayStore;
 pub use types::{

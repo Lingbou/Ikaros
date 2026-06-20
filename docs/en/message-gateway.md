@@ -69,8 +69,14 @@ Core types:
 - `GatewaySessionSource`
 - `GatewayClientIdentity`
 - `GatewayCapability`
+- `GatewayProtocolPolicy`
 
 Frames support `connect`, `request`, `response`, and `event`. `GatewaySessionSource` describes channel/account/peer/thread/message_id style origins. Frames and routes are redacted before storage.
+
+`GatewayProtocolPolicy` validates frame protocol version, allowed client ids,
+allowed channels, and required client capabilities before a daemon or adapter
+accepts a frame. This is the local protocol hardening layer used before any
+long-running multi-client gateway daemon is exposed.
 
 Protocol frames use `ikaros.gateway.v1`. A request frame contains:
 
@@ -134,10 +140,14 @@ Processing context:
 6. Successful results create a `GatewayDelivery` in the outbox.
 7. The session store receives redacted request/result/delivery evidence.
 
-`chat` messages reuse the chat session id derived from the gateway channel,
-account, peer, and thread/message id. `task` messages write a gateway-scoped
-user entry, a runtime result entry, and typed start/end/error events. Delivery
-records include the outbox delivery id and kind, not the full unredacted output.
+`chat` and `task` messages derive their durable session id from a versioned
+digest of gateway channel, account, peer, and thread. The raw channel/account/
+peer/thread values are not embedded in the session id. `message_id` is stored as
+redacted source evidence for the individual message; it does not decide the
+conversation identity when a structured thread is present. `task` messages write
+a gateway-scoped user entry, a runtime result entry, and typed start/end/error
+events. Delivery records include the outbox delivery id and kind, not the full
+unredacted output.
 
 If a message requires approval, the worker records the pending approval state in
 the processing summary; it does not auto-approve or retry with broader

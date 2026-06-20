@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use ikaros_core::{IkarosConfig, IkarosPaths, ResolvedAgentProfile, redact_secrets};
 use ikaros_harness::{AuditEvent, ExecutionSession};
 use ikaros_models::ModelUsageLedger;
-use ikaros_runtime::{ChatHistoryStore, ChatRunOptions, base_body_status};
+use ikaros_runtime::{ChatHistoryStore, ChatRunOptions, base_body_status, runtime_execution_env};
 use serde_json::json;
 use std::path::Path;
 
@@ -43,7 +43,8 @@ pub(super) async fn handle_interactive_chat_command(
                 .ok_or_else(|| anyhow!("usage: /agent <profile>"))?;
             let new_agent = resolve_interactive_agent(config, requested)?;
             runtime.session =
-                ExecutionSession::new_with_agent(workspace, &paths.audit_dir, &new_agent);
+                ExecutionSession::new_with_agent(workspace, &paths.audit_dir, &new_agent)
+                    .with_execution_env(runtime_execution_env(config, workspace)?);
             runtime.session.audit.append(AuditEvent::new(
                 "chat_agent_switch",
                 None,

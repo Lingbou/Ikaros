@@ -10,8 +10,9 @@ use ikaros_core::{IkarosPaths, ToolResult, redact_secrets};
 use ikaros_harness::{AuditEvent, CancellationToken, ExecutionSession, SkillRegistry};
 use ikaros_models::{
     ModelMessage, ModelRequest, ModelRequestOptions, ModelUsageLedger,
-    governed_provider_from_config,
+    governed_provider_from_config_with_http_client,
 };
+use ikaros_runtime::EgressModelHttpClient;
 use ikaros_session::{
     AgentEventKind, SessionId, SessionSource, SessionStore, SqliteSessionStore, TurnId,
 };
@@ -531,10 +532,11 @@ pub(crate) fn coding_session_and_registry_for_workflow_with_cancellation(
     let turn_id = turn_id.map(TurnId::from).unwrap_or_default();
     let mut env = skill_env(paths, &agent.workspace, &config)?;
     let coding_model_provider = if include_model_provider {
-        Some(Arc::from(governed_provider_from_config(
+        Some(Arc::from(governed_provider_from_config_with_http_client(
             &config.model.default,
             &config.providers.model,
             &paths.audit_dir,
+            Some(Arc::new(EgressModelHttpClient::new(session.env.clone()))),
         )?))
     } else {
         None
@@ -825,10 +827,11 @@ async fn append_model_code_review_notes(
     session: &ExecutionSession,
 ) -> Result<PathBuf> {
     let config = ikaros_core::IkarosConfig::load(&paths.config)?;
-    let provider = governed_provider_from_config(
+    let provider = governed_provider_from_config_with_http_client(
         &config.model.default,
         &config.providers.model,
         &paths.audit_dir,
+        Some(Arc::new(EgressModelHttpClient::new(session.env.clone()))),
     )?;
     let usage_ledger = ModelUsageLedger::new(&paths.audit_dir);
     let prompt = build_model_code_review_prompt(diff, &result.output)?;

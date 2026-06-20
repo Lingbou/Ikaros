@@ -14,8 +14,8 @@ use super::{
     types::{ChatMessageResult, ChatRunOptions, ChatTurnReport},
 };
 use crate::{
-    AgentEventSink, AgentHarness, AgentHarnessConfig, AgentLoopOptions, HarnessAgentRuntime,
-    noop_agent_event_sink,
+    AgentEventSink, AgentHarness, AgentHarnessConfig, AgentLoopOptions, EgressModelHttpClient,
+    HarnessAgentRuntime, noop_agent_event_sink,
 };
 use crate::{record_emotion_signal, resolve_agent_instance, session_and_registry_for_instance};
 use ikaros_context::TokenEstimator;
@@ -33,7 +33,7 @@ use ikaros_memory::{
 };
 use ikaros_models::{
     ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions, ModelResponse,
-    ModelStreamEvent, ModelUsageLedger, governed_provider_from_config,
+    ModelStreamEvent, ModelUsageLedger, governed_provider_from_config_with_http_client,
 };
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSource, PersistingAgentTurnSink, SessionEntry,
@@ -59,12 +59,13 @@ pub async fn run_chat_message(
         profile: agent_instance.profile.clone(),
     };
     let persona = load_or_default(&paths.persona)?;
-    let provider = governed_provider_from_config(
+    let (session, registry) = session_and_registry_for_instance(paths, &config, &agent_instance)?;
+    let provider = governed_provider_from_config_with_http_client(
         &config.model.default,
         &config.providers.model,
         &paths.audit_dir,
+        Some(Arc::new(EgressModelHttpClient::new(session.env.clone()))),
     )?;
-    let (session, registry) = session_and_registry_for_instance(paths, &config, &agent_instance)?;
     let memory_provider = LocalMemoryStore::new(&paths.memory_dir, &config.memory.backend)?;
     let mut options = options;
     if options.session_id.is_none() {

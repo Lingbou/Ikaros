@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::http::{ModelHttpClient, ModelHttpRequest, ReqwestModelHttpClient};
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
     ModelContextProfile, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStream,
@@ -11,9 +12,8 @@ use ikaros_core::{
     IkarosError, ModelConfig, RemoteProviderConfig, Result, redact_json, redact_secrets,
     resolve_config_secret, resolve_config_value,
 };
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{mem, time::Duration};
+use std::{collections::BTreeMap, mem, sync::Arc, time::Duration};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_DEFAULT_OUTPUT_LIMIT: u32 = 128_000;
@@ -41,14 +41,14 @@ const NO_XHIGH_CLAUDE_SUBSTRINGS: &[&str] = &[
     "claude-sonnet-4.6",
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AnthropicProvider {
     name: String,
     base_url: String,
     model: String,
     api_key: String,
     max_retries: u8,
-    client: Client,
+    http: Arc<dyn ModelHttpClient>,
 }
 
 impl AnthropicProvider {
@@ -57,19 +57,29 @@ impl AnthropicProvider {
         config: &ModelConfig,
         provider_settings: &RemoteProviderConfig,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_millis(config.timeout_ms))
-            .build()
-            .map_err(|source| {
-                IkarosError::Message(format!("failed to build Anthropic model client: {source}"))
-            })?;
+        Self::from_config_with_http_client(
+            provider_name,
+            config,
+            provider_settings,
+            Arc::new(ReqwestModelHttpClient::new(Duration::from_millis(
+                config.timeout_ms,
+            ))?),
+        )
+    }
+
+    pub fn from_config_with_http_client(
+        provider_name: impl Into<String>,
+        config: &ModelConfig,
+        provider_settings: &RemoteProviderConfig,
+        http: Arc<dyn ModelHttpClient>,
+    ) -> Result<Self> {
         Ok(Self {
             name: provider_name.into(),
             base_url: provider_base_url(provider_settings)?,
             model: resolve_config_value(&config.model, "model.default.model")?,
             api_key: provider_settings.api_key.clone(),
             max_retries: config.max_retries,
-            client,
+            http,
         })
     }
 
@@ -98,6 +108,10 @@ impl ModelProvider for AnthropicProvider {
         &self.name
     }
 
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     fn context_profile(&self) -> ModelContextProfile {
         ModelContextProfile::new(
             anthropic_context_window(&self.model),
@@ -115,22 +129,14 @@ impl ModelProvider for AnthropicProvider {
         let mut last_error = None;
         for attempt in 0..=self.max_retries {
             let result = self
-                .client
-                .post(&url)
-                .header("x-api-key", &key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .json(&body)
-                .send()
+                .http
+                .send(anthropic_http_post(&url, &key, &body)?)
                 .await;
             match result {
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.map_err(|source| {
-                        IkarosError::Message(format!(
-                            "failed to read Anthropic model response: {source}"
-                        ))
-                    })?;
-                    if !status.is_success() {
+                    let status = response.status;
+                    let text = response.body;
+                    if !(200..=299).contains(&status) {
                         last_error = Some(format!(
                             "Anthropic model provider returned HTTP {status}: {}",
                             redact_secrets(&text)
@@ -174,6 +180,27 @@ impl ModelProvider for AnthropicProvider {
             diagnostics: response.diagnostics,
         })
     }
+}
+
+fn anthropic_http_post(
+    url: &str,
+    key: &str,
+    body: &AnthropicMessagesRequest,
+) -> Result<ModelHttpRequest> {
+    let mut headers = BTreeMap::new();
+    headers.insert("x-api-key".into(), key.into());
+    headers.insert("anthropic-version".into(), ANTHROPIC_VERSION.into());
+    headers.insert("content-type".into(), "application/json".into());
+    Ok(ModelHttpRequest {
+        method: "POST".into(),
+        url: url.into(),
+        headers,
+        body: serde_json::to_string(body).map_err(|source| {
+            IkarosError::Message(format!(
+                "failed to serialize Anthropic request JSON: {source}"
+            ))
+        })?,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]

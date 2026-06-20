@@ -5,6 +5,7 @@ mod approval;
 mod audit;
 mod execution_env;
 mod guardrails;
+mod network;
 mod plugin;
 mod policy;
 mod session;
@@ -16,14 +17,16 @@ pub use approval::{
 };
 pub use audit::{AuditEvent, AuditLog, AuditRotationPolicy};
 pub use execution_env::{
-    ExecutionEnv, FileMetadata, FileSystem, LocalExecutionEnv, NetworkEgress, NetworkEgressRequest,
-    NetworkEgressResponse, ProcessOutput, ProcessRequest, ProcessRunner, WorkspaceExecutionEnv,
+    DryRunExecutionEnv, ExecutionEnv, FileMetadata, FileSystem, LocalExecutionEnv, NetworkEgress,
+    NetworkEgressRequest, NetworkEgressResponse, NetworkedExecutionEnv, ProcessOutput,
+    ProcessRequest, ProcessRunner, WorkspaceExecutionEnv,
 };
 pub use guardrails::{
     GuardrailConfig, GuardrailDecision, GuardrailObservation, GuardrailSignal, GuardrailSignalKind,
     GuardrailState,
 };
 pub use ikaros_core::{IkarosError, Result};
+pub use network::{GovernedNetworkEgress, HttpNetworkEgress, NetworkEgressPolicy};
 pub use plugin::{
     LoadedPluginManifest, PLUGIN_COMMAND_MAX_ARG_BYTES, PLUGIN_COMMAND_MAX_ARGS,
     PLUGIN_COMMAND_MAX_OUTPUT_BYTES, PLUGIN_COMMAND_MAX_STDIN_BYTES, PLUGIN_COMMAND_MAX_TIMEOUT_MS,

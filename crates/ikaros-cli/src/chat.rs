@@ -7,10 +7,11 @@ use crate::{resolve_agent_instance, session_and_registry_for_instance};
 use anyhow::Result;
 use clap::Args;
 use ikaros_core::{IkarosConfig, IkarosPaths, ResolvedAgentProfile, redact_secrets};
-use ikaros_models::{ModelUsageLedger, governed_provider_from_config};
+use ikaros_models::{ModelUsageLedger, governed_provider_from_config_with_http_client};
 use ikaros_runtime::{
     ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, ChatRunOptions,
-    DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, new_chat_session_id, run_chat_message, run_chat_turn,
+    DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, EgressModelHttpClient, new_chat_session_id,
+    run_chat_message, run_chat_turn,
 };
 use ikaros_soul::load_or_default;
 use std::{
@@ -111,11 +112,6 @@ pub(crate) async fn chat_command(
     paths.ensure()?;
     let config = IkarosConfig::load(&paths.config)?;
     let persona = load_or_default(&paths.persona)?;
-    let provider = governed_provider_from_config(
-        &config.model.default,
-        &config.providers.model,
-        &paths.audit_dir,
-    )?;
     let history_store =
         ChatHistoryStore::new_with_backend(&paths.home, &config.chat_history.backend)?;
     let mut options = ChatRunOptions::from(&args);
@@ -128,6 +124,14 @@ pub(crate) async fn chat_command(
     options.chat_history_backend = Some(history_store.backend_name().into());
     let (mut runtime, registry) =
         initial_interactive_runtime(paths, workspace, &config, agent_override, chat_session_id)?;
+    let provider = governed_provider_from_config_with_http_client(
+        &config.model.default,
+        &config.providers.model,
+        &paths.audit_dir,
+        Some(std::sync::Arc::new(EgressModelHttpClient::new(
+            runtime.session.env.clone(),
+        ))),
+    )?;
     let usage_ledger = ModelUsageLedger::new(&paths.audit_dir);
 
     println!(

@@ -71,22 +71,30 @@ ikaros rag delete-scope scratch
 
 ## Embedding
 
-本地 provider：
+本地 deterministic/test provider：
 
 - `hash`
 - `sparse`
 - `mock`
 
+本地 HTTP provider：
+
+- `ollama`
+
 可选 cloud provider：
 
 - `openai-compatible`
 
-`openai-compatible` 是唯一的 cloud embedding provider 名称。Provider endpoint 通过 `providers.embedding.base_url` 配置，不通过 provider-name alias 表达。
+`ollama` 会调用本地 Ollama `/api/embed` endpoint。`providers.embedding.base_url`
+留空时使用 `http://127.0.0.1:11434`，也可以显式设置为其他本地 Ollama base URL。
+`openai-compatible` 是 cloud embedding provider 名称。Provider endpoint 通过
+`providers.embedding.base_url` 配置，不通过 provider-name alias 表达。
 
-Cloud embedding call 是网络动作，ingest、reindex 和 search 都需要 harness 审批。文本在 provider 调用前脱敏。测试显式使用本地/mock provider，不需要凭证。
+OpenAI-compatible 和 Ollama embedding call 都是网络动作，ingest、reindex 和 search
+都需要 harness 审批。文本在 provider 调用前脱敏。测试显式使用本地/mock provider，不需要凭证。
 
 RAG search 输出不会暴露原始 embedding vector。本地索引可以保存向量，但 CLI 和 skill output 只展示 chunk 内容、citation metadata、score 和 embedding provider。
 
 ## Chat 上下文
 
-Chat 默认不注入 RAG。只有 profile 启用 `rag_context` 且本轮使用非零 `--rag-top-k`，或者用户直接执行 `ikaros rag search` 时，才会把本地 RAG 作为带 citation 的 reference retrieval 使用。Cloud embedding 仍然通过显式 RAG 命令触发，不做后台聊天检索。
+Chat 默认不注入 RAG。只有 profile 启用 `rag_context` 且本轮使用非零 `--rag-top-k`，或者用户直接执行 `ikaros rag search` 时，才会把本地 RAG 作为带 citation 的 reference retrieval 使用。Provider-backed embedding 仍然通过显式 RAG 命令触发，不做后台聊天检索。

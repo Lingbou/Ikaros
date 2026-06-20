@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    EmbeddingProvider, HashEmbeddingProvider, MockEmbeddingProvider,
+    EmbeddingProvider, HashEmbeddingProvider, MockEmbeddingProvider, OllamaEmbeddingProvider,
     OpenAiCompatibleEmbeddingProvider, SparseEmbeddingProvider,
 };
 use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result};
 
 pub fn embedding_provider_uses_network(provider: &str) -> bool {
-    provider.eq_ignore_ascii_case("openai-compatible")
+    matches!(
+        provider.to_ascii_lowercase().as_str(),
+        "openai-compatible" | "ollama"
+    )
 }
 
 pub(crate) fn with_embedding_provider<T>(
@@ -37,6 +40,10 @@ pub(crate) fn with_embedding_provider_config<T>(
                 config,
                 provider_settings,
             )?;
+            f(&provider)
+        }
+        "ollama" => {
+            let provider = OllamaEmbeddingProvider::from_config(config, provider_settings)?;
             f(&provider)
         }
         other => Err(IkarosError::Message(format!(

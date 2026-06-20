@@ -10,5 +10,7 @@ mod harness_storage;
 mod ingress_workers;
 #[path = "cli_smoke/persona_voice_coding.rs"]
 mod persona_voice_coding;
+#[path = "cli_smoke/provider.rs"]
+mod provider;
 #[path = "cli_smoke/runtime_core.rs"]
 mod runtime_core;

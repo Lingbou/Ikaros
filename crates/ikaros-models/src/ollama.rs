@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::http::{ModelHttpClient, ModelHttpRequest, ReqwestModelHttpClient};
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
     ModelContextProfile, ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions,
@@ -11,19 +12,18 @@ use ikaros_core::{
     IkarosError, ModelConfig, RemoteProviderConfig, Result, redact_json, redact_secrets,
     resolve_config_value,
 };
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OllamaProvider {
     name: String,
     base_url: String,
     model: String,
     max_retries: u8,
-    client: Client,
+    http: Arc<dyn ModelHttpClient>,
 }
 
 impl OllamaProvider {
@@ -32,18 +32,28 @@ impl OllamaProvider {
         config: &ModelConfig,
         provider_settings: &RemoteProviderConfig,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_millis(config.timeout_ms))
-            .build()
-            .map_err(|source| {
-                IkarosError::Message(format!("failed to build Ollama model client: {source}"))
-            })?;
+        Self::from_config_with_http_client(
+            provider_name,
+            config,
+            provider_settings,
+            Arc::new(ReqwestModelHttpClient::new(Duration::from_millis(
+                config.timeout_ms,
+            ))?),
+        )
+    }
+
+    pub fn from_config_with_http_client(
+        provider_name: impl Into<String>,
+        config: &ModelConfig,
+        provider_settings: &RemoteProviderConfig,
+        http: Arc<dyn ModelHttpClient>,
+    ) -> Result<Self> {
         Ok(Self {
             name: provider_name.into(),
             base_url: provider_base_url(provider_settings)?,
             model: config.model.clone(),
             max_retries: config.max_retries,
-            client,
+            http,
         })
     }
 }
@@ -68,6 +78,10 @@ impl ModelProvider for OllamaProvider {
         &self.name
     }
 
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     fn context_profile(&self) -> ModelContextProfile {
         ModelContextProfile::new(
             ollama_context_window(&self.model),
@@ -83,16 +97,12 @@ impl ModelProvider for OllamaProvider {
         let url = format!("{}/api/chat", self.base_url);
         let mut last_error = None;
         for attempt in 0..=self.max_retries {
-            let result = self.client.post(&url).json(&body).send().await;
+            let result = self.http.send(ollama_http_post(&url, &body)?).await;
             match result {
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.map_err(|source| {
-                        IkarosError::Message(format!(
-                            "failed to read Ollama model response: {source}"
-                        ))
-                    })?;
-                    if !status.is_success() {
+                    let status = response.status;
+                    let text = response.body;
+                    if !(200..=299).contains(&status) {
                         last_error = Some(format!(
                             "Ollama model provider returned HTTP {status}: {}",
                             redact_secrets(&text)
@@ -119,16 +129,12 @@ impl ModelProvider for OllamaProvider {
         let url = format!("{}/api/chat", self.base_url);
         let mut last_error = None;
         for attempt in 0..=self.max_retries {
-            let result = self.client.post(&url).json(&body).send().await;
+            let result = self.http.send(ollama_http_post(&url, &body)?).await;
             match result {
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.map_err(|source| {
-                        IkarosError::Message(format!(
-                            "failed to read Ollama model stream response: {source}"
-                        ))
-                    })?;
-                    if !status.is_success() {
+                    let status = response.status;
+                    let text = response.body;
+                    if !(200..=299).contains(&status) {
                         last_error = Some(format!(
                             "Ollama model provider returned HTTP {status}: {}",
                             redact_secrets(&text)
@@ -155,6 +161,19 @@ impl ModelProvider for OllamaProvider {
             "Ollama model stream request failed".into()
         })))
     }
+}
+
+fn ollama_http_post(url: &str, body: &OllamaChatRequest) -> Result<ModelHttpRequest> {
+    let mut headers = BTreeMap::new();
+    headers.insert("content-type".into(), "application/json".into());
+    Ok(ModelHttpRequest {
+        method: "POST".into(),
+        url: url.into(),
+        headers,
+        body: serde_json::to_string(body).map_err(|source| {
+            IkarosError::Message(format!("failed to serialize Ollama request JSON: {source}"))
+        })?,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]

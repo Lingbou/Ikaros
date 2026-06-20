@@ -4,6 +4,7 @@ use super::{
     client::OpenAiCompatibleProvider, request_builder::build_chat_completion_request,
     stream::parse_stream_response, tools::model_tool_calls, types::ChatCompletionResponse,
 };
+use crate::http::ModelHttpRequest;
 use crate::params::merge_request_options;
 use crate::types::{
     ModelContextProfile, ModelProvider, ModelRequest, ModelRequestDiagnostic, ModelResponse,
@@ -12,11 +13,16 @@ use crate::types::{
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, redact_secrets};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[async_trait]
 impl ModelProvider for OpenAiCompatibleProvider {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model
     }
 
     fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
@@ -50,20 +56,12 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let mut unsupported_parameter_retry_used = false;
         let mut diagnostics = Vec::new();
         loop {
-            let result = self
-                .client
-                .post(&url)
-                .bearer_auth(&key)
-                .json(&body)
-                .send()
-                .await;
+            let result = self.http.send(model_http_post(&url, &key, &body)?).await;
             let attempt_error = match result {
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.map_err(|source| {
-                        IkarosError::Message(format!("failed to read model response: {source}"))
-                    })?;
-                    if !status.is_success() {
+                    let status = response.status;
+                    let text = response.body;
+                    if !(200..=299).contains(&status) {
                         if !unsupported_parameter_retry_used {
                             if let Some(parameter) =
                                 unsupported_parameter_to_omit(self.profile, &text, &body)
@@ -76,10 +74,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
                         }
                         redacted_model_http_error(status, &text)
                     } else {
-                        let mut response =
+                        let mut parsed =
                             parse_chat_completion_response(&text, &self.name, &self.model)?;
-                        response.diagnostics = diagnostics;
-                        return Ok(response);
+                        parsed.diagnostics = diagnostics;
+                        return Ok(parsed);
                     }
                 }
                 Err(source) => format!("model request failed on attempt {attempt}: {source}"),
@@ -110,22 +108,12 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let mut unsupported_parameter_retry_used = false;
         let mut diagnostics = Vec::new();
         loop {
-            let result = self
-                .client
-                .post(&url)
-                .bearer_auth(&key)
-                .json(&body)
-                .send()
-                .await;
+            let result = self.http.send(model_http_post(&url, &key, &body)?).await;
             let attempt_error = match result {
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.map_err(|source| {
-                        IkarosError::Message(format!(
-                            "failed to read model stream response: {source}"
-                        ))
-                    })?;
-                    if !status.is_success() {
+                    let status = response.status;
+                    let text = response.body;
+                    if !(200..=299).contains(&status) {
                         if !unsupported_parameter_retry_used {
                             if let Some(parameter) =
                                 unsupported_parameter_to_omit(self.profile, &text, &body)
@@ -163,6 +151,20 @@ impl ModelProvider for OpenAiCompatibleProvider {
     }
 }
 
+fn model_http_post(url: &str, key: &str, body: &Value) -> Result<ModelHttpRequest> {
+    let mut headers = BTreeMap::new();
+    headers.insert("authorization".into(), format!("Bearer {key}"));
+    headers.insert("content-type".into(), "application/json".into());
+    Ok(ModelHttpRequest {
+        method: "POST".into(),
+        url: url.into(),
+        headers,
+        body: serde_json::to_string(body).map_err(|source| {
+            IkarosError::Message(format!("failed to serialize model request JSON: {source}"))
+        })?,
+    })
+}
+
 fn unsupported_parameter_retry_diagnostic(parameter: &str) -> ModelRequestDiagnostic {
     ModelRequestDiagnostic {
         kind: "unsupported_parameter_retry".into(),
@@ -172,7 +174,7 @@ fn unsupported_parameter_retry_diagnostic(parameter: &str) -> ModelRequestDiagno
     }
 }
 
-pub(crate) fn redacted_model_http_error(status: reqwest::StatusCode, text: &str) -> String {
+pub(crate) fn redacted_model_http_error(status: u16, text: &str) -> String {
     format!(
         "model provider returned HTTP {status}: {}",
         redact_secrets(text)

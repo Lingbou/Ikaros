@@ -15,6 +15,7 @@ use crate::{
     message::{MessageCommand, message_command},
     persona::{PersonaCommand, persona_command},
     policy::{PolicyCommand, policy_command},
+    provider::{ProviderCommand, provider_command},
     rag::{RagCommand, rag_command},
     relationship::{RelationshipCommand, relationship_command},
     repo::{RepoCommand, repo_command},
@@ -100,6 +101,10 @@ enum Commands {
     Policy {
         #[command(subcommand)]
         command: PolicyCommand,
+    },
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
     },
     Git {
         #[command(subcommand)]
@@ -196,6 +201,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Policy { command } => {
             policy_command(command, &paths, &workspace, cli.agent.as_deref())?
         }
+        Commands::Provider { command } => provider_command(command, &paths, &workspace).await?,
         Commands::Git { command } => {
             git_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }

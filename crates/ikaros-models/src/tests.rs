@@ -16,11 +16,30 @@ use async_trait::async_trait;
 use ikaros_core::{IkarosError, ModelConfig, ModelReasoningConfig, RemoteProviderConfig, Result};
 use std::{
     fs,
-    sync::{Arc, Mutex},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 struct CapturingProvider {
     seen: Arc<Mutex<Option<ModelRequest>>>,
+}
+
+struct FlakyProvider {
+    attempts: Arc<AtomicUsize>,
+    first_error: &'static str,
+}
+
+struct AlwaysFailProvider;
+
+#[derive(Clone)]
+struct CapturingHttpClient {
+    seen: Arc<Mutex<Vec<ModelHttpRequest>>>,
+    status: u16,
+    body: String,
 }
 
 fn model_stream_event_kinds(events: &[ModelStreamEvent]) -> Vec<&'static str> {
@@ -63,6 +82,62 @@ impl ModelProvider for CapturingProvider {
                 total_tokens: None,
             },
             diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[async_trait]
+impl ModelProvider for FlakyProvider {
+    fn name(&self) -> &str {
+        "flaky"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+        if attempt == 0 {
+            return Err(IkarosError::Message(self.first_error.into()));
+        }
+        Ok(ModelResponse {
+            provider: self.name().into(),
+            model: "test".into(),
+            content: "ok".into(),
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[async_trait]
+impl ModelProvider for AlwaysFailProvider {
+    fn name(&self) -> &str {
+        "always-fail"
+    }
+
+    fn model_id(&self) -> &str {
+        "fail-model"
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        Err(IkarosError::Message(
+            "provider returned 503 sk-secret".into(),
+        ))
+    }
+}
+
+impl ModelHttpClient for CapturingHttpClient {
+    fn send<'a>(
+        &'a self,
+        request: ModelHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<ModelHttpResponse>> + Send + 'a>> {
+        let seen = self.seen.clone();
+        let status = self.status;
+        let body = self.body.clone();
+        Box::pin(async move {
+            seen.lock()
+                .map_err(|_| IkarosError::Message("http capture lock poisoned".into()))?
+                .push(request);
+            Ok(ModelHttpResponse { status, body })
         })
     }
 }
@@ -139,6 +214,52 @@ fn model_transport_descriptor_separates_runtime_and_wire_format() {
     );
     assert!(descriptor.supports_streaming);
     assert!(descriptor.normalizes_tool_calls);
+}
+
+#[tokio::test]
+async fn openai_provider_sends_chat_request_through_injected_http_client() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let http = Arc::new(CapturingHttpClient {
+        seen: seen.clone(),
+        status: 200,
+        body: r#"{"model":"test-model","choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":2}}"#.into(),
+    });
+    let config = ModelConfig {
+        provider: "openai-compatible".into(),
+        model: "test-model".into(),
+        runtime: "harness-agent-loop".into(),
+        transport: "openai-compatible-chat-completions".into(),
+        ..ModelConfig::default()
+    };
+    let provider_settings = RemoteProviderConfig {
+        api_key: "sk-secret".into(),
+        base_url: "https://api.example/v1".into(),
+    };
+    let provider = OpenAiCompatibleProvider::from_config_with_http_client(
+        "openai-compatible",
+        &config,
+        &provider_settings,
+        http,
+    )
+    .expect("provider");
+
+    let response = provider
+        .generate(ModelRequest::from_user_text("hello"))
+        .await
+        .expect("response");
+
+    assert_eq!(response.content, "ok");
+    let requests = seen.lock().expect("seen");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].url, "https://api.example/v1/chat/completions");
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer sk-secret")
+    );
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body).expect("json");
+    assert_eq!(body["model"], "test-model");
+    assert_eq!(body["messages"][0]["content"], "hello");
 }
 
 #[tokio::test]
@@ -1189,7 +1310,7 @@ data: [DONE]
 #[test]
 fn openai_compatible_http_errors_redact_response_body() {
     let error = redacted_model_http_error(
-        reqwest::StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::BAD_REQUEST.as_u16(),
         r#"{"error":"provider echoed token=abc123 and sk-not-real"}"#,
     );
 
@@ -1400,6 +1521,89 @@ fn provider_context_profiles_are_provider_aware() {
 }
 
 #[test]
+fn provider_registry_reports_capabilities_cost_and_context() {
+    let registry = ProviderRegistry;
+    let kimi = registry
+        .descriptor(
+            "openai-compatible",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.6",
+        )
+        .expect("descriptor");
+
+    assert_eq!(kimi.provider, "openai-compatible");
+    assert_eq!(kimi.profile, "moonshot-kimi");
+    assert!(kimi.capabilities.chat);
+    assert!(kimi.capabilities.tool_calls);
+    assert!(kimi.capabilities.streaming);
+    assert!(kimi.capabilities.reasoning);
+    assert!(kimi.capabilities.network);
+    assert_eq!(kimi.context.context_window, 128_000);
+    assert_eq!(kimi.context.default_output_tokens, 32_000);
+    assert_eq!(kimi.cost.currency, "USD");
+    assert_eq!(kimi.health.status, ProviderHealthStatus::Unknown);
+}
+
+#[test]
+fn provider_registry_keeps_mock_offline_and_free() {
+    let registry = ProviderRegistry;
+    let mock = registry
+        .descriptor("mock", "", "mock-model")
+        .expect("mock descriptor");
+
+    assert_eq!(mock.provider, "mock");
+    assert!(!mock.capabilities.network);
+    assert!(mock.capabilities.streaming);
+    assert_eq!(mock.cost.input_per_million, None);
+    assert_eq!(mock.cost.output_per_million, None);
+    assert_eq!(mock.context.context_window, 8_192);
+    assert_eq!(mock.context.tokenizer, ModelTokenizerKind::Mock);
+}
+
+#[test]
+fn provider_health_records_failure_and_recovery() {
+    let mut health = ProviderHealthState::new("openai-compatible", "kimi-k2.6");
+    health.record_failure(ProviderErrorKind::RateLimited, "429 rate limited sk-secret");
+
+    assert_eq!(health.status, ProviderHealthStatus::Degraded);
+    assert_eq!(health.consecutive_failures, 1);
+    assert_eq!(health.last_error_kind, Some(ProviderErrorKind::RateLimited));
+    assert!(health.last_error_summary.contains("rate limited"));
+    assert!(!health.last_error_summary.contains("sk-secret"));
+
+    health.record_success();
+
+    assert_eq!(health.status, ProviderHealthStatus::Healthy);
+    assert_eq!(health.consecutive_failures, 0);
+    assert_eq!(health.last_error_kind, None);
+    assert!(health.last_error_summary.is_empty());
+}
+
+#[test]
+fn provider_error_classification_is_stable() {
+    assert_eq!(
+        ProviderErrorKind::classify_status(429),
+        ProviderErrorKind::RateLimited
+    );
+    assert_eq!(
+        ProviderErrorKind::classify_status(503),
+        ProviderErrorKind::Transient
+    );
+    assert_eq!(
+        ProviderErrorKind::classify_status(401),
+        ProviderErrorKind::Auth
+    );
+    assert_eq!(
+        ProviderErrorKind::classify_status(400),
+        ProviderErrorKind::BadRequest
+    );
+    assert!(ProviderErrorKind::RateLimited.retryable());
+    assert!(ProviderErrorKind::Transient.retryable());
+    assert!(!ProviderErrorKind::Auth.retryable());
+    assert!(!ProviderErrorKind::BadRequest.retryable());
+}
+
+#[test]
 fn governed_provider_delegates_context_profile() {
     let temp = tempfile::tempdir().expect("tempdir");
     let provider = GovernedModelProvider::new(
@@ -1413,4 +1617,144 @@ fn governed_provider_delegates_context_profile() {
         ModelTokenizerKind::Mock
     );
     assert_eq!(provider.context_profile().context_window, 8_192);
+}
+
+#[test]
+fn governed_provider_from_config_uses_configured_retry_policy() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = ModelConfig {
+        provider: "mock".into(),
+        model: "mock-ikaros".into(),
+        max_retries: 0,
+        ..ModelConfig::default()
+    };
+    let provider = crate::factory::governed_model_provider_from_config(
+        &config,
+        &RemoteProviderConfig::default(),
+        temp.path(),
+        None,
+    )
+    .expect("governed provider");
+
+    assert_eq!(provider.retry_policy().max_retries, 0);
+}
+
+#[tokio::test]
+async fn governed_provider_retries_transient_generate_failure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let provider = GovernedModelProvider::new_with_retry_policy(
+        Box::new(FlakyProvider {
+            attempts: attempts.clone(),
+            first_error: "provider transient failure: 503",
+        }),
+        ModelUsageLedger::new(temp.path()),
+        ModelRuntimeLimits::default(),
+        ProviderRetryPolicy {
+            max_retries: 1,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+        },
+    );
+
+    let response = provider
+        .generate(ModelRequest::from_user_text("hello"))
+        .await
+        .expect("retry succeeds");
+
+    assert_eq!(response.content, "ok");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn governed_provider_does_not_retry_auth_failure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let provider = GovernedModelProvider::new_with_retry_policy(
+        Box::new(FlakyProvider {
+            attempts: attempts.clone(),
+            first_error: "provider auth failure: 401",
+        }),
+        ModelUsageLedger::new(temp.path()),
+        ModelRuntimeLimits::default(),
+        ProviderRetryPolicy {
+            max_retries: 3,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+        },
+    );
+
+    let error = provider
+        .generate(ModelRequest::from_user_text("hello"))
+        .await
+        .expect_err("auth failure is terminal");
+
+    assert!(error.to_string().contains("401"));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn governed_provider_records_health_failure_and_enforces_cooldown() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let provider = GovernedModelProvider::new_with_retry_policy(
+        Box::new(AlwaysFailProvider),
+        ModelUsageLedger::new(temp.path()),
+        ModelRuntimeLimits::default(),
+        ProviderRetryPolicy {
+            max_retries: 0,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+        },
+    )
+    .with_cooldown_policy(ProviderCooldownPolicy {
+        failure_threshold: 1,
+        cooldown_ms: 60_000,
+    });
+
+    let first = provider
+        .generate(ModelRequest::from_user_text("hello"))
+        .await
+        .expect_err("first failure");
+    assert!(first.to_string().contains("503"));
+
+    let records = provider.health_ledger().read_all().expect("health");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider, "always-fail");
+    assert_eq!(records[0].model, "fail-model");
+    assert_eq!(records[0].status, ProviderHealthStatus::Unavailable);
+    assert_eq!(
+        records[0].last_error_kind,
+        Some(ProviderErrorKind::Transient)
+    );
+    assert!(!records[0].last_error_summary.contains("sk-secret"));
+    assert!(records[0].cooldown_until.is_some());
+
+    let second = provider
+        .generate(ModelRequest::from_user_text("hello again"))
+        .await
+        .expect_err("cooldown");
+    assert!(second.to_string().contains("cooldown"));
+}
+
+#[tokio::test]
+async fn fallback_provider_uses_next_provider_for_retryable_failure() {
+    let seen = Arc::new(Mutex::new(None));
+    let provider = FallbackModelProvider::new(vec![
+        Box::new(AlwaysFailProvider),
+        Box::new(CapturingProvider { seen: seen.clone() }),
+    ])
+    .expect("fallback chain");
+
+    let response = provider
+        .generate(ModelRequest::from_user_text("fallback please"))
+        .await
+        .expect("fallback succeeds");
+
+    assert_eq!(response.provider, "capturing");
+    assert!(
+        seen.lock()
+            .expect("seen")
+            .as_ref()
+            .is_some_and(|request| request.messages[0].content == "fallback please")
+    );
 }

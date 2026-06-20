@@ -11,7 +11,9 @@ use ikaros_session::{
     ApprovalStatus as SessionApprovalStatus, SessionEntry, SessionEntryId, SessionEntryKind,
     SessionId, SessionRecord, SessionSource, SessionStore, SqliteSessionStore, TurnId,
 };
+use ring::digest::{SHA256, digest};
 use serde_json::json;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -98,39 +100,42 @@ pub(crate) fn append_runtime_session_event(
 }
 
 pub(crate) fn gateway_session_id(message: &GatewayMessage) -> SessionId {
-    let channel = message
-        .session_source
-        .as_ref()
-        .map(|source| source.channel.as_str())
-        .unwrap_or(message.source.as_str());
-    let account = message
-        .session_source
-        .as_ref()
-        .and_then(|source| source.account.as_deref())
-        .unwrap_or("_");
-    let peer = message
-        .session_source
-        .as_ref()
-        .and_then(|source| source.peer.as_deref())
-        .unwrap_or("_");
-    let thread = message
-        .session_source
-        .as_ref()
-        .and_then(|source| source.thread.as_deref())
-        .or_else(|| {
-            message
-                .session_source
-                .as_ref()
-                .and_then(|source| source.message_id.as_deref())
-        })
-        .unwrap_or(message.id.as_str());
+    if let Some(source) = &message.session_source {
+        return SessionId::from(format!(
+            "gateway-{}",
+            gateway_session_digest(
+                &source.channel,
+                source.account.as_deref().unwrap_or("_"),
+                source.peer.as_deref().unwrap_or("_"),
+                source.thread.as_deref().unwrap_or("_"),
+            )
+        ));
+    }
+
     SessionId::from(format!(
-        "gateway:{}:{}:{}:{}",
-        redact_session_segment(channel),
-        redact_session_segment(account),
-        redact_session_segment(peer),
-        redact_session_segment(thread)
+        "gateway-message-{}",
+        gateway_session_digest(&message.source, "_", "_", &message.id)
     ))
+}
+
+fn gateway_session_digest(channel: &str, account: &str, peer: &str, thread: &str) -> String {
+    let mut input = Vec::new();
+    input.extend_from_slice(b"ikaros.gateway.session.v1\0");
+    push_digest_part(&mut input, channel);
+    push_digest_part(&mut input, account);
+    push_digest_part(&mut input, peer);
+    push_digest_part(&mut input, thread);
+    let digest = digest(&SHA256, &input);
+    let mut encoded = String::new();
+    for byte in &digest.as_ref()[..12] {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn push_digest_part(input: &mut Vec<u8>, value: &str) {
+    input.extend_from_slice(value.as_bytes());
+    input.push(0);
 }
 
 pub(crate) fn gateway_session_source(message: &GatewayMessage) -> SessionSource {

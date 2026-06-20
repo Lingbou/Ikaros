@@ -43,11 +43,11 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-context`: context bundles, sections, references, provider-aware
   token budgets, quota-based compaction, and context diffs.
 - `ikaros-runtime`: diagnostics, chat, tasks, schedules, gateway drain, body frames, agent handoff, `AgentRuntime`, `AgentHarness`, and context orchestration.
-- `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, skill execution, plugins, guardrails, and the task runner.
+- `ikaros-harness`: policy decisions, approvals, audit logs, `ExecutionSession`, `ExecutionEnv`, governed network egress policy, skill execution, plugins, guardrails, and the task runner.
 - `ikaros-memory`: JSONL/SQLite memory stores, `MemoryProvider` lifecycle,
   memory policy/journal primitives, and provider registry metadata.
 - `ikaros-rag`: local file ingestion, chunk storage, retrieval, and embedding providers.
-- `ikaros-models`: `ModelProvider`, `ModelTransport`, model context profiles, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, usage logging, and request governance.
+- `ikaros-models`: `ModelProvider`, `ModelTransport`, provider registry descriptors, model context profiles, mock, OpenAI-compatible, Anthropic, Ollama, streaming, tool-call normalization, retry/error classification, health state, usage logging, and request governance.
 - `ikaros-gateway`: local inbox/outbox store plus built-in `GatewayFrame` protocol types.
 - `ikaros-voice`: mock and OpenAI-compatible TTS/ASR providers.
 - `ikaros-skills`: built-in skills exposed through the harness.
@@ -142,7 +142,7 @@ State ownership:
 
 - Persona affects prompts and context, not policy.
 - Agent profiles are persona/policy overlays; `AgentInstance` is the runtime identity.
-- `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `ModelStreamEvent` normalizes provider deltas; `AgentRuntime` owns the turn loop and emits `AgentEvent`.
+- `ModelProvider` generates/streams model output; `ModelTransport` describes provider wire format; `ProviderRegistry` resolves local descriptor metadata for inspection and planning; `ModelStreamEvent` normalizes provider deltas; `AgentRuntime` owns the turn loop and emits `AgentEvent`.
 - `AgentEvent`, session ids, turn ids, append-only session entries, and replay
   reads belong to `ikaros-session`, not to the runtime loop.
 - `SessionWriter` owns turn-scoped session transactions. Built-in chat uses it
@@ -157,11 +157,11 @@ State ownership:
   metadata and must not be used as an implicit session fallback.
 - Context primitives live in `ikaros-context`. Runtime chat assembles
   relationship, explicit references, history, memory, and RAG into a
-  provider-aware token-budgeted `ContextBundle`. Provider metadata caps the
-  usable context window and selects the token estimator. OpenAI-compatible and
-  mock providers have deterministic local adapters; Anthropic and Ollama still
-  use explicit fallback adapters until exact native tokenizer libraries are
-  wired in.
+  provider-aware token-budgeted `ContextBundle`. Provider profiles and registry
+  metadata cap the usable context window and select the token estimator.
+  OpenAI-compatible and mock providers have deterministic local adapters;
+  Anthropic and Ollama still use explicit fallback adapters until exact native
+  tokenizer libraries are wired in.
 - `ContextReference` currently parses and locally resolves safe references:
   `@file:path:line-line`, `@folder:path`, `@git:rev`, `@diff`, and `@staged`.
   Paths must stay under the workspace. `@url:` is parsed but not fetched until

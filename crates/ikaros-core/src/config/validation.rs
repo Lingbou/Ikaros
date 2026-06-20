@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fs, path::Path};
 
 use super::{
-    IkarosConfig, MemoryConfig, MemoryPolicyConfig, ModelConfig, RagConfig, RemoteProviderConfig,
-    SelfModifyConfig, VoiceProviderConfig,
+    ExecutionConfig, IkarosConfig, MemoryConfig, MemoryPolicyConfig, ModelConfig, RagConfig,
+    RemoteProviderConfig, SelfModifyConfig, VoiceProviderConfig,
 };
 
 pub(crate) fn load_yaml_shape_checked(raw: &str) -> Result<IkarosConfig> {
@@ -122,6 +122,7 @@ impl IkarosConfig {
             false,
             report,
         );
+        validate_execution_config(&self.execution, report);
         validate_self_modify_config(&self.self_modify, report);
     }
 }
@@ -142,6 +143,7 @@ fn validate_yaml_shape(value: &yaml_serde::Value, report: &mut ConfigValidationR
             "chat_history",
             "rag",
             "voice",
+            "execution",
             "self_modify",
         ],
         report,
@@ -185,6 +187,9 @@ fn validate_yaml_shape(value: &yaml_serde::Value, report: &mut ConfigValidationR
     }
     if let Some(voice) = mapping_get(root, "voice") {
         validate_voice_shape(voice, report);
+    }
+    if let Some(execution) = mapping_get(root, "execution") {
+        validate_execution_shape(execution, report);
     }
     if let Some(self_modify) = mapping_get(root, "self_modify") {
         validate_self_modify_shape(self_modify, report);
@@ -406,6 +411,33 @@ fn validate_self_modify_shape(value: &yaml_serde::Value, report: &mut ConfigVali
             check_profiles,
             "self_modify.check_profiles",
             &["commands", "reason"],
+            report,
+        );
+    }
+}
+
+fn validate_execution_shape(value: &yaml_serde::Value, report: &mut ConfigValidationReport) {
+    let Some(map) = check_mapping_shape(value, "execution", &["network", "sandbox"], report) else {
+        return;
+    };
+    if let Some(network) = mapping_get(map, "network") {
+        check_mapping_shape(
+            network,
+            "execution.network",
+            &[
+                "enabled",
+                "allow_provider_hosts",
+                "allowed_hosts",
+                "timeout_ms",
+            ],
+            report,
+        );
+    }
+    if let Some(sandbox) = mapping_get(map, "sandbox") {
+        check_mapping_shape(
+            sandbox,
+            "execution.sandbox",
+            &["backend", "read_scope"],
             report,
         );
     }
@@ -841,7 +873,14 @@ fn validate_rag_config(
         config.embedding_timeout_ms,
         report,
     );
-    if is_remote_embedding_provider(&provider) {
+    if provider == "ollama" {
+        validate_required("rag.embedding_model", &config.embedding_model, report);
+        validate_optional_url(
+            "providers.embedding.base_url",
+            &provider_settings.base_url,
+            report,
+        );
+    } else if is_remote_embedding_provider(&provider) {
         validate_required("rag.embedding_model", &config.embedding_model, report);
         validate_required_url(
             "providers.embedding.base_url",
@@ -919,6 +958,40 @@ fn validate_self_modify_config(config: &SelfModifyConfig, report: &mut ConfigVal
                 report.error(format!("{path}.commands[{index}]"), "must not be empty");
             }
         }
+    }
+}
+
+fn validate_execution_config(config: &ExecutionConfig, report: &mut ConfigValidationReport) {
+    validate_timeout(
+        "execution.network.timeout_ms",
+        config.network.timeout_ms,
+        report,
+    );
+    for (index, host) in config.network.allowed_hosts.iter().enumerate() {
+        if host.trim().is_empty() {
+            report.error(
+                format!("execution.network.allowed_hosts[{index}]"),
+                "must not be empty",
+            );
+        }
+        if host.contains('/') || host.contains(':') {
+            report.error(
+                format!("execution.network.allowed_hosts[{index}]"),
+                "must be an exact host name, not a URL or host:port",
+            );
+        }
+    }
+    if !matches!(
+        normalize(&config.sandbox.backend).as_str(),
+        "local" | "dry-run"
+    ) {
+        report.error(
+            "execution.sandbox.backend",
+            "must be one of: local, dry-run",
+        );
+    }
+    if normalize(&config.sandbox.read_scope) != "workspace" {
+        report.error("execution.sandbox.read_scope", "must be workspace");
     }
 }
 
@@ -1023,7 +1096,10 @@ fn is_allowed_model_provider(provider: &str) -> bool {
 }
 
 fn is_allowed_embedding_provider(provider: &str) -> bool {
-    matches!(provider, "hash" | "sparse" | "mock" | "openai-compatible")
+    matches!(
+        provider,
+        "hash" | "sparse" | "mock" | "openai-compatible" | "ollama"
+    )
 }
 
 fn is_remote_embedding_provider(provider: &str) -> bool {

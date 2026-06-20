@@ -4,6 +4,7 @@ use crate::{Skill, SkillContext, SkillOutput, session::ExecutionSession};
 use ikaros_core::{IkarosError, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     future::Future,
     path::Component,
@@ -91,6 +92,29 @@ pub struct LocalExecutionEnv;
 pub struct WorkspaceExecutionEnv {
     workspace_root: PathBuf,
     inner: Arc<dyn ExecutionEnv>,
+}
+
+#[derive(Clone)]
+pub struct NetworkedExecutionEnv {
+    inner: Arc<dyn ExecutionEnv>,
+    network: Arc<dyn NetworkEgress>,
+}
+
+#[derive(Clone)]
+pub struct DryRunExecutionEnv {
+    inner: Arc<dyn ExecutionEnv>,
+}
+
+impl DryRunExecutionEnv {
+    pub fn new(inner: Arc<dyn ExecutionEnv>) -> Self {
+        Self { inner }
+    }
+}
+
+impl NetworkedExecutionEnv {
+    pub fn new(inner: Arc<dyn ExecutionEnv>, network: Arc<dyn NetworkEgress>) -> Self {
+        Self { inner, network }
+    }
 }
 
 impl WorkspaceExecutionEnv {
@@ -212,7 +236,7 @@ impl FileSystem for WorkspaceExecutionEnv {
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
         Box::pin(async move {
-            let resolved = self.resolve_path(path);
+            let resolved = self.ensure_existing_workspace_path(path)?;
             self.inner.path_metadata(&resolved).await
         })
     }
@@ -222,7 +246,7 @@ impl FileSystem for WorkspaceExecutionEnv {
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
         Box::pin(async move {
-            let resolved = self.resolve_path(path);
+            let resolved = self.ensure_existing_workspace_path(path)?;
             self.inner.read_to_string(&resolved).await
         })
     }
@@ -232,7 +256,7 @@ impl FileSystem for WorkspaceExecutionEnv {
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            let resolved = self.resolve_path(path);
+            let resolved = self.ensure_existing_workspace_path(path)?;
             self.inner.read_bytes(&resolved).await
         })
     }
@@ -274,7 +298,7 @@ impl FileSystem for WorkspaceExecutionEnv {
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            let resolved = self.resolve_path(path);
+            let resolved = self.ensure_existing_workspace_path(path)?;
             self.inner.read_dir(&resolved).await
         })
     }
@@ -312,6 +336,214 @@ impl NetworkEgress for WorkspaceExecutionEnv {
 }
 
 impl ExecutionEnv for WorkspaceExecutionEnv {
+    fn execute_skill<'a>(
+        &'a self,
+        skill: Arc<dyn Skill>,
+        input: serde_json::Value,
+        session: &'a ExecutionSession,
+    ) -> Pin<Box<dyn Future<Output = Result<SkillOutput>> + Send + 'a>> {
+        self.inner.execute_skill(skill, input, session)
+    }
+}
+
+impl FileSystem for NetworkedExecutionEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        self.inner.path_metadata(path)
+    }
+
+    fn read_to_string<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        self.inner.read_to_string(path)
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        self.inner.read_bytes(path)
+    }
+
+    fn write_string<'a>(
+        &'a self,
+        path: &'a Path,
+        content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        self.inner.write_string(path, content)
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        self.inner.write_bytes(path, content)
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        self.inner.create_dir_all(path)
+    }
+
+    fn read_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.inner.read_dir(path)
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        self.inner.remove_file(path)
+    }
+}
+
+impl ProcessRunner for NetworkedExecutionEnv {
+    fn run_process<'a>(
+        &'a self,
+        request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput>> + Send + 'a>> {
+        self.inner.run_process(request)
+    }
+}
+
+impl NetworkEgress for NetworkedExecutionEnv {
+    fn send_network_request<'a>(
+        &'a self,
+        request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        self.network.send_network_request(request)
+    }
+}
+
+impl ExecutionEnv for NetworkedExecutionEnv {
+    fn execute_skill<'a>(
+        &'a self,
+        skill: Arc<dyn Skill>,
+        input: serde_json::Value,
+        session: &'a ExecutionSession,
+    ) -> Pin<Box<dyn Future<Output = Result<SkillOutput>> + Send + 'a>> {
+        self.inner.execute_skill(skill, input, session)
+    }
+}
+
+impl FileSystem for DryRunExecutionEnv {
+    fn path_metadata<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<FileMetadata>> + Send + 'a>> {
+        self.inner.path_metadata(path)
+    }
+
+    fn read_to_string<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        self.inner.read_to_string(path)
+    }
+
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        self.inner.read_bytes(path)
+    }
+
+    fn write_string<'a>(
+        &'a self,
+        path: &'a Path,
+        _content: String,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        let path = path.to_path_buf();
+        Box::pin(async move {
+            let _ = path;
+            Ok(())
+        })
+    }
+
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        _content: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        let path = path.to_path_buf();
+        Box::pin(async move {
+            let _ = path;
+            Ok(())
+        })
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        let path = path.to_path_buf();
+        Box::pin(async move {
+            let _ = path;
+            Ok(())
+        })
+    }
+
+    fn read_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.inner.read_dir(path)
+    }
+
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        let path = path.to_path_buf();
+        Box::pin(async move {
+            let _ = path;
+            Ok(())
+        })
+    }
+}
+
+impl ProcessRunner for DryRunExecutionEnv {
+    fn run_process<'a>(
+        &'a self,
+        request: ProcessRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(ProcessOutput {
+                status: 0,
+                stdout: format!("dry-run: skipped command {}", request.command),
+                stderr: String::new(),
+            })
+        })
+    }
+}
+
+impl NetworkEgress for DryRunExecutionEnv {
+    fn send_network_request<'a>(
+        &'a self,
+        request: NetworkEgressRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(NetworkEgressResponse {
+                status: 200,
+                body: format!(
+                    "{{\"dry_run\":true,\"url\":{}}}",
+                    serde_json::to_string(&request.url)?
+                ),
+            })
+        })
+    }
+}
+
+impl ExecutionEnv for DryRunExecutionEnv {
     fn execute_skill<'a>(
         &'a self,
         skill: Arc<dyn Skill>,
@@ -389,6 +621,8 @@ pub struct ProcessOutput {
 pub struct NetworkEgressRequest {
     pub method: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
 }

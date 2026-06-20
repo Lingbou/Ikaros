@@ -58,8 +58,11 @@ Gateway protocol 类型放在 `ikaros-gateway` 内部，不单独建 crate。
 - `GatewaySessionSource`
 - `GatewayClientIdentity`
 - `GatewayCapability`
+- `GatewayProtocolPolicy`
 
 Frame 支持 `connect`、`request`、`response` 和 `event`。`GatewaySessionSource` 用于描述 channel/account/peer/thread/message_id 这类会话来源。所有 frame/route 入库前都会脱敏。
+
+`GatewayProtocolPolicy` 会在 daemon 或 adapter 接受 frame 前校验协议版本、允许的 client id、允许的 channel 和必需 capability。这是长期多客户端 gateway daemon 暴露前的本地协议 hardening 层。
 
 协议 frame 使用 `ikaros.gateway.v1`。Request frame 示例：
 
@@ -119,7 +122,11 @@ ikaros message webhook --port 8002
 6. 成功结果创建 `GatewayDelivery` 写入 outbox。
 7. Session store 写入脱敏后的 request/result/delivery evidence。
 
-`chat` 消息复用由 gateway channel、account、peer、thread/message id 派生出的 chat session id。`task` 消息会写入 gateway-scoped user entry、runtime result entry，以及 typed start/end/error event。Delivery record 只记录 outbox delivery id 和 kind，不复制未脱敏的完整输出。
+`chat` 和 `task` 消息的持久 session id 来自 gateway channel、account、peer 和 thread
+的带版本 digest。原始 channel/account/peer/thread 不会嵌入 session id。`message_id`
+作为单条消息的脱敏 source evidence 保存；当存在结构化 thread 时，它不决定 conversation
+identity。`task` 消息会写入 gateway-scoped user entry、runtime result entry，以及 typed
+start/end/error event。Delivery record 只记录 outbox delivery id 和 kind，不复制未脱敏的完整输出。
 
 如果消息需要审批，worker 会在 processing summary 中记录等待审批状态；它不会自动审批，也不会用更宽权限重试。
 

@@ -2,18 +2,17 @@
 
 use super::profile::OpenAiCompatProfile;
 use crate::{
+    http::{ModelHttpClient, ReqwestModelHttpClient},
     params::model_request_options_from_config,
     transport::{ModelTransport, ModelTransportDescriptor, descriptor},
     types::ModelRequestOptions,
 };
 use ikaros_core::{
-    IkarosError, ModelConfig, RemoteProviderConfig, Result, resolve_config_secret,
-    resolve_config_value,
+    ModelConfig, RemoteProviderConfig, Result, resolve_config_secret, resolve_config_value,
 };
-use reqwest::Client;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleProvider {
     pub(super) name: String,
     pub(super) base_url: String,
@@ -22,7 +21,7 @@ pub struct OpenAiCompatibleProvider {
     pub(super) max_retries: u8,
     pub(super) profile: OpenAiCompatProfile,
     pub(super) default_options: ModelRequestOptions,
-    pub(super) client: Client,
+    pub(super) http: Arc<dyn ModelHttpClient>,
 }
 
 impl OpenAiCompatibleProvider {
@@ -31,12 +30,22 @@ impl OpenAiCompatibleProvider {
         config: &ModelConfig,
         provider_settings: &RemoteProviderConfig,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_millis(config.timeout_ms))
-            .build()
-            .map_err(|source| {
-                IkarosError::Message(format!("failed to build model client: {source}"))
-            })?;
+        Self::from_config_with_http_client(
+            provider_name,
+            config,
+            provider_settings,
+            Arc::new(ReqwestModelHttpClient::new(Duration::from_millis(
+                config.timeout_ms,
+            ))?),
+        )
+    }
+
+    pub fn from_config_with_http_client(
+        provider_name: impl Into<String>,
+        config: &ModelConfig,
+        provider_settings: &RemoteProviderConfig,
+        http: Arc<dyn ModelHttpClient>,
+    ) -> Result<Self> {
         let base_url = resolve_config_value(
             &provider_settings.base_url,
             "providers.model.base_url for OpenAI-compatible model provider",
@@ -53,7 +62,7 @@ impl OpenAiCompatibleProvider {
             max_retries: config.max_retries,
             profile,
             default_options: model_request_options_from_config(config)?,
-            client,
+            http,
         })
     }
 

@@ -76,23 +76,30 @@ ikaros rag delete-scope scratch
 
 ## Embeddings
 
-Local providers:
+Local deterministic/test providers:
 
 - `hash`
 - `sparse`
 - `mock`
 
+Local HTTP provider:
+
+- `ollama`
+
 Optional cloud provider:
 
 - `openai-compatible`
 
-`openai-compatible` is the only cloud embedding provider name. Provider
-endpoints are configured through `providers.embedding.base_url`, not through
-provider-name aliases.
+`ollama` calls a local Ollama `/api/embed` endpoint. Leave
+`providers.embedding.base_url` empty to use `http://127.0.0.1:11434`, or set it
+to another local Ollama base URL. `openai-compatible` is the cloud embedding
+provider name. Provider endpoints are configured through
+`providers.embedding.base_url`, not through provider-name aliases.
 
-Cloud embedding calls are network actions and require harness approval for
-ingest, reindex, and search. Text is redacted before provider calls. Tests use
-explicit local/mock providers and do not require credentials.
+OpenAI-compatible and Ollama embedding calls are network actions and require
+harness approval for ingest, reindex, and search. Text is redacted before
+provider calls. Tests use explicit local/mock providers and do not require
+credentials.
 
 RAG search output is intentionally rendered without raw embedding vectors. The
 local index may store vectors, but CLI and skill output expose only the chunk
@@ -102,5 +109,5 @@ content, citation metadata, score, and embedding provider.
 
 Chat does not inject RAG by default. Local RAG can be added to a turn when a
 profile enables `rag_context` and the request uses a nonzero `--rag-top-k`, or
-when the user calls `ikaros rag search` directly. Cloud embedding remains an
-explicit RAG command path rather than background chat retrieval.
+when the user calls `ikaros rag search` directly. Provider-backed embedding
+remains an explicit RAG command path rather than background chat retrieval.

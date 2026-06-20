@@ -15,7 +15,19 @@ Initialize and inspect local state:
 ```bash
 ikaros init
 ikaros doctor
+ikaros provider inspect
+ikaros provider health
+ikaros provider health --live
 ```
+
+`provider inspect` reads the local `IKAROS_HOME/config.yaml` provider settings
+and prints the resolved provider descriptor: provider family, model, profile,
+context window, tokenizer, capabilities, health state, and cost fields. It does
+not call the provider and does not print API keys.
+
+`provider health` reads the local provider health ledger. `provider health
+--live` sends a short request through runtime `NetworkEgress` and records the
+result without printing API keys.
 
 Chat:
 

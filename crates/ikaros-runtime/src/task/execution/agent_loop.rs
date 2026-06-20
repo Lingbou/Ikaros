@@ -3,8 +3,8 @@
 use super::super::types::{RuntimeTaskPlan, TaskRunOptions};
 use super::reporting::{audit_agent_loop_task_report, task_execution_report_from_agent_loop};
 use crate::{
-    AgentHarness, AgentHarnessConfig, AgentLoopOptions, AgentLoopReport, HarnessAgentRuntime,
-    session::runtime_session_target,
+    AgentHarness, AgentHarnessConfig, AgentLoopOptions, AgentLoopReport, EgressModelHttpClient,
+    HarnessAgentRuntime, session::runtime_session_target,
 };
 use ikaros_core::{
     IkarosConfig, IkarosPaths, Plan, PlanStep, ResolvedAgentProfile, Result, RiskLevel,
@@ -13,7 +13,7 @@ use ikaros_core::{
 use ikaros_harness::{
     AuditEvent, ExecutionSession, GuardrailConfig, SkillRegistry, TaskExecutionReport,
 };
-use ikaros_models::{ModelRequestOptions, governed_provider_from_config};
+use ikaros_models::{ModelRequestOptions, governed_provider_from_config_with_http_client};
 use ikaros_session::{PersistingAgentTurnSink, SessionId, SessionSource, TurnId};
 use ikaros_soul::{PersonaProfile, load_or_default};
 use serde_json::json;
@@ -48,10 +48,13 @@ pub(super) async fn execute_agent_loop_task(
     input: AgentLoopTaskInput<'_>,
 ) -> Result<(TaskExecutionReport, Option<AgentLoopReport>)> {
     let persona = load_or_default(&input.paths.persona)?;
-    let provider = governed_provider_from_config(
+    let provider = governed_provider_from_config_with_http_client(
         &input.config.model.default,
         &input.config.providers.model,
         &input.paths.audit_dir,
+        Some(Arc::new(EgressModelHttpClient::new(
+            input.session.env.clone(),
+        ))),
     )?;
     input.session.audit.append(AuditEvent::new(
         "task_execution_start",

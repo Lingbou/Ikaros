@@ -263,6 +263,114 @@ pub enum ModelTokenizerKind {
     Mock,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelProviderCapabilities {
+    pub chat: bool,
+    pub streaming: bool,
+    pub tool_calls: bool,
+    pub reasoning: bool,
+    pub json_mode: bool,
+    pub network: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelProviderCost {
+    pub currency: String,
+    pub input_per_million: Option<f64>,
+    pub output_per_million: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderErrorKind {
+    Auth,
+    RateLimited,
+    Transient,
+    BadRequest,
+    ContextLimit,
+    Network,
+    Unknown,
+}
+
+impl ProviderErrorKind {
+    pub fn classify_status(status: u16) -> Self {
+        match status {
+            401 | 403 => Self::Auth,
+            408 | 409 | 425 | 429 => Self::RateLimited,
+            500..=599 => Self::Transient,
+            400 | 404 | 422 => Self::BadRequest,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn retryable(self) -> bool {
+        matches!(self, Self::RateLimited | Self::Transient | Self::Network)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderHealthStatus {
+    Unknown,
+    Healthy,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderHealthState {
+    pub provider: String,
+    pub model: String,
+    pub status: ProviderHealthStatus,
+    pub consecutive_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_kind: Option<ProviderErrorKind>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_error_summary: String,
+}
+
+impl ProviderHealthState {
+    pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            status: ProviderHealthStatus::Unknown,
+            consecutive_failures: 0,
+            last_error_kind: None,
+            last_error_summary: String::new(),
+        }
+    }
+
+    pub fn record_success(&mut self) {
+        self.status = ProviderHealthStatus::Healthy;
+        self.consecutive_failures = 0;
+        self.last_error_kind = None;
+        self.last_error_summary.clear();
+    }
+
+    pub fn record_failure(&mut self, kind: ProviderErrorKind, summary: impl Into<String>) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_error_kind = Some(kind);
+        self.last_error_summary = redact_secrets(&summary.into());
+        self.status = if self.consecutive_failures >= 3 {
+            ProviderHealthStatus::Unavailable
+        } else {
+            ProviderHealthStatus::Degraded
+        };
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelProviderDescriptor {
+    pub provider: String,
+    pub model: String,
+    pub profile: String,
+    pub capabilities: ModelProviderCapabilities,
+    pub context: ModelContextProfile,
+    pub cost: ModelProviderCost,
+    pub health: ProviderHealthState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelResponse {
     pub provider: String,
@@ -381,6 +489,9 @@ pub enum ModelStreamEvent {
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     fn name(&self) -> &str;
+    fn model_id(&self) -> &str {
+        ""
+    }
     fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
         request.estimated_tokens()
     }
