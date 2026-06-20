@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{GatewayDelivery, GatewayMessage, GatewayMessageStatus, GatewayRoute};
-use fs2::FileExt;
+use fs4::FileExt;
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
 use std::{
     collections::HashSet,
@@ -301,7 +301,7 @@ impl JsonlFileLock {
             .map_err(|source| IkarosError::io(&lock_path, source))?;
         let started = Instant::now();
         loop {
-            match file.try_lock_exclusive() {
+            match FileExt::try_lock(&file).map_err(std::io::Error::from) {
                 Ok(()) => {
                     if let Err(error) = write_lock_metadata(&mut file, &lock_path) {
                         let _ = FileExt::unlock(&file);
@@ -463,9 +463,6 @@ mod lock_tests {
         let first = JsonlFileLock::acquire_with_timeout(&path, StdDuration::from_secs(1))
             .expect("first lock");
         let lock_path = sibling_path_with_suffix(&path, ".lock");
-        let metadata = fs::read_to_string(&lock_path).expect("lock metadata");
-        let metadata: LockMetadata = serde_json::from_str(&metadata).expect("metadata json");
-        assert_eq!(metadata.pid, std::process::id());
 
         let error = match JsonlFileLock::acquire_with_timeout(&path, StdDuration::from_millis(30)) {
             Ok(_) => panic!("second lock acquired while first lock was held"),
@@ -478,6 +475,9 @@ mod lock_tests {
         );
 
         drop(first);
+        let metadata = fs::read_to_string(&lock_path).expect("lock metadata");
+        let metadata: LockMetadata = serde_json::from_str(&metadata).expect("metadata json");
+        assert_eq!(metadata.pid, std::process::id());
         let _second = JsonlFileLock::acquire_with_timeout(&path, StdDuration::from_secs(1))
             .expect("second lock after release");
     }

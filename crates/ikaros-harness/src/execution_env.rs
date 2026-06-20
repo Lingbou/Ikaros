@@ -119,10 +119,20 @@ impl WorkspaceExecutionEnv {
 
     fn ensure_lexically_in_workspace(&self, path: &Path) -> Result<PathBuf> {
         let resolved = self.resolve_path(path);
-        if !resolved.starts_with(&self.workspace_root) {
-            return Err(IkarosError::OutOfScope(resolved));
+        if resolved.starts_with(&self.workspace_root) {
+            return Ok(resolved);
         }
-        Ok(resolved)
+        #[cfg(windows)]
+        {
+            let canonical_workspace = fs::canonicalize(&self.workspace_root)
+                .unwrap_or_else(|_| self.workspace_root.clone());
+            if let Ok(canonical) = fs::canonicalize(&resolved)
+                && canonical.starts_with(&canonical_workspace)
+            {
+                return Ok(resolved);
+            }
+        }
+        Err(IkarosError::OutOfScope(resolved))
     }
 
     fn ensure_write_path(&self, path: &Path) -> Result<PathBuf> {
