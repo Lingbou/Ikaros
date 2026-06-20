@@ -18,7 +18,7 @@ use std::{
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const SESSION_SCHEMA_VERSION: i64 = 5;
+const SESSION_SCHEMA_VERSION: i64 = 6;
 const DEFAULT_CONTINUATION_LEASE_SECONDS: i64 = 300;
 
 #[derive(Debug, Clone)]
@@ -118,6 +118,7 @@ impl SqliteSessionStore {
                 session_id TEXT NOT NULL,
                 turn_id TEXT NOT NULL,
                 parent_event_id TEXT,
+                event_seq INTEGER NOT NULL DEFAULT 0,
                 at TEXT NOT NULL,
                 source TEXT NOT NULL,
                 kind_json TEXT NOT NULL,
@@ -192,6 +193,7 @@ impl SqliteSessionStore {
             "attempt_count",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_agent_event_sequence(conn, &self.path)?;
         rebuild_missing_entry_search_indexes(conn, &self.path)?;
         conn.pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)
             .map_err(|source| sqlite_error(&self.path, source))
@@ -480,7 +482,7 @@ impl SessionStore for SqliteSessionStore {
                 SELECT id, session_id, turn_id, parent_event_id, at, source, kind_json, payload_json
                 FROM agent_events
                 WHERE session_id = ?1
-                ORDER BY at ASC, rowid ASC
+                ORDER BY event_seq ASC, rowid ASC
                 "#,
             )
             .map_err(|source| sqlite_error(&self.path, source))?;
@@ -881,14 +883,47 @@ fn add_missing_column(
     .map_err(|source| sqlite_error(path, source))
 }
 
+fn ensure_agent_event_sequence(conn: &Connection, path: &Path) -> Result<()> {
+    add_missing_column(
+        conn,
+        path,
+        "agent_events",
+        "event_seq",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    conn.execute(
+        r#"
+        UPDATE agent_events
+        SET event_seq = (
+            SELECT COUNT(*)
+            FROM agent_events AS earlier
+            WHERE earlier.session_id = agent_events.session_id
+              AND earlier.rowid <= agent_events.rowid
+        )
+        WHERE event_seq = 0
+        "#,
+        [],
+    )
+    .map_err(|source| sqlite_error(path, source))?;
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS agent_events_session_seq_idx
+            ON agent_events(session_id, event_seq);
+        "#,
+    )
+    .map_err(|source| sqlite_error(path, source))
+}
+
 fn append_agent_event(conn: &Connection, path: &Path, event: &AgentEvent) -> Result<()> {
     insert_missing_session(conn, path, &event.session_id)?;
     conn.execute(
         r#"
         INSERT INTO agent_events (
-            id, session_id, turn_id, parent_event_id, at, source, kind_json, payload_json
+            id, session_id, turn_id, parent_event_id, event_seq, at, source, kind_json, payload_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(event_seq), 0) + 1, ?5, ?6, ?7, ?8
+        FROM agent_events
+        WHERE session_id = ?2
         "#,
         params![
             event.event_id.as_str(),
@@ -2327,7 +2362,10 @@ mod tests {
         let session_id = SessionId::from("session-writer-order");
         let turn_id = TurnId::from("turn-writer-order");
         let session = sample_session(session_id.clone());
-        let events = sample_events(session_id.clone(), turn_id.clone());
+        let mut events = sample_events(session_id.clone(), turn_id.clone());
+        events[0].at = parse_time("2026-06-20T00:00:00Z").expect("start timestamp");
+        events[1].at = parse_time("2026-06-20T00:00:01Z").expect("model timestamp");
+        events[2].at = parse_time("2026-06-20T00:00:00.5Z").expect("end timestamp");
 
         let mut writer = store.begin_turn(&session, &turn_id).expect("writer");
         for event in &events {

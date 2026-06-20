@@ -20,6 +20,10 @@ use std::{
     },
 };
 
+fn canonical_or_original(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 #[derive(Debug, Default)]
 struct SelfModifyTrackingEnv {
     read_to_string_calls: Arc<AtomicUsize>,
@@ -126,7 +130,7 @@ struct FailingRemoveFileSystem {
 impl FailingRemoveFileSystem {
     fn new(fail_path: PathBuf) -> Self {
         Self {
-            fail_path,
+            fail_path: canonical_or_original(&fail_path),
             failures_left: Arc::new(AtomicUsize::new(1)),
         }
     }
@@ -189,7 +193,8 @@ impl ExecutionFileSystem for FailingRemoveFileSystem {
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = ikaros_core::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if path == self.fail_path
+            let comparable_path = canonical_or_original(path);
+            if comparable_path == self.fail_path
                 && self
                     .failures_left
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
@@ -470,6 +475,7 @@ fn coding_turn_context_records_workspace_git_mode_and_redacts_secret() {
     .expect("ref");
     fs::write(temp.path().join(".git/status_porcelain_v1"), "").expect("status");
     fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").expect("cargo");
+    let expected_root = canonical_or_original(temp.path());
 
     let context = CodingTurnContext::from_workspace(CodingTurnContextInput {
         workspace_root: temp.path().to_path_buf(),
@@ -489,8 +495,11 @@ fn coding_turn_context_records_workspace_git_mode_and_redacts_secret() {
     assert_eq!(context.mode, CodingMode::Edit);
     assert_eq!(context.session_id.as_deref(), Some("session-1"));
     assert_eq!(context.turn_id.as_deref(), Some("turn-1"));
-    assert_eq!(context.workspace_root, temp.path());
-    assert_eq!(context.git.git_root.as_deref(), Some(temp.path()));
+    assert_eq!(context.workspace_root, expected_root);
+    assert_eq!(
+        context.git.git_root.as_deref(),
+        Some(expected_root.as_path())
+    );
     assert_eq!(
         context.git.head.as_deref(),
         Some("0123456789abcdef0123456789abcdef01234567")

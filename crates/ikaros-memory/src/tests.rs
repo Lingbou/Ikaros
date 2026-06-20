@@ -100,7 +100,7 @@ fn memory_policy_engine_scores_promotes_demotes_and_selects_quota_victims() {
         max_records_per_scope: 2,
     };
     let engine = MemoryPolicyEngine::new(policy);
-    let promoted = MemoryRecord::new(
+    let mut promoted = MemoryRecord::new(
         MemoryKind::Relationship,
         "user",
         "User preference: concise updates",
@@ -108,12 +108,15 @@ fn memory_policy_engine_scores_promotes_demotes_and_selects_quota_victims() {
     .expect("promoted")
     .with_tags(vec!["relationship".into(), "chat-learned".into()])
     .with_source("manual");
-    let demoted = MemoryRecord::new(MemoryKind::Task, "user", "old")
+    let mut demoted = MemoryRecord::new(MemoryKind::Task, "user", "old")
         .expect("demoted")
         .with_tags(Vec::new());
-    let quota_victim = MemoryRecord::new(MemoryKind::Task, "user", "stale")
+    let mut quota_victim = MemoryRecord::new(MemoryKind::Task, "user", "stale")
         .expect("quota")
         .with_tags(Vec::new());
+    demoted.created_at = "2026-06-20T00:00:00Z".into();
+    quota_victim.created_at = "2026-06-20T00:00:01Z".into();
+    promoted.created_at = "2026-06-20T00:00:02Z".into();
     let scope_records = vec![promoted.clone(), demoted.clone(), quota_victim.clone()];
 
     let promote = engine
