@@ -153,6 +153,13 @@ pub trait Skill: Send + Sync {
             ),
         }
     }
+    fn approval_context(
+        &self,
+        _input: &serde_json::Value,
+        _workspace_root: &Path,
+    ) -> Option<serde_json::Value> {
+        None
+    }
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput>;
 }
 

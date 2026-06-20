@@ -131,10 +131,18 @@ This roadmap describes planned work for Ikaros and is scoped as future planning 
 - Route coding git status snapshots through the session process boundary. The
   sync context constructor only consumes local fixture state or returns unknown;
   live workflow execution uses `ExecutionEnv` / `ProcessRunner`.
-- Future work should focus on combined provider/shell/write approval display,
-  running provider-call cancellation UI, richer readable terminal event output,
-  readline/history/multiline/Ctrl-C interaction, and deeper property/fuzz
-  coverage rather than adding a second coding control plane.
+- Keep the coding terminal surface explainable. Coding approval requests now
+  include a structured approval context for provider calls, workspace writes,
+  shell/test commands, session/turn identity, and replay instructions. `ikaros
+  code ...`, chat REPL `/code ...`, and `ikaros approval approve ...` render
+  `approval_scope`, `coding_progress`, and `coding_result` lines in addition to
+  the JSON payload.
+- Provider-backed coding turns can be cancelled while awaiting the provider:
+  Ctrl-C requests cancellation, the provider future is dropped, and the coding
+  timeline records `coding_loop_cancelled` before patch/test execution resumes.
+- Future work should focus on readline/history/multiline interaction, broader
+  slash-command resume/status ergonomics, and deeper property/fuzz coverage
+  rather than adding a second coding control plane.
 - Keep `debug coding-turn` aligned with the session timeline so coding replay
   can be inspected without reading ad hoc report files.
 

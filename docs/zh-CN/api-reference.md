@@ -194,7 +194,10 @@ model request/response metadata、token budget stop、cancellation stop、patch
 attempt、test evidence、review finding 和 loop termination 都写成可 replay 的
 coding event。`--max-iterations` 限制为 `1..=8`；`--model-token-budget` 会在预计
 request 超过剩余 coding-loop budget 时于 provider call 前停止。存在 `IKAROS.md` 和
-`.ikaros/instructions.md` 时，workspace instruction 会自动进入 coding context。
+`.ikaros/instructions.md` 时，workspace instruction 会自动进入 coding context。Coding turn
+的审批请求会携带 provider、shell/test、workspace write、session 和 replay 的结构化 context；
+CLI 会把它显示为 `approval_scope`。执行时会输出 `coding_progress` 和 `coding_result`
+摘要；provider-backed coding turn 在等待 provider response 时可以用 Ctrl-C 请求取消。
 
 Service manager 模板：
 

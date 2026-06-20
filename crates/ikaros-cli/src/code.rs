@@ -390,6 +390,7 @@ pub(crate) async fn code_command(
         }
     };
     print_skill_result(&result)?;
+    print_code_terminal_summary(&result)?;
     print_approval_hint(&result);
     println!("audit: {}", session.audit.path().display());
     if let Some(path) = model_usage_path {
@@ -467,14 +468,20 @@ async fn run_coding_workflow_command(
     agent_override: Option<&str>,
     command: CodingWorkflowCommandInput,
 ) -> Result<(ToolResult, Option<PathBuf>)> {
-    let (session, registry, session_id, turn_id) = coding_session_and_registry_for_workflow(
-        paths,
-        workspace,
-        agent_override,
-        command.session_id,
-        command.turn_id,
-        command.model_loop,
-    )?;
+    let cancellation = CancellationToken::new();
+    if command.model_loop {
+        install_coding_cancellation_signal(cancellation.clone());
+    }
+    let (session, registry, session_id, turn_id) =
+        coding_session_and_registry_for_workflow_with_cancellation(
+            paths,
+            workspace,
+            agent_override,
+            command.session_id,
+            command.turn_id,
+            command.model_loop,
+            cancellation,
+        )?;
     let mut input = json!({
         "objective": command.objective,
         "mode": command.mode,
@@ -508,13 +515,14 @@ async fn run_coding_workflow_command(
     ))
 }
 
-pub(crate) fn coding_session_and_registry_for_workflow(
+pub(crate) fn coding_session_and_registry_for_workflow_with_cancellation(
     paths: &IkarosPaths,
     workspace: &Path,
     agent_override: Option<&str>,
     session_id: Option<String>,
     turn_id: Option<String>,
     include_model_provider: bool,
+    cancellation: CancellationToken,
 ) -> Result<(ExecutionSession, SkillRegistry, SessionId, TurnId)> {
     let config = ikaros_core::IkarosConfig::load(&paths.config)?;
     let agent = resolve_agent_instance(&config, agent_override, workspace, &paths.home)?;
@@ -539,9 +547,117 @@ pub(crate) fn coding_session_and_registry_for_workflow(
         agent_id: Some(agent.agent_id.clone()),
         workspace: Some(agent.workspace.clone()),
         model_provider: coding_model_provider,
-        cancellation: CancellationToken::new(),
+        cancellation,
     });
     Ok((session, builtin_registry(env), session_id, turn_id))
+}
+
+pub(crate) fn install_coding_cancellation_signal(cancellation: CancellationToken) {
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            cancellation.cancel();
+            eprintln!(
+                "coding_cancel_requested: waiting for the running provider/tool step to stop"
+            );
+        }
+    });
+}
+
+pub(crate) fn print_code_terminal_summary(result: &ToolResult) -> Result<()> {
+    if let Some(context) = result.output.get("approval_context") {
+        print_code_approval_context(context);
+    }
+    if result
+        .output
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .is_some()
+    {
+        print_coding_progress(&result.output);
+    }
+    Ok(())
+}
+
+fn print_code_approval_context(context: &serde_json::Value) {
+    let operations = &context["operations"];
+    println!("approval_scope:");
+    println!(
+        "  provider_call: {}",
+        operations["provider_call"].as_bool().unwrap_or(false)
+    );
+    println!(
+        "  workspace_write: {}",
+        operations["workspace_write"].as_bool().unwrap_or(false)
+    );
+    let shell_requested = operations["shell"].as_bool().unwrap_or(false);
+    println!("  shell: {shell_requested}");
+    let shell_commands = operations["shell_commands"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if shell_commands.is_empty() {
+        if shell_requested
+            && operations["shell_commands_inferred"]
+                .as_bool()
+                .unwrap_or(false)
+        {
+            println!("  shell_commands: inferred from workspace");
+        } else {
+            println!("  shell_commands: none");
+        }
+    } else {
+        println!("  shell_commands:");
+        for command in shell_commands {
+            let command_text = command["command"].as_str().unwrap_or("<unknown>");
+            let reason = command["reason"].as_str().unwrap_or("unspecified");
+            println!(
+                "    - {} ({})",
+                redact_secrets(command_text),
+                redact_secrets(reason)
+            );
+        }
+    }
+    println!(
+        "  provider: {}",
+        context["provider"]["name"]
+            .as_str()
+            .unwrap_or("not_configured")
+    );
+    println!(
+        "  session: {} turn={}",
+        context["session"]["session_id"]
+            .as_str()
+            .unwrap_or("<generated>"),
+        context["session"]["turn_id"]
+            .as_str()
+            .unwrap_or("<generated>")
+    );
+}
+
+fn print_coding_progress(output: &serde_json::Value) {
+    let Some(events) = output.get("events").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    println!("coding_progress:");
+    for event in events {
+        let kind = event["kind"].as_str().unwrap_or("<unknown>");
+        let summary = event["summary"].as_str().unwrap_or_default();
+        println!("  - {}: {}", kind, redact_secrets(summary));
+    }
+    if let Some(loop_report) = output.get("loop_report") {
+        println!(
+            "coding_result: status={} iterations={} reason={}",
+            loop_report["status"].as_str().unwrap_or("<unknown>"),
+            loop_report["iterations"]
+                .as_u64()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "0".into()),
+            loop_report["reason"]
+                .as_str()
+                .map(redact_secrets)
+                .unwrap_or_default()
+        );
+    }
 }
 
 fn rollback_diff_for_coding_turn(

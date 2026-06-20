@@ -125,6 +125,7 @@ pub(crate) async fn self_modify_command(
                 call,
                 "self-modify apply requires explicit approval".into(),
                 workspace.to_path_buf(),
+                None,
             )?;
             session.audit.append(AuditEvent::new(
                 "self_modify_apply_requested",

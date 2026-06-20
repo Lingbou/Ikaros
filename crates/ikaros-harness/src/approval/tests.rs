@@ -19,6 +19,7 @@ fn approval_log_persists_pending_requests_with_redaction() {
         reason: "write requires approval".into(),
         created_at: now_rfc3339().expect("time"),
         workspace_root: Some(temp.path().join("workspace")),
+        context: Some(json!({"note": "token=abc123"})),
     };
     log.append_request(request).expect("append");
     let pending = log.pending().expect("pending");
@@ -26,6 +27,10 @@ fn approval_log_persists_pending_requests_with_redaction() {
     assert_eq!(pending[0].request.id, "approval-1");
     assert_eq!(
         pending[0].request.call.input["content"],
+        json!("token=[REDACTED_SECRET]")
+    );
+    assert_eq!(
+        pending[0].request.context.as_ref().expect("context")["note"],
         json!("token=[REDACTED_SECRET]")
     );
     let execution_request = log
@@ -118,5 +123,6 @@ fn approval_request(workspace_root: std::path::PathBuf) -> ApprovalRequest {
         reason: "write requires approval".into(),
         created_at: now_rfc3339().expect("time"),
         workspace_root: Some(workspace_root),
+        context: None,
     }
 }

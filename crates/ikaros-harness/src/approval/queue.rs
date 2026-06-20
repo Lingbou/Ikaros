@@ -31,6 +31,7 @@ impl ApprovalPolicy {
         call: ToolCall,
         reason: String,
         workspace_root: PathBuf,
+        context: Option<serde_json::Value>,
     ) -> Result<ApprovalRequest> {
         let request = ApprovalRequest {
             id: Uuid::new_v4().to_string(),
@@ -38,6 +39,7 @@ impl ApprovalPolicy {
             reason,
             created_at: now_rfc3339()?,
             workspace_root: Some(workspace_root),
+            context,
         };
         if let Some(log) = &self.log {
             log.append_request(request.clone())?;

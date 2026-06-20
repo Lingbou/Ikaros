@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    code::coding_session_and_registry_for_workflow, print_skill_result, session_and_registry,
+    code::{
+        coding_session_and_registry_for_workflow_with_cancellation,
+        install_coding_cancellation_signal, print_code_terminal_summary,
+    },
+    print_skill_result, session_and_registry,
 };
 use anyhow::Result;
 use clap::Subcommand;
 use ikaros_core::IkarosPaths;
-use ikaros_harness::ApprovalStatus;
+use ikaros_harness::{ApprovalStatus, CancellationToken};
 use ikaros_runtime::record_approval_resolution;
 use std::path::Path;
 
@@ -95,14 +99,19 @@ pub(crate) async fn approval_command(
                         .get("model_loop")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
+                    let cancellation = CancellationToken::new();
+                    if include_model_provider {
+                        install_coding_cancellation_signal(cancellation.clone());
+                    }
                     let (coding_session, coding_registry, _, _) =
-                        coding_session_and_registry_for_workflow(
+                        coding_session_and_registry_for_workflow_with_cancellation(
                             paths,
                             workspace,
                             agent_override,
                             session_id,
                             turn_id,
                             include_model_provider,
+                            cancellation,
                         )?;
                     (coding_session, coding_registry)
                 } else {
@@ -115,6 +124,9 @@ pub(crate) async fn approval_command(
                 let _ = record_approval_resolution(paths, workspace, agent_override, &record)?;
             }
             print_skill_result(&result)?;
+            if record.request.call.name == "code_workflow" {
+                print_code_terminal_summary(&result)?;
+            }
         }
         ApprovalCommand::Deny { id, note } => {
             let record = session.decide_approval(&id, ApprovalStatus::Denied, note)?;

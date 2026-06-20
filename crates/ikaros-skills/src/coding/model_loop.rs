@@ -184,7 +184,23 @@ pub(super) async fn run_provider_coding_loop(
             }),
         ));
 
-        let response = provider.generate(request).await?;
+        let response = tokio::select! {
+            response = provider.generate(request) => response?,
+            _ = cancellation.cancelled() => {
+                loop_status = CodingLoopStatus::Cancelled;
+                loop_reason =
+                    format!("provider coding loop cancelled while awaiting iteration {iteration} response");
+                events.push(CodingTurnEvent::new(
+                    CodingTurnEventKind::CodingLoopCancelled,
+                    loop_reason.clone(),
+                    json!({
+                        "iteration": iteration,
+                        "phase": "awaiting_model_response",
+                    }),
+                ));
+                break;
+            }
+        };
         let response_tokens = response.usage.total_or_prompt_completion();
         consumed_tokens = consumed_tokens
             .saturating_add(estimated_tokens)

@@ -55,19 +55,26 @@ shell-read when `run_tests` is requested in `test`/`edit`, and to local-write
 only when an explicit candidate patch is applied in `edit` mode. `self_modify`
 is rejected by ordinary `code_workflow` until it enters the dedicated
 self-modify approval path. `--model-loop` always contacts the configured model
-provider after approval. Today the policy request still carries one risk label:
+provider after approval. The policy request still has one effective risk label:
 model-only loops are network risk, test loops are shell-read risk, and patch
-application is local-write risk. Combined provider + shell/write approval
-display remains a hardening item. The workflow builds the repo map, change plan,
-optional patch attempt, turn diff,
+application is local-write risk. To avoid hiding combined risk, approval
+requests also carry structured context for provider calls, workspace writes,
+shell/test commands, session and turn identity, candidate diff size, and replay
+instructions. The CLI renders that context as `approval_scope`, and successful
+or replayed coding turns render `coding_progress` and `coding_result` summaries
+without requiring `debug coding-turn` JSON for the common path. The workflow
+builds the repo map, change plan, optional patch attempt, turn diff,
 test-matrix evidence, review, iteration plan, loop report, final report, and
 optional session replay evidence. Patch application in `code_workflow` and
 `code_edit_guarded` both go through the session `ExecutionEnv` filesystem
 interface rather than calling host filesystem APIs from the skill. Approved
 `code_workflow` replay uses the coding registry again, so provider-backed loops
 keep their session id, turn id, provider, budget, cancellation, and event
-persistence boundary. `code_edit_guarded` remains the direct approval-gated
-patch entry point for applying a provided unified diff.
+persistence boundary. Provider-backed coding loops also observe cancellation
+while waiting for the provider response; cancellation records a
+`coding_loop_cancelled` event and stops before later patch/test/review work.
+`code_edit_guarded` remains the direct approval-gated patch entry point for
+applying a provided unified diff.
 
 Skill descriptors also carry runtime scheduling metadata:
 

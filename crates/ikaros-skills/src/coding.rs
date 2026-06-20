@@ -419,6 +419,17 @@ impl Skill for CodeWorkflowSkill {
         }
     }
 
+    fn approval_context(
+        &self,
+        input: &serde_json::Value,
+        _workspace_root: &Path,
+    ) -> Option<serde_json::Value> {
+        Some(code_workflow_approval_context(
+            input,
+            self.coding_session.as_ref(),
+        ))
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
         let objective = input_string(&input, "objective")?;
         let mode = parse_coding_mode(&input)?;
@@ -641,6 +652,84 @@ fn code_workflow_runs_tests(input: &serde_json::Value) -> bool {
         .get("run_tests")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn code_workflow_approval_context(
+    input: &serde_json::Value,
+    coding_session: Option<&CodingSessionConfig>,
+) -> Value {
+    let mode = parse_coding_mode_lossy(input);
+    let capabilities = CodingModeCapabilities::for_mode(mode);
+    let apply_patch = code_workflow_apply_patch_requested(input);
+    let runs_tests = code_workflow_runs_tests(input);
+    let model_loop = code_workflow_model_loop_requested(input);
+    let workspace_write = apply_patch && capabilities.can_apply_patch;
+    let test_commands = parse_test_commands(input.get("test_commands")).unwrap_or_default();
+    let diff_chars = input
+        .get("diff")
+        .and_then(serde_json::Value::as_str)
+        .map(|diff| diff.chars().count())
+        .unwrap_or_default();
+    let session_id = input
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| coding_session.map(|session| session.session_id.as_str().to_owned()));
+    let turn_id = input
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| coding_session.map(|session| session.turn_id.as_str().to_owned()));
+    json!({
+        "kind": "coding_workflow",
+        "mode": mode,
+        "objective": input
+            .get("objective")
+            .and_then(serde_json::Value::as_str)
+            .map(redact_secrets)
+            .unwrap_or_default(),
+        "operations": {
+            "provider_call": model_loop,
+            "workspace_write": workspace_write,
+            "shell": runs_tests,
+            "shell_commands": test_commands
+                .iter()
+                .map(|command| json!({
+                    "command": redact_secrets(&command.command),
+                    "reason": redact_secrets(&command.reason),
+                }))
+                .collect::<Vec<_>>(),
+            "shell_commands_inferred": runs_tests && test_commands.is_empty(),
+            "approval_replay": true,
+        },
+        "provider": {
+            "name": coding_session
+                .and_then(|session| session.model_provider.as_ref())
+                .map(|provider| provider.name())
+                .unwrap_or("not_configured"),
+        },
+        "patch": {
+            "has_candidate_diff": diff_chars > 0,
+            "candidate_diff_chars": diff_chars,
+            "full_diff_omitted": diff_chars > 0,
+        },
+        "session": {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "agent_id": coding_session.and_then(|session| session.agent_id.clone()),
+            "workspace": coding_session
+                .and_then(|session| session.workspace.as_ref())
+                .map(|path| redact_secrets(&path.display().to_string())),
+        },
+        "limits": {
+            "max_iterations": parse_max_iterations(input).unwrap_or(1),
+            "model_token_budget": parse_model_token_budget(input).unwrap_or(None),
+        },
+        "next": {
+            "approve": "ikaros approval approve <approval-id>",
+            "deny": "ikaros approval deny <approval-id>",
+        },
+    })
 }
 
 fn parse_max_iterations(input: &serde_json::Value) -> Result<usize> {

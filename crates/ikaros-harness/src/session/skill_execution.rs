@@ -103,15 +103,21 @@ impl ExecutionSession {
                 }
             }
             PolicyDecision::AskUser => {
+                let approval_context = skill.approval_context(&input, &self.sandbox.workspace_root);
                 let approval = self.approvals.enqueue(
                     call.clone(),
                     evaluation.reason.clone(),
                     self.sandbox.workspace_root.clone(),
+                    approval_context.clone(),
                 )?;
+                let mut output = json!({"approval_id": approval.id, "decision": "ask_user"});
+                if let Some(context) = approval_context {
+                    output["approval_context"] = context;
+                }
                 ToolResult {
                     call_id: call.id,
                     ok: false,
-                    output: json!({"approval_id": approval.id, "decision": "ask_user"}),
+                    output,
                     summary: evaluation.reason,
                 }
             }

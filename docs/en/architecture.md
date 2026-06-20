@@ -224,9 +224,12 @@ State ownership:
   ambiguous anchors, already-applied hunks, generated malformed corpus cases,
   and generated line-update roundtrips. Terminal-first coding commands are
   available from both `ikaros code ...` and the chat REPL `/code ...` wrapper,
-  including rollback from persisted turn diff evidence. Combined provider/shell/write
-  approval display, running provider-call cancellation UI, and deeper
-  property/fuzz coverage remain future hardening.
+  including rollback from persisted turn diff evidence. Coding approval requests
+  now carry structured provider/shell/write/session context and the terminal
+  renders `approval_scope`, `coding_progress`, and `coding_result` summaries.
+  Provider-backed coding turns can be cancelled while awaiting a provider call;
+  cancellation records `coding_loop_cancelled` before later patch/test steps run.
+  Deeper property/fuzz coverage remains future hardening.
 
 ## Invariants
 

@@ -429,6 +429,9 @@ fn chat_repl_code_slash_command_uses_coding_turn_timeline() {
     );
     assert!(output.contains("commands:") || output.contains("Ikaros chat using provider="));
     assert!(output.contains("summary: coding turn completed"));
+    assert!(output.contains("coding_progress:"));
+    assert!(output.contains("  - plan_prepared:"));
+    assert!(output.contains("coding_result:"));
     assert!(output.contains("\"plan_prepared\""));
 
     let debug = env.run([
@@ -509,10 +512,20 @@ fn coding_workflow_model_loop_requires_approval_and_replays_mock_provider_turn()
         "coding-model-turn",
     ]);
     assert!(requested.contains("\"decision\": \"ask_user\""));
+    assert!(requested.contains("\"approval_context\""));
+    assert!(requested.contains("approval_scope:"));
+    assert!(requested.contains("provider_call: true"));
+    assert!(requested.contains("workspace_write: false"));
+    assert!(requested.contains("shell: false"));
+    assert!(requested.contains("shell_commands: none"));
     let approval_id = parse_approval_id(&requested);
 
     let approved = env.run(["approval", "approve", &approval_id]);
     assert!(approved.contains("summary: coding turn completed"));
+    assert!(approved.contains("coding_progress:"));
+    assert!(approved.contains("  - model_request_prepared:"));
+    assert!(approved.contains("  - model_response_received:"));
+    assert!(approved.contains("coding_result: status=passed"));
     assert!(approved.contains("\"model_request_prepared\""));
     assert!(approved.contains("\"model_response_received\""));
     assert!(approved.contains("\"status\": \"passed\""));

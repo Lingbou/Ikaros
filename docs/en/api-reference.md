@@ -222,7 +222,11 @@ termination as replayable coding events. `--max-iterations` is bounded to
 `1..=8`; `--model-token-budget` stops before a provider request when the
 estimated request would exceed the remaining coding-loop budget. Workspace
 instructions are loaded from `IKAROS.md` and `.ikaros/instructions.md` when
-present.
+present. Approval requests for coding turns include structured provider,
+shell/test, workspace-write, session, and replay context; the CLI prints that as
+`approval_scope`. Coding execution prints `coding_progress` and `coding_result`
+summaries, and provider-backed coding turns can be interrupted while waiting for
+the provider response with Ctrl-C.
 
 Service-manager templates:
 

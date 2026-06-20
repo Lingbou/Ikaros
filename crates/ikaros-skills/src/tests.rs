@@ -32,6 +32,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use tokio::sync::Notify;
 
 struct TrackingEnv {
     reads: Arc<AtomicUsize>,
@@ -49,6 +50,11 @@ struct SequentialTestProcessEnv {
 struct ScriptedCodingModelProvider {
     calls: Arc<AtomicUsize>,
     responses: Vec<String>,
+}
+
+struct BlockingCodingModelProvider {
+    calls: Arc<AtomicUsize>,
+    started: Arc<Notify>,
 }
 
 impl FileSystem for TrackingEnv {
@@ -423,6 +429,23 @@ impl ModelProvider for ScriptedCodingModelProvider {
             },
             diagnostics: Vec::new(),
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for BlockingCodingModelProvider {
+    fn name(&self) -> &str {
+        "blocking-coding-model"
+    }
+
+    fn context_profile(&self) -> ModelContextProfile {
+        ModelContextProfile::default()
+    }
+
+    async fn generate(&self, _request: ModelRequest) -> Result<ModelResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_waiters();
+        std::future::pending::<Result<ModelResponse>>().await
     }
 }
 
@@ -2100,11 +2123,156 @@ async fn code_workflow_model_loop_requires_approval_before_calling_provider() {
 
     assert!(!requested.ok);
     assert_eq!(requested.output["decision"], json!("ask_user"));
+    assert_eq!(
+        requested.output["approval_context"]["operations"]["provider_call"],
+        json!(true)
+    );
+    assert_eq!(
+        requested.output["approval_context"]["operations"]["workspace_write"],
+        json!(true)
+    );
+    assert_eq!(
+        requested.output["approval_context"]["operations"]["shell"],
+        json!(false)
+    );
+    assert_eq!(
+        requested.output["approval_context"]["operations"]["shell_commands"],
+        json!([])
+    );
+    assert_eq!(
+        requested.output["approval_context"]["operations"]["shell_commands_inferred"],
+        json!(false)
+    );
+    assert_eq!(
+        requested.output["approval_context"]["provider"]["name"],
+        json!("scripted-coding-model")
+    );
+    assert_eq!(
+        requested.output["approval_context"]["session"]["session_id"],
+        json!("model-approval-session")
+    );
+    assert_eq!(
+        requested.output["approval_context"]["session"]["turn_id"],
+        json!("model-approval-turn")
+    );
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("approval id");
+    let approval = session
+        .approvals
+        .get(approval_id)
+        .expect("approval lookup")
+        .expect("approval record");
+    assert_eq!(
+        approval.request.context.as_ref().expect("approval context")["operations"]["provider_call"],
+        json!(true)
+    );
     assert_eq!(model_calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         fs::read_to_string(workspace.join("lib.rs")).expect("lib unchanged"),
         "pub fn value() -> i32 { 1 }\n"
     );
+}
+
+#[tokio::test]
+async fn code_workflow_model_loop_cancels_while_waiting_for_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("mkdir");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]").expect("cargo");
+    fs::write(workspace.join("lib.rs"), "pub fn value() -> i32 { 1 }\n").expect("lib");
+    let store = Arc::new(SqliteSessionStore::new(temp.path().join("agent-state")));
+    let session_id = SessionId::from("model-wait-cancel-session");
+    let turn_id = TurnId::from("model-wait-cancel-turn");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let cancellation = ikaros_harness::CancellationToken::new();
+    let model = Arc::new(BlockingCodingModelProvider {
+        calls: model_calls.clone(),
+        started: started.clone(),
+    });
+    let registry = builtin_registry(SkillEnvironment {
+        coding_session: Some(CodingSessionConfig {
+            store: store.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            source: SessionSource::Test,
+            agent_id: Some("coding-agent".into()),
+            workspace: Some(workspace.clone()),
+            model_provider: Some(model),
+            cancellation: cancellation.clone(),
+        }),
+        ..test_env(temp.path(), &workspace)
+    });
+    let session = ExecutionSession::new(&workspace, temp.path().join("audit"));
+    let requested = session
+        .execute_skill(
+            &registry,
+            "code_workflow",
+            json!({
+                "objective": "cancel while provider is running",
+                "mode": "edit",
+                "model_loop": true,
+                "apply_patch": true,
+                "run_tests": true,
+                "max_iterations": 1,
+                "test_commands": [{"command": "cargo test", "reason": "should not run after cancel"}],
+                "session_id": session_id.as_str(),
+                "turn_id": turn_id.as_str(),
+            }),
+        )
+        .await
+        .expect("request");
+    let approval_id = requested.output["approval_id"]
+        .as_str()
+        .expect("approval id")
+        .to_owned();
+    session
+        .decide_approval(&approval_id, ApprovalStatus::Approved, None)
+        .expect("approve");
+
+    let execute = tokio::spawn({
+        let session = session.clone();
+        let registry = registry.clone();
+        async move {
+            session
+                .execute_approved_skill(&registry, &approval_id)
+                .await
+        }
+    });
+    started.notified().await;
+    cancellation.cancel();
+    let executed = tokio::time::timeout(std::time::Duration::from_millis(500), execute)
+        .await
+        .expect("provider wait should observe cancellation")
+        .expect("join")
+        .expect("execute approved");
+
+    assert!(executed.ok);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(executed.output["loop_report"]["status"], json!("cancelled"));
+    assert!(
+        executed.output["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| event["kind"] == json!("coding_loop_cancelled")
+                && event["payload"]["phase"] == json!("awaiting_model_response"))
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("lib.rs")).expect("lib unchanged"),
+        "pub fn value() -> i32 { 1 }\n"
+    );
+    let replay = store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("session replay");
+    assert!(replay.agent_events.iter().any(|event| {
+        event.turn_id == turn_id
+            && matches!(event.kind, AgentEventKind::CodingTurn)
+            && event.payload["kind"] == json!("coding_loop_cancelled")
+            && event.payload["payload"]["phase"] == json!("awaiting_model_response")
+    }));
 }
 
 #[tokio::test]

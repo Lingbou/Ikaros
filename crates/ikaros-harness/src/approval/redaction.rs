@@ -6,6 +6,7 @@ use ikaros_core::{ToolResult, redact_json, redact_secrets};
 pub(super) fn redact_approval_request(mut request: ApprovalRequest) -> ApprovalRequest {
     request.reason = redact_secrets(&request.reason);
     request.call.input = redact_json(request.call.input);
+    request.context = request.context.map(redact_json);
     request
 }
 
