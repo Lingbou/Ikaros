@@ -22,6 +22,57 @@ pub enum GatewayMessageStatus {
     Processing,
     Processed,
     Failed,
+    Cancelled,
+    DeadLettered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GatewayDeliveryStatus {
+    Pending,
+    Processing,
+    Delivered,
+    DeadLettered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GatewayPairingStatus {
+    Pending,
+    Paired,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayPairing {
+    pub code: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub peer: String,
+    pub status: GatewayPairingStatus,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<String>,
+}
+
+impl GatewayPairing {
+    pub fn new(
+        source: impl Into<String>,
+        account: Option<String>,
+        peer: impl Into<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            code: Uuid::new_v4().to_string(),
+            source: redact_secrets(&source.into()),
+            account: account.map(|account| redact_secrets(&account)),
+            peer: redact_secrets(&peer.into()),
+            status: GatewayPairingStatus::Pending,
+            created_at: now_rfc3339()?,
+            paired_at: None,
+            revoked_at: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +92,8 @@ pub struct GatewayRoute {
     pub client_identity: Option<GatewayClientIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<GatewayCapability>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub safe_tools: bool,
 }
 
 impl GatewayRoute {
@@ -60,6 +113,7 @@ impl GatewayRoute {
             session_source: None,
             client_identity: None,
             capabilities: Vec::new(),
+            safe_tools: false,
         }
     }
 
@@ -93,6 +147,11 @@ impl GatewayRoute {
         self.capabilities = capabilities.into_iter().map(redacted_capability).collect();
         self
     }
+
+    pub fn with_safe_tools(mut self, safe_tools: bool) -> Self {
+        self.safe_tools = safe_tools;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,11 +172,23 @@ pub struct GatewayMessage {
     pub client_identity: Option<GatewayClientIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<GatewayCapability>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub safe_tools: bool,
     pub status: GatewayMessageStatus,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempt_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub processed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_lettered_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
@@ -136,13 +207,27 @@ impl GatewayMessage {
             session_source: route.session_source,
             client_identity: route.client_identity,
             capabilities: route.capabilities,
+            safe_tools: route.safe_tools,
             status: GatewayMessageStatus::Pending,
+            attempt_count: 0,
+            lease_owner: None,
+            lease_expires_at: None,
             created_at: now.clone(),
             updated_at: now,
             processed_at: None,
+            dead_lettered_at: None,
+            last_error: None,
             summary: None,
         })
     }
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub(crate) fn stable_idempotency_digest(key: &str) -> String {
@@ -196,6 +281,24 @@ pub struct GatewayDelivery {
     pub kind: String,
     pub content: String,
     pub created_at: String,
+    #[serde(default = "default_delivery_status")]
+    pub status: GatewayDeliveryStatus,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempt_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_lettered_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl GatewayDelivery {
@@ -210,6 +313,19 @@ impl GatewayDelivery {
             kind: redact_secrets(&kind.into()),
             content: redact_secrets(&content.into()),
             created_at: now_rfc3339()?,
+            status: GatewayDeliveryStatus::Pending,
+            attempt_count: 0,
+            lease_owner: None,
+            lease_expires_at: None,
+            next_attempt_at: None,
+            delivered_at: None,
+            dead_lettered_at: None,
+            last_error: None,
+            summary: None,
         })
     }
+}
+
+fn default_delivery_status() -> GatewayDeliveryStatus {
+    GatewayDeliveryStatus::Pending
 }

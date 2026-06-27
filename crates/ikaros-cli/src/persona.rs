@@ -39,7 +39,7 @@ pub(crate) struct PersonaSet {
 pub(crate) fn persona_command(command: PersonaCommand, paths: &IkarosPaths) -> Result<()> {
     match command {
         PersonaCommand::Show => {
-            let persona = load_or_default(&paths.persona)?;
+            let persona = load_or_default(&paths.persona_dir)?;
             println!("name: {}", persona.identity.name);
             println!("role: {}", persona.identity.role);
             println!("tone: {}", persona.tone.style);
@@ -48,7 +48,7 @@ pub(crate) fn persona_command(command: PersonaCommand, paths: &IkarosPaths) -> R
             println!("{}", persona.context_summary());
         }
         PersonaCommand::Path => {
-            println!("{}", paths.persona.display());
+            println!("{}", paths.persona_dir.display());
         }
         PersonaCommand::Set(args) => {
             let args = *args;

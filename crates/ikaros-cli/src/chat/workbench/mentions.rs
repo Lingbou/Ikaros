@@ -21,11 +21,7 @@ pub(in crate::chat) fn print_context_mentions(workspace: &Path, query: Option<&s
     } else {
         println!("mentions_query: all");
     }
-    let mut candidates = fixed_context_mentions(query);
-    candidates.extend(workspace_mentions(workspace, query)?);
-    candidates.sort_by(|left, right| left.label.cmp(&right.label).then(left.kind.cmp(right.kind)));
-    candidates.dedup_by(|left, right| left.label == right.label && left.kind == right.kind);
-    candidates.truncate(MAX_MENTION_CANDIDATES);
+    let candidates = context_mention_candidates(workspace, query)?;
     println!("mentions_found: {}", candidates.len());
     for candidate in candidates {
         println!(
@@ -35,6 +31,68 @@ pub(in crate::chat) fn print_context_mentions(workspace: &Path, query: Option<&s
         );
     }
     Ok(())
+}
+
+#[allow(dead_code)]
+pub(in crate::chat) fn print_context_mentions_for_human(
+    workspace: &Path,
+    query: Option<&str>,
+) -> Result<()> {
+    for line in context_mentions_human_lines(workspace, query)? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+pub(in crate::chat) fn context_mentions_human_lines(
+    workspace: &Path,
+    query: Option<&str>,
+) -> Result<Vec<String>> {
+    let query = query.map(str::trim).filter(|query| !query.is_empty());
+    let candidates = context_mention_candidates(workspace, query)?;
+
+    let mut lines = vec![
+        "• Mentions".to_owned(),
+        format!(
+            "  query: {}",
+            query.map(terminal_inline).unwrap_or_else(|| "all".into())
+        ),
+    ];
+    if candidates.is_empty() {
+        lines.push("  matches: none".to_owned());
+        lines.push("  examples: @diff, @staged, @git:HEAD, @file:path".to_owned());
+        return Ok(lines);
+    }
+
+    lines.push(format!(
+        "  matches: {}{}",
+        candidates.len(),
+        if candidates.len() == MAX_MENTION_CANDIDATES {
+            " shown"
+        } else {
+            ""
+        }
+    ));
+    for candidate in candidates {
+        lines.push(format!(
+            "  - {} ({})",
+            terminal_inline(&candidate.label),
+            candidate.kind
+        ));
+    }
+    Ok(lines)
+}
+
+fn context_mention_candidates(
+    workspace: &Path,
+    query: Option<&str>,
+) -> Result<Vec<MentionCandidate>> {
+    let mut candidates = fixed_context_mentions(query);
+    candidates.extend(workspace_mentions(workspace, query)?);
+    candidates.sort_by(|left, right| left.label.cmp(&right.label).then(left.kind.cmp(right.kind)));
+    candidates.dedup_by(|left, right| left.label == right.label && left.kind == right.kind);
+    candidates.truncate(MAX_MENTION_CANDIDATES);
+    Ok(candidates)
 }
 
 fn fixed_context_mentions(query: Option<&str>) -> Vec<MentionCandidate> {
@@ -232,13 +290,7 @@ mod tests {
     #[test]
     fn generated_workspace_mentions_are_single_line_terminal_candidates() {
         let temp = tempdir().expect("tempdir");
-        let names = [
-            "normal.rs",
-            "with\ttab.rs",
-            "with\nnewline.rs",
-            "with\rcarriage.rs",
-        ];
-        for name in names {
+        for name in ["normal.rs", "with-space.rs"] {
             fs::write(temp.path().join(name), "pub fn sample() {}\n").expect("sample file");
         }
 
@@ -254,5 +306,15 @@ mod tests {
                 "mention candidate must be single-line safe: {mention:?}"
             );
         }
+    }
+
+    #[test]
+    fn relative_slash_path_replaces_control_characters() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("with\ttab\nnewline\rcarriage.rs");
+
+        let relative = relative_slash_path(temp.path(), &path);
+
+        assert_eq!(relative, "with_tab_newline_carriage.rs");
     }
 }

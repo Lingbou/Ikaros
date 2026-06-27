@@ -2,7 +2,7 @@
 
 pub use ikaros_context::{ChatContext, DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET};
 use ikaros_harness::CancellationToken;
-use ikaros_models::ModelResponse;
+use ikaros_models::{ModelContentBlock, ModelResponse};
 use ikaros_session::SessionSource;
 use ikaros_soul::EmotionState;
 use serde::{Deserialize, Serialize};
@@ -13,17 +13,23 @@ pub struct ChatRunOptions {
     pub stream: bool,
     pub agent_loop: bool,
     pub memory_limit: usize,
+    pub memory_search_limit: usize,
     pub rag_top_k: usize,
     pub history_context_limit: usize,
     pub history_summary_limit: usize,
     pub context_token_budget: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_engine: Option<String>,
     pub relationship_learning: bool,
     pub scope: Option<String>,
     pub no_context: bool,
     pub session_id: Option<String>,
+    pub turn_id: Option<String>,
     pub session_source: Option<SessionSource>,
-    pub chat_history_path: Option<PathBuf>,
-    pub chat_history_backend: Option<String>,
+    pub session_state_db: Option<PathBuf>,
+    pub safe_tools: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_blocks: Vec<ModelContentBlock>,
     #[serde(skip)]
     pub cancellation: CancellationToken,
 }
@@ -34,17 +40,21 @@ impl Default for ChatRunOptions {
             stream: false,
             agent_loop: true,
             memory_limit: 3,
+            memory_search_limit: 0,
             rag_top_k: 0,
             history_context_limit: 3,
             history_summary_limit: 12,
             context_token_budget: DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET,
+            context_engine: None,
             relationship_learning: true,
             scope: None,
             no_context: false,
             session_id: None,
+            turn_id: None,
             session_source: None,
-            chat_history_path: None,
-            chat_history_backend: None,
+            session_state_db: None,
+            safe_tools: false,
+            content_blocks: Vec::new(),
             cancellation: CancellationToken::new(),
         }
     }
@@ -66,7 +76,7 @@ pub struct ChatMessageResult {
     pub rag_hits: usize,
     pub audit_path: PathBuf,
     pub model_usage_path: PathBuf,
-    pub chat_history_path: PathBuf,
+    pub session_state_db: PathBuf,
     pub chat_session_id: String,
 }
 
@@ -82,6 +92,5 @@ pub struct ChatTurnReport {
     pub history_hits: usize,
     pub memory_hits: usize,
     pub rag_hits: usize,
-    pub chat_history_path: Option<PathBuf>,
     pub chat_session_id: Option<String>,
 }

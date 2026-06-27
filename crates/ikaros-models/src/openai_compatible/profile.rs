@@ -1,141 +1,389 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::types::{ModelContextProfile, ModelRequestOptions, ModelTokenizerKind, ReasoningEffort};
+use super::schema_sanitizer::sanitize_moonshot_tool_definitions;
+use crate::types::{
+    ModelContextProfile, ModelRequestOptions, ModelTokenizerKind, ModelToolDefinition,
+    ReasoningEffort,
+};
 use ikaros_core::{IkarosError, Result};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderProfile {
+    pub id: &'static str,
+    pub default_max_tokens: Option<u32>,
+    pub context: ModelContextProfile,
+    pub temperature_policy: TemperaturePolicy,
+    pub reasoning_policy: ReasoningPolicy,
+    pub message_policy: MessagePolicy,
+    pub tool_schema_policy: ToolSchemaPolicy,
+    pub request_body_policy: RequestBodyPolicy,
+    pub retry_without_parameters: &'static [&'static str],
+    pub network_access: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenAiCompatProfile {
-    Generic,
+pub struct ProviderProfileSpec {
+    pub id: &'static str,
+    pub auto_base_url_markers: &'static [&'static str],
+    pub auto_model_markers: &'static [&'static str],
+    pub auto_model_tail_prefixes: &'static [&'static str],
+    pub default_max_tokens: Option<u32>,
+    pub temperature_policy: TemperaturePolicy,
+    pub reasoning_policy: ReasoningPolicy,
+    pub message_policy: MessagePolicy,
+    pub tool_schema_policy: ToolSchemaPolicy,
+    pub request_body_policy: RequestBodyPolicy,
+    pub retry_without_parameters: &'static [&'static str],
+    pub network_access: bool,
+    context_window: ContextWindowPolicy,
+    default_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextWindowPolicy {
+    Fixed(u32),
+    InferGeneric,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemperaturePolicy {
+    PassThrough,
+    Omit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningPolicy {
+    None,
     MoonshotKimi,
     DeepSeek,
     GeminiOpenAi,
-    OpenRouter,
-    Qwen,
-    LocalOpenAiCompatible,
+    OpenRouterAnthropic,
 }
 
-impl OpenAiCompatProfile {
-    pub fn resolve(configured: &str, base_url: &str, model: &str) -> Result<Self> {
-        let configured = configured.trim().to_ascii_lowercase();
-        if configured.is_empty() || configured == "auto" {
-            return Ok(Self::auto(base_url, model));
-        }
-        match configured.as_str() {
-            "generic" => Ok(Self::Generic),
-            "moonshot-kimi" => Ok(Self::MoonshotKimi),
-            "deepseek" => Ok(Self::DeepSeek),
-            "gemini-openai" => Ok(Self::GeminiOpenAi),
-            "openrouter" => Ok(Self::OpenRouter),
-            "qwen" => Ok(Self::Qwen),
-            "local-openai-compatible" => Ok(Self::LocalOpenAiCompatible),
-            other => Err(IkarosError::Message(format!(
-                "unsupported OpenAI-compatible profile `{other}`"
-            ))),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessagePolicy {
+    Plain,
+    QwenTextPartsWithSystemCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSchemaPolicy {
+    PassThrough,
+    MoonshotSubset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestBodyPolicy {
+    None,
+    QwenHighResolutionImages,
+}
+
+impl TemperaturePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PassThrough => "pass-through",
+            Self::Omit => "omit",
         }
     }
+}
 
-    pub fn id(self) -> &'static str {
+impl ReasoningPolicy {
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::Generic => "generic",
+            Self::None => "none",
             Self::MoonshotKimi => "moonshot-kimi",
             Self::DeepSeek => "deepseek",
             Self::GeminiOpenAi => "gemini-openai",
-            Self::OpenRouter => "openrouter",
-            Self::Qwen => "qwen",
-            Self::LocalOpenAiCompatible => "local-openai-compatible",
+            Self::OpenRouterAnthropic => "openrouter-anthropic",
         }
     }
+}
 
-    pub fn default_max_tokens(self, model: &str) -> Option<u32> {
+impl MessagePolicy {
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::MoonshotKimi => Some(32_000),
-            Self::Qwen => Some(65_536),
-            Self::LocalOpenAiCompatible => Some(65_536),
-            Self::DeepSeek if deepseek_supports_thinking(model) => None,
-            _ => None,
+            Self::Plain => "plain",
+            Self::QwenTextPartsWithSystemCache => "qwen-text-parts-system-cache",
         }
     }
+}
 
-    pub fn context_profile(self, model: &str) -> ModelContextProfile {
-        let context_window = match self {
-            Self::GeminiOpenAi => 1_048_576,
-            Self::LocalOpenAiCompatible => 131_072,
-            Self::MoonshotKimi | Self::DeepSeek | Self::OpenRouter | Self::Qwen => 128_000,
-            Self::Generic => infer_generic_context_window(model),
+impl ToolSchemaPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PassThrough => "pass-through",
+            Self::MoonshotSubset => "moonshot-subset",
+        }
+    }
+}
+
+impl RequestBodyPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::QwenHighResolutionImages => "qwen-high-resolution-images",
+        }
+    }
+}
+
+const OPENAI_COMPAT_PROFILE_SPECS: &[ProviderProfileSpec] = &[
+    ProviderProfileSpec {
+        id: "generic",
+        auto_base_url_markers: &[],
+        auto_model_markers: &[],
+        auto_model_tail_prefixes: &[],
+        default_max_tokens: None,
+        temperature_policy: TemperaturePolicy::PassThrough,
+        reasoning_policy: ReasoningPolicy::None,
+        message_policy: MessagePolicy::Plain,
+        tool_schema_policy: ToolSchemaPolicy::PassThrough,
+        request_body_policy: RequestBodyPolicy::None,
+        retry_without_parameters: &["temperature", "max_tokens"],
+        network_access: true,
+        context_window: ContextWindowPolicy::InferGeneric,
+        default_output_tokens: 4_096,
+    },
+    ProviderProfileSpec {
+        id: "moonshot-kimi",
+        auto_base_url_markers: &["api.moonshot.ai", "api.moonshot.cn", "api.kimi.com"],
+        auto_model_markers: &["kimi", "moonshot"],
+        auto_model_tail_prefixes: &["kimi-", "kimi_"],
+        default_max_tokens: Some(32_000),
+        temperature_policy: TemperaturePolicy::Omit,
+        reasoning_policy: ReasoningPolicy::MoonshotKimi,
+        message_policy: MessagePolicy::Plain,
+        tool_schema_policy: ToolSchemaPolicy::MoonshotSubset,
+        request_body_policy: RequestBodyPolicy::None,
+        retry_without_parameters: &[],
+        network_access: true,
+        context_window: ContextWindowPolicy::Fixed(128_000),
+        default_output_tokens: 32_000,
+    },
+    ProviderProfileSpec {
+        id: "deepseek",
+        auto_base_url_markers: &["deepseek"],
+        auto_model_markers: &[],
+        auto_model_tail_prefixes: &["deepseek-"],
+        default_max_tokens: None,
+        temperature_policy: TemperaturePolicy::PassThrough,
+        reasoning_policy: ReasoningPolicy::DeepSeek,
+        message_policy: MessagePolicy::Plain,
+        tool_schema_policy: ToolSchemaPolicy::PassThrough,
+        request_body_policy: RequestBodyPolicy::None,
+        retry_without_parameters: &["temperature", "max_tokens"],
+        network_access: true,
+        context_window: ContextWindowPolicy::Fixed(128_000),
+        default_output_tokens: 8_192,
+    },
+    ProviderProfileSpec {
+        id: "gemini-openai",
+        auto_base_url_markers: &["generativelanguage.googleapis.com"],
+        auto_model_markers: &[],
+        auto_model_tail_prefixes: &["gemini-"],
+        default_max_tokens: None,
+        temperature_policy: TemperaturePolicy::PassThrough,
+        reasoning_policy: ReasoningPolicy::GeminiOpenAi,
+        message_policy: MessagePolicy::Plain,
+        tool_schema_policy: ToolSchemaPolicy::PassThrough,
+        request_body_policy: RequestBodyPolicy::None,
+        retry_without_parameters: &["temperature", "max_tokens"],
+        network_access: true,
+        context_window: ContextWindowPolicy::Fixed(1_048_576),
+        default_output_tokens: 8_192,
+    },
+    ProviderProfileSpec {
+        id: "openrouter",
+        auto_base_url_markers: &["openrouter.ai"],
+        auto_model_markers: &[],
+        auto_model_tail_prefixes: &[],
+        default_max_tokens: None,
+        temperature_policy: TemperaturePolicy::PassThrough,
+        reasoning_policy: ReasoningPolicy::OpenRouterAnthropic,
+        message_policy: MessagePolicy::Plain,
+        tool_schema_policy: ToolSchemaPolicy::PassThrough,
+        request_body_policy: RequestBodyPolicy::None,
+        retry_without_parameters: &["temperature", "max_tokens"],
+        network_access: true,
+        context_window: ContextWindowPolicy::Fixed(128_000),
+        default_output_tokens: 8_192,
+    },
+    ProviderProfileSpec {
+        id: "qwen",
+        auto_base_url_markers: &["dashscope", "portal.qwen.ai"],
+        auto_model_markers: &[],
+        auto_model_tail_prefixes: &["qwen"],
+        default_max_tokens: Some(65_536),
+        temperature_policy: TemperaturePolicy::PassThrough,
+        reasoning_policy: ReasoningPolicy::None,
+        message_policy: MessagePolicy::QwenTextPartsWithSystemCache,
+        tool_schema_policy: ToolSchemaPolicy::PassThrough,
+        request_body_policy: RequestBodyPolicy::QwenHighResolutionImages,
+        retry_without_parameters: &["temperature"],
+        network_access: true,
+        context_window: ContextWindowPolicy::Fixed(128_000),
+        default_output_tokens: 65_536,
+    },
+    ProviderProfileSpec {
+        id: "local-openai-compatible",
+        auto_base_url_markers: &["localhost", "127.0.0.1", "[::1]", "0.0.0.0"],
+        auto_model_markers: &[],
+        auto_model_tail_prefixes: &[],
+        default_max_tokens: Some(65_536),
+        temperature_policy: TemperaturePolicy::PassThrough,
+        reasoning_policy: ReasoningPolicy::None,
+        message_policy: MessagePolicy::Plain,
+        tool_schema_policy: ToolSchemaPolicy::PassThrough,
+        request_body_policy: RequestBodyPolicy::None,
+        retry_without_parameters: &["temperature", "max_tokens"],
+        network_access: false,
+        context_window: ContextWindowPolicy::Fixed(131_072),
+        default_output_tokens: 65_536,
+    },
+];
+
+impl ProviderProfile {
+    pub fn catalog() -> &'static [ProviderProfileSpec] {
+        OPENAI_COMPAT_PROFILE_SPECS
+    }
+
+    pub fn resolve_configured(configured: &str, base_url: &str, model: &str) -> Result<Self> {
+        let configured = configured.trim().to_ascii_lowercase();
+        if !configured.is_empty() && configured != "auto" {
+            return Self::resolve_profile_id(&configured, base_url, model);
+        }
+        let spec = ProviderProfileSpec::auto(base_url, model);
+        Ok(Self::resolve_spec(spec, base_url, model))
+    }
+
+    pub fn resolve_profile_id(profile_id: &str, base_url: &str, model: &str) -> Result<Self> {
+        let spec = ProviderProfileSpec::resolve_profile_id(profile_id)?;
+        Ok(Self::resolve_spec(spec, base_url, model))
+    }
+
+    pub fn resolve_spec(spec: &ProviderProfileSpec, base_url: &str, model: &str) -> Self {
+        let default_max_tokens = spec.default_max_tokens;
+        let context_window = match spec.context_window {
+            ContextWindowPolicy::Fixed(tokens) => tokens,
+            ContextWindowPolicy::InferGeneric => infer_generic_context_window(model),
         };
-        let default_output_tokens = self.default_max_tokens(model).unwrap_or(match self {
-            Self::DeepSeek | Self::GeminiOpenAi | Self::OpenRouter => 8_192,
-            Self::Generic => 4_096,
-            _ => 4_096,
-        });
-        ModelContextProfile::new(
+        let default_output_tokens = default_max_tokens.unwrap_or(spec.default_output_tokens);
+        let id = spec.id;
+        let context = ModelContextProfile::new(
             context_window,
             default_output_tokens,
             ModelTokenizerKind::OpenAiCompatible,
-            format!("openai-compatible:{}", self.id()),
-        )
+            format!("openai-compatible:{id}"),
+        );
+        let tool_schema_policy = if spec.tool_schema_policy == ToolSchemaPolicy::MoonshotSubset
+            || moonshot_kimi_profile_spec().auto_detects(
+                &base_url.trim().trim_end_matches('/').to_ascii_lowercase(),
+                &model.to_ascii_lowercase(),
+            ) {
+            ToolSchemaPolicy::MoonshotSubset
+        } else {
+            spec.tool_schema_policy
+        };
+        Self {
+            id,
+            default_max_tokens,
+            context,
+            temperature_policy: spec.temperature_policy,
+            reasoning_policy: spec.reasoning_policy,
+            message_policy: spec.message_policy,
+            tool_schema_policy,
+            request_body_policy: spec.request_body_policy,
+            retry_without_parameters: spec.retry_without_parameters,
+            network_access: spec.network_access,
+        }
     }
 
-    pub fn omits_temperature(self) -> bool {
-        matches!(self, Self::MoonshotKimi)
+    pub fn prepare_messages(&self, messages: &mut serde_json::Value) {
+        match self.message_policy {
+            MessagePolicy::Plain => {}
+            MessagePolicy::QwenTextPartsWithSystemCache => prepare_qwen_messages(messages),
+        }
     }
 
-    pub fn auto(base_url: &str, model: &str) -> Self {
-        let base = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
-        let model_lower = model.trim().to_ascii_lowercase();
-        if is_moonshot_base_url(&base) || is_moonshot_model(&model_lower) {
-            return Self::MoonshotKimi;
+    pub fn prepare_tools(&self, tools: Vec<ModelToolDefinition>) -> Vec<ModelToolDefinition> {
+        match self.tool_schema_policy {
+            ToolSchemaPolicy::PassThrough => tools,
+            ToolSchemaPolicy::MoonshotSubset => sanitize_moonshot_tool_definitions(tools),
         }
-        if base.contains("deepseek") || model_tail(&model_lower).starts_with("deepseek-") {
-            return Self::DeepSeek;
-        }
-        if base.contains("generativelanguage.googleapis.com") && base.ends_with("/openai")
-            || model_tail(&model_lower).starts_with("gemini-")
-        {
-            return Self::GeminiOpenAi;
-        }
-        if base.contains("openrouter.ai") {
-            return Self::OpenRouter;
-        }
-        if base.contains("dashscope") || base.contains("portal.qwen.ai") {
-            return Self::Qwen;
-        }
-        if is_local_base_url(&base) {
-            return Self::LocalOpenAiCompatible;
-        }
-        Self::Generic
     }
 
     pub fn apply_profile_fields(
-        self,
+        &self,
         body: &mut serde_json::Map<String, serde_json::Value>,
         model: &str,
         base_url: &str,
         options: &ModelRequestOptions,
     ) {
-        match self {
-            Self::MoonshotKimi => apply_kimi_fields(body, options),
-            Self::DeepSeek => apply_deepseek_fields(body, model, options),
-            Self::GeminiOpenAi => apply_gemini_openai_fields(body, model, base_url, options),
-            Self::OpenRouter => apply_openrouter_fields(body, model, options),
-            Self::Qwen => apply_qwen_fields(body),
-            _ => {}
+        match self.reasoning_policy {
+            ReasoningPolicy::None => {}
+            ReasoningPolicy::MoonshotKimi => apply_kimi_fields(body, options),
+            ReasoningPolicy::DeepSeek => apply_deepseek_fields(body, model, options),
+            ReasoningPolicy::GeminiOpenAi => {
+                apply_gemini_openai_fields(body, model, base_url, options)
+            }
+            ReasoningPolicy::OpenRouterAnthropic => apply_openrouter_fields(body, model, options),
+        }
+        match self.request_body_policy {
+            RequestBodyPolicy::None => {}
+            RequestBodyPolicy::QwenHighResolutionImages => apply_qwen_fields(body),
         }
     }
 
-    pub fn prepare_messages(self, messages: &mut serde_json::Value) {
-        if self == Self::Qwen {
-            prepare_qwen_messages(messages);
-        }
+    pub fn can_retry_without_parameter(&self, parameter: &str) -> bool {
+        self.retry_without_parameters.contains(&parameter)
+    }
+}
+
+impl ProviderProfileSpec {
+    pub fn resolve_profile_id(profile_id: &str) -> Result<&'static Self> {
+        let profile_id = profile_id.trim().to_ascii_lowercase();
+        ProviderProfile::catalog()
+            .iter()
+            .find(|spec| spec.id == profile_id)
+            .ok_or_else(|| {
+                IkarosError::Message(format!(
+                    "unsupported OpenAI-compatible profile `{profile_id}`"
+                ))
+            })
     }
 
-    pub fn can_retry_without_parameter(self, parameter: &str) -> bool {
-        match parameter {
-            "temperature" => !self.omits_temperature(),
-            "max_tokens" => !matches!(self, Self::MoonshotKimi | Self::Qwen),
-            _ => false,
-        }
+    pub fn auto(base_url: &str, model: &str) -> &'static Self {
+        let base = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+        let model_lower = model.trim().to_ascii_lowercase();
+        ProviderProfile::catalog()
+            .iter()
+            .find(|spec| spec.id != "generic" && spec.auto_detects(&base, &model_lower))
+            .unwrap_or_else(generic_profile_spec)
     }
+
+    fn auto_detects(&self, base_url: &str, model: &str) -> bool {
+        let tail = model_tail(model);
+        self.auto_base_url_markers
+            .iter()
+            .any(|marker| base_url.contains(marker))
+            || self
+                .auto_model_markers
+                .iter()
+                .any(|marker| model.contains(marker))
+            || self
+                .auto_model_tail_prefixes
+                .iter()
+                .any(|prefix| tail.starts_with(prefix))
+    }
+}
+
+fn generic_profile_spec() -> &'static ProviderProfileSpec {
+    ProviderProfileSpec::resolve_profile_id("generic")
+        .expect("generic OpenAI-compatible profile spec must exist")
+}
+
+fn moonshot_kimi_profile_spec() -> &'static ProviderProfileSpec {
+    ProviderProfileSpec::resolve_profile_id("moonshot-kimi")
+        .expect("moonshot-kimi OpenAI-compatible profile spec must exist")
 }
 
 fn apply_kimi_fields(
@@ -406,22 +654,6 @@ fn gemini_thinking_config(model: &str, options: &ModelRequestOptions) -> Option<
     Some(serde_json::Value::Object(config))
 }
 
-pub fn is_moonshot_model(model: &str) -> bool {
-    let bare = model.trim().to_ascii_lowercase();
-    let tail = model_tail(&bare);
-    tail.starts_with("kimi-")
-        || tail == "kimi"
-        || bare.contains("moonshot")
-        || bare.contains("/kimi")
-        || bare.starts_with("kimi")
-}
-
-fn is_moonshot_base_url(base_url: &str) -> bool {
-    base_url.contains("api.moonshot.ai")
-        || base_url.contains("api.moonshot.cn")
-        || base_url.contains("api.kimi.com")
-}
-
 fn deepseek_supports_thinking(model: &str) -> bool {
     let model_lower = model.to_ascii_lowercase();
     let tail = model_tail(&model_lower);
@@ -454,13 +686,6 @@ fn openrouter_anthropic_reasoning_is_mandatory(model: &str) -> bool {
     ]
     .iter()
     .any(|needle| model.contains(needle))
-}
-
-fn is_local_base_url(base_url: &str) -> bool {
-    base_url.contains("localhost")
-        || base_url.contains("127.0.0.1")
-        || base_url.contains("0.0.0.0")
-        || base_url.contains("::1")
 }
 
 fn model_tail(model: &str) -> &str {

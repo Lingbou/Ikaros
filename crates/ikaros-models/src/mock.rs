@@ -2,8 +2,9 @@
 
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, ModelStream,
-    ModelTokenizerKind, TokenUsage, chunk_text, estimate_tokens,
+    ModelContextProfile, ModelProvider, ModelProviderCapabilities, ModelRequest,
+    ModelRequestDiagnostic, ModelResponse, ModelStream, ModelTokenizerKind, TokenUsage, chunk_text,
+    estimate_tokens,
 };
 use async_trait::async_trait;
 use ikaros_core::{Result, redact_secrets};
@@ -57,6 +58,20 @@ impl ModelProvider for MockModelProvider {
         ModelContextProfile::new(8_192, 1_024, ModelTokenizerKind::Mock, "mock")
     }
 
+    fn capabilities(&self) -> ModelProviderCapabilities {
+        ModelProviderCapabilities {
+            chat: true,
+            streaming: true,
+            tool_calls: true,
+            reasoning: false,
+            json_mode: true,
+            network: false,
+            image_input: true,
+            audio_input: true,
+            file_input: true,
+        }
+    }
+
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
         let last = request
             .messages
@@ -86,6 +101,7 @@ impl ModelProvider for MockModelProvider {
                 prompt_tokens: Some(last.split_whitespace().count() as u32),
                 completion_tokens: Some(estimate_tokens(&content)),
                 total_tokens: None,
+                ..TokenUsage::default()
             },
             diagnostics: Vec::new(),
         })
@@ -100,7 +116,11 @@ impl ModelProvider for MockModelProvider {
             tool_calls: response.tool_calls,
             usage: response.usage,
             events: Vec::new(),
-            diagnostics: response.diagnostics,
+            diagnostics: response
+                .diagnostics
+                .into_iter()
+                .map(ModelRequestDiagnostic::sanitized)
+                .collect(),
         };
         stream.events = stream.normalized_events();
         Ok(stream)

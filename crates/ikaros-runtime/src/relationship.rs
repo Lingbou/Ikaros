@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::session_and_registry;
 use ikaros_core::{IkarosPaths, Result, ToolResult, redact_secrets};
 use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_host::session_and_registry;
 use ikaros_memory::{
     RelationshipMemoryNote, relationship_context_lines as memory_relationship_context_lines,
     relationship_notes_from_output,
@@ -47,6 +47,7 @@ pub async fn relationship_snapshot_from_session(
     let mut input = json!({
         "kind": "relationship",
         "limit": limit,
+        "include_pending_candidates": true,
     });
     if let Some(scope) = scope {
         input["scope"] = json!(scope);

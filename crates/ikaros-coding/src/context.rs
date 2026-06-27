@@ -2,7 +2,7 @@
 
 use crate::TestCommand;
 use ikaros_core::{AgentPermission, IkarosError, Result, redact_secrets};
-use ikaros_harness::{ProcessRequest, ProcessRunner};
+use ikaros_sandbox::{ProcessRequest, ProcessRunner};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,

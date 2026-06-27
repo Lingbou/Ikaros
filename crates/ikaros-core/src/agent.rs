@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::PolicyDecision;
+use crate::{ModelConfig, PolicyDecision, RemoteProviderConfig};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AgentConfig {
     pub default: String,
@@ -100,17 +100,23 @@ pub struct AgentProfile {
     pub persona_overlay: String,
     pub memory_context: bool,
     pub rag_context: bool,
+    #[serde(default = "default_agent_toolsets")]
+    pub toolsets: Vec<String>,
     pub workspace_writes: AgentPermission,
     pub shell: AgentPermission,
     pub network: AgentPermission,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AgentInstanceConfig {
     pub profile: String,
     pub workspace: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolsets: Option<Vec<String>>,
+    pub providers: AgentInstanceProvidersConfig,
+    pub model: Option<ModelConfig>,
     pub session_policy: AgentSessionPolicy,
     pub auth_scope: AgentAuthScope,
     pub route_bindings: Vec<AgentRouteBinding>,
@@ -122,6 +128,9 @@ impl Default for AgentInstanceConfig {
             profile: "build".into(),
             workspace: None,
             state_dir: None,
+            toolsets: None,
+            providers: AgentInstanceProvidersConfig::default(),
+            model: None,
             session_policy: AgentSessionPolicy::default(),
             auth_scope: AgentAuthScope::default(),
             route_bindings: Vec::new(),
@@ -129,13 +138,21 @@ impl Default for AgentInstanceConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AgentInstanceProvidersConfig {
+    pub model: Option<RemoteProviderConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentInstance {
     pub agent_id: String,
     pub profile_name: String,
     pub profile: AgentProfile,
     pub workspace: PathBuf,
     pub state_dir: PathBuf,
+    pub providers: AgentInstanceProvidersConfig,
+    pub model: Option<ModelConfig>,
     pub session_policy: AgentSessionPolicy,
     pub auth_scope: AgentAuthScope,
     pub route_bindings: Vec<AgentRouteBinding>,
@@ -154,6 +171,8 @@ impl AgentInstance {
             profile_name: profile.name,
             profile: profile.profile,
             agent_id,
+            providers: AgentInstanceProvidersConfig::default(),
+            model: None,
             session_policy: AgentSessionPolicy::default(),
             auth_scope: AgentAuthScope::default(),
             route_bindings: Vec::new(),
@@ -168,6 +187,10 @@ impl AgentInstance {
         default_state_root: &Path,
     ) -> Self {
         let agent_id = agent_id.into();
+        let mut profile = profile;
+        if let Some(toolsets) = &config.toolsets {
+            profile.profile.toolsets = toolsets.clone();
+        }
         Self {
             workspace: config
                 .workspace
@@ -180,6 +203,8 @@ impl AgentInstance {
             profile_name: profile.name,
             profile: profile.profile,
             agent_id,
+            providers: config.providers.clone(),
+            model: config.model.clone(),
             session_policy: config.session_policy.clone(),
             auth_scope: config.auth_scope.clone(),
             route_bindings: config.route_bindings.clone(),
@@ -196,6 +221,26 @@ impl AgentInstance {
         instance.state_dir = instance.state_dir.join(&instance.agent_id);
         instance
     }
+
+    pub fn model_config<'a>(&'a self, default: &'a ModelConfig) -> &'a ModelConfig {
+        self.model.as_ref().unwrap_or(default)
+    }
+
+    pub fn model_provider_config<'a>(
+        &'a self,
+        default: &'a RemoteProviderConfig,
+    ) -> &'a RemoteProviderConfig {
+        self.providers.model.as_ref().unwrap_or(default)
+    }
+
+    pub fn effective_model_provider_config(
+        &self,
+        default_model: &ModelConfig,
+        default_provider: &RemoteProviderConfig,
+    ) -> RemoteProviderConfig {
+        self.model_config(default_model)
+            .effective_provider_config(self.model_provider_config(default_provider))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +249,7 @@ pub struct AgentSessionPolicy {
     pub history_scope: AgentHistoryScope,
     pub allow_session_switch: bool,
     pub max_parallel_subagents: usize,
+    pub max_delegation_depth: usize,
 }
 
 impl Default for AgentSessionPolicy {
@@ -212,6 +258,7 @@ impl Default for AgentSessionPolicy {
             history_scope: AgentHistoryScope::Workspace,
             allow_session_switch: true,
             max_parallel_subagents: 4,
+            max_delegation_depth: 2,
         }
     }
 }
@@ -260,6 +307,7 @@ impl AgentProfile {
                     .into(),
             memory_context: true,
             rag_context: false,
+            toolsets: default_agent_toolsets(),
             workspace_writes: AgentPermission::Ask,
             shell: AgentPermission::Allow,
             network: AgentPermission::Ask,
@@ -275,6 +323,7 @@ impl AgentProfile {
                     .into(),
             memory_context: true,
             rag_context: false,
+            toolsets: default_agent_toolsets(),
             workspace_writes: AgentPermission::Deny,
             shell: AgentPermission::Ask,
             network: AgentPermission::Ask,
@@ -290,11 +339,27 @@ impl AgentProfile {
                     .into(),
             memory_context: true,
             rag_context: false,
+            toolsets: default_agent_toolsets(),
             workspace_writes: AgentPermission::Ask,
             shell: AgentPermission::Ask,
             network: AgentPermission::Ask,
         }
     }
+}
+
+pub fn default_agent_toolsets() -> Vec<String> {
+    [
+        "core",
+        "workspace",
+        "memory",
+        "rag",
+        "coding",
+        "voice",
+        "plugin",
+    ]
+    .into_iter()
+    .map(ToOwned::to_owned)
+    .collect()
 }
 
 impl Default for AgentProfile {

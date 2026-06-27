@@ -27,23 +27,26 @@ pub(super) fn finish_agent_loop(
         tool_results: finish.tool_results,
         events: finish.events,
     };
-    session.audit.append(AuditEvent::new(
-        "agent_loop_end",
-        None,
-        format!("agent loop ended: {:?}", report.stop_reason),
-        json!({
-            "task_id": task_id,
-            "stop_reason": &report.stop_reason,
-            "provider": &report.provider,
-            "model": &report.model,
-            "streamed": report.streamed,
-            "stream_chunk_count": report.stream_chunks.len(),
-            "iterations": report.iterations,
-            "tool_call_diagnostics": &report.tool_call_diagnostics,
-            "tool_result_count": report.tool_results.len(),
-            "event_count": report.events.len(),
-            "final_content_chars": report.final_content.chars().count(),
-        }),
-    )?)?;
+    session
+        .audit
+        .append(session.correlate_audit_event(AuditEvent::new(
+            "agent_loop_end",
+            None,
+            format!("agent loop ended: {:?}", report.stop_reason),
+            json!({
+                "correlation_id": session.correlation_id(),
+                "task_id": task_id,
+                "stop_reason": &report.stop_reason,
+                "provider": &report.provider,
+                "model": &report.model,
+                "streamed": report.streamed,
+                "stream_chunk_count": report.stream_chunks.len(),
+                "iterations": report.iterations,
+                "tool_call_diagnostics": &report.tool_call_diagnostics,
+                "tool_result_count": report.tool_results.len(),
+                "event_count": report.events.len(),
+                "final_content_chars": report.final_content.chars().count(),
+            }),
+        )?))?;
     Ok(report)
 }

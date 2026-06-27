@@ -6,7 +6,7 @@ use super::{
 };
 use crate::GuardedPatchApplier;
 use ikaros_core::{IkarosError, Result, SelfModifyConfig, now_rfc3339, redact_secrets};
-use ikaros_harness::{FileSystem as ExecutionFileSystem, ProcessRunner};
+use ikaros_sandbox::{FileSystem as ExecutionFileSystem, ProcessRunner};
 use uuid::Uuid;
 
 impl SelfModifyStore {

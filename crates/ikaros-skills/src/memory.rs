@@ -3,13 +3,14 @@
 use crate::support::input_string;
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, RiskLevel};
-use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_memory::{
-    JsonlMemoryCandidateStore, JsonlWorkingMemoryStore, LocalMemoryStore, MemoryCandidate,
-    MemoryCandidateQuery, MemoryCandidateReason, MemoryCandidateStatus, MemoryKind,
+    JsonlMemoryCandidateStore, JsonlMemoryJournal, JsonlWorkingMemoryStore, LocalMemoryStore,
+    MemoryCandidate, MemoryCandidateQuery, MemoryCandidateReason, MemoryCandidateStatus,
+    MemoryChangeReport, MemoryJournal, MemoryJournalAction, MemoryJournalEntry, MemoryKind,
     MemoryPerspective, MemoryProjectionInput, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
     ProjectionRenderer, WorkingMemoryQuery,
 };
+use ikaros_toolkit::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use serde_json::json;
 use std::path::Path;
 
@@ -102,7 +103,7 @@ impl Skill for MemorySearchSkill {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        json!({"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string"}, "scope": {"type": "string"}, "observer": {"type": "string"}, "subject": {"type": "string"}, "limit": {"type": "integer"}}})
+        json!({"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string"}, "scope": {"type": "string"}, "observer": {"type": "string"}, "subject": {"type": "string"}, "limit": {"type": "integer"}, "include_inactive": {"type": "boolean"}, "include_pending_candidates": {"type": "boolean"}}})
     }
 
     fn risk_level(&self) -> RiskLevel {
@@ -115,36 +116,115 @@ impl Skill for MemorySearchSkill {
             .and_then(serde_json::Value::as_str)
             .map(parse_memory_kind)
             .transpose()?;
+        let scope = input
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let text = input
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let limit = input
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .map(|value| value as usize);
+        let include_pending_candidates = input
+            .get("include_pending_candidates")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let query = MemoryQuery {
-            kind,
-            scope: input
-                .get("scope")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
+            kind: kind.clone(),
+            scope: scope.clone(),
             perspective: optional_memory_perspective(&input)?,
-            text: input
-                .get("query")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            limit: input
-                .get("limit")
-                .and_then(serde_json::Value::as_u64)
-                .map(|value| value as usize),
+            text: text.clone(),
+            limit,
+            include_inactive: input
+                .get("include_inactive")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         };
         let records = self.store.search(query)?;
-        Ok(SkillOutput::new("memory search complete", json!(records)))
+        let mut output = json!(records);
+        if include_pending_candidates && matches!(kind, Some(MemoryKind::Relationship)) {
+            let existing = output.as_array().map(Vec::len).unwrap_or(0);
+            let remaining = limit.unwrap_or(usize::MAX).saturating_sub(existing);
+            if remaining > 0 {
+                let pending = pending_relationship_candidate_records(
+                    &self.store,
+                    scope.as_deref(),
+                    text.as_deref(),
+                    remaining,
+                )?;
+                if let Some(items) = output.as_array_mut() {
+                    items.extend(pending);
+                }
+            }
+        }
+        Ok(SkillOutput::new("memory search complete", output))
     }
+}
+
+fn pending_relationship_candidate_records(
+    memory_store: &LocalMemoryStore,
+    scope: Option<&str>,
+    text: Option<&str>,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
+    let candidates =
+        JsonlMemoryCandidateStore::new(memory_store.memory_dir()).list(MemoryCandidateQuery {
+            status: Some(MemoryCandidateStatus::Pending),
+            kind: Some(MemoryKind::Relationship),
+            scope: scope.map(ToOwned::to_owned),
+            limit: Some(usize::MAX),
+        })?;
+    let needle = text
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let mut records = Vec::new();
+    for candidate in candidates {
+        if records.len() >= limit {
+            break;
+        }
+        if let Some(needle) = &needle
+            && !candidate.content.to_ascii_lowercase().contains(needle)
+        {
+            continue;
+        }
+        let mut tags = candidate.tags.clone();
+        if !tags.iter().any(|tag| tag == "pending-candidate") {
+            tags.push("pending-candidate".into());
+        }
+        records.push(json!({
+            "id": candidate.id,
+            "created_at": candidate.created_at,
+            "updated_at": null,
+            "kind": candidate.kind,
+            "scope": candidate.scope,
+            "content": candidate.content,
+            "tags": tags,
+            "source": "memory_candidate",
+            "source_ref": candidate.source_ref,
+            "confidence": candidate.confidence,
+            "sensitive": false,
+            "status": candidate.status,
+        }));
+    }
+    Ok(records)
 }
 
 #[derive(Debug, Clone)]
 pub struct MemoryCandidateCreateSkill {
     store: JsonlMemoryCandidateStore,
+    journal: JsonlMemoryJournal,
 }
 
 impl MemoryCandidateCreateSkill {
     pub(crate) fn new(memory_store: LocalMemoryStore) -> Self {
+        let memory_dir = memory_store.memory_dir().to_path_buf();
         Self {
-            store: JsonlMemoryCandidateStore::new(memory_store.memory_dir()),
+            store: JsonlMemoryCandidateStore::new(&memory_dir),
+            journal: JsonlMemoryJournal::new(memory_dir),
         }
     }
 }
@@ -218,6 +298,17 @@ impl Skill for MemoryCandidateCreateSkill {
             )?;
         }
         let candidate = self.store.create(candidate)?;
+        let mut entry =
+            MemoryJournalEntry::new(MemoryJournalAction::CandidateCreated, "candidate_created")?
+                .with_memory(
+                    candidate.id.clone(),
+                    candidate.kind.clone(),
+                    candidate.scope.clone(),
+                )?;
+        if let Some(source_ref) = candidate.source_ref.clone() {
+            entry = entry.with_source_ref(source_ref)?;
+        }
+        self.journal.append(entry)?;
         Ok(SkillOutput::new(
             "memory candidate created",
             json!({"created": true, "id": candidate.id, "status": candidate.status}),
@@ -387,15 +478,20 @@ impl Skill for MemoryUpdateSkill {
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>()
             });
-        let updated = self.store.update(&id, content, tags)?;
-        let ok = updated.is_some();
+        let report = self.store.update(&id, content.clone(), tags.clone())?;
+        let ok = report.is_some();
+        let updated = report.as_ref().map(|report| &report.record);
+        let change_report = report
+            .as_ref()
+            .map(|report| report.change.clone())
+            .unwrap_or_else(|| MemoryChangeReport::not_found(id.clone()));
         Ok(SkillOutput::new(
             if ok {
                 "memory updated"
             } else {
                 "memory record not found"
             },
-            json!({"updated": updated}),
+            json!({"updated": updated, "change_report": change_report}),
         ))
     }
 }
@@ -445,6 +541,7 @@ impl Skill for MemoryDeleteSkill {
                         perspective: None,
                         text: None,
                         limit: None,
+                        include_inactive: true,
                     })?
                     .iter()
                     .any(|record| record.id == id);

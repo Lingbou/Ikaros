@@ -4,9 +4,10 @@ use super::{
     overlay::{evaluate_agent_policy_overlay, profile_workspace_write_decision},
     path::{has_component, is_protected, is_secret_like_path, is_under, resolve_under_workspace},
     rules::{is_destructive_command, is_forbidden_publication_or_git_action},
-    types::{PolicyEngine, PolicyEvaluation, PolicyRequest, SandboxProfile},
+    types::{PolicyEngine, PolicyEvaluation, SandboxProfile},
 };
 use ikaros_core::{PolicyDecision, RiskLevel};
+use ikaros_toolkit::PolicyRequest;
 
 #[derive(Debug, Clone, Default)]
 pub struct DefaultPolicyEngine;

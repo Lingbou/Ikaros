@@ -8,7 +8,8 @@ use std::{env, fs, path::PathBuf};
 pub struct IkarosPaths {
     pub home: PathBuf,
     pub config: PathBuf,
-    pub persona: PathBuf,
+    pub persona_dir: PathBuf,
+    pub persona_profile: PathBuf,
     pub memory_dir: PathBuf,
     pub rag_dir: PathBuf,
     pub audit_dir: PathBuf,
@@ -30,9 +31,12 @@ impl IkarosPaths {
 
     pub fn from_home(home: impl Into<PathBuf>) -> Self {
         let home = home.into();
+        let persona_dir = home.join("persona");
+        let persona_profile = persona_dir.join("profile.md");
         Self {
             config: home.join("config.yaml"),
-            persona: home.join("persona.md"),
+            persona_dir,
+            persona_profile,
             memory_dir: home.join("memory"),
             rag_dir: home.join("rag"),
             audit_dir: home.join("audit"),
@@ -48,6 +52,7 @@ impl IkarosPaths {
     pub fn ensure(&self) -> Result<()> {
         for path in [
             &self.home,
+            &self.persona_dir,
             &self.memory_dir,
             &self.rag_dir,
             &self.audit_dir,

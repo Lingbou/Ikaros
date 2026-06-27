@@ -31,7 +31,11 @@ pub struct PersonaWriteReport {
 
 pub fn update_persona(paths: &IkarosPaths, patch: PersonaPatch) -> Result<PersonaWriteReport> {
     paths.ensure()?;
-    let current = load_or_default(&paths.persona)?;
+    let current = if paths.persona_profile.exists() {
+        load_or_default(&paths.persona_profile)?
+    } else {
+        load_or_default(&paths.persona_dir)?
+    };
     let mut changed_fields = Vec::new();
     let updated = apply_persona_patch(current, patch, &mut changed_fields)?;
     write_persona(paths, &updated, changed_fields, "persona updated")
@@ -39,8 +43,15 @@ pub fn update_persona(paths: &IkarosPaths, patch: PersonaPatch) -> Result<Person
 
 pub fn reset_persona(paths: &IkarosPaths) -> Result<PersonaWriteReport> {
     paths.ensure()?;
-    let persona = PersonaLoader::parse(PersonaLoader::default_markdown())?;
-    write_persona(paths, &persona, vec!["reset".into()], "persona reset")
+    PersonaLoader::write_default_bundle(&paths.persona_dir)?;
+    let persona = load_or_default(&paths.persona_dir)?;
+    write_persona_report(
+        paths,
+        &persona,
+        vec!["reset".into()],
+        "persona reset",
+        &paths.persona_dir,
+    )
 }
 
 fn apply_persona_patch(
@@ -125,22 +136,38 @@ fn write_persona(
     if redact_secrets(&markdown) != markdown {
         return Err(IkarosError::SecretRejected("persona markdown".into()));
     }
-    fs::write(&paths.persona, &markdown)
-        .map_err(|source| ikaros_core::IkarosError::io(&paths.persona, source))?;
+    fs::write(&paths.persona_profile, &markdown)
+        .map_err(|source| ikaros_core::IkarosError::io(&paths.persona_profile, source))?;
+    write_persona_report(
+        paths,
+        persona,
+        changed_fields,
+        message,
+        &paths.persona_profile,
+    )
+}
+
+fn write_persona_report(
+    paths: &IkarosPaths,
+    persona: &PersonaProfile,
+    changed_fields: Vec<String>,
+    message: &str,
+    path: &std::path::Path,
+) -> Result<PersonaWriteReport> {
     let audit = AuditLog::new(&paths.audit_dir);
     audit.append(AuditEvent::new(
         "persona_updated",
         None,
         message,
         json!({
-            "path": &paths.persona,
+            "path": path,
             "name": persona.identity.name,
             "role": persona.identity.role,
             "changed_fields": changed_fields,
         }),
     )?)?;
     Ok(PersonaWriteReport {
-        path: paths.persona.clone(),
+        path: path.to_path_buf(),
         name: persona.identity.name.clone(),
         role: persona.identity.role.clone(),
         changed_fields,
@@ -202,7 +229,7 @@ mod tests {
 
         assert_eq!(report.name, "Ika");
         assert!(report.changed_fields.contains(&"name".into()));
-        let loaded = PersonaLoader::load(&paths.persona).expect("load");
+        let loaded = PersonaLoader::load(&paths.persona_profile).expect("load");
         assert_eq!(loaded.identity.name, "Ika");
         assert_eq!(loaded.tone.style, "concise and warm");
         assert!(report.audit_path.exists());

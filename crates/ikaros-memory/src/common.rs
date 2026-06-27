@@ -7,7 +7,8 @@ pub(crate) fn filter_records(records: Vec<MemoryRecord>, query: &MemoryQuery) ->
     let mut filtered = records
         .into_iter()
         .filter(|record| {
-            query.kind.as_ref().is_none_or(|kind| &record.kind == kind)
+            (query.include_inactive || record.active)
+                && query.kind.as_ref().is_none_or(|kind| &record.kind == kind)
                 && query
                     .scope
                     .as_ref()

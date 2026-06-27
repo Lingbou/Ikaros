@@ -8,7 +8,8 @@ use std::path::PathBuf;
 pub struct RuntimeInitReport {
     pub home: PathBuf,
     pub config: PathBuf,
-    pub persona: PathBuf,
+    pub persona_dir: PathBuf,
+    pub persona_profile: PathBuf,
     pub memory_dir: PathBuf,
     pub rag_dir: PathBuf,
     pub automation_dir: PathBuf,
@@ -22,12 +23,14 @@ pub struct RuntimeInitReport {
 pub struct RuntimeDoctorReport {
     pub home: PathBuf,
     pub workspace: PathBuf,
+    pub config: ConfigSummary,
     pub persona: PersonaSummary,
     pub agent: AgentSummary,
     pub agent_profiles: Vec<String>,
     pub emotion: String,
     pub model: ModelSummary,
     pub model_usage_path: PathBuf,
+    pub execution: ExecutionSummary,
     pub memory: StoreSummary,
     pub memory_providers: MemoryProviderRegistry,
     pub rag: RagSummary,
@@ -37,6 +40,20 @@ pub struct RuntimeDoctorReport {
     pub skills: Vec<String>,
     pub plugins: PluginSummary,
     pub audit_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigSummary {
+    pub schema_version: u32,
+    pub valid: bool,
+    pub issues: Vec<ConfigIssueSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigIssueSummary {
+    pub severity: String,
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +80,20 @@ pub struct ModelSummary {
     pub api_key_configured: bool,
     pub rate_limit_per_minute: Option<u32>,
     pub daily_token_budget: Option<u32>,
+    pub daily_token_used_today: u32,
+    pub daily_token_remaining_today: Option<u32>,
+    pub daily_token_budget_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionSummary {
+    pub sandbox_backend: String,
+    pub sandbox_image: String,
+    pub sandbox_read_scope: String,
+    pub network_enabled: bool,
+    pub allow_provider_hosts: bool,
+    pub allowed_hosts: usize,
+    pub network_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +108,9 @@ pub struct RagSummary {
     pub embedding_provider: String,
     pub embedding_model: String,
     pub embedding_api_key_configured: bool,
+    pub embedding_base_url_configured: bool,
+    pub embedding_uses_network: bool,
+    pub embedding_egress: String,
     pub path: PathBuf,
 }
 

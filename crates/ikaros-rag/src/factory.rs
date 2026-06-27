@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    EmbeddingProvider, HashEmbeddingProvider, MockEmbeddingProvider, OllamaEmbeddingProvider,
-    OpenAiCompatibleEmbeddingProvider, SparseEmbeddingProvider,
+    EmbeddingProvider, HashEmbeddingProvider, MockEmbeddingProvider, SparseEmbeddingProvider,
 };
-use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result};
+use ikaros_core::{IkarosError, Result};
 
 pub fn embedding_provider_uses_network(provider: &str) -> bool {
     matches!(
@@ -17,35 +16,13 @@ pub(crate) fn with_embedding_provider<T>(
     name: &str,
     f: impl FnOnce(&dyn EmbeddingProvider) -> Result<T>,
 ) -> Result<T> {
-    let config = RagConfig {
-        embedding_provider: name.into(),
-        ..RagConfig::default()
-    };
-    let provider_settings = RemoteProviderConfig::default();
-    with_embedding_provider_config(&config, &provider_settings, f)
-}
-
-pub(crate) fn with_embedding_provider_config<T>(
-    config: &RagConfig,
-    provider_settings: &RemoteProviderConfig,
-    f: impl FnOnce(&dyn EmbeddingProvider) -> Result<T>,
-) -> Result<T> {
-    match config.embedding_provider.to_ascii_lowercase().as_str() {
+    match name.to_ascii_lowercase().as_str() {
         "hash" => f(&HashEmbeddingProvider),
         "sparse" => f(&SparseEmbeddingProvider),
         "mock" => f(&MockEmbeddingProvider),
-        "openai-compatible" => {
-            let provider = OpenAiCompatibleEmbeddingProvider::from_config(
-                config.embedding_provider.clone(),
-                config,
-                provider_settings,
-            )?;
-            f(&provider)
-        }
-        "ollama" => {
-            let provider = OllamaEmbeddingProvider::from_config(config, provider_settings)?;
-            f(&provider)
-        }
+        "openai-compatible" | "ollama" => Err(IkarosError::Message(format!(
+            "remote embedding provider `{name}` requires a harness ExecutionEnv; use ikaros-skills RAG egress embedding path"
+        ))),
         other => Err(IkarosError::Message(format!(
             "unsupported embedding provider: {other}"
         ))),

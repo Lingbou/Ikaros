@@ -3,7 +3,7 @@
 use super::ChatHistoryRecord;
 use ikaros_core::redact_secrets;
 
-pub(super) fn search_chat_history_records(
+pub fn search_chat_history_records(
     records: Vec<ChatHistoryRecord>,
     query: &str,
     limit: usize,

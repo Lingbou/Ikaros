@@ -10,18 +10,39 @@ pub(crate) fn render_systemd(config: &ServiceTemplateConfig) -> String {
         .map(|arg| systemd_quote_arg(&arg))
         .collect::<Vec<_>>()
         .join(" ");
+    let stop_block = render_systemd_stop_block(config);
     let description = match config.kind {
         ServiceKind::ScheduleWorker => "Ikaros local schedule worker",
         ServiceKind::MessageWorker => "Ikaros local message worker",
         ServiceKind::MessageWebhook => "Ikaros local message webhook",
     };
     format!(
-        "[Unit]\nDescription={}\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment={}\nWorkingDirectory={}\nExecStart={}\nRestart=on-failure\nRestartSec=5s\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription={}\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment={}\nWorkingDirectory={}\nExecStart={}\n{}Restart=on-failure\nRestartSec=5s\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n",
         description,
         systemd_quote_env("IKAROS_HOME", &config.ikaros_home.display().to_string()),
         systemd_quote_arg(&config.workspace.display().to_string()),
         args,
+        stop_block,
     )
+}
+
+fn render_systemd_stop_block(config: &ServiceTemplateConfig) -> String {
+    if config.kind != ServiceKind::MessageWorker {
+        return String::new();
+    }
+    let mut args = config.base_command_args();
+    args.extend([
+        "message".into(),
+        "worker-stop".into(),
+        "--reason".into(),
+        "service manager stop".into(),
+    ]);
+    let command = args
+        .into_iter()
+        .map(|arg| systemd_quote_arg(&arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("ExecStop={command}\nTimeoutStopSec=30s\n")
 }
 
 pub(crate) fn render_launchd(config: &ServiceTemplateConfig) -> String {
@@ -105,6 +126,10 @@ mod tests {
         assert!(template.contains("--interval-seconds 60"));
         assert!(template.contains("--limit 5"));
         assert!(template.contains("WorkingDirectory=\"/home/user/work space/project\""));
+        assert!(
+            template.contains("\"/home/user/work space/project\" --agent plan schedule worker")
+        );
+        assert!(!template.contains("--workspace"));
     }
 
     #[test]
@@ -113,8 +138,10 @@ mod tests {
         assert!(template.contains("<string>ikaros-message-webhook</string>"));
         assert!(template.contains("<string>message</string>"));
         assert!(template.contains("<string>webhook</string>"));
+        assert!(template.contains("<string>/home/user/work space/project</string>"));
         assert!(template.contains("<string>127.0.0.1</string>"));
         assert!(template.contains("<string>8002</string>"));
+        assert!(!template.contains("<string>--workspace</string>"));
     }
 
     #[test]
@@ -124,6 +151,17 @@ mod tests {
         assert!(template.contains("message worker"));
         assert!(template.contains("--interval-seconds 60"));
         assert!(template.contains("--limit 5"));
+        assert!(template.contains("ExecStop="));
+        assert!(template.contains("message worker-stop"));
+        assert!(template.contains("--reason \"service manager stop\""));
+        assert!(template.contains("TimeoutStopSec=30s"));
+    }
+
+    #[test]
+    fn systemd_schedule_worker_has_no_message_stop_hook() {
+        let template = base_config(ServiceManager::Systemd, ServiceKind::ScheduleWorker).render();
+        assert!(!template.contains("message worker-stop"));
+        assert!(!template.contains("ExecStop="));
     }
 
     #[test]

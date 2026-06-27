@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{MemoryKind, MemoryQuery, MemoryRecord, MemoryStore, common::filter_records};
+use crate::{
+    MemoryKind, MemoryQuery, MemoryRecord, MemoryStore, MemoryUpdateReport, common::filter_records,
+};
 use ikaros_core::{IkarosError, Result, contains_secret_like, now_rfc3339, reject_secret_like};
 use std::{
     fs::{self, OpenOptions},
@@ -103,7 +105,7 @@ impl MemoryStore for JsonlMemoryStore {
         id: &str,
         content: Option<String>,
         tags: Option<Vec<String>>,
-    ) -> Result<Option<MemoryRecord>> {
+    ) -> Result<Option<MemoryUpdateReport>> {
         if let Some(content) = &content {
             reject_secret_like(content, "memory content")?;
         }
@@ -112,6 +114,7 @@ impl MemoryStore for JsonlMemoryStore {
         let mut updated = None;
         for record in &mut records {
             if record.id == id {
+                let before = record.clone();
                 if let Some(content) = content.clone() {
                     record.content = content;
                 }
@@ -124,7 +127,10 @@ impl MemoryStore for JsonlMemoryStore {
                     return Err(IkarosError::SecretRejected("memory content".into()));
                 }
                 record.updated_at = Some(now.clone());
-                updated = Some(record.clone());
+                updated = Some(MemoryUpdateReport::from_before_after(
+                    &before,
+                    record.clone(),
+                ));
                 break;
             }
         }

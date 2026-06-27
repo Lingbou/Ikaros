@@ -1,49 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use ikaros_core::{IkarosError, PolicyDecision, Result, now_rfc3339, redact_json, redact_secrets};
-use serde::{Deserialize, Serialize};
+use ikaros_core::{IkarosError, Result};
+use ikaros_toolkit::AuditEvent;
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 use time::{
     OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339, macros::format_description,
 };
-use uuid::Uuid;
 
 const DEFAULT_AUDIT_ROTATION_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const ROTATED_AUDIT_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'_>] =
     format_description!("[year][month][day]T[hour][minute][second]Z");
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AuditEvent {
-    pub id: String,
-    pub at: String,
-    pub kind: String,
-    pub decision: Option<PolicyDecision>,
-    pub message: String,
-    pub data: serde_json::Value,
-}
-
-impl AuditEvent {
-    pub fn new(
-        kind: impl Into<String>,
-        decision: Option<PolicyDecision>,
-        message: impl Into<String>,
-        data: serde_json::Value,
-    ) -> Result<Self> {
-        Ok(Self {
-            id: Uuid::new_v4().to_string(),
-            at: now_rfc3339()?,
-            kind: kind.into(),
-            decision,
-            message: redact_secrets(&message.into()),
-            data: redact_json(data),
-        })
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuditRotationPolicy {
@@ -73,6 +45,7 @@ impl Default for AuditRotationPolicy {
 pub struct AuditLog {
     path: PathBuf,
     rotation: AuditRotationPolicy,
+    io_lock: Arc<Mutex<()>>,
 }
 
 impl AuditLog {
@@ -80,6 +53,7 @@ impl AuditLog {
         Self {
             path: audit_dir.into().join("audit.jsonl"),
             rotation: AuditRotationPolicy::default(),
+            io_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -87,6 +61,7 @@ impl AuditLog {
         Self {
             path: path.into(),
             rotation: AuditRotationPolicy::default(),
+            io_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -100,18 +75,29 @@ impl AuditLog {
     }
 
     pub fn append(&self, event: AuditEvent) -> Result<()> {
+        let _guard = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.ensure_parent_dir()?;
         let encoded = serde_json::to_string(&event)?;
         self.rotate_if_needed(encoded.len() as u64, &event.at)?;
+        let mut line = encoded;
+        line.push('\n');
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
             .map_err(|source| IkarosError::io(&self.path, source))?;
-        writeln!(file, "{encoded}").map_err(|source| IkarosError::io(&self.path, source))
+        file.write_all(line.as_bytes())
+            .map_err(|source| IkarosError::io(&self.path, source))
     }
 
     pub fn read_all(&self) -> Result<Vec<AuditEvent>> {
+        let _guard = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut events = Vec::new();
         for path in self.read_paths()? {
             read_events_from_path(&path, &mut events)?;
@@ -240,11 +226,29 @@ fn read_events_from_reader<R: BufRead>(
     reader: R,
     events: &mut Vec<AuditEvent>,
 ) -> Result<()> {
-    for line in reader.lines() {
+    for (line_index, line) in reader.lines().enumerate() {
         let line = line.map_err(|source| IkarosError::io(path, source))?;
         if !line.trim().is_empty() {
-            events.push(serde_json::from_str(&line)?);
+            read_events_from_line(path, line_index + 1, &line, events)?;
         }
+    }
+    Ok(())
+}
+
+fn read_events_from_line(
+    path: &Path,
+    line_number: usize,
+    line: &str,
+    events: &mut Vec<AuditEvent>,
+) -> Result<()> {
+    for event in serde_json::Deserializer::from_str(line).into_iter::<AuditEvent>() {
+        events.push(event.map_err(|source| {
+            IkarosError::Message(format!(
+                "failed to parse audit log {} line {}: {source}",
+                path.display(),
+                line_number
+            ))
+        })?);
     }
     Ok(())
 }

@@ -4,7 +4,7 @@ use crate::session_and_registry;
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use ikaros_coding::{SelfModifyChangeKind, SelfModifyStore};
-use ikaros_core::{IkarosConfig, IkarosPaths, RiskLevel, ToolCall, ToolResult};
+use ikaros_core::{IkarosConfig, IkarosPaths, RiskLevel, ToolCall, ToolResult, redact_json};
 use ikaros_harness::{ApprovalStatus, AuditEvent};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -213,10 +213,11 @@ pub(crate) async fn self_modify_command(
                     return Err(error.into());
                 }
             };
+            let public_report = redact_json(serde_json::to_value(&report)?);
             let result = ToolResult {
                 call_id: record.request.call.id.clone(),
                 ok: report.post_checks_passed,
-                output: serde_json::to_value(&report)?,
+                output: public_report.clone(),
                 summary: if report.post_checks_passed {
                     "self-modify approved apply completed".into()
                 } else {
@@ -233,7 +234,10 @@ pub(crate) async fn self_modify_command(
                     "proposal_id": proposal_id,
                     "target_path": report.target_path,
                     "check_profile": report.check_profile,
-                    "patch_report": report.patch_report,
+                    "patch_report": public_report
+                        .get("patch_report")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                     "pre_heartbeat": report.pre_heartbeat,
                     "post_heartbeat": report.post_heartbeat,
                     "pre_checks": report.pre_checks,
@@ -242,7 +246,7 @@ pub(crate) async fn self_modify_command(
                     "auto_rollback": report.auto_rollback,
                 }),
             )?)?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            println!("{}", serde_json::to_string_pretty(&public_report)?);
         }
         SelfModifyCommand::Rollback { proposal_id } => {
             let report = store.rollback_with_env(&proposal_id, &*session.env).await?;

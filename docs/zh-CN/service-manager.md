@@ -28,9 +28,15 @@ ikaros service render \
 模板包含本地 runtime 参数，例如：
 
 - `--ikaros-home`
-- `--workspace`
+- 位置参数 workspace path
 - 可选 `--agent`
 - worker interval 和 limit
 - webhook host 和 port
 
-模板不包含 API key。当 worker 触发 provider 调用时，会从选中的本地 `IKAROS_HOME/config.yaml` 读取 `providers.*` 设置。
+Systemd `message-worker` 模板会保持 `ExecStart` 为前台 `message worker`
+进程，让 service manager 直接管理进程本身。同时它会增加 `ExecStop` hook，执行
+`message worker-stop --reason "service manager stop"`，给 worker 一个短的协作式关闭窗口，
+让 gateway worker 消费 `message-worker.stop` 并写入 shutdown forensics。
+
+模板不包含 API key。当 worker 触发 provider 调用时，会读取选中的本地
+`IKAROS_HOME/config.yaml`，包括 `model.default` 和共享的 `providers.*` 资源设置。

@@ -63,7 +63,10 @@ fn dashboard_event_mapping_redacts_data_values() {
     let body_event = audit_event_to_body_event(event);
     assert_eq!(body_event.kind, BodyEventKind::Skill);
     assert_eq!(
-        body_event.data.get("call_id").map(String::as_str),
+        body_event
+            .data
+            .get("call_id")
+            .and_then(serde_json::Value::as_str),
         Some("call-1")
     );
     assert!(!body_event.message.contains("abc123"));
@@ -71,7 +74,7 @@ fn dashboard_event_mapping_redacts_data_values() {
         !body_event
             .data
             .values()
-            .any(|value| value.contains("abc123"))
+            .any(|value| value.to_string().contains("abc123"))
     );
 }
 

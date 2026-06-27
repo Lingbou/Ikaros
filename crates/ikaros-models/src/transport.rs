@@ -23,11 +23,11 @@ pub fn model_transport_descriptor_from_config(
     provider_settings: &RemoteProviderConfig,
 ) -> ModelTransportDescriptor {
     ModelTransportDescriptor {
-        provider: config.provider.clone(),
+        provider: config.provider.to_string(),
         model: config.model.clone(),
         runtime: normalized_or(&config.runtime, "harness-agent-loop"),
         transport: normalized_or(
-            &config.transport,
+            config.transport.as_str(),
             default_transport_for_provider(&config.provider),
         ),
         base_url: non_empty(provider_settings.base_url.clone()),

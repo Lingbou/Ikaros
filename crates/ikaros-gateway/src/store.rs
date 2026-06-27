@@ -1,35 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{GatewayDelivery, GatewayMessage, GatewayMessageStatus, GatewayRoute};
-use fs4::FileExt;
-use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
-use std::{
-    collections::HashSet,
-    fs::{self, OpenOptions},
-    io::ErrorKind,
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
-    thread,
-    time::{Duration as StdDuration, Instant},
+use crate::{
+    GatewayDelivery, GatewayDeliveryStatus, GatewayMessage, GatewayMessageStatus, GatewayPairing,
+    GatewayPairingStatus, GatewayRoute,
 };
-use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
-use uuid::Uuid;
+use ikaros_core::{Result, now_rfc3339, redact_secrets};
+use std::path::{Path, PathBuf};
+use time::{Duration, OffsetDateTime};
+
+mod jsonl;
+mod state;
+
+use jsonl::{read_jsonl, with_jsonl_lock, write_jsonl};
+use state::*;
 
 const PROCESSING_CLAIM_TIMEOUT: Duration = Duration::minutes(15);
-const LOCK_ACQUIRE_TIMEOUT: StdDuration = StdDuration::from_secs(30);
-const LOCK_RETRY_INTERVAL: StdDuration = StdDuration::from_millis(25);
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct LockMetadata {
-    pid: u32,
-    acquired_at: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct LocalGatewayStore {
     inbox_path: PathBuf,
     outbox_path: PathBuf,
+    pairings_path: PathBuf,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct GatewayPairingReport {
+    pub code: String,
+    pub source: String,
+    pub account: Option<String>,
+    pub peer: String,
+    pub status: GatewayPairingStatus,
+    pub created_at: String,
+    pub paired_at: Option<String>,
+    pub revoked_at: Option<String>,
 }
 
 impl LocalGatewayStore {
@@ -38,13 +40,20 @@ impl LocalGatewayStore {
         Self {
             inbox_path: gateway_dir.join("inbox.jsonl"),
             outbox_path: gateway_dir.join("outbox.jsonl"),
+            pairings_path: gateway_dir.join("pairings.jsonl"),
         }
     }
 
     pub fn from_files(inbox_path: impl Into<PathBuf>, outbox_path: impl Into<PathBuf>) -> Self {
+        let inbox_path = inbox_path.into();
+        let pairings_path = inbox_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("pairings.jsonl");
         Self {
-            inbox_path: inbox_path.into(),
+            inbox_path,
             outbox_path: outbox_path.into(),
+            pairings_path,
         }
     }
 
@@ -54,6 +63,10 @@ impl LocalGatewayStore {
 
     pub fn outbox_path(&self) -> &Path {
         &self.outbox_path
+    }
+
+    pub fn pairings_path(&self) -> &Path {
+        &self.pairings_path
     }
 
     pub fn enqueue(&self, route: GatewayRoute) -> Result<GatewayMessage> {
@@ -103,11 +116,21 @@ impl LocalGatewayStore {
     }
 
     pub fn claim_pending(&self, limit: usize) -> Result<Vec<GatewayMessage>> {
+        self.claim_pending_with_owner(limit, "local-gateway-worker")
+    }
+
+    pub fn claim_pending_with_owner(
+        &self,
+        limit: usize,
+        owner: impl Into<String>,
+    ) -> Result<Vec<GatewayMessage>> {
         with_jsonl_lock(&self.inbox_path, || {
             let mut messages = self.read_messages()?;
             sort_messages(&mut messages);
             let now_at = OffsetDateTime::now_utc();
             let now = now_rfc3339()?;
+            let lease_expires_at = format_rfc3339(now_at + PROCESSING_CLAIM_TIMEOUT)?;
+            let owner = redact_secrets(&owner.into());
             let mut claimed = Vec::new();
             for message in &mut messages {
                 if claimed.len() >= limit {
@@ -115,6 +138,11 @@ impl LocalGatewayStore {
                 }
                 if claimable_message(message, now_at) {
                     message.status = GatewayMessageStatus::Processing;
+                    message.attempt_count = message.attempt_count.saturating_add(1);
+                    message.lease_owner = Some(owner.clone());
+                    message.lease_expires_at = Some(lease_expires_at.clone());
+                    message.processed_at = None;
+                    message.dead_lettered_at = None;
                     message.updated_at = now.clone();
                     claimed.push(message.clone());
                 }
@@ -132,6 +160,25 @@ impl LocalGatewayStore {
         status: GatewayMessageStatus,
         summary: impl Into<String>,
     ) -> Result<Option<GatewayMessage>> {
+        self.record_status_with_claim(id, None, status, summary)
+    }
+
+    pub fn record_status_for_claim(
+        &self,
+        claim: &GatewayMessage,
+        status: GatewayMessageStatus,
+        summary: impl Into<String>,
+    ) -> Result<Option<GatewayMessage>> {
+        self.record_status_with_claim(&claim.id, Some(claim), status, summary)
+    }
+
+    fn record_status_with_claim(
+        &self,
+        id: &str,
+        claim: Option<&GatewayMessage>,
+        status: GatewayMessageStatus,
+        summary: impl Into<String>,
+    ) -> Result<Option<GatewayMessage>> {
         with_jsonl_lock(&self.inbox_path, || {
             let mut messages = self.read_messages()?;
             let now = now_rfc3339()?;
@@ -139,9 +186,110 @@ impl LocalGatewayStore {
             let mut updated = None;
             for message in &mut messages {
                 if message.id == id {
+                    if !lease_update_allowed(message, claim) {
+                        break;
+                    }
                     message.status = status.clone();
                     message.summary = Some(summary.clone());
                     message.processed_at = Some(now.clone());
+                    message.lease_owner = None;
+                    message.lease_expires_at = None;
+                    if matches!(
+                        message.status,
+                        GatewayMessageStatus::Failed | GatewayMessageStatus::DeadLettered
+                    ) {
+                        message.last_error = Some(summary.clone());
+                    }
+                    if message.status == GatewayMessageStatus::DeadLettered {
+                        message.dead_lettered_at = Some(now.clone());
+                    }
+                    message.updated_at = now.clone();
+                    updated = Some(message.clone());
+                    break;
+                }
+            }
+            self.write_messages(&messages)?;
+            Ok(updated)
+        })
+    }
+
+    pub fn record_failure(
+        &self,
+        id: &str,
+        error: impl Into<String>,
+        max_attempts: u32,
+    ) -> Result<Option<GatewayMessage>> {
+        self.record_failure_with_claim(id, None, error, max_attempts)
+    }
+
+    pub fn record_failure_for_claim(
+        &self,
+        claim: &GatewayMessage,
+        error: impl Into<String>,
+        max_attempts: u32,
+    ) -> Result<Option<GatewayMessage>> {
+        self.record_failure_with_claim(&claim.id, Some(claim), error, max_attempts)
+    }
+
+    fn record_failure_with_claim(
+        &self,
+        id: &str,
+        claim: Option<&GatewayMessage>,
+        error: impl Into<String>,
+        max_attempts: u32,
+    ) -> Result<Option<GatewayMessage>> {
+        with_jsonl_lock(&self.inbox_path, || {
+            let mut messages = self.read_messages()?;
+            let now = now_rfc3339()?;
+            let error = redact_secrets(&error.into());
+            let max_attempts = max_attempts.max(1);
+            let mut updated = None;
+            for message in &mut messages {
+                if message.id == id {
+                    if !lease_update_allowed(message, claim) {
+                        break;
+                    }
+                    message.summary = Some(error.clone());
+                    message.last_error = Some(error.clone());
+                    message.lease_owner = None;
+                    message.lease_expires_at = None;
+                    message.updated_at = now.clone();
+                    if message.attempt_count >= max_attempts {
+                        message.status = GatewayMessageStatus::DeadLettered;
+                        message.processed_at = Some(now.clone());
+                        message.dead_lettered_at = Some(now.clone());
+                    } else {
+                        message.status = GatewayMessageStatus::Pending;
+                        message.processed_at = None;
+                        message.dead_lettered_at = None;
+                    }
+                    updated = Some(message.clone());
+                    break;
+                }
+            }
+            self.write_messages(&messages)?;
+            Ok(updated)
+        })
+    }
+
+    pub fn cancel(&self, id: &str, reason: impl Into<String>) -> Result<Option<GatewayMessage>> {
+        with_jsonl_lock(&self.inbox_path, || {
+            let mut messages = self.read_messages()?;
+            let now = now_rfc3339()?;
+            let reason = redact_secrets(&reason.into());
+            let mut updated = None;
+            for message in &mut messages {
+                if message.id == id {
+                    if gateway_terminal_status(&message.status) {
+                        break;
+                    }
+                    message.status = GatewayMessageStatus::Cancelled;
+                    message.summary = Some(reason.clone());
+                    message.last_error = Some(reason.clone());
+                    message.lease_owner = None;
+                    message.lease_expires_at = None;
+                    message.processed_at = Some(now.clone());
+                    message.dead_lettered_at = None;
                     message.updated_at = now.clone();
                     updated = Some(message.clone());
                     break;
@@ -162,6 +310,84 @@ impl LocalGatewayStore {
                 .collect::<Vec<_>>();
             self.write_messages(&retained)?;
             Ok(retained.len() != before)
+        })
+    }
+
+    pub fn create_pairing(
+        &self,
+        source: impl Into<String>,
+        account: Option<&str>,
+        peer: impl Into<String>,
+    ) -> Result<GatewayPairing> {
+        with_jsonl_lock(&self.pairings_path, || {
+            let mut pairings = self.read_pairings()?;
+            let pairing = GatewayPairing::new(source, account.map(ToOwned::to_owned), peer)?;
+            pairings.push(pairing.clone());
+            self.write_pairings(&pairings)?;
+            Ok(pairing)
+        })
+    }
+
+    pub fn pairings(&self) -> Result<Vec<GatewayPairing>> {
+        with_jsonl_lock(&self.pairings_path, || {
+            let mut pairings = self.read_pairings()?;
+            sort_pairings(&mut pairings);
+            Ok(pairings)
+        })
+    }
+
+    pub fn redacted_pairing_reports(&self) -> Result<Vec<GatewayPairingReport>> {
+        Ok(self
+            .pairings()?
+            .into_iter()
+            .map(|pairing| GatewayPairingReport {
+                code: "[REDACTED_PAIRING_CODE]".into(),
+                source: redact_secrets(&pairing.source),
+                account: pairing.account.as_deref().map(redact_secrets),
+                peer: redact_secrets(&pairing.peer),
+                status: pairing.status,
+                created_at: pairing.created_at,
+                paired_at: pairing.paired_at,
+                revoked_at: pairing.revoked_at,
+            })
+            .collect())
+    }
+
+    pub fn route_has_paired_peer(&self, route: &GatewayRoute) -> Result<bool> {
+        with_jsonl_lock(&self.pairings_path, || {
+            let pairings = self.read_pairings()?;
+            Ok(pairings.iter().any(|pairing| {
+                pairing.status == GatewayPairingStatus::Paired
+                    && pairing_matches_route(pairing, route)
+            }))
+        })
+    }
+
+    pub fn confirm_pairing_for_route(
+        &self,
+        route: &GatewayRoute,
+        code: &str,
+    ) -> Result<Option<GatewayPairing>> {
+        with_jsonl_lock(&self.pairings_path, || {
+            let mut pairings = self.read_pairings()?;
+            let now = now_rfc3339()?;
+            let mut confirmed = None;
+            for pairing in &mut pairings {
+                if pairing.status == GatewayPairingStatus::Pending
+                    && pairing.code == code
+                    && pairing_matches_route(pairing, route)
+                {
+                    pairing.status = GatewayPairingStatus::Paired;
+                    pairing.paired_at = Some(now.clone());
+                    pairing.revoked_at = None;
+                    confirmed = Some(pairing.clone());
+                    break;
+                }
+            }
+            if confirmed.is_some() {
+                self.write_pairings(&pairings)?;
+            }
+            Ok(confirmed)
         })
     }
 
@@ -188,6 +414,145 @@ impl LocalGatewayStore {
         })
     }
 
+    pub fn claim_pending_deliveries_with_owner(
+        &self,
+        limit: usize,
+        owner: impl Into<String>,
+    ) -> Result<Vec<GatewayDelivery>> {
+        with_jsonl_lock(&self.outbox_path, || {
+            let mut deliveries = self.read_deliveries()?;
+            sort_deliveries(&mut deliveries);
+            let now_at = OffsetDateTime::now_utc();
+            let now = now_rfc3339()?;
+            let lease_expires_at = format_rfc3339(now_at + PROCESSING_CLAIM_TIMEOUT)?;
+            let owner = redact_secrets(&owner.into());
+            let mut claimed = Vec::new();
+            for delivery in &mut deliveries {
+                if claimed.len() >= limit {
+                    break;
+                }
+                if claimable_delivery(delivery, now_at) {
+                    delivery.status = GatewayDeliveryStatus::Processing;
+                    delivery.attempt_count = delivery.attempt_count.saturating_add(1);
+                    delivery.lease_owner = Some(owner.clone());
+                    delivery.lease_expires_at = Some(lease_expires_at.clone());
+                    delivery.next_attempt_at = None;
+                    delivery.delivered_at = None;
+                    delivery.dead_lettered_at = None;
+                    delivery.summary = Some(format!("claimed at {now}"));
+                    claimed.push(delivery.clone());
+                }
+            }
+            if !claimed.is_empty() {
+                self.write_deliveries(&deliveries)?;
+            }
+            Ok(claimed)
+        })
+    }
+
+    pub fn record_delivery_success_for_claim(
+        &self,
+        claim: &GatewayDelivery,
+        summary: impl Into<String>,
+    ) -> Result<Option<GatewayDelivery>> {
+        with_jsonl_lock(&self.outbox_path, || {
+            let mut deliveries = self.read_deliveries()?;
+            let now = now_rfc3339()?;
+            let summary = redact_secrets(&summary.into());
+            let mut updated = None;
+            for delivery in &mut deliveries {
+                if delivery.id == claim.id {
+                    if !delivery_update_allowed(delivery, claim) {
+                        break;
+                    }
+                    delivery.status = GatewayDeliveryStatus::Delivered;
+                    delivery.summary = Some(summary.clone());
+                    delivery.lease_owner = None;
+                    delivery.lease_expires_at = None;
+                    delivery.next_attempt_at = None;
+                    delivery.delivered_at = Some(now.clone());
+                    delivery.dead_lettered_at = None;
+                    updated = Some(delivery.clone());
+                    break;
+                }
+            }
+            self.write_deliveries(&deliveries)?;
+            Ok(updated)
+        })
+    }
+
+    pub fn delivery_claim_by_owner(&self, id: &str, lease_owner: &str) -> Result<GatewayDelivery> {
+        let expected_owner = redact_secrets(lease_owner);
+        let Some(delivery) = self
+            .deliveries()?
+            .into_iter()
+            .find(|delivery| delivery.id == id)
+        else {
+            return Err(ikaros_core::IkarosError::Message(format!(
+                "delivery not found: {}",
+                redact_secrets(id)
+            )));
+        };
+        if delivery.status != GatewayDeliveryStatus::Processing {
+            return Err(ikaros_core::IkarosError::Message(format!(
+                "delivery is not processing: id={} status={:?}",
+                redact_secrets(&delivery.id),
+                delivery.status
+            )));
+        }
+        if delivery.lease_owner.as_deref() != Some(expected_owner.as_str()) {
+            return Err(ikaros_core::IkarosError::Message(format!(
+                "delivery lease owner mismatch: id={} expected_owner={}",
+                redact_secrets(&delivery.id),
+                expected_owner
+            )));
+        }
+        Ok(delivery)
+    }
+
+    pub fn record_delivery_failure_for_claim(
+        &self,
+        claim: &GatewayDelivery,
+        error: impl Into<String>,
+        max_attempts: u32,
+        backoff_seconds: u64,
+    ) -> Result<Option<GatewayDelivery>> {
+        with_jsonl_lock(&self.outbox_path, || {
+            let mut deliveries = self.read_deliveries()?;
+            let now_at = OffsetDateTime::now_utc();
+            let now = now_rfc3339()?;
+            let error = redact_secrets(&error.into());
+            let max_attempts = max_attempts.max(1);
+            let backoff = Duration::seconds(backoff_seconds.min(i64::MAX as u64) as i64);
+            let next_attempt_at = format_rfc3339(now_at + backoff)?;
+            let mut updated = None;
+            for delivery in &mut deliveries {
+                if delivery.id == claim.id {
+                    if !delivery_update_allowed(delivery, claim) {
+                        break;
+                    }
+                    delivery.last_error = Some(error.clone());
+                    delivery.summary = Some(error.clone());
+                    delivery.lease_owner = None;
+                    delivery.lease_expires_at = None;
+                    if delivery.attempt_count >= max_attempts {
+                        delivery.status = GatewayDeliveryStatus::DeadLettered;
+                        delivery.next_attempt_at = None;
+                        delivery.dead_lettered_at = Some(now.clone());
+                    } else {
+                        delivery.status = GatewayDeliveryStatus::Pending;
+                        delivery.next_attempt_at = Some(next_attempt_at.clone());
+                        delivery.dead_lettered_at = None;
+                    }
+                    updated = Some(delivery.clone());
+                    break;
+                }
+            }
+            self.write_deliveries(&deliveries)?;
+            Ok(updated)
+        })
+    }
+
     fn read_messages(&self) -> Result<Vec<GatewayMessage>> {
         read_jsonl(&self.inbox_path)
     }
@@ -203,282 +568,12 @@ impl LocalGatewayStore {
     fn write_deliveries(&self, deliveries: &[GatewayDelivery]) -> Result<()> {
         write_jsonl(&self.outbox_path, deliveries)
     }
-}
 
-fn idempotency_digest_matches(
-    message: &GatewayMessage,
-    digest: &str,
-    route: &GatewayRoute,
-) -> bool {
-    if message.idempotency_key_digest.as_deref() == Some(digest) {
-        return true;
-    }
-    message.idempotency_key_digest.is_none()
-        && route
-            .idempotency_key
-            .as_deref()
-            .is_some_and(|key| !key.contains("[REDACTED_SECRET]"))
-        && message.idempotency_key == route.idempotency_key
-}
-
-fn read_jsonl<T>(path: &Path) -> Result<Vec<T>>
-where
-    T: serde::de::DeserializeOwned,
-{
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let file = fs::File::open(path).map_err(|source| IkarosError::io(path, source))?;
-    let reader = BufReader::new(file);
-    let mut items = Vec::new();
-    for line in reader.lines() {
-        let line = line.map_err(|source| IkarosError::io(path, source))?;
-        if !line.trim().is_empty() {
-            items.push(serde_json::from_str(&line)?);
-        }
-    }
-    Ok(items)
-}
-
-fn write_jsonl<T>(path: &Path, items: &[T]) -> Result<()>
-where
-    T: serde::Serialize,
-{
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| IkarosError::io(parent, source))?;
-    }
-    let temp_path = temp_jsonl_path(path);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .create_new(true)
-        .truncate(false)
-        .write(true)
-        .open(&temp_path)
-        .map_err(|source| IkarosError::io(&temp_path, source))?;
-    let write_result = (|| -> Result<()> {
-        for item in items {
-            writeln!(file, "{}", serde_json::to_string(item)?)
-                .map_err(|source| IkarosError::io(&temp_path, source))?;
-        }
-        file.sync_all()
-            .map_err(|source| IkarosError::io(&temp_path, source))?;
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&temp_path);
-        return Err(error);
-    }
-    fs::rename(&temp_path, path).map_err(|source| IkarosError::io(path, source))?;
-    Ok(())
-}
-
-struct JsonlFileLock {
-    file: fs::File,
-    _process_guard: ProcessFileLock,
-}
-
-struct ProcessFileLock {
-    key: PathBuf,
-}
-
-impl JsonlFileLock {
-    fn acquire(path: &Path) -> Result<Self> {
-        Self::acquire_with_timeout(path, LOCK_ACQUIRE_TIMEOUT)
+    fn read_pairings(&self) -> Result<Vec<GatewayPairing>> {
+        read_jsonl(&self.pairings_path)
     }
 
-    fn acquire_with_timeout(path: &Path, timeout: StdDuration) -> Result<Self> {
-        let lock_path = sibling_path_with_suffix(path, ".lock");
-        if let Some(parent) = lock_path.parent() {
-            fs::create_dir_all(parent).map_err(|source| IkarosError::io(parent, source))?;
-        }
-        let process_guard = ProcessFileLock::acquire(lock_identity(&lock_path), timeout)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|source| IkarosError::io(&lock_path, source))?;
-        let started = Instant::now();
-        loop {
-            match FileExt::try_lock(&file).map_err(std::io::Error::from) {
-                Ok(()) => {
-                    if let Err(error) = write_lock_metadata(&mut file, &lock_path) {
-                        let _ = FileExt::unlock(&file);
-                        return Err(error);
-                    }
-                    return Ok(Self {
-                        file,
-                        _process_guard: process_guard,
-                    });
-                }
-                Err(source) if is_lock_contention(source.kind()) => {
-                    if started.elapsed() >= timeout {
-                        return Err(IkarosError::Message(format!(
-                            "timed out locking gateway store {}",
-                            lock_path.display()
-                        )));
-                    }
-                    thread::sleep(LOCK_RETRY_INTERVAL);
-                }
-                Err(source) => return Err(IkarosError::io(&lock_path, source)),
-            }
-        }
-    }
-}
-
-impl Drop for JsonlFileLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
-
-fn with_jsonl_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _lock = JsonlFileLock::acquire(path)?;
-    f()
-}
-
-impl ProcessFileLock {
-    fn acquire(key: PathBuf, timeout: StdDuration) -> Result<Self> {
-        let started = Instant::now();
-        loop {
-            {
-                let mut locked_paths = process_locks().lock().map_err(|_| {
-                    IkarosError::Message("gateway lock registry is poisoned".into())
-                })?;
-                if locked_paths.insert(key.clone()) {
-                    return Ok(Self { key });
-                }
-            }
-            if started.elapsed() >= timeout {
-                return Err(IkarosError::Message(format!(
-                    "timed out locking gateway store {}",
-                    key.display()
-                )));
-            }
-            thread::sleep(LOCK_RETRY_INTERVAL);
-        }
-    }
-}
-
-impl Drop for ProcessFileLock {
-    fn drop(&mut self) {
-        if let Ok(mut locked_paths) = process_locks().lock() {
-            locked_paths.remove(&self.key);
-        }
-    }
-}
-
-fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
-    static LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-    LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-fn lock_identity(lock_path: &Path) -> PathBuf {
-    let Some(parent) = lock_path.parent() else {
-        return lock_path.to_path_buf();
-    };
-    let parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
-    match lock_path.file_name() {
-        Some(file_name) => parent.join(file_name),
-        None => parent,
-    }
-}
-
-fn write_lock_metadata(file: &mut fs::File, path: &Path) -> Result<()> {
-    let meta = LockMetadata {
-        pid: std::process::id(),
-        acquired_at: now_rfc3339()?,
-    };
-    let payload = serde_json::to_vec(&meta).map_err(|source| {
-        IkarosError::Message(format!(
-            "failed to serialize gateway lock metadata: {source}"
-        ))
-    })?;
-    file.set_len(0)
-        .and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ()))
-        .and_then(|()| file.write_all(&payload))
-        .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.sync_all())
-        .map_err(|source| IkarosError::io(path, source))
-}
-
-fn is_lock_contention(kind: ErrorKind) -> bool {
-    kind == ErrorKind::WouldBlock
-        || kind == ErrorKind::AlreadyExists
-        || kind == ErrorKind::Interrupted
-        || (cfg!(windows) && kind == ErrorKind::PermissionDenied)
-}
-
-fn temp_jsonl_path(path: &Path) -> PathBuf {
-    sibling_path_with_suffix(path, &format!(".tmp.{}", Uuid::new_v4()))
-}
-
-fn sibling_path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "gateway.jsonl".into());
-    path.with_file_name(format!("{file_name}{suffix}"))
-}
-
-fn sort_messages(messages: &mut [GatewayMessage]) {
-    messages.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-}
-
-fn sort_deliveries(deliveries: &mut [GatewayDelivery]) {
-    deliveries.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-}
-
-fn claimable_message(message: &GatewayMessage, now: OffsetDateTime) -> bool {
-    match message.status {
-        GatewayMessageStatus::Pending => true,
-        GatewayMessageStatus::Processing => processing_claim_expired(message, now),
-        GatewayMessageStatus::Processed | GatewayMessageStatus::Failed => false,
-    }
-}
-
-fn processing_claim_expired(message: &GatewayMessage, now: OffsetDateTime) -> bool {
-    OffsetDateTime::parse(&message.updated_at, &Rfc3339)
-        .map(|updated_at| now - updated_at >= PROCESSING_CLAIM_TIMEOUT)
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod lock_tests {
-    use super::*;
-
-    #[test]
-    fn jsonl_lock_blocks_same_process_takeover_until_release() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("inbox.jsonl");
-        let first = JsonlFileLock::acquire_with_timeout(&path, StdDuration::from_secs(1))
-            .expect("first lock");
-        let lock_path = sibling_path_with_suffix(&path, ".lock");
-
-        let error = match JsonlFileLock::acquire_with_timeout(&path, StdDuration::from_millis(30)) {
-            Ok(_) => panic!("second lock acquired while first lock was held"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("timed out locking gateway store")
-        );
-
-        drop(first);
-        let metadata = fs::read_to_string(&lock_path).expect("lock metadata");
-        let metadata: LockMetadata = serde_json::from_str(&metadata).expect("metadata json");
-        assert_eq!(metadata.pid, std::process::id());
-        let _second = JsonlFileLock::acquire_with_timeout(&path, StdDuration::from_secs(1))
-            .expect("second lock after release");
+    fn write_pairings(&self, pairings: &[GatewayPairing]) -> Result<()> {
+        write_jsonl(&self.pairings_path, pairings)
     }
 }

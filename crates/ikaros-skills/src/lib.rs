@@ -1,41 +1,59 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Built-in Ikaros skills, all designed to run through the harness.
 
+mod browser;
 mod coding;
 mod fs;
+pub mod groups;
+mod mcp;
 mod memory;
+mod multimodal;
 mod persona;
 mod plugin;
+mod prompt_docs;
 mod rag;
 mod shell;
 mod support;
+mod tool_bridge;
 mod voice;
+mod web;
 
+pub use browser::{
+    BrowserActivateTargetSkill, BrowserCdpSkill, BrowserClickSkill, BrowserCloseTargetSkill,
+    BrowserListSkill, BrowserNavigateSkill, BrowserNewTargetSkill, BrowserScreenshotSkill,
+    BrowserScrollSkill, BrowserSnapshotSkill, BrowserStatusSkill, BrowserTypeSkill,
+};
 pub use coding::{
     CodeEditGuardedSkill, CodeIterateSkill, CodeReviewSkill, CodeWorkflowSkill, RepoScanSkill,
     RunTestsSkill, TaskSummarizeSkill,
 };
 pub use fs::{FsReadSkill, FsWriteGuardedSkill, ListDirSkill};
-use ikaros_core::{RagConfig, RemoteProviderConfig};
-use ikaros_harness::{CancellationToken, SkillRegistry};
+pub use groups::{BuiltinRegistryBuilder, BuiltinSkillGroup};
+use ikaros_core::{ModelConfig, RagConfig, RemoteProviderConfig};
+use ikaros_harness::CancellationToken;
 use ikaros_memory::LocalMemoryStore;
 use ikaros_models::ModelProvider;
 use ikaros_rag::LocalRagStore;
 use ikaros_session::{SessionId, SessionSource, SessionStore, TurnId};
+use ikaros_toolkit::{SkillRegistry, Toolset};
 use ikaros_voice::VoiceProviderConfig;
+pub use mcp::{McpStdioCallSkill, McpStdioProbeSkill};
 pub use memory::{
     MemoryAppendSkill, MemoryCandidateCreateSkill, MemoryDeleteSkill, MemoryProjectionSkill,
     MemorySearchSkill, MemoryUpdateSkill, WorkingMemoryListSkill,
 };
+pub use multimodal::{ImageGenerateSkill, VisionDescribeSkill};
 pub use persona::PersonaLoadSkill;
 pub use plugin::PluginCommandRunSkill;
 pub use rag::{
     RagDeletePathSkill, RagDeleteScopeSkill, RagIngestSkill, RagReindexSkill, RagSearchSkill,
-    RagStaleSkill,
+    RagStaleSkill, with_execution_env_embedding_provider,
 };
 pub use shell::{GitDiffSkill, GitStatusSkill, ShellGuardedSkill};
 use std::{path::PathBuf, sync::Arc};
+pub use tool_bridge::{ToolCallSkill, ToolDescribeSkill, ToolSearchSkill};
 pub use voice::{VoiceAsrSkill, VoiceTtsSkill};
+pub use web::{WebExtractSkill, WebSearchSkill};
 
 #[derive(Clone)]
 pub struct CodingSessionConfig {
@@ -79,60 +97,24 @@ pub struct SkillEnvironment {
     pub voice_tts_provider: RemoteProviderConfig,
     pub voice_asr: VoiceProviderConfig,
     pub voice_asr_provider: RemoteProviderConfig,
+    pub web_search_provider: RemoteProviderConfig,
     pub coding_session: Option<CodingSessionConfig>,
 }
 
 pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
-    let mut registry = SkillRegistry::new();
-    registry.register(FsReadSkill);
-    registry.register(FsWriteGuardedSkill);
-    registry.register(ListDirSkill);
-    registry.register(ShellGuardedSkill);
-    registry.register(GitStatusSkill);
-    registry.register(GitDiffSkill);
-    registry.register(MemoryAppendSkill::new(env.memory_store.clone()));
-    registry.register(MemorySearchSkill::new(env.memory_store.clone()));
-    registry.register(MemoryCandidateCreateSkill::new(env.memory_store.clone()));
-    registry.register(MemoryProjectionSkill::new(env.memory_store.clone()));
-    registry.register(WorkingMemoryListSkill::new(env.memory_store.clone()));
-    registry.register(MemoryUpdateSkill::new(env.memory_store.clone()));
-    registry.register(MemoryDeleteSkill::new(env.memory_store.clone()));
-    registry.register(PersonaLoadSkill::new(env.persona_path));
-    registry.register(VoiceTtsSkill::new(
-        env.voice_tts.clone(),
-        env.voice_tts_provider.clone(),
-    ));
-    registry.register(VoiceAsrSkill::new(
-        env.voice_asr.clone(),
-        env.voice_asr_provider.clone(),
-    ));
-    registry.register(TaskSummarizeSkill);
-    registry.register(RepoScanSkill);
-    registry.register(RunTestsSkill);
-    registry.register(CodeEditGuardedSkill);
-    registry.register(CodeReviewSkill);
-    registry.register(CodeIterateSkill);
-    registry.register(CodeWorkflowSkill::new(env.coding_session.clone()));
-    registry.register(RagIngestSkill::new(
-        env.rag_index.clone(),
-        env.rag_config.clone(),
-        env.rag_provider.clone(),
-    ));
-    registry.register(RagSearchSkill::new(
-        env.rag_index.clone(),
-        env.rag_config.clone(),
-        env.rag_provider.clone(),
-    ));
-    registry.register(RagStaleSkill::new(env.rag_index.clone()));
-    registry.register(RagDeleteScopeSkill::new(env.rag_index.clone()));
-    registry.register(RagDeletePathSkill::new(env.rag_index.clone()));
-    registry.register(RagReindexSkill::new(
-        env.rag_index,
-        env.rag_config,
-        env.rag_provider,
-    ));
-    registry.register(PluginCommandRunSkill::new(env.skills_dir));
-    registry
+    BuiltinRegistryBuilder::new(env).build()
+}
+
+pub fn register_model_backed_skills(
+    registry: &mut SkillRegistry,
+    model: ModelConfig,
+    provider: RemoteProviderConfig,
+) {
+    registry.register_with_toolset(
+        VisionDescribeSkill::new(model.clone(), provider.clone()),
+        Toolset::Core,
+    );
+    registry.register_with_toolset(ImageGenerateSkill::new(model, provider), Toolset::Core);
 }
 
 #[cfg(test)]

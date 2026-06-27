@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, RiskLevel, redact_secrets};
 use ikaros_harness::{
     LoadedPluginManifest, PLUGIN_COMMAND_MAX_OUTPUT_BYTES, PLUGIN_COMMAND_MAX_STDIN_BYTES,
-    PLUGIN_COMMAND_MAX_TIMEOUT_MS, PluginCatalog, PluginCommandManifest, PluginSkillManifest,
+    PLUGIN_COMMAND_MAX_TIMEOUT_MS, PluginCatalog, PluginCommandManifest,
+    PluginPermissionDeclaration, PluginSkillManifest,
+};
+use ikaros_toolkit::{
     PolicyRequest, ProcessOutput, ProcessRequest, Skill, SkillContext, SkillOutput,
 };
 use serde_json::json;
@@ -54,6 +57,10 @@ impl Skill for PluginCommandRunSkill {
     fn policy_request(&self, input: &serde_json::Value, workspace_root: &Path) -> PolicyRequest {
         let request = self
             .resolve_plugin_command(input)
+            .and_then(|resolved| {
+                enforce_plugin_permissions(&resolved, workspace_root)?;
+                Ok(resolved)
+            })
             .map(|resolved| PolicyRequest {
                 action: format!("plugin:{}", resolved.qualified_name),
                 risk: resolved.skill.risk.clone(),
@@ -82,6 +89,7 @@ impl Skill for PluginCommandRunSkill {
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
         let plugin_input = input.get("input").cloned().unwrap_or_else(|| json!({}));
         let resolved = self.resolve_plugin_command(&input)?;
+        enforce_plugin_permissions(&resolved, &ctx.session.sandbox.workspace_root)?;
         let output = run_plugin_command(&resolved, plugin_input, &ctx).await?;
         Ok(SkillOutput::new(
             format!("plugin command executed: {}", resolved.qualified_name),
@@ -192,6 +200,103 @@ fn resolve_plugin_program(plugin_root: &Path, program: &Path) -> Result<PathBuf>
         )));
     }
     Ok(program)
+}
+
+fn enforce_plugin_permissions(
+    resolved: &ResolvedPluginCommand,
+    workspace_root: &Path,
+) -> Result<()> {
+    if !plugin_skill_requires_runtime_permission(&resolved.skill.risk) {
+        return Ok(());
+    }
+    for permission in &resolved.skill.permissions {
+        validate_plugin_permission_paths(permission, workspace_root)?;
+    }
+    let permission = resolved
+        .skill
+        .permissions
+        .iter()
+        .find(|permission| plugin_permission_matches(permission, resolved))
+        .ok_or_else(|| {
+            IkarosError::Message(format!(
+                "plugin skill {} requires a matching runtime permission declaration",
+                resolved.qualified_name
+            ))
+        })?;
+    if plugin_risk_requires_network(&resolved.skill.risk) && !permission.network {
+        return Err(IkarosError::Message(format!(
+            "plugin skill {} requires a network permission declaration",
+            resolved.qualified_name
+        )));
+    }
+    Ok(())
+}
+
+fn plugin_skill_requires_runtime_permission(risk: &RiskLevel) -> bool {
+    !matches!(risk, RiskLevel::SafeRead)
+}
+
+fn plugin_permission_matches(
+    permission: &PluginPermissionDeclaration,
+    resolved: &ResolvedPluginCommand,
+) -> bool {
+    if permission.risk != resolved.skill.risk {
+        return false;
+    }
+    let action = permission.action.trim();
+    action == "run"
+        || action == resolved.skill.name
+        || action == resolved.qualified_name
+        || action == format!("plugin:{}", resolved.qualified_name)
+}
+
+fn validate_plugin_permission_paths(
+    permission: &PluginPermissionDeclaration,
+    workspace_root: &Path,
+) -> Result<()> {
+    for path in &permission.paths {
+        validate_plugin_permission_path(path, workspace_root)?;
+    }
+    Ok(())
+}
+
+fn validate_plugin_permission_path(path: &Path, workspace_root: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(IkarosError::Message(
+            "plugin permission path must not be empty".into(),
+        ));
+    }
+    if path.components().any(|component| {
+        matches!(component, Component::ParentDir) || component.as_os_str() == ".temp"
+    }) {
+        return Err(IkarosError::Message(format!(
+            "plugin permission path must stay under the workspace and must not target .temp: {}",
+            path.display()
+        )));
+    }
+    let workspace_root = fs::canonicalize(workspace_root).unwrap_or_else(|_| {
+        if workspace_root.is_absolute() {
+            workspace_root.to_path_buf()
+        } else {
+            PathBuf::from("/").join(workspace_root)
+        }
+    });
+    let declared = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    };
+    if !declared.starts_with(&workspace_root) {
+        return Err(IkarosError::Message(format!(
+            "plugin permission path must stay under the workspace: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn plugin_risk_requires_network(risk: &RiskLevel) -> bool {
+    matches!(risk, RiskLevel::Network | RiskLevel::RemoteServer)
 }
 
 async fn run_plugin_command(

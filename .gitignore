@@ -27,3 +27,6 @@ docs/ops-log.local.md
 
 # Local agent/tooling state
 .claude/settings.local.json
+
+docs/superpowers
+CONTEXT.md

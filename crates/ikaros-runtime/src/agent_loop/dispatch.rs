@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::types::{AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolResult};
+use super::types::{
+    AgentLoopStopReason, AgentLoopToolCall, AgentLoopToolDefinition, AgentLoopToolResult,
+};
 use ikaros_core::{Result, ToolResult, redact_json, redact_secrets};
 use ikaros_harness::{
     AuditEvent, ExecutionSession, GuardrailConfig, GuardrailDecision, GuardrailObservation,
@@ -14,12 +16,16 @@ use tokio::time::{Duration, timeout};
 pub(super) async fn dispatch_agent_loop_tool_call(
     session: &ExecutionSession,
     registry: &SkillRegistry,
+    direct_manifest: &[AgentLoopToolDefinition],
     iteration: u32,
     call: AgentLoopToolCall,
     timeout_ms: Option<u64>,
 ) -> AgentLoopToolResult {
     let name = redact_secrets(&call.name);
     let started_at = OffsetDateTime::now_utc();
+    if !direct_manifest.iter().any(|tool| tool.name == call.name) {
+        return not_in_direct_manifest_agent_loop_tool_result(iteration, name);
+    }
     let execution = session.execute_skill(registry, &call.name, call.input.clone());
     let result = match timeout_ms {
         Some(timeout_ms) if timeout_ms > 0 => {
@@ -43,7 +49,29 @@ pub(super) async fn dispatch_agent_loop_tool_call(
             ok: false,
             summary: redact_secrets(&error.to_string()),
             output: json!({"error": redact_secrets(&error.to_string())}),
+            recoverable: false,
         },
+    }
+}
+
+fn not_in_direct_manifest_agent_loop_tool_result(
+    iteration: u32,
+    name: String,
+) -> AgentLoopToolResult {
+    let summary = format!(
+        "tool {name} is not in the model-visible direct tool manifest; deferred tools must be routed through tool_call after disclosure"
+    );
+    AgentLoopToolResult {
+        iteration,
+        name,
+        harness_call_id: None,
+        ok: false,
+        summary: redact_secrets(&summary),
+        output: json!({
+            "error": redact_secrets(&summary),
+            "reason": "tool_not_in_direct_manifest",
+        }),
+        recoverable: false,
     }
 }
 
@@ -71,6 +99,7 @@ fn timed_out_agent_loop_tool_result(
                 "ended_at": format_rfc3339(ended_at),
             }
         }),
+        recoverable: true,
     }
 }
 
@@ -158,6 +187,7 @@ fn agent_loop_tool_result_from_tool_result(
         ok: result.ok,
         summary: redact_secrets(&result.summary),
         output: redact_json(result.output),
+        recoverable: false,
     }
 }
 
@@ -172,16 +202,19 @@ fn audit_agent_loop_guardrail(
     } else {
         "agent_loop_guardrail_warning"
     };
-    session.audit.append(AuditEvent::new(
-        kind,
-        None,
-        signal.message(),
-        json!({
-            "task_id": task_id,
-            "signal": signal,
-            "halted": halted,
-        }),
-    )?)
+    session
+        .audit
+        .append(session.correlate_audit_event(AuditEvent::new(
+            kind,
+            None,
+            signal.message(),
+            json!({
+                "correlation_id": session.correlation_id(),
+                "task_id": task_id,
+                "signal": signal,
+                "halted": halted,
+            }),
+        )?))
 }
 
 fn should_observe_agent_loop_result(result: &AgentLoopToolResult) -> bool {

@@ -2,7 +2,9 @@
 
 use super::ExecutionSession;
 use crate::{AuditEvent, Skill, SkillRegistry};
-use ikaros_core::{IkarosError, PolicyDecision, Result, RiskLevel, ToolCall, ToolResult};
+use ikaros_core::{
+    IkarosError, PolicyDecision, Result, RiskLevel, ToolCall, ToolResult, redact_secrets,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -59,22 +61,53 @@ impl ExecutionSession {
         let audit_input_redacted = audit_input != input;
         let request = skill.policy_request(&input, &self.sandbox.workspace_root);
         let call = ToolCall::new(skill.name(), request.risk.clone(), input.clone());
-        self.audit.append(AuditEvent::new(
-            "tool_call",
-            None,
-            format!("tool call requested: {}", skill.name()),
-            json!({
-                "call_id": &call.id,
-                "name": &call.name,
-                "risk": &call.risk,
-                "input": audit_input,
-                "audit_input_redacted": audit_input_redacted,
-            }),
-        )?)?;
+        let call_id = call.id.clone();
+        let skill_name = call.name.clone();
+        let risk = call.risk.clone();
+        tracing::info!(
+            event = "harness_tool_requested",
+            call_id = %call_id,
+            skill = %skill_name,
+            risk = ?risk,
+            audit_input_redacted,
+            correlation_id = ?self.correlation_id(),
+            "harness tool requested"
+        );
+        self.audit
+            .append(self.correlate_audit_event(AuditEvent::new(
+                "tool_call",
+                None,
+                format!("tool call requested: {}", skill.name()),
+                json!({
+                    "call_id": &call.id,
+                    "name": &call.name,
+                    "risk": &call.risk,
+                    "input": audit_input,
+                    "audit_input_redacted": audit_input_redacted,
+                }),
+            )?))?;
         let evaluation = self.evaluate(&request)?;
+        tracing::info!(
+            event = "harness_tool_policy",
+            call_id = %call_id,
+            skill = %skill_name,
+            risk = ?risk,
+            decision = ?evaluation.decision,
+            reason = %redact_secrets(&evaluation.reason),
+            correlation_id = ?self.correlation_id(),
+            "harness tool policy decision"
+        );
         let result = match evaluation.decision {
             PolicyDecision::Allow => {
                 if self.sandbox.dry_run {
+                    tracing::info!(
+                        event = "harness_tool_dry_run",
+                        call_id = %call_id,
+                        skill = %skill_name,
+                        risk = ?risk,
+                        correlation_id = ?self.correlation_id(),
+                        "harness tool skipped by dry-run"
+                    );
                     ToolResult {
                         call_id: call.id,
                         ok: true,
@@ -82,14 +115,43 @@ impl ExecutionSession {
                         summary: format!("dry-run allowed {}", skill.name()),
                     }
                 } else {
-                    match self.env.execute_skill(skill.clone(), input, self).await {
-                        Ok(output) => ToolResult {
-                            call_id: call.id,
-                            ok: true,
-                            summary: output.summary,
-                            output: output.output,
-                        },
+                    tracing::info!(
+                        event = "harness_tool_started",
+                        call_id = %call_id,
+                        skill = %skill_name,
+                        risk = ?risk,
+                        correlation_id = ?self.correlation_id(),
+                        "harness tool execution started"
+                    );
+                    let context = self.skill_context();
+                    match self.env.execute_skill(skill.clone(), input, context).await {
+                        Ok(output) => {
+                            tracing::info!(
+                                event = "harness_tool_completed",
+                                call_id = %call_id,
+                                skill = %skill_name,
+                                risk = ?risk,
+                                ok = true,
+                                correlation_id = ?self.correlation_id(),
+                                "harness tool execution completed"
+                            );
+                            ToolResult {
+                                call_id: call.id,
+                                ok: true,
+                                summary: output.summary,
+                                output: output.output,
+                            }
+                        }
                         Err(error) => {
+                            tracing::warn!(
+                                event = "harness_tool_failed",
+                                call_id = %call_id,
+                                skill = %skill_name,
+                                risk = ?risk,
+                                error = %redact_secrets(&error.to_string()),
+                                correlation_id = ?self.correlation_id(),
+                                "harness tool execution failed"
+                            );
                             let result = ToolResult {
                                 call_id: call.id,
                                 ok: false,
@@ -110,6 +172,16 @@ impl ExecutionSession {
                     self.sandbox.workspace_root.clone(),
                     approval_context.clone(),
                 )?;
+                tracing::info!(
+                    event = "harness_tool_approval_queued",
+                    call_id = %call_id,
+                    skill = %skill_name,
+                    risk = ?risk,
+                    approval_id = %approval.id,
+                    reason = %redact_secrets(&evaluation.reason),
+                    correlation_id = ?self.correlation_id(),
+                    "harness tool approval queued"
+                );
                 let mut output = json!({"approval_id": approval.id, "decision": "ask_user"});
                 if let Some(context) = approval_context {
                     output["approval_context"] = context;
@@ -121,12 +193,23 @@ impl ExecutionSession {
                     summary: evaluation.reason,
                 }
             }
-            PolicyDecision::Deny => ToolResult {
-                call_id: call.id,
-                ok: false,
-                output: json!({"decision": "deny"}),
-                summary: evaluation.reason,
-            },
+            PolicyDecision::Deny => {
+                tracing::warn!(
+                    event = "harness_tool_denied",
+                    call_id = %call_id,
+                    skill = %skill_name,
+                    risk = ?risk,
+                    reason = %redact_secrets(&evaluation.reason),
+                    correlation_id = ?self.correlation_id(),
+                    "harness tool denied"
+                );
+                ToolResult {
+                    call_id: call.id,
+                    ok: false,
+                    output: json!({"decision": "deny"}),
+                    summary: evaluation.reason,
+                }
+            }
         };
         self.audit_tool_result(skill.name(), &result)?;
         Ok(result)

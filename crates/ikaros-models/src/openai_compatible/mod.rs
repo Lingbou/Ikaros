@@ -10,7 +10,10 @@ mod tools;
 mod types;
 
 pub use client::OpenAiCompatibleProvider;
-pub(crate) use profile::OpenAiCompatProfile;
+pub(crate) use profile::{ProviderProfile, ReasoningPolicy};
+
+#[cfg(test)]
+pub(crate) use profile::{MessagePolicy, RequestBodyPolicy, TemperaturePolicy, ToolSchemaPolicy};
 
 #[cfg(test)]
 pub(crate) use chat::{

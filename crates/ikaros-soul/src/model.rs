@@ -10,6 +10,7 @@ pub struct PersonaProfile {
     pub tone: ToneConfig,
     pub relationship: RelationshipModel,
     pub behavior_rules: Vec<BehaviorRule>,
+    pub documents: Vec<PersonaDocument>,
     pub raw_markdown: String,
     pub sections: BTreeMap<String, String>,
 }
@@ -28,7 +29,7 @@ impl PersonaProfile {
             .map(|rule| format!("- {}", rule.text))
             .collect::<Vec<_>>()
             .join("\n");
-        format!(
+        let mut summary = format!(
             "Persona: {}\nRole: {}\nTone: {}\nTraits: {}\nRelationship stance: {}\nRules:\n{}",
             self.identity.name,
             self.identity.role,
@@ -36,8 +37,58 @@ impl PersonaProfile {
             traits,
             self.relationship.stance,
             rules
-        )
+        );
+        if let Some(documents) = self.document_context(12_000) {
+            summary.push_str("\n\nPersona source documents:\n");
+            summary.push_str(&documents);
+        }
+        summary
     }
+
+    fn document_context(&self, limit: usize) -> Option<String> {
+        let mut rendered = String::new();
+        for document in &self.documents {
+            let content = document.content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            if !rendered.is_empty() {
+                rendered.push_str("\n\n");
+            }
+            rendered.push_str("## ");
+            rendered.push_str(document.source.as_deref().unwrap_or("inline persona"));
+            rendered.push('\n');
+            rendered.push_str(content);
+            if rendered.len() > limit {
+                truncate_to_char_boundary(&mut rendered, limit);
+                rendered.push_str("\n[persona documents truncated]");
+                break;
+            }
+        }
+        if rendered.trim().is_empty() {
+            None
+        } else {
+            Some(rendered)
+        }
+    }
+}
+
+fn truncate_to_char_boundary(value: &mut String, limit: usize) {
+    if value.len() <= limit {
+        return;
+    }
+
+    let mut boundary = limit;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersonaDocument {
+    pub source: Option<String>,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,5 +185,39 @@ mod tests {
             EmotionState::for_runtime_signal(RuntimeSignal::TaskComplete),
             EmotionState::Satisfied
         );
+    }
+
+    #[test]
+    fn persona_document_context_truncates_on_utf8_boundary() {
+        let profile = PersonaProfile {
+            identity: Identity {
+                name: "测试人格".into(),
+                role: "persona".into(),
+                description: "多字节 persona".into(),
+            },
+            traits: Vec::new(),
+            tone: ToneConfig {
+                style: "测试语气".into(),
+                language: Some("中文".into()),
+            },
+            relationship: RelationshipModel {
+                stance: "测试关系".into(),
+                boundaries: Vec::new(),
+            },
+            behavior_rules: Vec::new(),
+            documents: vec![PersonaDocument {
+                source: Some("voice.md".into()),
+                content: "测".repeat(100),
+            }],
+            raw_markdown: String::new(),
+            sections: BTreeMap::new(),
+        };
+
+        let context = profile
+            .document_context(17)
+            .expect("truncated document context");
+
+        assert!(context.contains("[persona documents truncated]"));
+        assert!(context.is_char_boundary(context.len()));
     }
 }

@@ -1,31 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::{ChatHistoryAppend, ChatHistoryRecord};
-use ikaros_core::{Result, now_rfc3339, redact_secrets};
+use super::ChatHistoryRecord;
+use ikaros_core::redact_secrets;
 use uuid::Uuid;
 
 pub fn new_chat_session_id() -> String {
     Uuid::new_v4().to_string()
-}
-
-pub fn build_chat_history_record_with_turn_id(
-    turn_id: impl Into<String>,
-    input: ChatHistoryAppend<'_>,
-) -> Result<ChatHistoryRecord> {
-    Ok(ChatHistoryRecord {
-        session_id: redact_secrets(input.session_id),
-        turn_id: redact_secrets(&turn_id.into()),
-        created_at: now_rfc3339()?,
-        agent: redact_secrets(input.agent),
-        provider: redact_secrets(input.provider),
-        model: redact_secrets(input.model),
-        streamed: input.streamed,
-        user_message: redact_secrets(input.user_message),
-        assistant_message: redact_secrets(input.assistant_message),
-        relationship_hits: input.relationship_hits,
-        memory_hits: input.memory_hits,
-        rag_hits: input.rag_hits,
-    })
 }
 
 pub fn chat_history_context_lines(records: &[ChatHistoryRecord], limit: usize) -> Vec<String> {

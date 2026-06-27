@@ -61,7 +61,7 @@ async fn run_task(
     agent_override: Option<&str>,
 ) -> Result<()> {
     paths.ensure()?;
-    let persona = load_or_default(&paths.persona)?;
+    let persona = load_or_default(&paths.persona_dir)?;
     let run = execute_task_text_with_options(
         task_text,
         options.clone(),

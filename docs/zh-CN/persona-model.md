@@ -24,7 +24,8 @@ ikaros persona reset
 
 ## Emotion
 
-Runtime emotion state 很小，并由 audit 支撑。当前 signal 会把 task/chat 结果映射到 neutral、focused、curious、concerned、confused、satisfied 等状态。
+Runtime emotion state 很小，并由 audit 支撑。当前 signal 会把 task/chat 结果映射到 neutral、focused、curious、concerned、
+confused、satisfied 等状态。
 
 Body renderer 从 runtime/audit state 读取最新 emotion。Persona 文本不能设置策略或权限。
 
