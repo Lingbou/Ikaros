@@ -36,17 +36,19 @@ impl ExecutionSession {
             audit_path: Some(self.audit.path().to_path_buf()),
         };
         let mut guardrails = GuardrailState::default();
-        self.audit.append(AuditEvent::new(
-            "task_execution_start",
-            None,
-            format!("task execution started: {task_id}"),
-            json!({
-                "task_id": &task_id,
-                "step_count": steps.len(),
-                "dry_run": self.sandbox.dry_run,
-                "guardrails": &options.guardrails,
-            }),
-        )?)?;
+        self.audit
+            .append(self.correlate_audit_event(AuditEvent::new(
+                "task_execution_start",
+                None,
+                format!("task execution started: {task_id}"),
+                json!({
+                    "correlation_id": self.correlation_id(),
+                    "task_id": &task_id,
+                    "step_count": steps.len(),
+                    "dry_run": self.sandbox.dry_run,
+                    "guardrails": &options.guardrails,
+                }),
+            )?))?;
 
         for (index, step) in steps.iter().enumerate() {
             if cancellation.is_cancelled() {
@@ -62,17 +64,19 @@ impl ExecutionSession {
             }
 
             report.steps[index].start()?;
-            self.audit.append(AuditEvent::new(
-                "task_step_start",
-                None,
-                format!("task step started: {}", step.skill),
-                json!({
-                    "task_id": &task_id,
-                    "step_id": &step.id,
-                    "skill": &step.skill,
-                    "risk": &step.risk,
-                }),
-            )?)?;
+            self.audit
+                .append(self.correlate_audit_event(AuditEvent::new(
+                    "task_step_start",
+                    None,
+                    format!("task step started: {}", step.skill),
+                    json!({
+                        "correlation_id": self.correlation_id(),
+                        "task_id": &task_id,
+                        "step_id": &step.id,
+                        "skill": &step.skill,
+                        "risk": &step.risk,
+                    }),
+                )?))?;
 
             let max_attempts = u32::from(options.max_retries) + 1;
             for attempt in 1..=max_attempts {
@@ -195,19 +199,21 @@ impl ExecutionSession {
                             report.steps[index].summary = redact_secrets(&format!(
                                 "attempt {attempt} failed: {summary}; retrying"
                             ));
-                            self.audit.append(AuditEvent::new(
-                                "task_step_retry",
-                                None,
-                                format!("task step retry: {}", step.skill),
-                                json!({
-                                    "task_id": &task_id,
-                                    "step_id": &step.id,
-                                    "skill": &step.skill,
-                                    "attempt": attempt,
-                                    "max_attempts": max_attempts,
-                                    "summary": &report.steps[index].summary,
-                                }),
-                            )?)?;
+                            self.audit
+                                .append(self.correlate_audit_event(AuditEvent::new(
+                                    "task_step_retry",
+                                    None,
+                                    format!("task step retry: {}", step.skill),
+                                    json!({
+                                        "correlation_id": self.correlation_id(),
+                                        "task_id": &task_id,
+                                        "step_id": &step.id,
+                                        "skill": &step.skill,
+                                        "attempt": attempt,
+                                        "max_attempts": max_attempts,
+                                        "summary": &report.steps[index].summary,
+                                    }),
+                                )?))?;
                             if options.retry_delay_ms > 0 {
                                 sleep(Duration::from_millis(options.retry_delay_ms)).await;
                             }
@@ -255,15 +261,17 @@ impl ExecutionSession {
     }
 
     fn audit_task_step_result(&self, task_id: &str, record: &StepExecutionRecord) -> Result<()> {
-        self.audit.append(AuditEvent::new(
-            "task_step_result",
-            None,
-            format!("task step {:?}: {}", record.status, record.skill),
-            json!({
-                "task_id": task_id,
-                "step": record,
-            }),
-        )?)
+        self.audit
+            .append(self.correlate_audit_event(AuditEvent::new(
+                "task_step_result",
+                None,
+                format!("task step {:?}: {}", record.status, record.skill),
+                json!({
+                    "correlation_id": self.correlation_id(),
+                    "task_id": task_id,
+                    "step": record,
+                }),
+            )?))
     }
 
     fn audit_guardrail_signal(
@@ -278,31 +286,35 @@ impl ExecutionSession {
         } else {
             "task_guardrail_warning"
         };
-        self.audit.append(AuditEvent::new(
-            kind,
-            None,
-            signal.message(),
-            json!({
-                "task_id": task_id,
-                "step_id": &step.id,
-                "skill": &step.skill,
-                "signal": signal,
-                "halted": halted,
-            }),
-        )?)
+        self.audit
+            .append(self.correlate_audit_event(AuditEvent::new(
+                kind,
+                None,
+                signal.message(),
+                json!({
+                    "correlation_id": self.correlation_id(),
+                    "task_id": task_id,
+                    "step_id": &step.id,
+                    "skill": &step.skill,
+                    "signal": signal,
+                    "halted": halted,
+                }),
+            )?))
     }
 
     fn audit_task_execution_end(&self, report: &TaskExecutionReport) -> Result<()> {
-        self.audit.append(AuditEvent::new(
-            "task_execution_end",
-            None,
-            format!("task execution ended: {:?}", report.state),
-            json!({
-                "task_id": &report.task_id,
-                "state": &report.state,
-                "steps": &report.steps,
-            }),
-        )?)
+        self.audit
+            .append(self.correlate_audit_event(AuditEvent::new(
+                "task_execution_end",
+                None,
+                format!("task execution ended: {:?}", report.state),
+                json!({
+                    "correlation_id": self.correlation_id(),
+                    "task_id": &report.task_id,
+                    "state": &report.state,
+                    "steps": &report.steps,
+                }),
+            )?))
     }
 }
 

@@ -7,10 +7,10 @@ mod rules;
 mod types;
 
 pub use engine::DefaultPolicyEngine;
-pub(crate) use path::{canonicalize_path_for_policy, resolve_under_workspace};
+pub(crate) use path::canonicalize_path_for_policy;
 pub use types::{
-    AgentPolicyOverlay, CapabilityToken, PolicyEngine, PolicyEvaluation, PolicyRequest,
-    SandboxProfile, ScopedPermission,
+    AgentPolicyOverlay, CapabilityToken, PolicyEngine, PolicyEvaluation, SandboxProfile,
+    ScopedPermission,
 };
 
 #[cfg(test)]

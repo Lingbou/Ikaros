@@ -10,7 +10,8 @@ Default path:
 IKAROS_HOME/persona.md
 ```
 
-The loader preserves markdown and parses common sections such as identity, traits, tone, relationship stance, boundaries, and behavior rules.
+The loader preserves markdown and parses common sections such as identity, traits, tone,
+relationship stance, boundaries, and behavior rules.
 
 ## Commands
 
@@ -24,7 +25,8 @@ ikaros persona reset
 
 ## Emotion
 
-Runtime emotion state is small and audit-backed. Current signals map task/chat outcomes to states such as neutral, focused, curious, concerned, confused, and satisfied.
+Runtime emotion state is small and audit-backed. Current signals map task/chat outcomes to states
+such as neutral, focused, curious, concerned, confused, and satisfied.
 
 Body renderers read the latest emotion from runtime/audit state. Persona text does not get to set policy or permissions.
 
@@ -43,4 +45,5 @@ automatic observations enter the memory candidate inbox first. Use
 
 ## Boundary
 
-Persona can influence tone, context priority, and prompt wording. It cannot grant access to tools, secrets, code changes, approvals, or provider credentials.
+Persona can influence tone, context priority, and prompt wording. It cannot grant access to tools,
+secrets, code changes, approvals, or provider credentials.

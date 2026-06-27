@@ -77,8 +77,10 @@ timeout_ms = 1000
 #[test]
 fn plugin_catalog_rejects_unsafe_command_program_path() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let bad_dir = temp.path().join("bad");
+    fs::create_dir_all(&bad_dir).expect("bad plugin dir");
     fs::write(
-        temp.path().join("bad.toml"),
+        bad_dir.join("plugin.toml"),
         r#"
 name = "bad"
 version = "0.1.0"
@@ -108,8 +110,10 @@ program = "../outside.sh"
 #[test]
 fn plugin_catalog_rejects_command_timeout_above_limit() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let bad_dir = temp.path().join("bad-timeout");
+    fs::create_dir_all(&bad_dir).expect("bad plugin dir");
     fs::write(
-        temp.path().join("bad-timeout.toml"),
+        bad_dir.join("plugin.toml"),
         format!(
             r#"
 name = "bad-timeout"
@@ -144,8 +148,10 @@ timeout_ms = {}
 #[test]
 fn plugin_catalog_rejects_command_args_with_control_characters() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let bad_dir = temp.path().join("bad-args");
+    fs::create_dir_all(&bad_dir).expect("bad plugin dir");
     fs::write(
-        temp.path().join("bad-args.toml"),
+        bad_dir.join("plugin.toml"),
         r#"
 name = "bad-args"
 version = "0.1.0"
@@ -297,6 +303,66 @@ risk = "safe_read"
 }
 
 #[test]
+fn plugin_management_quarantines_enabled_plugin_until_released() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let plugin_dir = temp.path().join("hello");
+    fs::create_dir_all(&plugin_dir).expect("plugin dir");
+    fs::write(
+        plugin_dir.join("plugin.toml"),
+        r#"
+name = "hello"
+version = "0.1.0"
+description = "Quarantine sample plugin."
+
+[[skills]]
+name = "run"
+description = "Declared skill."
+risk = "safe_read"
+"#,
+    )
+    .expect("manifest");
+
+    let enabled = set_plugin_enabled(temp.path(), "hello", true).expect("enable plugin");
+    assert!(enabled.enabled);
+    assert!(!enabled.quarantined);
+
+    let quarantined = set_plugin_quarantine(
+        temp.path(),
+        "hello",
+        true,
+        Some("review token=abc123 before use"),
+    )
+    .expect("quarantine plugin");
+    assert!(quarantined.enabled);
+    assert!(quarantined.quarantined);
+    assert_eq!(
+        quarantined.quarantine_reason.as_deref(),
+        Some("review token=[REDACTED_SECRET] before use")
+    );
+    let catalog = PluginCatalog::load(temp.path()).expect("catalog");
+    assert_eq!(catalog.enabled_plugin_count(), 0);
+    assert_eq!(catalog.disabled_plugin_count(), 1);
+    assert!(catalog.find_skill("hello.run").is_none());
+    assert!(catalog.find_declared_skill("hello.run").is_some());
+
+    let report = audit_plugins(temp.path()).expect("audit");
+    assert_eq!(report.quarantined_plugin_count, 1);
+    assert!(report.plugins[0].quarantined);
+    assert_eq!(
+        report.plugins[0].quarantine_reason.as_deref(),
+        Some("review token=[REDACTED_SECRET] before use")
+    );
+
+    let released =
+        set_plugin_quarantine(temp.path(), "hello", false, None).expect("release plugin");
+    assert!(released.enabled);
+    assert!(!released.quarantined);
+    let catalog = PluginCatalog::load(temp.path()).expect("catalog");
+    assert_eq!(catalog.enabled_plugin_count(), 1);
+    assert!(catalog.find_skill("hello.run").is_some());
+}
+
+#[test]
 fn plugin_validation_reports_command_metadata_without_executing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let plugin_dir = temp.path().join("hello");
@@ -365,8 +431,10 @@ program = "bin/missing.sh"
 "#,
     )
     .expect("manifest");
+    let bad_dir = temp.path().join("bad");
+    fs::create_dir_all(&bad_dir).expect("bad plugin dir");
     fs::write(
-        temp.path().join("bad.toml"),
+        bad_dir.join("plugin.toml"),
         r#"
 name = "bad"
 version = "0.1.0"
@@ -561,8 +629,10 @@ fn plugin_management_rejects_missing_plugin() {
 #[test]
 fn plugin_catalog_keeps_invalid_manifest_as_warning() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let plugin_dir = temp.path().join("bad");
+    fs::create_dir_all(&plugin_dir).expect("plugin dir");
     fs::write(
-        temp.path().join("bad.toml"),
+        plugin_dir.join("plugin.toml"),
         r#"
 name = "bad"
 version = "0.1.0"
@@ -580,8 +650,10 @@ description = "Missing declared skills."
 #[test]
 fn plugin_catalog_redacts_manifest_text_before_exposure() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let plugin_dir = temp.path().join("redacted");
+    fs::create_dir_all(&plugin_dir).expect("plugin dir");
     fs::write(
-        temp.path().join("redacted.toml"),
+        plugin_dir.join("plugin.toml"),
         r#"
 name = "redacted"
 version = "0.1.0"

@@ -45,28 +45,34 @@ pub(super) fn audit_agent_loop_task_report(
     report: &TaskExecutionReport,
 ) -> Result<()> {
     for step in &report.steps {
-        session.audit.append(AuditEvent::new(
-            "task_step_result",
+        session
+            .audit
+            .append(session.correlate_audit_event(AuditEvent::new(
+                "task_step_result",
+                None,
+                format!("task step {:?}: {}", step.status, step.skill),
+                json!({
+                    "correlation_id": session.correlation_id(),
+                    "task_id": &report.task_id,
+                    "mode": "agent_loop",
+                    "step": step,
+                }),
+            )?))?;
+    }
+    session
+        .audit
+        .append(session.correlate_audit_event(AuditEvent::new(
+            "task_execution_end",
             None,
-            format!("task step {:?}: {}", step.status, step.skill),
+            format!("task execution ended: {:?}", report.state),
             json!({
+                "correlation_id": session.correlation_id(),
                 "task_id": &report.task_id,
                 "mode": "agent_loop",
-                "step": step,
+                "state": &report.state,
+                "steps": &report.steps,
             }),
-        )?)?;
-    }
-    session.audit.append(AuditEvent::new(
-        "task_execution_end",
-        None,
-        format!("task execution ended: {:?}", report.state),
-        json!({
-            "task_id": &report.task_id,
-            "mode": "agent_loop",
-            "state": &report.state,
-            "steps": &report.steps,
-        }),
-    )?)?;
+        )?))?;
     Ok(())
 }
 

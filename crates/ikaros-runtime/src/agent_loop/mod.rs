@@ -9,7 +9,7 @@ mod stream;
 mod tool_parse;
 mod types;
 
-pub use prompt::agent_loop_tool_definitions;
+pub use prompt::{agent_loop_tool_definitions, agent_toolset_selection};
 pub use runtime::{
     AgentRuntime, HarnessAgentRuntime, RecordingAgentRuntime, run_agent_loop,
     run_agent_loop_with_events,

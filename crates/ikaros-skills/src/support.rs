@@ -38,3 +38,14 @@ pub(crate) fn input_string(input: &serde_json::Value, key: &str) -> Result<Strin
         .map(ToOwned::to_owned)
         .ok_or_else(|| IkarosError::Message(format!("{key} is required")))
 }
+
+pub(crate) fn input_object(
+    input: &serde_json::Value,
+    key: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    input
+        .get(key)
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .ok_or_else(|| IkarosError::Message(format!("{key} object is required")))
+}

@@ -81,19 +81,24 @@ impl SqliteRagIndex {
             "#,
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
-        ensure_sqlite_column(
+        require_sqlite_columns(
             conn,
             &self.path,
             "rag_chunks",
-            "embedding_provider",
-            "ALTER TABLE rag_chunks ADD COLUMN embedding_provider TEXT",
-        )?;
-        ensure_sqlite_column(
-            conn,
-            &self.path,
-            "rag_chunks",
-            "embedding_json",
-            "ALTER TABLE rag_chunks ADD COLUMN embedding_json TEXT",
+            &[
+                "id",
+                "document_id",
+                "scope",
+                "source_path",
+                "canonical_path",
+                "line_start",
+                "line_end",
+                "content",
+                "embedding_provider",
+                "embedding_json",
+                "indexed_at",
+                "modified_at",
+            ],
         )
     }
 
@@ -366,12 +371,11 @@ fn sqlite_error(path: &Path, source: rusqlite::Error) -> IkarosError {
     IkarosError::Message(format!("sqlite error at {}: {source}", path.display()))
 }
 
-fn ensure_sqlite_column(
+fn require_sqlite_columns(
     conn: &Connection,
     path: &Path,
     table: &str,
-    column: &str,
-    migration_sql: &str,
+    required: &[&str],
 ) -> Result<()> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
@@ -379,11 +383,17 @@ fn ensure_sqlite_column(
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|source| sqlite_error(path, source))?;
+    let mut existing = BTreeSet::new();
     for row in rows {
-        if row.map_err(|source| sqlite_error(path, source))? == column {
-            return Ok(());
+        existing.insert(row.map_err(|source| sqlite_error(path, source))?);
+    }
+    for column in required {
+        if !existing.contains(*column) {
+            return Err(IkarosError::Message(format!(
+                "RAG SQLite index at {} is missing required column {table}.{column}; delete the index and run rag reindex",
+                path.display()
+            )));
         }
     }
-    conn.execute_batch(migration_sql)
-        .map_err(|source| sqlite_error(path, source))
+    Ok(())
 }

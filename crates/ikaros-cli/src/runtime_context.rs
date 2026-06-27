@@ -11,7 +11,7 @@ pub(crate) fn session_and_registry(
     workspace: &Path,
     agent_override: Option<&str>,
 ) -> Result<(ExecutionSession, ikaros_harness::SkillRegistry)> {
-    Ok(ikaros_runtime::session_and_registry(
+    Ok(ikaros_host::session_and_registry(
         paths,
         workspace,
         agent_override,
@@ -22,7 +22,7 @@ pub(crate) fn resolve_agent(
     config: &IkarosConfig,
     agent_override: Option<&str>,
 ) -> Result<ResolvedAgentProfile> {
-    Ok(ikaros_runtime::resolve_agent(config, agent_override)?)
+    Ok(ikaros_host::resolve_agent(config, agent_override)?)
 }
 
 pub(crate) fn resolve_agent_instance(
@@ -31,7 +31,7 @@ pub(crate) fn resolve_agent_instance(
     workspace: &Path,
     state_root: &Path,
 ) -> Result<AgentInstance> {
-    Ok(ikaros_runtime::resolve_agent_instance(
+    Ok(ikaros_host::resolve_agent_instance(
         config,
         agent_override,
         workspace,
@@ -44,7 +44,7 @@ pub(crate) fn session_and_registry_for_instance(
     config: &IkarosConfig,
     agent: &AgentInstance,
 ) -> Result<(ExecutionSession, ikaros_harness::SkillRegistry)> {
-    Ok(ikaros_runtime::session_and_registry_for_instance(
+    Ok(ikaros_host::session_and_registry_for_instance(
         paths, config, agent,
     )?)
 }
@@ -54,7 +54,7 @@ pub(crate) fn skill_env(
     workspace: &Path,
     config: &IkarosConfig,
 ) -> Result<SkillEnvironment> {
-    Ok(ikaros_runtime::skill_environment(paths, workspace, config)?)
+    Ok(ikaros_host::skill_environment(paths, workspace, config)?)
 }
 
 pub(crate) fn print_skill_result(result: &ikaros_core::ToolResult) -> Result<()> {

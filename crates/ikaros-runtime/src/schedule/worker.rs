@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::{execution::run_scheduled_job, types::ScheduleWorkerTickReport};
+use super::{
+    execution::run_scheduled_job,
+    types::{ScheduleWorkerTickReport, ScheduledJobRunReport},
+};
 use ikaros_automation::{LocalScheduleStore, ScheduledJob};
-use ikaros_core::{IkarosError, IkarosPaths, Result};
+use ikaros_core::{IkarosError, IkarosPaths, Result, TaskState, redact_secrets};
 use std::path::Path;
 
 pub async fn run_schedule_worker_tick(
@@ -38,7 +41,22 @@ pub async fn run_due_jobs(
 ) -> Result<Vec<super::types::ScheduledJobRunReport>> {
     let mut reports = Vec::new();
     for job in jobs {
-        reports.push(run_scheduled_job(job, store, paths, workspace, agent_override).await?);
+        match run_scheduled_job(job.clone(), store, paths, workspace, agent_override).await {
+            Ok(report) => reports.push(report),
+            Err(error) => reports.push(failed_scheduled_job_report(job, error)),
+        }
     }
     Ok(reports)
+}
+
+fn failed_scheduled_job_report(job: ScheduledJob, error: IkarosError) -> ScheduledJobRunReport {
+    ScheduledJobRunReport {
+        job_id: job.id,
+        title: job.title,
+        task_state: TaskState::Failed,
+        summary: redact_secrets(&error.to_string()),
+        update: None,
+        deliveries: Vec::new(),
+        task_report: None,
+    }
 }

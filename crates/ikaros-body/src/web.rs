@@ -135,7 +135,13 @@ fn render_event_row(event: &BodyEvent) -> String {
         event
             .data
             .iter()
-            .map(|(key, value)| format!("{}={}", html_escape(key), html_escape(value)))
+            .map(|(key, value)| {
+                format!(
+                    "{}={}",
+                    html_escape(key),
+                    html_escape(&body_event_value_text(value))
+                )
+            })
             .collect::<Vec<_>>()
             .join("<br>")
     };
@@ -146,6 +152,13 @@ fn render_event_row(event: &BodyEvent) -> String {
         html_escape(&event.message),
         data,
     )
+}
+
+fn body_event_value_text(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn html_escape(input: &str) -> String {
@@ -184,7 +197,7 @@ mod tests {
             BodyKind::Web,
             BodyEventKind::Audit,
             "audit <script> token=abc123",
-            BTreeMap::from([("detail".into(), "api_key=abc123".into())]),
+            BTreeMap::from([("detail".into(), serde_json::json!("api_key=abc123"))]),
         );
         let frame = BodyFrame {
             body: BodyKind::Web,

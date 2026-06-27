@@ -37,20 +37,14 @@ fn parse_envelope_json(content: &str) -> Option<AgentLoopModelEnvelope> {
 fn agent_loop_envelope_from_json_value(value: serde_json::Value) -> Option<AgentLoopModelEnvelope> {
     match value {
         serde_json::Value::Object(object) => {
-            let final_answer = object
-                .get("final_answer")
-                .and_then(serde_json::Value::as_str)
-                .map(redact_secrets);
-            let tool_calls = object
-                .get("tool_calls")
-                .and_then(serde_json::Value::as_array)
-                .map(|calls| {
-                    calls
-                        .iter()
-                        .filter_map(agent_loop_tool_call_from_json)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            if !object
+                .keys()
+                .all(|key| matches!(key.as_str(), "final_answer" | "tool_calls"))
+            {
+                return None;
+            }
+            let final_answer = optional_canonical_non_empty_string(object.get("final_answer"))?;
+            let tool_calls = canonical_fallback_tool_calls(object.get("tool_calls"))?;
             if final_answer.is_none() && tool_calls.is_empty() {
                 return None;
             }
@@ -96,19 +90,50 @@ fn agent_loop_tool_call_from_model_tool_call(call: &ModelToolCall) -> AgentLoopT
 
 fn agent_loop_tool_call_from_json(value: &serde_json::Value) -> Option<AgentLoopToolCall> {
     let object = value.as_object()?;
-    let id = object
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .map(redact_secrets);
+    if !object
+        .keys()
+        .all(|key| matches!(key.as_str(), "id" | "name" | "input"))
+    {
+        return None;
+    }
+    let id = optional_canonical_non_empty_string(object.get("id"))?;
     let name = object
         .get("name")
         .and_then(serde_json::Value::as_str)
-        .map(redact_secrets)?;
-    let input = object
-        .get("input")
-        .map(|value| normalize_tool_input(value, value.as_str()))
-        .unwrap_or_else(empty_object);
+        .and_then(non_empty_string)?;
+    let input = canonical_fallback_tool_input(object.get("input"))?;
     Some(AgentLoopToolCall { id, name, input })
+}
+
+fn canonical_fallback_tool_calls(
+    value: Option<&serde_json::Value>,
+) -> Option<Vec<AgentLoopToolCall>> {
+    let Some(value) = value else {
+        return Some(Vec::new());
+    };
+    let calls = value.as_array()?;
+    calls
+        .iter()
+        .map(agent_loop_tool_call_from_json)
+        .collect::<Option<Vec<_>>>()
+}
+
+fn optional_canonical_non_empty_string(
+    value: Option<&serde_json::Value>,
+) -> Option<Option<String>> {
+    match value {
+        None => Some(None),
+        Some(serde_json::Value::String(value)) => non_empty_string(value).map(Some),
+        Some(_) => None,
+    }
+}
+
+fn canonical_fallback_tool_input(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let value = value?;
+    match value {
+        serde_json::Value::Object(_) => Some(redact_json(value.clone())),
+        _ => None,
+    }
 }
 
 fn normalize_tool_input(

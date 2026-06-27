@@ -56,15 +56,18 @@ pub async fn create_relationship_candidates_from_chat(
         }
     }
     if created > 0 {
-        session.audit.append(AuditEvent::new(
-            "chat_relationship_candidate_created",
-            None,
-            "relationship memory candidate created from chat",
-            json!({
-                "created": created,
-                "scope": redact_secrets(scope),
-            }),
-        )?)?;
+        session
+            .audit
+            .append(session.correlate_audit_event(AuditEvent::new(
+                "chat_relationship_candidate_created",
+                None,
+                "relationship memory candidate created from chat",
+                json!({
+                    "correlation_id": session.correlation_id(),
+                    "created": created,
+                    "scope": redact_secrets(scope),
+                }),
+            )?))?;
     }
     Ok(created)
 }

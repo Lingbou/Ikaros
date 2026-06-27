@@ -23,18 +23,6 @@ pub(super) fn discover_plugin_manifests(skills_dir: &Path) -> Result<Vec<PathBuf
             if nested.exists() {
                 manifests.push(nested);
             }
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "marketplace.toml")
-        {
-            continue;
-        } else if path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
-        {
-            manifests.push(path);
         }
     }
     manifests.sort();

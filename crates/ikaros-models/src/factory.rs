@@ -2,7 +2,9 @@
 
 use crate::{
     anthropic::AnthropicProvider,
-    governance::{GovernedModelProvider, ModelRuntimeLimits, ProviderRetryPolicy},
+    governance::{
+        FallbackModelProvider, GovernedModelProvider, ModelRuntimeLimits, ProviderRetryPolicy,
+    },
     http::ModelHttpClient,
     mock::MockModelProvider,
     ollama::OllamaProvider,
@@ -105,9 +107,35 @@ pub(crate) fn governed_model_provider_from_config(
     http: Option<Arc<dyn ModelHttpClient>>,
 ) -> Result<GovernedModelProvider> {
     Ok(GovernedModelProvider::new_with_retry_policy(
-        provider_from_config_with_http_client(config, provider_settings, http)?,
+        provider_chain_from_config_with_http_client(config, provider_settings, http)?,
         ModelUsageLedger::new(audit_dir),
         ModelRuntimeLimits::from(config),
         ProviderRetryPolicy::from(config),
     ))
+}
+
+fn provider_chain_from_config_with_http_client(
+    config: &ModelConfig,
+    provider_settings: &RemoteProviderConfig,
+    http: Option<Arc<dyn ModelHttpClient>>,
+) -> Result<Box<dyn ModelProvider>> {
+    if config.fallbacks.is_empty() {
+        return provider_from_config_with_http_client(config, provider_settings, http);
+    }
+    let mut providers = Vec::<Box<dyn ModelProvider>>::new();
+    providers.push(provider_from_config_with_http_client(
+        config,
+        provider_settings,
+        http.clone(),
+    )?);
+    for fallback in &config.fallbacks {
+        let fallback_model = fallback.model_config();
+        let fallback_provider = fallback_model.effective_provider_config(provider_settings);
+        providers.push(provider_from_config_with_http_client(
+            &fallback_model,
+            &fallback_provider,
+            http.clone(),
+        )?);
+    }
+    Ok(Box::new(FallbackModelProvider::new(providers)?))
 }

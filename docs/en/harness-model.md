@@ -1,19 +1,29 @@
 # Harness Model
 
-The harness is Ikaros's tool execution boundary. Runtime code, chat loops, agent loops, scheduled jobs, message drains, coding helpers, and plugin runs all pass through it before mutating local state or running processes.
+The harness is Ikaros's governed tool-call boundary. Runtime code, chat loops,
+agent loops, scheduled jobs, message drains, coding helpers, and plugin runs all
+pass through it before mutating local state or running processes.
 
 The harness should be treated like a small kernel around local effects: callers
 submit typed requests, the harness evaluates policy, records the decision, and
 then either executes through an environment backend or returns a denial/approval
-state. Code outside the harness should not open files, start processes, or send
-network requests on behalf of model-selected tools.
+state. The reusable tool contracts live in `ikaros-toolkit`; concrete execution
+environments live in `ikaros-sandbox`. Code outside the harness should not open
+files, start processes, or send network requests on behalf of model-selected
+tools.
 
 ## Main Types
 
-- `Skill` and `SkillRegistry`: named operations that can be executed.
-- `SkillDescriptor` and `SkillBundle`: separate executable tools from prompt skills and support `disable_model_invocation`.
-- `ExecutionSession`: workspace, policy, approvals, audit log, agent overlay, dry-run state, and `ExecutionEnv`.
-- `ExecutionEnv`: execution environment abstraction composed of `FileSystem`, `ProcessRunner`, and `NetworkEgress`.
+- `Skill` and `SkillRegistry`: named operations and prompt-skill documents from
+  `ikaros-toolkit`.
+- `ToolRegistry`: the executable-tool view derived from `SkillRegistry`; it excludes prompt-skill
+  documents from callable tool lookup and provider tool-schema generation.
+- `SkillDescriptor`, `PromptSkillDocument`, and `SkillBundle`: separate executable tools from prompt
+  skills, carry `toolset` metadata, and support `disable_model_invocation`.
+- `ExecutionSession`: workspace, policy, approvals, audit log, agent overlay,
+  dry-run state, and `ExecutionEnv`.
+- `ExecutionEnv`: shared environment interface from `ikaros-toolkit`, with local,
+  dry-run, Docker, workspace, and network implementations in `ikaros-sandbox`.
 - `PolicyRequest` and `PolicyEvaluation`: the input and result for a policy decision.
 - `ApprovalRequest` and `ApprovalLog`: persisted approval workflow.
 - `AuditEvent` and `AuditLog`: JSONL event stream for decisions and results.
@@ -47,7 +57,16 @@ instead of mutating global state.
 7. Deny results return without execution.
 8. The result is written to audit.
 
-Safe-read skills may pass redacted audit input while executing with the real local input. Chat uses this for local memory/RAG lookup so the audit log does not store full user prompts.
+Safe-read skills may pass redacted audit input while executing with the real local input. Chat uses
+this for local memory/RAG lookup so the audit log does not store full user prompts.
+
+The same boundary emits structured `tracing` events for policy decisions, tool
+start/completion/failure, approval decisions and approval replay, process
+execution, and governed network egress. Trace fields are metadata only:
+tool/approval/call ids, skill names, risk labels, decisions, command names,
+argument counts, byte counts, status codes, and redacted error text. Request
+inputs, process stdout/stderr, network headers, and network bodies are not
+written into tracing events.
 
 Coding has two harness paths. `code_workflow` is the controlled turn workflow:
 by default it is a safe-read plan/review path, but its policy risk upgrades to
@@ -89,6 +108,48 @@ remote, destructive, secret, and self-modification risk descriptors default to
 `sequential`. The model provider sees only the callable tool schema; scheduling
 metadata belongs to the runtime/harness boundary.
 
+Skill descriptors also carry `toolset`. Agent profiles choose the enabled
+toolsets. The direct model-visible surface is limited to enabled
+`core`, `workspace`, and `memory` tools, plus the bridge tools. `rag`, `coding`,
+`voice`, and `plugin` stay deferred even when enabled, so a model can discover
+and invoke them without every RAG/coding/voice/plugin schema being injected into
+every turn. The bridge respects the active agent profile's toolset selection: a
+deferred tool outside that selection is not searchable, describable, or callable
+through `tool_call`. Disclosure is scoped to the current `ExecutionSession`:
+`tool_search` requires a non-empty query and discloses only the returned
+deferred descriptors, `tool_describe` discloses the named descriptor, and
+`tool_call` rejects any deferred tool that has not been disclosed by one of
+those two paths in the same session. `tool_call`
+delegates to the target skill through `ExecutionSession`, so the target tool
+still gets its own policy decision, approval request, audit events, and
+`ExecutionEnv` execution. Audit logs therefore show the bridge call, a
+`deferred_tool_invocation` linkage event with target descriptor metadata, and
+the underlying deferred tool call/result.
+
+Prompt skills are intentionally different from executable tools. A prompt skill
+is registered as a `PromptSkillDocument` with instructions and descriptor
+metadata, but without an executable `Skill` implementation. It never enters the
+provider tool schema and `tool_call` always rejects it as non-executable. The
+only model-facing path is progressive disclosure: `tool_search` can return its
+descriptor metadata when the active toolset allows it, including provenance and
+the safe relative support-file list, and `tool_describe` can return the
+instruction document plus the safe support-file contents after applying the
+same secret redaction used for other model-visible payloads. `tool_search`
+never returns the instruction body or support-file contents. This keeps
+document-style guidance and support files out of the callable tool namespace
+while still letting a turn load them explicitly.
+Local prompt skill documents are discovered from
+`IKAROS_HOME/skills/<name>/SKILL.md`. The directory name becomes the skill name.
+The document may start with a small front matter block containing
+`description`, `toolset`, `provenance`, and `support_files`; the body is the
+instruction text. `support_files` may list relative files under the same skill
+directory. Parent-directory and absolute paths are ignored. Safe support files
+are not returned by `tool_search`, but `tool_describe` loads them on demand,
+redacts secret-like content, and includes a truncation flag when a file is too
+large for the prompt-skill payload.
+These documents are still prompt skills, not plugins: they are searchable and
+describable through the bridge, but never executable.
+
 ## Policy Decisions
 
 Policy returns one of three effective states:
@@ -107,7 +168,12 @@ workspace, skill, risk, input, and agent identity that were approved.
 
 ## ExecutionEnv
 
-`ExecutionEnv` narrows host operations into three interfaces:
+`ExecutionEnv` is the shared interface from `ikaros-toolkit`. `ikaros-sandbox`
+provides the local, dry-run, Docker, workspace-scoped, and governed-network
+implementations. The harness attaches one environment to each
+`ExecutionSession` and requires skills to use it.
+
+The interface narrows host operations into three capabilities:
 
 - `FileSystem`: read path metadata, read/write text and bytes, create directories, list directories.
 - `ProcessRunner`: run structured process requests.
@@ -119,6 +185,13 @@ by tests and future environment implementations; normal runtime sessions should
 not attach it directly unless they intentionally want to bypass workspace
 scoping.
 
+Normal runtime sessions receive their environment from `ikaros-host`.
+`ikaros-host` composes the configured sandbox backend, workspace scope, dry-run
+wrapper, Docker process backend, and governed network egress into the
+`ExecutionEnv` attached to the session. The harness owns policy decisions and
+the session boundary; host assembly owns config-driven wiring; sandbox owns the
+concrete filesystem/process/network adapters.
+
 `WorkspaceExecutionEnv` resolves relative paths against the session workspace.
 Filesystem reads, writes, byte reads/writes, directory listing/creation, file
 removal, and process working directories must stay under the workspace root. The
@@ -126,10 +199,12 @@ scope check uses both lexical normalization and canonical existing-path anchors,
 so `..` paths and symlink escapes cannot turn an approved workspace operation
 into an external host read or write. Skill policy still decides whether a read is
 allowed, but the env layer now enforces the workspace boundary for existing
-paths. Filesystem skills, shell commands, coding helpers, RAG maintenance,
-voice output, voice ASR audio reads, self-modify workspace reads/writes/checks,
-and command-backed plugins should use session/env instead of calling host APIs
-directly.
+paths. On Unix local file writes also open the final path with no-follow flags,
+so a symlink swap between the workspace scope check and the write is rejected
+instead of following the replaced path outside the workspace. Filesystem skills,
+shell commands, coding helpers, RAG maintenance, voice output, voice ASR audio
+reads, self-modify workspace reads/writes/checks, and command-backed plugins
+should use session/env instead of calling host APIs directly.
 
 `ProcessRequest` has two modes:
 
@@ -139,34 +214,71 @@ directly.
 Model-facing skills should prefer `program`. `shell` is reserved for internal
 adapters that already performed allowlist validation. The local backend captures
 stdout/stderr, supports optional stdin, supports a timeout, and can reject output
-that exceeds `max_output_bytes`. A timeout attempts to kill the child before
-returning `command timed out`.
+that exceeds `max_output_bytes`. Timeouts and output-cap failures terminate the
+spawned process group on Unix before returning the structured error.
+Process execution clears the ambient host environment before spawn, restores
+only a small platform baseline such as `PATH`/home/temp/system-root variables,
+and then applies explicit `ProcessRequest.env` entries. `ProcessRequest` debug
+output redacts sensitive environment variable names and secret-like values, so
+diagnostics can show which env keys were requested without leaking credentials.
+
+Command-backed plugins run with an explicit plugin cwd scope. Their manifest
+program must canonicalize under the plugin directory, shell execution is
+rejected for that scope, and the command cwd is the plugin root rather than the
+user workspace. Ordinary workspace commands still use the default workspace cwd
+scope.
 
 `NetworkEgress` is part of the interface. Runtime sessions compose the
 workspace-scoped filesystem/process backend with `GovernedNetworkEgress` and
 `HttpNetworkEgress`. The governed wrapper is deny-by-default, allows only exact
-parsed URL hosts from its allowlist, and redacts denied host summaries. Provider
-HTTP adapters receive an egress-backed transport in chat, task agent-loop, and
-provider-backed coding paths. Arbitrary plugin or shell code should not bypass
-the harness to make network requests; model-facing shell commands remain limited
-to structured test/check allowlists.
+parsed URL hosts from the allowlist built by `ikaros-host`, permits only `http`
+and `https` schemes, and redacts denied host summaries. The HTTP transport
+resolves the allowed host, rejects restricted resolved addresses, disables
+redirects, and pins the verified socket addresses into the request client so the
+transport does not perform a second independent DNS lookup for the same request.
+Provider HTTP adapters receive an egress-backed transport in chat, task agent-loop, and
+provider-backed coding paths. Provider-backed RAG embedding skills also use the
+session environment for OpenAI-compatible and Ollama embedding HTTP after the
+approval request is accepted. Arbitrary plugin or shell code should not bypass
+the harness to make network requests; model-facing shell commands remain
+limited to structured test/check allowlists. `NetworkEgressRequest` and
+`NetworkEgressResponse` preserve raw headers and bodies for transport parsing,
+but their diagnostic `Debug` output redacts secret-like URL, header, and body
+values before they can enter logs or error reports.
 
 `execution.sandbox.backend: dry-run` installs a dry-run backend for filesystem
 and process side-effect operations. It preserves workspace reads but skips
-writes and process execution with structured dry-run output. Network egress is
-controlled separately by `execution.network.enabled` and the governed allowlist;
-disable `execution.network.enabled` when a dry-run session must also avoid
-network effects. Docker and ssh isolation are kept as future backend
-implementations rather than being implied by policy metadata.
+writes and process execution with structured dry-run output. `docker` installs
+the first process-container backend: process requests are translated to
+`docker run --rm --network none`, the workspace is mounted at `/workspace`, and
+the configured `execution.sandbox.image` supplies tools such as Cargo, Git, npm,
+or pytest. Network egress is controlled separately by
+`execution.network.enabled` and the governed allowlist; disable
+`execution.network.enabled` when a dry-run session must also avoid network
+effects. Docker process execution is a useful local isolation layer, but it is
+not a complete seccomp, VM, or multi-tenant sandbox.
+
+The current sandbox surface also exposes a diagnostic isolation matrix and a
+local sandbox debug report. Available levels are `dry_run`, `workspace_only`,
+`network_restricted`, and the Docker-backed `container` first slice; raw no-op
+host execution is not exposed as a normal runtime backend. This report is a
+debug/UX contract for explaining cwd scope, env allowlisting, timeout/output
+caps, the process timeout strategy, file-write scope, and governed network
+egress. It is not a complete process namespace, seccomp, or VM boundary.
 
 ## Shell and Plugins
 
-- `shell_guarded` no longer executes arbitrary shell strings; it accepts only allowlisted test/check commands and runs them as program + args.
+- `shell_guarded` no longer executes arbitrary shell strings; it accepts only allowlisted test/check
+  commands and runs them as program + args.
 - `git_status` and `git_diff` are fixed structured commands.
 - `run_tests` reuses the same test/check allowlist.
-- Command-backed plugins do not execute through a shell; manifest `program` must be relative and must canonicalize under the plugin directory. The resolved program is executed with the session workspace as cwd, not the plugin installation directory.
+- Command-backed plugins do not execute through a shell; manifest `program` must be relative and
+  must canonicalize under the plugin directory. The resolved program is executed with the plugin
+  directory as cwd under an explicit plugin cwd scope, while policy/audit still come from the
+  session.
 - Plugin manifests reject abnormal timeouts, too many args, oversized args, and control characters.
-- Plugin runtime limits stdin, stdout/stderr, and timeout, then redacts output before audit/reporting.
+- Plugin runtime limits stdin, stdout/stderr, and timeout, then redacts output
+  before audit/reporting.
 
 Plugin command execution has two boundaries:
 
@@ -188,7 +300,9 @@ The task runner executes ordered skill steps. It handles:
 - guardrail warnings or halts
 - final task reports
 
-`task run --dry-run` uses the same path with dry-run enabled. `task run --agent-loop` lets the model choose harness skills, but dispatch still goes through `ExecutionSession`.
+`task run --dry-run` uses the same path with dry-run enabled.
+`task run --agent-loop` lets the model choose governed skills, but dispatch
+still goes through `ExecutionSession`.
 
 ## Audit Rules
 

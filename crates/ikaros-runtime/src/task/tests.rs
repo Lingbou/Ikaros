@@ -144,7 +144,9 @@ fn write_offline_mock_config(paths: &IkarosPaths) {
     std::fs::create_dir_all(&paths.home).expect("home");
     std::fs::write(
         &paths.config,
-        r#"model:
+        r#"schema_version: 1
+
+model:
   default:
     provider: mock
     runtime: harness-agent-loop
@@ -154,6 +156,15 @@ fn write_offline_mock_config(paths: &IkarosPaths) {
 rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
+
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
 "#,
     )
     .expect("mock config");

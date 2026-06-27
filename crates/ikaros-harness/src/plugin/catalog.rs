@@ -87,7 +87,7 @@ impl PluginCatalog {
     pub fn declared_skill_count(&self) -> usize {
         self.plugins
             .iter()
-            .filter(|plugin| plugin.marketplace.enabled)
+            .filter(|plugin| plugin_marketplace_entry_is_active(&plugin.marketplace))
             .map(|plugin| plugin.manifest.skills.len())
             .sum()
     }
@@ -95,14 +95,14 @@ impl PluginCatalog {
     pub fn enabled_plugin_count(&self) -> usize {
         self.plugins
             .iter()
-            .filter(|plugin| plugin.marketplace.enabled)
+            .filter(|plugin| plugin_marketplace_entry_is_active(&plugin.marketplace))
             .count()
     }
 
     pub fn disabled_plugin_count(&self) -> usize {
         self.plugins
             .iter()
-            .filter(|plugin| !plugin.marketplace.enabled)
+            .filter(|plugin| !plugin_marketplace_entry_is_active(&plugin.marketplace))
             .count()
     }
 
@@ -110,7 +110,7 @@ impl PluginCatalog {
         let mut names = self
             .plugins
             .iter()
-            .filter(|plugin| plugin.marketplace.enabled)
+            .filter(|plugin| plugin_marketplace_entry_is_active(&plugin.marketplace))
             .flat_map(|plugin| {
                 plugin
                     .manifest
@@ -140,7 +140,7 @@ impl PluginCatalog {
         enabled_only: bool,
     ) -> Option<(&LoadedPluginManifest, &PluginSkillManifest)> {
         self.plugins.iter().find_map(|plugin| {
-            if enabled_only && !plugin.marketplace.enabled {
+            if enabled_only && !plugin_marketplace_entry_is_active(&plugin.marketplace) {
                 return None;
             }
             plugin.manifest.skills.iter().find_map(|skill| {
@@ -153,4 +153,8 @@ impl PluginCatalog {
             })
         })
     }
+}
+
+pub(super) fn plugin_marketplace_entry_is_active(entry: &PluginMarketplaceEntry) -> bool {
+    entry.enabled && !entry.quarantined
 }

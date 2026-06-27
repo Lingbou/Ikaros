@@ -312,43 +312,24 @@ fn sparse_embedding_provider_normalizes_vectors() {
 }
 
 #[test]
-fn openai_compatible_embedding_body_redacts_input() {
-    let config = ikaros_core::RagConfig {
-        embedding_provider: "openai-compatible".into(),
-        embedding_model: "embedding-model".into(),
-        ..ikaros_core::RagConfig::default()
-    };
-    let body = super::openai_compatible::test_embedding_request_body(
-        &config,
-        "please embed sk-test-secret",
-    );
-    assert_eq!(body["model"], "embedding-model");
-    assert!(
-        !body["input"]
-            .as_str()
-            .expect("input")
-            .contains("sk-test-secret")
-    );
-    assert!(
-        body["input"]
-            .as_str()
-            .expect("input")
-            .contains("[REDACTED_SECRET]")
-    );
-}
-
-#[test]
-fn ollama_embedding_body_redacts_input() {
-    let config = ikaros_core::RagConfig {
-        embedding_provider: "ollama".into(),
-        embedding_model: "nomic-embed-text".into(),
-        ..ikaros_core::RagConfig::default()
-    };
-
-    let body = super::ollama::test_ollama_embedding_request_body(&config, "hello token=abc123");
-
-    assert_eq!(body["model"], "nomic-embed-text");
-    assert_eq!(body["input"], "hello token=[REDACTED_SECRET]");
+fn rag_core_rejects_remote_embedding_provider_without_execution_env() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = LocalRagStore::new(temp.path().join("rag"), "jsonl").expect("rag store");
+    for provider in ["openai-compatible", "ollama"] {
+        let err = store
+            .search_with_embedding_provider(
+                RagQuery {
+                    query: "remote probe".into(),
+                    top_k: 1,
+                    scope: None,
+                },
+                provider,
+            )
+            .expect_err("remote embedding providers must not be built inside ikaros-rag");
+        let err = err.to_string();
+        assert!(err.contains("ExecutionEnv"), "{provider}: {err}");
+        assert!(!err.contains("sk-test-secret"));
+    }
 }
 
 #[test]

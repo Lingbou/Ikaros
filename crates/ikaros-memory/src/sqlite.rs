@@ -2,6 +2,7 @@
 
 use crate::{
     MemoryKind, MemoryPerspective, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
+    MemoryUpdateReport,
     common::{filter_records, memory_kind_from_str, memory_kind_to_str},
 };
 use ikaros_core::{IkarosError, Result, contains_secret_like, now_rfc3339, reject_secret_like};
@@ -66,25 +67,29 @@ impl SqliteMemoryStore {
             "#,
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
-        add_column_if_missing(conn, &self.path, "memories", "source_ref_json", "TEXT")?;
-        add_column_if_missing(conn, &self.path, "memories", "perspective_json", "TEXT")?;
-        add_column_if_missing(
+        require_memory_columns(
             conn,
             &self.path,
-            "memories",
-            "active",
-            "INTEGER NOT NULL DEFAULT 1",
+            &[
+                "id",
+                "created_at",
+                "updated_at",
+                "kind",
+                "scope",
+                "perspective_json",
+                "content",
+                "tags_json",
+                "source",
+                "source_ref_json",
+                "confidence",
+                "sensitive",
+                "active",
+                "supersedes_json",
+                "superseded_by",
+                "valid_from",
+                "valid_until",
+            ],
         )?;
-        add_column_if_missing(
-            conn,
-            &self.path,
-            "memories",
-            "supersedes_json",
-            "TEXT NOT NULL DEFAULT '[]'",
-        )?;
-        add_column_if_missing(conn, &self.path, "memories", "superseded_by", "TEXT")?;
-        add_column_if_missing(conn, &self.path, "memories", "valid_from", "TEXT")?;
-        add_column_if_missing(conn, &self.path, "memories", "valid_until", "TEXT")?;
         Ok(())
     }
 
@@ -201,7 +206,7 @@ impl MemoryStore for SqliteMemoryStore {
         id: &str,
         content: Option<String>,
         tags: Option<Vec<String>>,
-    ) -> Result<Option<MemoryRecord>> {
+    ) -> Result<Option<MemoryUpdateReport>> {
         if let Some(content) = &content {
             reject_secret_like(content, "memory content")?;
         }
@@ -209,6 +214,7 @@ impl MemoryStore for SqliteMemoryStore {
         let Some(mut record) = current else {
             return Ok(None);
         };
+        let before = record.clone();
         if let Some(content) = content {
             record.content = content;
         }
@@ -228,7 +234,7 @@ impl MemoryStore for SqliteMemoryStore {
             params![&record.updated_at, &record.content, &tags_json, id],
         )
         .map_err(|source| sqlite_error(&self.path, source))?;
-        Ok(Some(record))
+        Ok(Some(MemoryUpdateReport::from_before_after(&before, record)))
     }
 
     fn supersede(
@@ -361,27 +367,22 @@ fn sqlite_error(path: &Path, source: rusqlite::Error) -> IkarosError {
     IkarosError::Message(format!("sqlite error at {}: {source}", path.display()))
 }
 
-fn add_column_if_missing(
-    conn: &Connection,
-    path: &Path,
-    table: &str,
-    column: &str,
-    column_type: &str,
-) -> Result<()> {
+fn require_memory_columns(conn: &Connection, path: &Path, required: &[&str]) -> Result<()> {
     let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
+        .prepare("PRAGMA table_info(memories)")
         .map_err(|source| sqlite_error(path, source))?;
     let existing = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|source| sqlite_error(path, source))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|source| sqlite_error(path, source))?;
-    if !existing.iter().any(|name| name == column) {
-        conn.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"),
-            [],
-        )
-        .map_err(|source| sqlite_error(path, source))?;
+    for column in required {
+        if !existing.iter().any(|name| name == column) {
+            return Err(IkarosError::Message(format!(
+                "memory SQLite store at {} is missing required column {column}; delete the store and rebuild memory",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }

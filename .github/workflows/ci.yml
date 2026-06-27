@@ -21,11 +21,20 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace --all-features
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+      - name: Dependency policy
+        run: cargo deny check
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+      - name: Security audit
+        run: cargo audit
       - name: Docs
         run: cargo doc --workspace --all-features --no-deps
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,4 +42,4 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets --all-features
       - name: Test
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --lib --bins

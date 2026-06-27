@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    AgentEvent, AgentEventSink, ApprovalRecord, SessionEntry, SessionId, SessionRecord,
-    SessionSource, SessionStore, TurnId,
+    AgentEvent, AgentEventSink, ApprovalRecord, SessionEntry, SessionId, SessionInputId,
+    SessionRecord, SessionSource, SessionStore, TurnId,
 };
 use ikaros_core::{IkarosError, Result};
 use std::{
@@ -25,12 +25,105 @@ pub fn noop_agent_event_sink() -> &'static dyn AgentEventSink {
     &NOOP_AGENT_EVENT_SINK
 }
 
+pub struct FanoutAgentEventSink<'a> {
+    sinks: Vec<&'a dyn AgentEventSink>,
+}
+
+impl<'a> FanoutAgentEventSink<'a> {
+    pub fn new(sinks: impl IntoIterator<Item = &'a dyn AgentEventSink>) -> Self {
+        Self {
+            sinks: sinks.into_iter().collect(),
+        }
+    }
+}
+
+impl AgentEventSink for FanoutAgentEventSink<'_> {
+    fn emit(&self, event: &AgentEvent) -> Result<()> {
+        for sink in &self.sinks {
+            sink.emit(event)?;
+        }
+        Ok(())
+    }
+
+    fn emit_approval(&self, approval: &ApprovalRecord) -> Result<()> {
+        for sink in &self.sinks {
+            sink.emit_approval(approval)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CollectingAgentEventSink {
+    events: Arc<Mutex<Vec<AgentEvent>>>,
+    approvals: Arc<Mutex<Vec<ApprovalRecord>>>,
+}
+
+impl CollectingAgentEventSink {
+    pub fn events(&self) -> Result<Vec<AgentEvent>> {
+        self.events
+            .lock()
+            .map(|events| events.clone())
+            .map_err(|_| {
+                IkarosError::Message("collecting agent event sink lock is poisoned".into())
+            })
+    }
+
+    pub fn approvals(&self) -> Result<Vec<ApprovalRecord>> {
+        self.approvals
+            .lock()
+            .map(|approvals| approvals.clone())
+            .map_err(|_| {
+                IkarosError::Message("collecting agent approval sink lock is poisoned".into())
+            })
+    }
+
+    pub fn clear(&self) -> Result<()> {
+        self.events
+            .lock()
+            .map_err(|_| {
+                IkarosError::Message("collecting agent event sink lock is poisoned".into())
+            })?
+            .clear();
+        self.approvals
+            .lock()
+            .map_err(|_| {
+                IkarosError::Message("collecting agent approval sink lock is poisoned".into())
+            })?
+            .clear();
+        Ok(())
+    }
+}
+
+impl AgentEventSink for CollectingAgentEventSink {
+    fn emit(&self, event: &AgentEvent) -> Result<()> {
+        self.events
+            .lock()
+            .map_err(|_| {
+                IkarosError::Message("collecting agent event sink lock is poisoned".into())
+            })?
+            .push(event.clone());
+        Ok(())
+    }
+
+    fn emit_approval(&self, approval: &ApprovalRecord) -> Result<()> {
+        self.approvals
+            .lock()
+            .map_err(|_| {
+                IkarosError::Message("collecting agent approval sink lock is poisoned".into())
+            })?
+            .push(approval.clone());
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct PersistingAgentEventSink {
     store: Arc<dyn SessionStore>,
     source: SessionSource,
     agent_id: Option<String>,
     workspace: Option<PathBuf>,
+    parent_session_id: Option<SessionId>,
 }
 
 impl PersistingAgentEventSink {
@@ -40,6 +133,7 @@ impl PersistingAgentEventSink {
             source: SessionSource::Runtime,
             agent_id: None,
             workspace: None,
+            parent_session_id: None,
         }
     }
 
@@ -57,6 +151,11 @@ impl PersistingAgentEventSink {
         self.workspace = Some(workspace.into());
         self
     }
+
+    pub fn with_parent_session_id(mut self, parent_session_id: impl Into<SessionId>) -> Self {
+        self.parent_session_id = Some(parent_session_id.into());
+        self
+    }
 }
 
 impl AgentEventSink for PersistingAgentEventSink {
@@ -65,6 +164,7 @@ impl AgentEventSink for PersistingAgentEventSink {
         session.started_at = event.at;
         session.agent_id = self.agent_id.clone();
         session.workspace = self.workspace.clone();
+        session.parent_session_id = self.parent_session_id.clone();
         self.store.upsert_session(&session)?;
         self.store.append_agent_event(event)
     }
@@ -74,6 +174,7 @@ impl AgentEventSink for PersistingAgentEventSink {
         session.started_at = approval.at;
         session.agent_id = self.agent_id.clone();
         session.workspace = self.workspace.clone();
+        session.parent_session_id = self.parent_session_id.clone();
         self.store.upsert_session(&session)?;
         self.store.append_approval(approval)
     }
@@ -84,7 +185,9 @@ pub struct PersistingAgentTurnSink {
     source: SessionSource,
     agent_id: Option<String>,
     workspace: Option<PathBuf>,
+    parent_session_id: Option<SessionId>,
     buffer: Mutex<Option<BufferedTurn>>,
+    input_id: Mutex<Option<SessionInputId>>,
 }
 
 struct BufferedTurn {
@@ -107,7 +210,9 @@ impl PersistingAgentTurnSink {
             source: SessionSource::Runtime,
             agent_id: None,
             workspace: None,
+            parent_session_id: None,
             buffer: Mutex::new(None),
+            input_id: Mutex::new(None),
         }
     }
 
@@ -126,15 +231,30 @@ impl PersistingAgentTurnSink {
         self
     }
 
+    pub fn with_parent_session_id(mut self, parent_session_id: impl Into<SessionId>) -> Self {
+        self.parent_session_id = Some(parent_session_id.into());
+        self
+    }
+
+    pub fn promote_input_on_commit(&self, input_id: impl Into<SessionInputId>) -> Result<()> {
+        *self.lock_input_id()? = Some(input_id.into());
+        Ok(())
+    }
+
     pub fn commit(&self) -> Result<()> {
         let Some(buffer) = self.lock_buffer()?.take() else {
             return Ok(());
         };
+        let input_id = self.lock_input_id()?.take();
         let mut session = SessionRecord::new(buffer.session_id.clone(), self.source.clone());
         session.started_at = buffer.started_at;
         session.agent_id = self.agent_id.clone();
         session.workspace = self.workspace.clone();
+        session.parent_session_id = self.parent_session_id.clone();
         let mut writer = self.store.begin_turn(&session, &buffer.turn_id)?;
+        if let Some(input_id) = input_id {
+            writer.promote_input(&input_id)?;
+        }
         for item in buffer.items {
             match item {
                 BufferedTurnItem::Entry(entry) => writer.append_entry(&entry)?,
@@ -147,6 +267,7 @@ impl PersistingAgentTurnSink {
 
     pub fn rollback(&self) -> Result<()> {
         let _ = self.lock_buffer()?.take();
+        let _ = self.lock_input_id()?.take();
         Ok(())
     }
 
@@ -182,6 +303,12 @@ impl PersistingAgentTurnSink {
         self.buffer
             .lock()
             .map_err(|_| IkarosError::Message("session turn buffer lock is poisoned".into()))
+    }
+
+    fn lock_input_id(&self) -> Result<MutexGuard<'_, Option<SessionInputId>>> {
+        self.input_id
+            .lock()
+            .map_err(|_| IkarosError::Message("session turn input lock is poisoned".into()))
     }
 
     fn ensure_buffer(
@@ -230,5 +357,46 @@ impl AgentEventSink for PersistingAgentTurnSink {
 
     fn emit_approval(&self, approval: &ApprovalRecord) -> Result<()> {
         self.append_approval(approval)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AgentEventKind, AgentEventSource, ApprovalStatus};
+    use serde_json::json;
+
+    #[test]
+    fn fanout_agent_event_sink_emits_events_and_approvals_to_all_sinks() {
+        let first = CollectingAgentEventSink::default();
+        let second = CollectingAgentEventSink::default();
+        let fanout = FanoutAgentEventSink::new([&first as &dyn AgentEventSink, &second]);
+        let session_id = SessionId::from("fanout-session");
+        let turn_id = TurnId::from("fanout-turn");
+        let event = AgentEvent::new(
+            session_id.clone(),
+            turn_id.clone(),
+            None,
+            AgentEventSource::Runtime,
+            AgentEventKind::TurnStart,
+            json!({"phase": "test"}),
+        );
+        let approval = ApprovalRecord {
+            approval_id: "approval-1".into(),
+            session_id,
+            turn_id: Some(turn_id),
+            at: event.at,
+            status: ApprovalStatus::Requested,
+            request: json!({"tool": "fs_write_guarded"}),
+            decision: None,
+        };
+
+        fanout.emit(&event).expect("emit event");
+        fanout.emit_approval(&approval).expect("emit approval");
+
+        for sink in [&first, &second] {
+            assert_eq!(sink.events().expect("events"), vec![event.clone()]);
+            assert_eq!(sink.approvals().expect("approvals"), vec![approval.clone()]);
+        }
     }
 }

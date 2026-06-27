@@ -6,12 +6,10 @@ use super::super::{
     types::{RuntimeTaskExecution, TaskRunOptions},
 };
 use super::agent_loop::{AgentLoopTaskInput, agent_loop_task_plan, execute_agent_loop_task};
-use crate::{
-    emotion::record_emotion_signal,
-    environment::{recent_policy_decisions, runtime_harness},
-};
+use crate::emotion::record_emotion_signal;
 use ikaros_core::{IkarosPaths, Result, Task};
 use ikaros_harness::{CancellationToken, ExecutionOptions};
+use ikaros_host::{recent_policy_decisions, runtime_harness};
 use ikaros_soul::RuntimeSignal;
 use serde_json::json;
 use std::path::Path;
@@ -69,6 +67,7 @@ pub async fn execute_task_text_with_options(
             task_id: &task.id,
             task_text: &task_text,
             config: &harness.config,
+            agent_instance: &harness.agent_instance,
             agent: &harness.agent,
             session: &session,
             registry: &harness.registry,

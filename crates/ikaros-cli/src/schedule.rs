@@ -2,7 +2,10 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use ikaros_automation::{LocalScheduleStore, ScheduleDeliveryTarget, ScheduledJob};
+use ikaros_automation::{
+    LocalScheduleStore, ScheduleDeliveryTarget, ScheduleJobOptions, ScheduleRetryPolicy,
+    ScheduledJob,
+};
 use ikaros_core::IkarosPaths;
 use ikaros_runtime::{run_due_jobs, run_schedule_worker_tick};
 use std::{path::Path, time::Duration};
@@ -48,6 +51,14 @@ pub(crate) struct ScheduleAdd {
         help = "Delivery target: local-file or gateway-outbox; repeat to use multiple targets"
     )]
     delivery: Vec<String>,
+    #[arg(long = "retry-max-attempts", default_value_t = 1)]
+    retry_max_attempts: u32,
+    #[arg(long = "retry-backoff-seconds", default_value_t = 60)]
+    retry_backoff_seconds: u64,
+    #[arg(long = "grace-period-seconds")]
+    grace_period_seconds: Option<u64>,
+    #[arg(long)]
+    timezone: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -74,12 +85,20 @@ pub(crate) async fn schedule_command(
                 .profile
                 .or_else(|| agent_override.map(ToOwned::to_owned));
             let deliveries = parse_delivery_targets(args.delivery)?;
-            let job = store.add_with_deliveries(
+            let job = store.add_with_options(
                 args.task,
                 args.at,
-                args.every_seconds,
-                agent,
-                deliveries,
+                ScheduleJobOptions {
+                    interval_seconds: args.every_seconds,
+                    agent,
+                    deliveries,
+                    retry: ScheduleRetryPolicy {
+                        max_attempts: args.retry_max_attempts,
+                        backoff_seconds: args.retry_backoff_seconds,
+                    },
+                    grace_period_seconds: args.grace_period_seconds,
+                    timezone: args.timezone,
+                },
             )?;
             print_job("scheduled", &job)?;
         }

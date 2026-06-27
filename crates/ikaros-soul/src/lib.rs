@@ -6,6 +6,6 @@ mod model;
 
 pub use loader::{PersonaLoader, load_or_default};
 pub use model::{
-    BehaviorRule, EmotionState, Identity, PersonaProfile, PersonalityTrait, RelationshipMemory,
-    RelationshipModel, RuntimeSignal, ToneConfig,
+    BehaviorRule, EmotionState, Identity, PersonaDocument, PersonaProfile, PersonalityTrait,
+    RelationshipMemory, RelationshipModel, RuntimeSignal, ToneConfig,
 };

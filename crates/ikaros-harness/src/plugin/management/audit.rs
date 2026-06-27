@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::super::catalog::PluginCatalog;
+use super::super::catalog::{PluginCatalog, plugin_marketplace_entry_is_active};
 use super::types::{PluginAuditMissingCommand, PluginAuditPlugin, PluginAuditReport};
 use ikaros_core::Result;
 use std::path::Path;
@@ -37,7 +37,8 @@ pub fn audit_plugins(skills_dir: impl AsRef<Path>) -> Result<PluginAuditReport> 
         }
 
         let plugin_skill_count = plugin.manifest.skills.len();
-        let plugin_enabled_skill_count = if plugin.marketplace.enabled {
+        let plugin_enabled_skill_count = if plugin_marketplace_entry_is_active(&plugin.marketplace)
+        {
             plugin_skill_count
         } else {
             0
@@ -51,6 +52,8 @@ pub fn audit_plugins(skills_dir: impl AsRef<Path>) -> Result<PluginAuditReport> 
             name: plugin.manifest.name.clone(),
             version: plugin.manifest.version.clone(),
             enabled: plugin.marketplace.enabled,
+            quarantined: plugin.marketplace.quarantined,
+            quarantine_reason: plugin.marketplace.quarantine_reason.clone(),
             priority: plugin.marketplace.priority,
             source: plugin.marketplace.source.clone(),
             marketplace_path: plugin.marketplace.path.clone(),
@@ -67,6 +70,11 @@ pub fn audit_plugins(skills_dir: impl AsRef<Path>) -> Result<PluginAuditReport> 
         plugin_count: catalog.plugin_count(),
         enabled_plugin_count: catalog.enabled_plugin_count(),
         disabled_plugin_count: catalog.disabled_plugin_count(),
+        quarantined_plugin_count: catalog
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.marketplace.quarantined)
+            .count(),
         skill_count,
         enabled_skill_count,
         command_skill_count,

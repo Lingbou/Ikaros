@@ -44,18 +44,9 @@ fn push_redacted_token(output: &mut String, token: &str) {
     if token.is_empty() {
         return;
     }
-    let lower = token.to_ascii_lowercase();
-    let is_assignment_secret = [
-        "api_key",
-        "apikey",
-        "access_token",
-        "auth_token",
-        "token",
-        "password",
-        "secret",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle) && token.contains('='));
+    let is_assignment_secret = token
+        .split_once('=')
+        .is_some_and(|(key, _)| is_secret_assignment_key(key));
     if token.contains("sk-") {
         output.push_str("[REDACTED_SECRET]");
     } else if is_assignment_secret {
@@ -64,6 +55,24 @@ fn push_redacted_token(output: &mut String, token: &str) {
     } else {
         output.push_str(token);
     }
+}
+
+fn is_secret_assignment_key(key: &str) -> bool {
+    let normalized: String = key
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    matches!(
+        normalized.as_str(),
+        "apikey" | "accesstoken" | "authtoken" | "token" | "password" | "secret" | "privatekey"
+    ) || normalized.ends_with("apikey")
+        || normalized.ends_with("accesstoken")
+        || normalized.ends_with("authtoken")
+        || normalized.ends_with("token")
+        || normalized.ends_with("password")
+        || normalized.ends_with("secret")
+        || normalized.ends_with("privatekey")
 }
 
 pub fn redact_json(value: serde_json::Value) -> serde_json::Value {

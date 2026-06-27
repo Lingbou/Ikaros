@@ -194,6 +194,7 @@ fn redact_marketplace_entry(mut entry: PluginMarketplaceEntry) -> PluginMarketpl
     entry.repository = entry.repository.as_deref().map(redact_secrets);
     entry.homepage = entry.homepage.as_deref().map(redact_secrets);
     entry.license = entry.license.as_deref().map(redact_secrets);
+    entry.quarantine_reason = entry.quarantine_reason.as_deref().map(redact_secrets);
     entry.tags = entry
         .tags
         .into_iter()

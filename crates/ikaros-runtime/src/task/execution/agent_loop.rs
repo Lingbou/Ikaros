@@ -4,14 +4,15 @@ use super::super::types::{RuntimeTaskPlan, TaskRunOptions};
 use super::reporting::{audit_agent_loop_task_report, task_execution_report_from_agent_loop};
 use crate::{
     AgentHarness, AgentHarnessConfig, AgentLoopOptions, AgentLoopReport, EgressModelHttpClient,
-    HarnessAgentRuntime, session::runtime_session_target,
+    HarnessAgentRuntime, agent_toolset_selection, session::runtime_session_target,
 };
 use ikaros_core::{
-    IkarosConfig, IkarosPaths, Plan, PlanStep, ResolvedAgentProfile, Result, RiskLevel,
-    redact_secrets,
+    AgentInstance, IkarosConfig, IkarosPaths, Plan, PlanStep, ResolvedAgentProfile, Result,
+    RiskLevel, redact_secrets,
 };
 use ikaros_harness::{
-    AuditEvent, ExecutionSession, GuardrailConfig, SkillRegistry, TaskExecutionReport,
+    AuditEvent, ExecutionSession, GuardrailConfig, SkillRegistry, TaskExecutionReport, Toolset,
+    ToolsetSelection,
 };
 use ikaros_models::{ModelRequestOptions, governed_provider_from_config_with_http_client};
 use ikaros_session::{PersistingAgentTurnSink, SessionId, SessionSource, TurnId};
@@ -38,6 +39,7 @@ pub(super) struct AgentLoopTaskInput<'a> {
     pub task_id: &'a str,
     pub task_text: &'a str,
     pub config: &'a IkarosConfig,
+    pub agent_instance: &'a AgentInstance,
     pub agent: &'a ResolvedAgentProfile,
     pub session: &'a ExecutionSession,
     pub registry: &'a SkillRegistry,
@@ -47,27 +49,43 @@ pub(super) struct AgentLoopTaskInput<'a> {
 pub(super) async fn execute_agent_loop_task(
     input: AgentLoopTaskInput<'_>,
 ) -> Result<(TaskExecutionReport, Option<AgentLoopReport>)> {
-    let persona = load_or_default(&input.paths.persona)?;
-    let provider = governed_provider_from_config_with_http_client(
+    let persona = load_or_default(&input.paths.persona_dir)?;
+    let model_config = input
+        .agent_instance
+        .model_config(&input.config.model.default);
+    let model_provider = input.agent_instance.effective_model_provider_config(
         &input.config.model.default,
         &input.config.providers.model,
+    );
+    let provider = governed_provider_from_config_with_http_client(
+        model_config,
+        &model_provider,
         &input.paths.audit_dir,
         Some(Arc::new(EgressModelHttpClient::new(
             input.session.env.clone(),
         ))),
     )?;
-    input.session.audit.append(AuditEvent::new(
-        "task_execution_start",
-        None,
-        format!("task agent loop started: {}", input.task_id),
-        json!({
-            "task_id": input.task_id,
-            "mode": "agent_loop",
-            "dry_run": input.options.dry_run,
-            "max_iterations": input.options.loop_max_iterations.max(1),
-        }),
-    )?)?;
+    input
+        .session
+        .audit
+        .append(input.session.correlate_audit_event(AuditEvent::new(
+            "task_execution_start",
+            None,
+            format!("task agent loop started: {}", input.task_id),
+            json!({
+                "correlation_id": input.session.correlation_id(),
+                "task_id": input.task_id,
+                "mode": "agent_loop",
+                "dry_run": input.options.dry_run,
+                "max_iterations": input.options.loop_max_iterations.max(1),
+            }),
+        )?))?;
     let runtime = HarnessAgentRuntime;
+    let toolsets = if input.options.safe_tools {
+        ToolsetSelection::new([Toolset::Core])
+    } else {
+        agent_toolset_selection(input.agent)?
+    };
     let target = runtime_session_target(
         input.paths,
         &input.session.sandbox.workspace_root,
@@ -91,6 +109,11 @@ pub(super) async fn execute_agent_loop_task(
         .with_source(session_source)
         .with_agent_id(target.agent_id.clone())
         .with_workspace(target.workspace.clone());
+    let event_sink = if let Some(parent_session_id) = &input.options.parent_session_id {
+        event_sink.with_parent_session_id(parent_session_id.as_str())
+    } else {
+        event_sink
+    };
     let mut harness = AgentHarness::new(
         AgentHarnessConfig {
             session_id: session_id.clone(),
@@ -105,7 +128,9 @@ pub(super) async fn execute_agent_loop_task(
                 max_iterations: input.options.loop_max_iterations.max(1),
                 request_options: ModelRequestOptions::default(),
                 stream: false,
+                system_prompt_messages: Vec::new(),
                 guardrails: GuardrailConfig::default(),
+                toolsets,
                 cancellation: Default::default(),
                 hooks: None,
             },

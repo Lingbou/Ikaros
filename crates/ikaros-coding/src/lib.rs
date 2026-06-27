@@ -32,9 +32,9 @@ pub use review::{
     CodeReviewAssistant, DiffSummarizer, DiffSummary, ReviewFinding, ReviewReport, ReviewSeverity,
 };
 pub use runtime::{
-    CodingLoopReport, CodingLoopStatus, CodingRuntime, CodingTurnDiffReport, CodingTurnEvent,
-    CodingTurnEventKind, CodingTurnInput, CodingTurnReport, DeterministicCodingRuntime,
-    MockModelCodingInput, MockModelCodingRuntime, MockModelCodingTurn,
+    CodingLoopReport, CodingLoopStatus, CodingTurnDiffReport, CodingTurnEvent, CodingTurnEventKind,
+    CodingTurnInput, CodingTurnReport, DeterministicCodingRuntime, MockModelCodingInput,
+    MockModelCodingRuntime, MockModelCodingTurn,
 };
 pub use self_modify::{
     SelfModifyApplyReport, SelfModifyChangeKind, SelfModifyCheckProfile, SelfModifyCheckReport,

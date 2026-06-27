@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_core::RiskLevel;
-use ikaros_harness::{CancellationToken, GuardrailConfig, ToolExecutionMode};
+use ikaros_harness::{CancellationToken, GuardrailConfig, ToolExecutionMode, ToolsetSelection};
 use ikaros_models::{ModelRequestOptions, ModelResponse, ModelStreamEvent, TokenUsage};
 pub use ikaros_session::{
     AgentEvent, AgentEventId, AgentEventKind, AgentEventSink, AgentEventSource, AgentSessionId,
@@ -27,7 +27,11 @@ pub struct AgentLoopOptions {
     pub max_iterations: u32,
     pub request_options: ModelRequestOptions,
     pub stream: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_prompt_messages: Vec<String>,
     pub guardrails: GuardrailConfig,
+    #[serde(default)]
+    pub toolsets: ToolsetSelection,
     #[serde(skip)]
     pub cancellation: CancellationToken,
     #[serde(skip)]
@@ -40,7 +44,9 @@ impl Default for AgentLoopOptions {
             max_iterations: 4,
             request_options: ModelRequestOptions::default(),
             stream: false,
+            system_prompt_messages: Vec::new(),
             guardrails: GuardrailConfig::default(),
+            toolsets: ToolsetSelection::default(),
             cancellation: CancellationToken::new(),
             hooks: None,
         }
@@ -63,7 +69,9 @@ impl PartialEq for AgentLoopOptions {
         self.max_iterations == other.max_iterations
             && self.request_options == other.request_options
             && self.stream == other.stream
+            && self.system_prompt_messages == other.system_prompt_messages
             && self.guardrails == other.guardrails
+            && self.toolsets == other.toolsets
             && self.cancellation == other.cancellation
     }
 }
@@ -192,6 +200,11 @@ pub struct AgentLoopToolResult {
     pub ok: bool,
     pub summary: String,
     pub output: serde_json::Value,
+    /// When true, the tool hit a transient / recoverable error
+    /// (e.g. timeout, connection reset) and the harness may enqueue
+    /// a ToolResult continuation to retry without a full model turn.
+    #[serde(default)]
+    pub recoverable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -220,6 +233,7 @@ pub(super) struct AgentLoopModelTurn {
     pub(super) streamed: bool,
     pub(super) stream_chunks: Vec<String>,
     pub(super) stream_events: Vec<ModelStreamEvent>,
+    pub(super) stream_events_already_emitted: bool,
 }
 
 pub(super) struct AgentLoopFinish {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use ikaros_core::{PolicyDecision, TaskState, redact_secrets};
+use ikaros_core::{PolicyDecision, TaskState, redact_json, redact_secrets};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -40,23 +40,26 @@ pub struct BodyEvent {
     pub body: BodyKind,
     pub kind: BodyEventKind,
     pub message: String,
-    pub data: BTreeMap<String, String>,
+    pub data: BTreeMap<String, serde_json::Value>,
 }
 
 impl BodyEvent {
-    pub fn new(
+    pub fn new<V>(
         body: BodyKind,
         kind: BodyEventKind,
         message: impl Into<String>,
-        data: BTreeMap<String, String>,
-    ) -> Self {
+        data: BTreeMap<String, V>,
+    ) -> Self
+    where
+        V: Into<serde_json::Value>,
+    {
         Self {
             body,
             kind,
             message: redact_secrets(&message.into()),
             data: data
                 .into_iter()
-                .map(|(key, value)| (key, redact_secrets(&value)))
+                .map(|(key, value)| (key, redact_json(value.into())))
                 .collect(),
         }
     }
@@ -146,12 +149,38 @@ mod tests {
             BodyKind::Cli,
             BodyEventKind::Message,
             "received sk-not-real",
-            BTreeMap::from([("token".into(), "api_key=abc".into())]),
+            BTreeMap::from([("token".into(), serde_json::json!("api_key=abc"))]),
         );
         let json = serde_json::to_string(&event).expect("json");
         assert!(!json.contains("sk-not-real"));
         assert!(!json.contains("abc"));
         assert!(json.contains("[REDACTED_SECRET]"));
+    }
+
+    #[test]
+    fn body_events_preserve_typed_json_data_and_redact_nested_secrets() {
+        let event = BodyEvent::new(
+            BodyKind::Web,
+            BodyEventKind::Task,
+            "typed data",
+            BTreeMap::from([
+                ("attempt".into(), serde_json::json!(2)),
+                ("ok".into(), serde_json::json!(false)),
+                (
+                    "payload".into(),
+                    serde_json::json!({
+                        "path": "workspace/src/main.rs",
+                        "token": "api_key=abc123"
+                    }),
+                ),
+            ]),
+        );
+        let json = serde_json::to_value(&event).expect("json");
+
+        assert_eq!(json["data"]["attempt"], 2);
+        assert_eq!(json["data"]["ok"], false);
+        assert_eq!(json["data"]["payload"]["path"], "workspace/src/main.rs");
+        assert_eq!(json["data"]["payload"]["token"], "[REDACTED_SECRET]");
     }
 
     #[test]

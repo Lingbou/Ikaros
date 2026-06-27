@@ -7,7 +7,7 @@ Body 层是展示边界。它渲染 runtime 状态，但不执行工具。
 `ikaros-body` 定义：
 
 - `BodyStatus`：当前 persona、emotion、task state、context count、policy decision 和路径。
-- `BodyEvent`：脱敏事件项。
+- `BodyEvent`：脱敏事件项，`data` 使用 typed JSON value；runtime 把 audit evidence 映射进 body frame 时会保留结构化 payload。
 - `BodyFrame`：一个 status snapshot 加 recent event。
 - CLI 和 web dashboard 输出的 render adapter。
 
@@ -22,7 +22,8 @@ ikaros body dashboard --refresh-seconds 5 --snapshot-output previews/frame.json
 ikaros body serve --port 8001
 ```
 
-Dashboard 默认把本地 HTML 写到 `IKAROS_HOME` 下。Server 默认绑定 `127.0.0.1`，只提供只读 frame 数据。
+Dashboard 默认把本地 HTML 写到 `IKAROS_HOME` 下。Server 默认绑定 `127.0.0.1`，只提供只读 frame 数据。Renderer 可以为了展示把
+typed event data 展平成文本，但 `BodyFrame` JSON 会在脱敏后继续保留 number、boolean、array 和 object。
 
 ## 规则
 

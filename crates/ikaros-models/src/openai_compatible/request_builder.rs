@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{
-    profile::{OpenAiCompatProfile, is_moonshot_model},
-    schema_sanitizer::sanitize_moonshot_tool_definitions,
+    profile::{ProviderProfile, TemperaturePolicy},
     tools::{openai_messages, openai_tools},
 };
 use crate::{
@@ -21,7 +20,7 @@ pub(super) struct PreparedChatCompletionRequest {
 pub(super) fn build_chat_completion_request(
     model: &str,
     base_url: &str,
-    profile: OpenAiCompatProfile,
+    profile: &ProviderProfile,
     default_options: &ModelRequestOptions,
     request: ModelRequest,
     stream: bool,
@@ -38,13 +37,12 @@ pub(super) fn build_chat_completion_request(
     profile.prepare_messages(&mut messages);
     body.insert("messages".into(), messages);
 
-    let profile_default_max = profile.default_max_tokens(model);
     insert_u32(
         &mut body,
         "max_tokens",
-        options.max_tokens.or(profile_default_max),
+        options.max_tokens.or(profile.default_max_tokens),
     );
-    if profile.omits_temperature() {
+    if profile.temperature_policy == TemperaturePolicy::Omit {
         options.temperature = None;
     }
     insert_f32(&mut body, "temperature", options.temperature)?;
@@ -62,11 +60,7 @@ pub(super) fn build_chat_completion_request(
         );
     }
 
-    let tools = if profile == OpenAiCompatProfile::MoonshotKimi || is_moonshot_model(model) {
-        sanitize_moonshot_tool_definitions(request.tools)
-    } else {
-        request.tools
-    };
+    let tools = profile.prepare_tools(request.tools);
     if let Some(tools) = openai_tools(tools) {
         body.insert(
             "tools".into(),
@@ -88,7 +82,7 @@ pub(super) fn build_chat_completion_request(
 
     Ok(PreparedChatCompletionRequest {
         body: Value::Object(body),
-        profile_id: profile.id(),
+        profile_id: profile.id,
     })
 }
 

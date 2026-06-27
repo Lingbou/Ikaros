@@ -135,11 +135,74 @@ async fn run_schedule_worker_tick_can_deliver_to_gateway_outbox() {
     assert!(outbox.contains(&job.id));
 }
 
+#[tokio::test]
+async fn run_schedule_worker_tick_records_session_when_preflight_config_is_missing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let paths = IkarosPaths::from_home(home);
+    let store = LocalScheduleStore::new(&paths.automation_dir);
+    let job = store
+        .add(
+            "summarize schedule without config",
+            "now",
+            None,
+            Some("build".into()),
+        )
+        .expect("add job");
+
+    let tick = run_schedule_worker_tick(&store, 10, &paths, &workspace, None)
+        .await
+        .expect("tick should record failed run instead of aborting");
+
+    assert_eq!(tick.ran, 1);
+    assert_eq!(tick.reports[0].task_state, TaskState::Failed);
+    assert!(tick.reports[0].summary.contains("config file not found"));
+    let stored = store
+        .list()
+        .expect("list")
+        .into_iter()
+        .find(|candidate| candidate.id == job.id)
+        .expect("stored job");
+    assert_eq!(stored.last_status.as_deref(), Some("Failed"));
+
+    let session_store = SqliteSessionStore::new(paths.home.join("agents").join("build"));
+    let session_id = crate::session::schedule_session_id(&job.id);
+    let replay = session_store
+        .replay_session(&session_id)
+        .expect("replay")
+        .expect("schedule failure session");
+    assert!(matches!(
+        replay.session.source,
+        SessionSource::Schedule { .. }
+    ));
+    assert_eq!(
+        replay.entries[0].visible_text.as_deref(),
+        Some("summarize schedule without config")
+    );
+    assert_eq!(replay.entries[1].payload["status"], "failed");
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::Error))
+    );
+    assert!(
+        replay
+            .agent_events
+            .iter()
+            .any(|event| matches!(event.kind, AgentEventKind::TurnEnd))
+    );
+}
+
 fn write_offline_mock_config(paths: &IkarosPaths) {
     std::fs::create_dir_all(&paths.home).expect("home");
     std::fs::write(
         &paths.config,
-        r#"model:
+        r#"schema_version: 1
+
+model:
   default:
     provider: mock
     runtime: harness-agent-loop
@@ -149,6 +212,15 @@ fn write_offline_mock_config(paths: &IkarosPaths) {
 rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
+
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
 "#,
     )
     .expect("mock config");

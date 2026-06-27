@@ -10,7 +10,7 @@ mod validation;
 
 pub use audit::audit_plugins;
 pub use install::install_local_plugin;
-pub use marketplace_update::set_plugin_enabled;
+pub use marketplace_update::{set_plugin_enabled, set_plugin_quarantine};
 pub use types::{
     PluginAuditMissingCommand, PluginAuditPlugin, PluginAuditReport, PluginInstallReport,
     PluginMarketplaceUpdate, PluginUninstallReport, PluginValidationReport,

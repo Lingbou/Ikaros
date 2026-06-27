@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    JsonlMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryStore, SqliteMemoryStore,
+    JsonlMemoryStore, MemoryKind, MemoryQuery, MemoryRecord, MemoryStore, MemoryUpdateReport,
+    SqliteMemoryStore,
 };
 use ikaros_core::{IkarosError, Result};
 use std::path::{Path, PathBuf};
@@ -59,7 +60,7 @@ impl MemoryStore for LocalMemoryStore {
         id: &str,
         content: Option<String>,
         tags: Option<Vec<String>>,
-    ) -> Result<Option<MemoryRecord>> {
+    ) -> Result<Option<MemoryUpdateReport>> {
         match self {
             Self::Jsonl(store) => store.update(id, content, tags),
             Self::Sqlite(store) => store.update(id, content, tags),

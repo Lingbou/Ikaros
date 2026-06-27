@@ -8,6 +8,7 @@ use crate::support::{TestHome, install_echo_plugin, parse_approval_id, write_ech
 fn approval_replay_writes_only_after_user_approval() {
     let env = TestHome::new();
     env.init();
+    env.use_offline_mock_config();
 
     let output = env.run(["fs", "write", "notes.txt", "hello approved smoke"]);
     let approval_id = parse_approval_id(&output);
@@ -58,7 +59,9 @@ fn sqlite_memory_and_rag_backends_are_configured_end_to_end() {
     env.init();
     fs::write(
         env.home.join("config.yaml"),
-        r#"model:
+        r#"schema_version: 1
+
+model:
   default:
     provider: mock
     runtime: harness-agent-loop
@@ -68,13 +71,19 @@ fn sqlite_memory_and_rag_backends_are_configured_end_to_end() {
 memory:
   backend: sqlite
 
-chat_history:
-  backend: sqlite
-
 rag:
   backend: sqlite
   embedding_provider: hash
   embedding_model: text-embedding-3-small
+
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
 "#,
     )
     .expect("sqlite config");
@@ -131,14 +140,17 @@ rag:
     ]);
     assert!(chat.contains("provider: mock"));
     assert!(chat.contains("emotion: Satisfied"));
-    assert!(chat.contains("chat_history:"));
-    assert!(env.home.join("chat/history.sqlite").exists());
+    assert!(chat.contains("session_state_db:"));
+    assert!(chat.contains("chat_timeline: session_store"));
+    assert!(!env.home.join("chat/history.sqlite").exists());
     assert!(!env.home.join("chat/history.jsonl").exists());
     let history = env.run(["chat", "--history", "--history-limit", "1"]);
-    assert!(history.contains("chat_history_backend: sqlite"));
+    assert!(history.contains("history_source: session_replay"));
+    assert!(history.contains("history_authority: session_store"));
     assert!(history.contains("records: 1"));
     let history_search = env.run(["chat", "--history-search", "sqlite chat"]);
-    assert!(history_search.contains("chat_history_backend: sqlite"));
+    assert!(history_search.contains("history_source: session_replay"));
+    assert!(history_search.contains("history_authority: session_store"));
     assert!(history_search.contains("records: 1"));
     assert!(history_search.contains("matches:"));
 }
@@ -147,16 +159,29 @@ rag:
 fn schedule_body_and_service_surfaces_stay_local_and_non_mutating_by_default() {
     let env = TestHome::new();
     env.init();
+    env.use_offline_mock_config();
 
     let scheduled = env.run([
         "schedule",
         "add",
         "--profile",
         "plan",
+        "--retry-max-attempts",
+        "3",
+        "--retry-backoff-seconds",
+        "60",
+        "--grace-period-seconds",
+        "300",
+        "--timezone",
+        "UTC",
         "summarize schedule smoke",
     ]);
     assert!(scheduled.contains("scheduled:"));
     assert!(scheduled.contains("\"agent\": \"plan\""));
+    assert!(scheduled.contains("\"max_attempts\": 3"));
+    assert!(scheduled.contains("\"backoff_seconds\": 60"));
+    assert!(scheduled.contains("\"grace_period_seconds\": 300"));
+    assert!(scheduled.contains("\"timezone\": \"UTC\""));
 
     let due = env.run(["schedule", "run-due", "--dry-run"]);
     assert!(due.contains("summarize schedule smoke"));
@@ -230,6 +255,7 @@ fn command_backed_plugin_runs_only_through_approval_and_redacts_io() {
     let plugin_source = env.workspace.join("plugin-source/hello");
     write_echo_plugin(&plugin_source);
     env.init();
+    env.use_offline_mock_config();
 
     let plugin_source_arg = plugin_source.to_string_lossy().into_owned();
     let installed = env.run(["skill", "install", plugin_source_arg.as_str()]);
@@ -325,6 +351,7 @@ fn command_backed_plugin_runs_only_through_approval_and_redacts_io() {
 fn guarded_edit_applies_exact_diff_after_approval() {
     let env = TestHome::new();
     env.init();
+    env.use_offline_mock_config();
     fs::write(env.workspace.join("notes.txt"), "one\n").expect("source file");
 
     let diff = "\

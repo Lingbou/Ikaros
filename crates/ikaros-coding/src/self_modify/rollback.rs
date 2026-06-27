@@ -5,7 +5,7 @@ use super::{
     SelfModifyRollbackReport, SelfModifyStore, diff::path_metadata_with_env,
 };
 use ikaros_core::{IkarosError, Result, now_rfc3339};
-use ikaros_harness::FileSystem as ExecutionFileSystem;
+use ikaros_sandbox::FileSystem as ExecutionFileSystem;
 use std::{
     fs,
     path::{Path, PathBuf},

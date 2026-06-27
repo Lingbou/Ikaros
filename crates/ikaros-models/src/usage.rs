@@ -7,6 +7,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,12 +19,24 @@ pub struct ModelUsageRecord {
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
     pub total_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u32>,
     pub estimated: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModelUsageLedger {
     path: PathBuf,
+    cache: Arc<Mutex<ModelUsageCache>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ModelUsageCache {
+    loaded: bool,
+    file_len: u64,
+    records: Vec<ModelUsageRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,17 +57,29 @@ pub struct ProviderHealthRecord {
 #[derive(Debug, Clone)]
 pub struct ProviderHealthLedger {
     path: PathBuf,
+    cache: Arc<Mutex<ProviderHealthCache>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProviderHealthCache {
+    loaded: bool,
+    file_len: u64,
+    records: Vec<ProviderHealthRecord>,
 }
 
 impl ModelUsageLedger {
     pub fn new(audit_dir: impl Into<PathBuf>) -> Self {
         Self {
             path: audit_dir.into().join("model-usage.jsonl"),
+            cache: Arc::default(),
         }
     }
 
     pub fn from_file(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            cache: Arc::default(),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -71,24 +96,16 @@ impl ModelUsageLedger {
             .append(true)
             .open(&self.path)
             .map_err(|source| IkarosError::io(&self.path, source))?;
-        writeln!(file, "{encoded}").map_err(|source| IkarosError::io(&self.path, source))
+        writeln!(file, "{encoded}").map_err(|source| IkarosError::io(&self.path, source))?;
+        let file_len = file
+            .metadata()
+            .map_err(|source| IkarosError::io(&self.path, source))?
+            .len();
+        self.update_cache_after_append(record, file_len)
     }
 
     pub fn read_all(&self) -> Result<Vec<ModelUsageRecord>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
-        }
-        let file =
-            fs::File::open(&self.path).map_err(|source| IkarosError::io(&self.path, source))?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        for line in reader.lines() {
-            let line = line.map_err(|source| IkarosError::io(&self.path, source))?;
-            if !line.trim().is_empty() {
-                records.push(serde_json::from_str(&line)?);
-            }
-        }
-        Ok(records)
+        self.cached_records()
     }
 
     pub fn total_for_day(&self, day: &str) -> Result<u32> {
@@ -107,17 +124,117 @@ impl ModelUsageLedger {
             .filter(|record| record.at.starts_with(minute))
             .count())
     }
+
+    fn update_cache_after_append(&self, record: ModelUsageRecord, file_len: u64) -> Result<()> {
+        let mut cache = self.cache.lock().map_err(|_| {
+            IkarosError::Message(format!(
+                "model usage cache lock poisoned for {}",
+                self.path.display()
+            ))
+        })?;
+        if cache.loaded {
+            cache.records.push(record);
+        } else {
+            cache.records = read_usage_records_from_file(&self.path)?.0;
+        }
+        cache.loaded = true;
+        cache.file_len = file_len;
+        Ok(())
+    }
+
+    fn cached_records(&self) -> Result<Vec<ModelUsageRecord>> {
+        let file_len = match fs::metadata(&self.path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut cache = self.cache.lock().map_err(|_| {
+                    IkarosError::Message(format!(
+                        "model usage cache lock poisoned for {}",
+                        self.path.display()
+                    ))
+                })?;
+                cache.loaded = true;
+                cache.file_len = 0;
+                cache.records.clear();
+                return Ok(Vec::new());
+            }
+            Err(source) => return Err(IkarosError::io(&self.path, source)),
+        };
+
+        {
+            let cache = self.cache.lock().map_err(|_| {
+                IkarosError::Message(format!(
+                    "model usage cache lock poisoned for {}",
+                    self.path.display()
+                ))
+            })?;
+            if cache.loaded && cache.file_len == file_len {
+                return Ok(cache.records.clone());
+            }
+        }
+
+        match read_usage_records_from_file(&self.path) {
+            Ok((records, loaded_len)) => {
+                let mut cache = self.cache.lock().map_err(|_| {
+                    IkarosError::Message(format!(
+                        "model usage cache lock poisoned for {}",
+                        self.path.display()
+                    ))
+                })?;
+                cache.loaded = true;
+                cache.file_len = loaded_len;
+                cache.records = records.clone();
+                Ok(records)
+            }
+            Err(error) => {
+                let cache = self.cache.lock().map_err(|_| {
+                    IkarosError::Message(format!(
+                        "model usage cache lock poisoned for {}",
+                        self.path.display()
+                    ))
+                })?;
+                if cache.loaded {
+                    Ok(cache.records.clone())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+fn read_usage_records_from_file(path: &Path) -> Result<(Vec<ModelUsageRecord>, u64)> {
+    if !path.exists() {
+        return Ok((Vec::new(), 0));
+    }
+    let file = fs::File::open(path).map_err(|source| IkarosError::io(path, source))?;
+    let loaded_len = file
+        .metadata()
+        .map_err(|source| IkarosError::io(path, source))?
+        .len();
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(|source| IkarosError::io(path, source))?;
+        if !line.trim().is_empty() {
+            records.push(serde_json::from_str(&line)?);
+        }
+    }
+    Ok((records, loaded_len))
 }
 
 impl ProviderHealthLedger {
     pub fn new(audit_dir: impl Into<PathBuf>) -> Self {
         Self {
             path: audit_dir.into().join("provider-health.jsonl"),
+            cache: Arc::default(),
         }
     }
 
     pub fn from_file(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            cache: Arc::default(),
+        }
     }
 
     pub fn for_usage_ledger(ledger: &ModelUsageLedger) -> Self {
@@ -126,7 +243,10 @@ impl ProviderHealthLedger {
             .parent()
             .map(|parent| parent.join("provider-health.jsonl"))
             .unwrap_or_else(|| PathBuf::from("provider-health.jsonl"));
-        Self { path }
+        Self {
+            path,
+            cache: Arc::default(),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -144,24 +264,16 @@ impl ProviderHealthLedger {
             .append(true)
             .open(&self.path)
             .map_err(|source| IkarosError::io(&self.path, source))?;
-        writeln!(file, "{encoded}").map_err(|source| IkarosError::io(&self.path, source))
+        writeln!(file, "{encoded}").map_err(|source| IkarosError::io(&self.path, source))?;
+        let file_len = file
+            .metadata()
+            .map_err(|source| IkarosError::io(&self.path, source))?
+            .len();
+        self.update_cache_after_append(record, file_len)
     }
 
     pub fn read_all(&self) -> Result<Vec<ProviderHealthRecord>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
-        }
-        let file =
-            fs::File::open(&self.path).map_err(|source| IkarosError::io(&self.path, source))?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        for line in reader.lines() {
-            let line = line.map_err(|source| IkarosError::io(&self.path, source))?;
-            if !line.trim().is_empty() {
-                records.push(serde_json::from_str(&line)?);
-            }
-        }
-        Ok(records)
+        self.cached_records()
     }
 
     pub fn latest(&self, provider: &str, model: &str) -> Result<Option<ProviderHealthRecord>> {
@@ -171,4 +283,100 @@ impl ProviderHealthLedger {
             .rev()
             .find(|record| record.provider == provider && record.model == model))
     }
+
+    fn update_cache_after_append(&self, record: ProviderHealthRecord, file_len: u64) -> Result<()> {
+        let mut cache = self.cache.lock().map_err(|_| {
+            IkarosError::Message(format!(
+                "provider health cache lock poisoned for {}",
+                self.path.display()
+            ))
+        })?;
+        if cache.loaded {
+            cache.records.push(record);
+        } else {
+            cache.records = read_health_records_from_file(&self.path)?.0;
+        }
+        cache.loaded = true;
+        cache.file_len = file_len;
+        Ok(())
+    }
+
+    fn cached_records(&self) -> Result<Vec<ProviderHealthRecord>> {
+        let file_len = match fs::metadata(&self.path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut cache = self.cache.lock().map_err(|_| {
+                    IkarosError::Message(format!(
+                        "provider health cache lock poisoned for {}",
+                        self.path.display()
+                    ))
+                })?;
+                cache.loaded = true;
+                cache.file_len = 0;
+                cache.records.clear();
+                return Ok(Vec::new());
+            }
+            Err(source) => return Err(IkarosError::io(&self.path, source)),
+        };
+
+        {
+            let cache = self.cache.lock().map_err(|_| {
+                IkarosError::Message(format!(
+                    "provider health cache lock poisoned for {}",
+                    self.path.display()
+                ))
+            })?;
+            if cache.loaded && cache.file_len == file_len {
+                return Ok(cache.records.clone());
+            }
+        }
+
+        match read_health_records_from_file(&self.path) {
+            Ok((records, loaded_len)) => {
+                let mut cache = self.cache.lock().map_err(|_| {
+                    IkarosError::Message(format!(
+                        "provider health cache lock poisoned for {}",
+                        self.path.display()
+                    ))
+                })?;
+                cache.loaded = true;
+                cache.file_len = loaded_len;
+                cache.records = records.clone();
+                Ok(records)
+            }
+            Err(error) => {
+                let cache = self.cache.lock().map_err(|_| {
+                    IkarosError::Message(format!(
+                        "provider health cache lock poisoned for {}",
+                        self.path.display()
+                    ))
+                })?;
+                if cache.loaded {
+                    Ok(cache.records.clone())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+fn read_health_records_from_file(path: &Path) -> Result<(Vec<ProviderHealthRecord>, u64)> {
+    if !path.exists() {
+        return Ok((Vec::new(), 0));
+    }
+    let file = fs::File::open(path).map_err(|source| IkarosError::io(path, source))?;
+    let loaded_len = file
+        .metadata()
+        .map_err(|source| IkarosError::io(path, source))?
+        .len();
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(|source| IkarosError::io(path, source))?;
+        if !line.trim().is_empty() {
+            records.push(serde_json::from_str(&line)?);
+        }
+    }
+    Ok((records, loaded_len))
 }

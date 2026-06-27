@@ -85,10 +85,21 @@ fn resolve_file_reference(
     workspace_root: &Path,
 ) -> ContextResult<String> {
     let path = ensure_workspace_child(path, workspace_root)?;
-    let content = fs::read_to_string(&path).map_err(|error| ContextError::Io {
+    let bytes = fs::read(&path).map_err(|error| ContextError::Io {
         path: path.display().to_string(),
         message: error.to_string(),
     })?;
+    let byte_len = bytes.len();
+    let content = match String::from_utf8(bytes) {
+        Ok(content) if is_text_reference_content(&content) => content,
+        _ => {
+            return Ok(redact_secrets(&format!(
+                "[reference/file {}]\nskipped: non-text or non-utf8 file bytes={}",
+                display_workspace_relative(&path, workspace_root),
+                byte_len
+            )));
+        }
+    };
     let start = start_line.unwrap_or(1);
     let end = end_line.unwrap_or(start.saturating_add(119));
     let selected = content
@@ -107,6 +118,12 @@ fn resolve_file_reference(
         end,
         selected
     )))
+}
+
+fn is_text_reference_content(content: &str) -> bool {
+    content
+        .chars()
+        .all(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
 }
 
 fn resolve_folder_reference(path: &Path, workspace_root: &Path) -> ContextResult<String> {
@@ -317,5 +334,21 @@ mod tests {
         assert!(resolved[0].contains("1: first line"));
         assert!(resolved[0].contains("[REDACTED_SECRET]"));
         assert!(!resolved[0].contains("abc123"));
+    }
+
+    #[test]
+    fn resolves_binary_file_reference_as_structured_notice() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("image.bin"), [0xff, 0x00, 0x89, 0x50])
+            .expect("write binary");
+        let references = parse_context_references("@file:image.bin");
+
+        let resolved =
+            resolve_context_references(&references, temp.path()).expect("resolved references");
+
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].contains("[reference/file image.bin]"));
+        assert!(resolved[0].contains("skipped: non-text or non-utf8 file"));
+        assert!(resolved[0].contains("bytes=4"));
     }
 }

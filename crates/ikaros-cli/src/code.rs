@@ -6,15 +6,17 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use ikaros_core::{IkarosPaths, ToolResult, redact_secrets};
+use ikaros_core::{IkarosPaths, ToolResult, redact_json, redact_secrets};
 use ikaros_harness::{AuditEvent, CancellationToken, ExecutionSession, SkillRegistry};
 use ikaros_models::{
-    ModelMessage, ModelRequest, ModelRequestOptions, ModelUsageLedger,
+    ModelMessage, ModelRequest, ModelRequestDiagnostic, ModelRequestOptions, ModelUsageLedger,
     governed_provider_from_config_with_http_client,
 };
 use ikaros_runtime::EgressModelHttpClient;
 use ikaros_session::{
-    AgentEventKind, SessionId, SessionSource, SessionStore, SqliteSessionStore, TurnId,
+    AgentEvent, AgentEventKind, AgentEventSource, ApprovalRecord as SessionApprovalRecord,
+    ApprovalStatus as SessionApprovalStatus, SessionId, SessionSource, SessionStore,
+    SqliteSessionStore, TurnId,
 };
 use ikaros_skills::{CodingSessionConfig, builtin_registry};
 use serde_json::json;
@@ -410,7 +412,7 @@ fn split_interactive_code_line(input: &str) -> Result<Vec<String>> {
     let mut escaped = false;
     for ch in input.chars() {
         if escaped {
-            current.push(ch);
+            current.push(decode_interactive_code_escape(ch));
             escaped = false;
             continue;
         }
@@ -446,6 +448,15 @@ fn split_interactive_code_line(input: &str) -> Result<Vec<String>> {
         args.push(current);
     }
     Ok(args)
+}
+
+fn decode_interactive_code_escape(ch: char) -> char {
+    match ch {
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        other => other,
+    }
 }
 
 struct CodingWorkflowCommandInput {
@@ -508,12 +519,73 @@ async fn run_coding_workflow_command(
         input["test_analysis"] = serde_json::from_str(&test_analysis_json)
             .with_context(|| "failed to parse --test-analysis-json")?;
     }
-    Ok((
-        session
-            .execute_skill(&registry, "code_workflow", input)
-            .await?,
+    let result = session
+        .execute_skill(&registry, "code_workflow", input)
+        .await?;
+    record_coding_workflow_approval_request(
+        paths,
+        workspace,
+        agent_override,
+        &session,
+        &result,
+        &session_id,
+        &turn_id,
+    )?;
+    Ok((result, None))
+}
+
+fn record_coding_workflow_approval_request(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+    session: &ExecutionSession,
+    result: &ToolResult,
+    session_id: &SessionId,
+    turn_id: &TurnId,
+) -> Result<()> {
+    if result
+        .output
+        .get("decision")
+        .and_then(serde_json::Value::as_str)
+        != Some("ask_user")
+    {
+        return Ok(());
+    }
+    let Some(approval_id) = result
+        .output
+        .get("approval_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(());
+    };
+    let Some(record) = session.approvals.get(approval_id)? else {
+        return Ok(());
+    };
+    let config = ikaros_core::IkarosConfig::load(&paths.config)?;
+    let agent = resolve_agent_instance(&config, agent_override, workspace, &paths.home)?;
+    let store = SqliteSessionStore::new(&agent.state_dir);
+    store.append_approval(&SessionApprovalRecord {
+        approval_id: approval_id.into(),
+        session_id: session_id.clone(),
+        turn_id: Some(turn_id.clone()),
+        at: time::OffsetDateTime::now_utc(),
+        status: SessionApprovalStatus::Requested,
+        request: redact_json(serde_json::to_value(&record.request)?),
+        decision: None,
+    })?;
+    store.append_agent_event(&AgentEvent::new(
+        session_id.clone(),
+        turn_id.clone(),
         None,
-    ))
+        AgentEventSource::Harness,
+        AgentEventKind::ApprovalRequested,
+        json!({
+            "approval_id": approval_id,
+            "tool": &record.request.call.name,
+            "risk": format!("{:?}", record.request.call.risk),
+        }),
+    ))?;
+    Ok(())
 }
 
 pub(crate) fn coding_session_and_registry_for_workflow_with_cancellation(
@@ -532,9 +604,12 @@ pub(crate) fn coding_session_and_registry_for_workflow_with_cancellation(
     let turn_id = turn_id.map(TurnId::from).unwrap_or_default();
     let mut env = skill_env(paths, &agent.workspace, &config)?;
     let coding_model_provider = if include_model_provider {
+        let model_config = agent.model_config(&config.model.default);
+        let model_provider =
+            agent.effective_model_provider_config(&config.model.default, &config.providers.model);
         Some(Arc::from(governed_provider_from_config_with_http_client(
-            &config.model.default,
-            &config.providers.model,
+            model_config,
+            &model_provider,
             &paths.audit_dir,
             Some(Arc::new(EgressModelHttpClient::new(session.env.clone()))),
         )?))
@@ -827,9 +902,30 @@ async fn append_model_code_review_notes(
     session: &ExecutionSession,
 ) -> Result<PathBuf> {
     let config = ikaros_core::IkarosConfig::load(&paths.config)?;
+    let agent_override = session
+        .sandbox
+        .agent
+        .as_ref()
+        .and_then(|agent| agent.agent_id.as_deref())
+        .or_else(|| {
+            session
+                .sandbox
+                .agent
+                .as_ref()
+                .map(|agent| agent.profile_name.as_str())
+        });
+    let agent = resolve_agent_instance(
+        &config,
+        agent_override,
+        &session.sandbox.workspace_root,
+        &paths.home,
+    )?;
+    let model_config = agent.model_config(&config.model.default);
+    let model_provider =
+        agent.effective_model_provider_config(&config.model.default, &config.providers.model);
     let provider = governed_provider_from_config_with_http_client(
-        &config.model.default,
-        &config.providers.model,
+        model_config,
+        &model_provider,
         &paths.audit_dir,
         Some(Arc::new(EgressModelHttpClient::new(session.env.clone()))),
     )?;
@@ -851,6 +947,12 @@ async fn append_model_code_review_notes(
             tools: Vec::new(),
         })
         .await?;
+    let diagnostics = response
+        .diagnostics
+        .iter()
+        .cloned()
+        .map(ModelRequestDiagnostic::sanitized)
+        .collect::<Vec<_>>();
     session.audit.append(AuditEvent::new(
         "code_model_review_result",
         None,
@@ -859,7 +961,7 @@ async fn append_model_code_review_notes(
             "provider": response.provider,
             "model": response.model,
             "usage": response.usage,
-            "diagnostics": response.diagnostics,
+            "diagnostics": diagnostics.clone(),
             "prompt_chars": prompt.chars().count(),
         }),
     )?)?;
@@ -868,7 +970,7 @@ async fn append_model_code_review_notes(
         "model": response.model,
         "content": redact_secrets(&response.content),
         "usage": response.usage,
-        "diagnostics": response.diagnostics,
+        "diagnostics": diagnostics,
         "prompt_chars": prompt.chars().count(),
     });
     if let Some(output) = result.output.as_object_mut() {
@@ -955,6 +1057,25 @@ diff --git a/src/lib.rs b/src/lib.rs
                 assert_eq!(objective, "prepare quoted objective");
                 assert_eq!(session_id.as_deref(), Some("chat-code-session"));
                 assert_eq!(turn_id.as_deref(), Some("chat-code-turn"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interactive_code_parser_decodes_escaped_newlines_in_quoted_diff() {
+        let command = parse_interactive_code_command(
+            r#"apply "apply escaped diff" --diff "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n""#,
+        )
+        .expect("parse /code apply");
+        match command {
+            CodeCommand::Apply {
+                objective, diff, ..
+            } => {
+                assert_eq!(objective, "apply escaped diff");
+                assert!(diff.contains("diff --git a/src/lib.rs b/src/lib.rs\n"));
+                assert!(diff.contains("-old\n+new\n"));
+                assert!(!diff.contains("\\n"));
             }
             other => panic!("unexpected command: {other:?}"),
         }

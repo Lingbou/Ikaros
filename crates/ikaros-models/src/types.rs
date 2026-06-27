@@ -2,12 +2,15 @@
 
 use async_trait::async_trait;
 use ikaros_core::{Result, redact_json, redact_secrets};
+pub use ikaros_protocol::{ModelRequestDiagnostic, ModelStreamEvent, TokenUsage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_blocks: Vec<ModelContentBlock>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ModelToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21,6 +24,7 @@ impl ModelMessage {
         Self {
             role: "user".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
@@ -31,6 +35,7 @@ impl ModelMessage {
         Self {
             role: "system".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
@@ -41,6 +46,7 @@ impl ModelMessage {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
@@ -54,6 +60,7 @@ impl ModelMessage {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             tool_calls,
             tool_call_id: None,
             tool_name: None,
@@ -68,9 +75,110 @@ impl ModelMessage {
         Self {
             role: "tool".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
+        }
+    }
+
+    pub fn user_with_content_blocks(blocks: Vec<ModelContentBlock>) -> Self {
+        Self {
+            role: "user".into(),
+            content: content_blocks_text(&blocks),
+            content_blocks: blocks,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            tool_name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ModelContentBlock {
+    Text {
+        text: String,
+    },
+    Image {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Audio {
+        audio_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
+    File {
+        file_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    ToolResult {
+        tool_call_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+    },
+}
+
+impl ModelContentBlock {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::Image {
+            image_url: url.into(),
+            mime_type: None,
+            detail: None,
+        }
+    }
+
+    pub fn redacted(self) -> Self {
+        match self {
+            Self::Text { text } => Self::Text {
+                text: redact_secrets(&text),
+            },
+            Self::Image {
+                image_url,
+                mime_type,
+                detail,
+            } => Self::Image {
+                image_url: redact_secrets(&image_url),
+                mime_type: mime_type.map(|value| redact_secrets(&value)),
+                detail: detail.map(|value| redact_secrets(&value)),
+            },
+            Self::Audio {
+                audio_url,
+                mime_type,
+            } => Self::Audio {
+                audio_url: redact_secrets(&audio_url),
+                mime_type: mime_type.map(|value| redact_secrets(&value)),
+            },
+            Self::File {
+                file_url,
+                mime_type,
+                name,
+            } => Self::File {
+                file_url: redact_secrets(&file_url),
+                mime_type: mime_type.map(|value| redact_secrets(&value)),
+                name: name.map(|value| redact_secrets(&value)),
+            },
+            Self::ToolResult {
+                tool_call_id,
+                text,
+                is_error,
+            } => Self::ToolResult {
+                tool_call_id: redact_secrets(&tool_call_id),
+                text: redact_secrets(&text),
+                is_error,
+            },
         }
     }
 }
@@ -100,6 +208,10 @@ impl ModelRequest {
     pub fn redacted(mut self) -> Self {
         for message in &mut self.messages {
             message.content = redact_secrets(&message.content);
+            message.content_blocks = std::mem::take(&mut message.content_blocks)
+                .into_iter()
+                .map(ModelContentBlock::redacted)
+                .collect();
             message.tool_calls = redact_model_tool_calls(std::mem::take(&mut message.tool_calls));
             message.tool_call_id = message
                 .tool_call_id
@@ -139,9 +251,46 @@ impl ModelRequest {
         let prompt_tokens = self
             .messages
             .iter()
-            .map(|message| estimate_tokens(&message.content))
+            .map(|message| {
+                let blocks_tokens = message
+                    .content_blocks
+                    .iter()
+                    .map(estimate_content_block_tokens)
+                    .sum::<u32>();
+                let text_tokens = if !message.content_blocks.is_empty()
+                    && message.content == content_blocks_text(&message.content_blocks)
+                {
+                    0
+                } else {
+                    estimate_tokens(&message.content)
+                };
+                text_tokens.saturating_add(blocks_tokens)
+            })
             .sum::<u32>();
         prompt_tokens.saturating_add(output_tokens.unwrap_or_default())
+    }
+}
+
+fn content_blocks_text(blocks: &[ModelContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ModelContentBlock::Text { text } => Some(text.as_str()),
+            ModelContentBlock::ToolResult { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn estimate_content_block_tokens(block: &ModelContentBlock) -> u32 {
+    match block {
+        ModelContentBlock::Text { text } | ModelContentBlock::ToolResult { text, .. } => {
+            estimate_tokens(text)
+        }
+        ModelContentBlock::Image { .. } => 1_000,
+        ModelContentBlock::Audio { .. } => 2_000,
+        ModelContentBlock::File { name, .. } => name.as_deref().map_or(1_000, estimate_tokens),
     }
 }
 
@@ -191,23 +340,6 @@ impl ReasoningEffort {
             Self::XHigh => "xhigh",
             Self::Max => "max",
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct TokenUsage {
-    pub prompt_tokens: Option<u32>,
-    pub completion_tokens: Option<u32>,
-    pub total_tokens: Option<u32>,
-}
-
-impl TokenUsage {
-    pub fn total_or_prompt_completion(&self) -> u32 {
-        self.total_tokens.unwrap_or_else(|| {
-            self.prompt_tokens
-                .unwrap_or_default()
-                .saturating_add(self.completion_tokens.unwrap_or_default())
-        })
     }
 }
 
@@ -271,6 +403,28 @@ pub struct ModelProviderCapabilities {
     pub reasoning: bool,
     pub json_mode: bool,
     pub network: bool,
+    #[serde(default)]
+    pub image_input: bool,
+    #[serde(default)]
+    pub audio_input: bool,
+    #[serde(default)]
+    pub file_input: bool,
+}
+
+impl ModelProviderCapabilities {
+    pub fn text_only() -> Self {
+        Self {
+            chat: true,
+            streaming: false,
+            tool_calls: false,
+            reasoning: false,
+            json_mode: false,
+            network: false,
+            image_input: false,
+            audio_input: false,
+            file_input: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -278,6 +432,10 @@ pub struct ModelProviderCost {
     pub currency: String,
     pub input_per_million: Option<f64>,
     pub output_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_million: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -365,10 +523,59 @@ pub struct ModelProviderDescriptor {
     pub provider: String,
     pub model: String,
     pub profile: String,
+    pub profile_policy: ModelProviderProfilePolicy,
     pub capabilities: ModelProviderCapabilities,
     pub context: ModelContextProfile,
     pub cost: ModelProviderCost,
     pub health: ProviderHealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelProviderProfileCatalogEntry {
+    pub provider: String,
+    pub profile: String,
+    pub profile_policy: ModelProviderProfilePolicy,
+    pub capabilities: ModelProviderCapabilities,
+    pub context: ModelContextProfile,
+    pub auto_base_url_markers: Vec<String>,
+    pub auto_model_markers: Vec<String>,
+    pub auto_model_tail_prefixes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelProviderProfilePolicy {
+    pub temperature: String,
+    pub reasoning: String,
+    pub message: String,
+    pub tool_schema: String,
+    pub request_body: String,
+    #[serde(default = "default_prompt_cache_policy")]
+    pub prompt_cache: String,
+    pub retry_without_parameters: Vec<String>,
+}
+
+fn default_prompt_cache_policy() -> String {
+    "none".into()
+}
+
+impl ModelProviderProfilePolicy {
+    pub fn native(profile: impl Into<String>) -> Self {
+        let profile = profile.into();
+        Self {
+            temperature: profile.clone(),
+            reasoning: profile.clone(),
+            message: profile.clone(),
+            tool_schema: profile.clone(),
+            request_body: profile,
+            prompt_cache: "none".into(),
+            retry_without_parameters: Vec::new(),
+        }
+    }
+
+    pub fn with_prompt_cache(mut self, prompt_cache: impl Into<String>) -> Self {
+        self.prompt_cache = prompt_cache.into();
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -471,19 +678,17 @@ impl ModelStream {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
-pub enum ModelStreamEvent {
-    Start { provider: String, model: String },
-    TextDelta(String),
-    ReasoningDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, args_delta: String },
-    ToolCallEnd { id: String },
-    RefusalDelta(String),
-    Usage(TokenUsage),
-    Error { message: String },
-    Done,
+pub trait ModelStreamEventSink: Send {
+    fn emit(&mut self, event: ModelStreamEvent) -> Result<()>;
+}
+
+#[derive(Debug, Default)]
+pub struct NoopModelStreamEventSink;
+
+impl ModelStreamEventSink for NoopModelStreamEventSink {
+    fn emit(&mut self, _event: ModelStreamEvent) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -498,6 +703,9 @@ pub trait ModelProvider: Send + Sync {
     fn context_profile(&self) -> ModelContextProfile {
         ModelContextProfile::default()
     }
+    fn capabilities(&self) -> ModelProviderCapabilities {
+        ModelProviderCapabilities::text_only()
+    }
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse>;
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let response = self.generate(request).await?;
@@ -508,19 +716,26 @@ pub trait ModelProvider: Send + Sync {
             tool_calls: response.tool_calls,
             usage: response.usage,
             events: Vec::new(),
-            diagnostics: response.diagnostics,
+            diagnostics: response
+                .diagnostics
+                .into_iter()
+                .map(ModelRequestDiagnostic::sanitized)
+                .collect(),
         };
         stream.events = stream.normalized_events();
         Ok(stream)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelRequestDiagnostic {
-    pub kind: String,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parameter: Option<String>,
+    async fn stream_with_events(
+        &self,
+        request: ModelRequest,
+        event_sink: &mut dyn ModelStreamEventSink,
+    ) -> Result<ModelStream> {
+        let stream = self.stream(request).await?;
+        for event in stream.normalized_events() {
+            event_sink.emit(event)?;
+        }
+        Ok(stream)
+    }
 }
 
 pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {

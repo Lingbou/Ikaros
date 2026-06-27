@@ -3,9 +3,7 @@
 use crate::types::{ModelRequestOptions, ReasoningConfig, ReasoningEffort};
 use ikaros_core::{IkarosError, ModelConfig, Result};
 
-pub(crate) fn model_request_options_from_config(
-    config: &ModelConfig,
-) -> Result<ModelRequestOptions> {
+pub fn model_request_options_from_config(config: &ModelConfig) -> Result<ModelRequestOptions> {
     let reasoning = ReasoningConfig {
         enabled: config.reasoning.enabled,
         effort: config

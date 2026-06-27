@@ -13,7 +13,7 @@ pub fn tts_provider_from_config(
     match config.provider.to_ascii_lowercase().as_str() {
         "mock" => Ok(Box::new(MockTtsProvider)),
         "openai-compatible" => Ok(Box::new(OpenAiCompatibleVoiceProvider::from_config(
-            config.provider.clone(),
+            config.provider.to_string(),
             config,
             provider_settings,
         )?)),
@@ -30,7 +30,7 @@ pub fn asr_provider_from_config(
     match config.provider.to_ascii_lowercase().as_str() {
         "mock" => Ok(Box::new(MockAsrProvider)),
         "openai-compatible" => Ok(Box::new(OpenAiCompatibleVoiceProvider::from_config(
-            config.provider.clone(),
+            config.provider.to_string(),
             config,
             provider_settings,
         )?)),

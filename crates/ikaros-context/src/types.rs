@@ -326,6 +326,8 @@ struct ContextSectionContract {
     trust_level: ContextTrustLevel,
     source_kind: ContextSourceKind,
     injection_reason: &'static str,
+    freshness: &'static str,
+    scope: &'static str,
 }
 
 impl ContextSectionContract {
@@ -335,46 +337,64 @@ impl ContextSectionContract {
                 trust_level: ContextTrustLevel::High,
                 source_kind: ContextSourceKind::Runtime,
                 injection_reason: "runtime_prompt",
+                freshness: "current",
+                scope: "runtime",
             },
             ContextSectionKind::Relationship => Self {
                 trust_level: ContextTrustLevel::High,
                 source_kind: ContextSourceKind::AcceptedMemory,
                 injection_reason: "relationship_core",
+                freshness: "stable",
+                scope: "user",
             },
             ContextSectionKind::References => Self {
                 trust_level: ContextTrustLevel::High,
                 source_kind: ContextSourceKind::ExplicitReference,
                 injection_reason: "user_explicit_reference",
+                freshness: "current",
+                scope: "workspace",
             },
             ContextSectionKind::History => Self {
                 trust_level: ContextTrustLevel::Medium,
                 source_kind: ContextSourceKind::SessionHistory,
                 injection_reason: "recent_episode_history",
+                freshness: "recent",
+                scope: "session",
             },
             ContextSectionKind::MemoryProjection => Self {
                 trust_level: ContextTrustLevel::High,
                 source_kind: ContextSourceKind::MemoryProjection,
                 injection_reason: "accepted_memory_projection",
+                freshness: "stable",
+                scope: "user",
             },
             ContextSectionKind::WorkingMemory => Self {
                 trust_level: ContextTrustLevel::Medium,
                 source_kind: ContextSourceKind::WorkingMemory,
                 injection_reason: "session_working_memory",
+                freshness: "current",
+                scope: "session",
             },
             ContextSectionKind::RetrievedMemory => Self {
                 trust_level: ContextTrustLevel::MediumLow,
                 source_kind: ContextSourceKind::RetrievedMemory,
                 injection_reason: "on_demand_memory_search",
+                freshness: "retrieved",
+                scope: "user",
             },
             ContextSectionKind::Rag => Self {
                 trust_level: ContextTrustLevel::MediumLow,
                 source_kind: ContextSourceKind::RagIndex,
                 injection_reason: "explicit_reference_retrieval",
+                freshness: "retrieved",
+                scope: "workspace",
             },
             ContextSectionKind::ToolResults => Self {
                 trust_level: ContextTrustLevel::Medium,
                 source_kind: ContextSourceKind::ToolResult,
                 injection_reason: "tool_result",
+                freshness: "current",
+                scope: "session",
             },
         }
     }
@@ -401,8 +421,8 @@ fn push_section(
         trust_level: contract.trust_level,
         source_kind: contract.source_kind,
         injection_reason: contract.injection_reason.to_owned(),
-        freshness: None,
-        scope: None,
+        freshness: Some(contract.freshness.to_owned()),
+        scope: Some(contract.scope.to_owned()),
         lines,
         estimated_tokens,
     });
@@ -433,6 +453,8 @@ mod tests {
         assert_eq!(relationship.trust_level, ContextTrustLevel::High);
         assert_eq!(relationship.source_kind, ContextSourceKind::AcceptedMemory);
         assert_eq!(relationship.injection_reason, "relationship_core");
+        assert_eq!(relationship.freshness.as_deref(), Some("stable"));
+        assert_eq!(relationship.scope.as_deref(), Some("user"));
 
         let memory_projection = sections
             .iter()
@@ -447,6 +469,8 @@ mod tests {
             memory_projection.injection_reason,
             "accepted_memory_projection"
         );
+        assert_eq!(memory_projection.freshness.as_deref(), Some("stable"));
+        assert_eq!(memory_projection.scope.as_deref(), Some("user"));
 
         let working_memory = sections
             .iter()
@@ -455,6 +479,8 @@ mod tests {
         assert_eq!(working_memory.trust_level, ContextTrustLevel::Medium);
         assert_eq!(working_memory.source_kind, ContextSourceKind::WorkingMemory);
         assert_eq!(working_memory.injection_reason, "session_working_memory");
+        assert_eq!(working_memory.freshness.as_deref(), Some("current"));
+        assert_eq!(working_memory.scope.as_deref(), Some("session"));
 
         let retrieved_memory = sections
             .iter()
@@ -466,6 +492,8 @@ mod tests {
             ContextSourceKind::RetrievedMemory
         );
         assert_eq!(retrieved_memory.injection_reason, "on_demand_memory_search");
+        assert_eq!(retrieved_memory.freshness.as_deref(), Some("retrieved"));
+        assert_eq!(retrieved_memory.scope.as_deref(), Some("user"));
 
         let rag = sections
             .iter()
@@ -474,5 +502,7 @@ mod tests {
         assert_eq!(rag.trust_level, ContextTrustLevel::MediumLow);
         assert_eq!(rag.source_kind, ContextSourceKind::RagIndex);
         assert_eq!(rag.injection_reason, "explicit_reference_retrieval");
+        assert_eq!(rag.freshness.as_deref(), Some("retrieved"));
+        assert_eq!(rag.scope.as_deref(), Some("workspace"));
     }
 }

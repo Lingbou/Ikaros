@@ -68,8 +68,8 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 fn model_config_matches(config: &IkarosConfig) -> bool {
-    config.model.default.provider == "openai-compatible"
-        && config.model.default.transport == "openai-compatible-chat-completions"
+    config.model.default.provider.as_str() == "openai-compatible"
+        && config.model.default.transport.as_str() == "openai-compatible-chat-completions"
 }
 
 fn non_empty_config_value(value: &str) -> Option<String> {

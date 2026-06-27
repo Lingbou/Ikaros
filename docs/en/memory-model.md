@@ -142,24 +142,32 @@ core memory:
 ```bash
 ikaros memory candidate list
 ikaros memory candidate accept <candidate-id> --reason "explicit user instruction"
-ikaros memory candidate accept <candidate-id> --supersedes <memory-id> --reason "user corrected this"
+ikaros memory candidate accept <candidate-id> \
+  --supersedes <memory-id> \
+  --reason "user corrected this"
 ikaros memory candidate reject <candidate-id> --reason "temporary task scope"
 ```
 
-Accepting a candidate appends a core memory record and refreshes the projection
-for that scope. Rejected candidates remain in the inbox for auditability.
-Projection renders and candidate accept/reject decisions also append
-`projection_rendered`, `candidate_accepted`, `candidate_rejected`, or
-`superseded` actions to `memory_journal.jsonl`, with the candidate id, replaced
-memory id, or projection scope attached.
+Creating a candidate appends a `candidate_created` action to
+`memory_journal.jsonl` with the candidate id, kind, scope, and source reference
+when present. Accepting a candidate appends a core memory record and refreshes
+the projection for that scope. Rejected candidates remain in the inbox for
+auditability. Projection renders and candidate accept/reject decisions also
+append `projection_rendered`, `candidate_accepted`, `candidate_rejected`, or
+`superseded` actions to the journal, with the candidate id, replaced memory id,
+or projection scope attached.
 
 ## Supersession
 
 Long-term memory updates use supersession rather than deleting history. A
 replacement record can mark an older record inactive through `supersedes` and
-`superseded_by`, with `valid_from` and `valid_until` timestamps. Search and
-debug paths can still inspect both records, while projections render only active
-records. This lets Ikaros answer why a current memory replaced an older fact.
+`superseded_by`, with `valid_from` and `valid_until` timestamps. Ordinary
+`memory list` and `memory search` calls hide inactive records by default; pass
+`--include-inactive` when inspecting supersession history. Use
+`ikaros memory supersession <memory-id>` to explain either side of the chain:
+the selected record, the records it replaces, the record that replaced it, and
+the validity timestamps. Projections render only active records. This lets
+Ikaros answer why a current memory replaced an older fact.
 
 ## Relationship Memory
 
@@ -183,7 +191,7 @@ second memory database.
 
 ## Harness Boundary
 
-Memory writes and deletes go through harness skills where the operation is
+Memory writes and deletes go through governed skills where the operation is
 model/tool driven. CLI projection and candidate maintenance still use the same
 local store validation and secret rejection. Runtime-created ordinary turn
 state goes to working memory; accepted candidates, explicit relationship

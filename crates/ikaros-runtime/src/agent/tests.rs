@@ -141,11 +141,37 @@ async fn agent_handoff_can_use_agent_loop() {
         == Some("inspect runtime")));
 }
 
+#[tokio::test]
+async fn agent_handoff_rejects_excessive_delegation_depth() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let paths = IkarosPaths::from_home(home);
+    write_offline_mock_config(&paths);
+
+    let mut options = TaskRunOptions::deterministic(true);
+    options.delegation_depth = 3;
+    let error = run_agent_handoff_with_options(
+        &paths,
+        &workspace,
+        Some("build"),
+        "inspect runtime",
+        options,
+    )
+    .await
+    .expect_err("delegation depth over policy limit must fail");
+
+    assert!(error.to_string().contains("delegation depth"));
+}
+
 fn write_offline_mock_config(paths: &IkarosPaths) {
     std::fs::create_dir_all(&paths.home).expect("home");
     std::fs::write(
         &paths.config,
-        r#"model:
+        r#"schema_version: 1
+
+model:
   default:
     provider: mock
     runtime: harness-agent-loop
@@ -155,6 +181,15 @@ fn write_offline_mock_config(paths: &IkarosPaths) {
 rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
+
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
 "#,
     )
     .expect("mock config");

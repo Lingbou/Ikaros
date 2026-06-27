@@ -71,7 +71,7 @@ impl BodyAdapter for CliBodyAdapter {
             let fields = event
                 .data
                 .iter()
-                .map(|(key, value)| format!("{key}={value}"))
+                .map(|(key, value)| format!("{key}={}", body_event_value_text(value)))
                 .collect::<Vec<_>>()
                 .join(" ");
             format!(" {fields}")
@@ -81,6 +81,13 @@ impl BodyAdapter for CliBodyAdapter {
             event.kind, event.body, event.message, data
         )
     }
+}
+
+fn body_event_value_text(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 #[cfg(test)]
@@ -112,7 +119,7 @@ mod tests {
             BodyKind::Cli,
             BodyEventKind::Message,
             "received sk-not-real",
-            BTreeMap::from([("token".into(), "api_key=abc".into())]),
+            BTreeMap::from([("token".into(), serde_json::json!("api_key=abc"))]),
         );
         let rendered = CliBodyAdapter.render_event(&event);
         assert!(!rendered.contains("sk-not-real"));

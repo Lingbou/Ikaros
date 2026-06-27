@@ -2,69 +2,67 @@
 //! Runtime coordination over config, harness sessions, skills, and task execution.
 
 mod agent;
-mod agent_harness;
 mod agent_loop;
 mod body;
 mod chat;
 mod diagnostics;
 mod emotion;
-mod environment;
-mod message;
+mod gateway;
 mod model_http;
 mod persona;
 mod relationship;
 mod schedule;
 mod session;
+mod session_runner;
 mod task;
 
 pub use agent::{
     AgentHandoffReport, AgentPoolItemReport, AgentPoolReport, AgentPoolTask, run_agent_handoff,
     run_agent_handoff_with_options, run_agent_pool, run_agent_pool_with_options,
 };
-pub use agent_harness::{
-    AgentHarness, AgentHarnessConfig, AgentHarnessMessage, AgentHarnessPendingCounts,
-    AgentHarnessPhase, AgentHarnessTurn,
-};
 pub use agent_loop::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, AgentLoopHookEvent,
     AgentLoopHooks, AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
     AgentLoopToolCall, AgentLoopToolCallDiagnostic, AgentLoopToolCallParseStrategy,
     AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime, HarnessAgentRuntime,
-    RecordingAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink, run_agent_loop,
-    run_agent_loop_with_events,
+    RecordingAgentRuntime, agent_loop_tool_definitions, agent_toolset_selection,
+    noop_agent_event_sink, run_agent_loop, run_agent_loop_with_events,
 };
 pub use body::{
     audit_event_to_body_event, audit_event_to_body_event_for_body, base_body_status,
     body_event_kind_from_audit, current_body_frame,
 };
 pub use chat::{
-    ChatContext, ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, ChatMessageResult,
-    ChatRunOptions, ChatTurnEventOptions, ChatTurnReport, CompactInput, CompactReport,
-    ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent, ContextModelBudget,
-    DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, LocalChatContextEngine, TurnRecord, build_chat_context,
-    build_chat_context_bundle_with_engine, build_chat_context_bundle_with_model_context,
-    build_chat_context_with_engine, context_lookup_is_safe_read, extract_rag_context,
-    extract_retrieved_memory_context, new_chat_session_id, render_chat_system_prompt,
-    render_persona_agent_context, run_chat_message, run_chat_turn, run_chat_turn_with_events,
+    CHAT_HISTORY_DELETE_SESSION_OPERATION, ChatContext, ChatHistoryRecord,
+    ChatHistorySessionSummary, ChatMessageResult, ChatRunOptions, ChatSessionRuntime,
+    ChatSessionRuntimeConfig, ChatSessionRuntimeEvent, ChatSessionRuntimeEventReceiver,
+    ChatSessionRuntimeHandle, ChatSessionTurnResult, ChatTurnEventOptions, ChatTurnReport,
+    CompactInput, CompactReport, ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent,
+    ContextModelBudget, DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, LocalChatContextEngine, TurnRecord,
+    apply_chat_memory_policy, build_chat_context, build_chat_context_bundle_with_engine,
+    build_chat_context_bundle_with_model_context, build_chat_context_with_engine,
+    chat_history_records_from_session_replay, chat_history_session_summaries_from_session_replays,
+    chat_memory_policy_from_config, context_lookup_is_safe_read, emit_chat_memory_lifecycle_report,
+    extract_rag_context, extract_retrieved_memory_context, new_chat_session_id,
+    render_chat_system_prompt, render_persona_agent_context, run_chat_message, run_chat_turn,
+    run_chat_turn_with_events, search_chat_history_records,
 };
 pub use diagnostics::{
-    AgentSummary, AutomationSummary, GatewaySummary, ModelSummary, PersonaSummary, PluginSummary,
-    RagSummary, RuntimeDoctorReport, RuntimeInitReport, StoreSummary, VoiceSummary,
-    initialize_runtime_home, runtime_doctor_report,
+    AgentSummary, AutomationSummary, ExecutionSummary, GatewaySummary, ModelSummary,
+    PersonaSummary, PluginSummary, RagSummary, RuntimeDoctorReport, RuntimeInitReport,
+    StoreSummary, VoiceSummary, initialize_runtime_home, initialize_runtime_home_with_options,
+    runtime_doctor_report,
 };
 pub use emotion::{
     EMOTION_EVENT_KIND, latest_emotion_from_events, parse_emotion_state, record_emotion_signal,
+    record_emotion_signal_with_correlation,
 };
-pub use environment::{
-    RuntimeHarness, recent_policy_decisions, resolve_agent, resolve_agent_instance,
-    runtime_execution_env, session_and_registry, session_and_registry_for_agent,
-    session_and_registry_for_instance, skill_environment,
+pub use gateway::{
+    GatewayDrainContext, GatewayDrainReport, GatewayWorkerTickReport, PlatformDeliveryReport,
+    deliver_to_platform, drain_gateway_message, drain_gateway_messages,
+    platform_webhook_config_key, run_gateway_worker_tick,
 };
-pub use message::{
-    GatewayDrainContext, GatewayDrainReport, GatewayWorkerTickReport, drain_gateway_message,
-    drain_gateway_messages, run_gateway_worker_tick,
-};
-pub use model_http::{EgressModelHttpClient, provider_egress_allowed_hosts};
+pub use model_http::EgressModelHttpClient;
 pub use persona::{
     PersonaPatch, PersonaWriteReport, render_persona_markdown, reset_persona, update_persona,
 };
@@ -79,6 +77,10 @@ pub use schedule::{
 };
 pub use session::gateway_session_id;
 pub use session::record_approval_resolution;
+pub use session_runner::{
+    AgentHarness, AgentHarnessConfig, AgentHarnessMessage, AgentHarnessPendingCounts,
+    AgentHarnessPhase, AgentHarnessTurn,
+};
 pub use task::{
     RuntimeTaskExecution, RuntimeTaskPlan, TaskRunOptions, build_task_plan,
     execute_task_for_automation, execute_task_text, execute_task_text_with_options,

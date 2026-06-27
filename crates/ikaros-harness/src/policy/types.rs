@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use ikaros_core::{AgentInstance, PolicyDecision, ResolvedAgentProfile, RiskLevel};
+use ikaros_toolkit::PolicyRequest;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -101,15 +102,6 @@ pub struct CapabilityToken {
     pub id: String,
     pub permission: ScopedPermission,
     pub expires_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PolicyRequest {
-    pub action: String,
-    pub risk: RiskLevel,
-    pub path: Option<PathBuf>,
-    pub command: Option<String>,
-    pub is_write: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

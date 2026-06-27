@@ -3,7 +3,7 @@
 use super::SelfModifyStore;
 use crate::patch::parse_diff_path;
 use ikaros_core::{IkarosError, Result};
-use ikaros_harness::{FileMetadata, FileSystem as ExecutionFileSystem};
+use ikaros_sandbox::{FileMetadata, FileSystem as ExecutionFileSystem};
 use std::{
     fs,
     io::ErrorKind,

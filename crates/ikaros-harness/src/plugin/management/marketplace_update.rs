@@ -7,7 +7,7 @@ use super::super::{
     validation::validate_plugin_marketplace,
 };
 use super::types::PluginMarketplaceUpdate;
-use ikaros_core::{IkarosError, Result};
+use ikaros_core::{IkarosError, Result, redact_secrets};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -54,11 +54,93 @@ pub fn set_plugin_enabled(
         entry_added = true;
     }
 
+    let updated_entry = marketplace
+        .plugins
+        .iter()
+        .find(|entry| entry.name == name)
+        .cloned();
     write_marketplace(skills_dir, marketplace)?;
 
     Ok(PluginMarketplaceUpdate {
         name: name.to_owned(),
         enabled,
+        quarantined: updated_entry
+            .as_ref()
+            .map(|entry| entry.quarantined)
+            .unwrap_or(false),
+        quarantine_reason: updated_entry.and_then(|entry| entry.quarantine_reason),
+        marketplace_path: marketplace_path(skills_dir),
+        entry_added,
+    })
+}
+
+pub fn set_plugin_quarantine(
+    skills_dir: impl AsRef<Path>,
+    name: &str,
+    quarantined: bool,
+    reason: Option<&str>,
+) -> Result<PluginMarketplaceUpdate> {
+    let skills_dir = skills_dir.as_ref();
+    fs::create_dir_all(skills_dir).map_err(|source| IkarosError::io(skills_dir, source))?;
+
+    let catalog = PluginCatalog::load(skills_dir)?;
+    let plugin = catalog
+        .plugins
+        .iter()
+        .find(|plugin| plugin.manifest.name == name)
+        .ok_or_else(|| IkarosError::Message(format!("plugin not found: {name}")))?;
+    let inferred_path = infer_marketplace_path(skills_dir, &plugin.path);
+
+    let mut marketplace = load_plugin_marketplace_entries(skills_dir).map_err(|issue| {
+        IkarosError::Message(format!(
+            "failed to load plugin marketplace at {}: {}",
+            issue.path.display(),
+            issue.message
+        ))
+    })?;
+    let mut entry_added = false;
+    let reason = reason
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .map(redact_secrets);
+    let enabled;
+    if let Some(entry) = marketplace
+        .plugins
+        .iter_mut()
+        .find(|entry| entry.name == name)
+    {
+        entry.quarantined = quarantined;
+        entry.quarantine_reason = quarantined.then(|| {
+            reason
+                .clone()
+                .unwrap_or_else(|| "operator quarantine".into())
+        });
+        if entry.path.is_none() {
+            entry.path = inferred_path.clone();
+        }
+        enabled = entry.enabled;
+    } else {
+        let mut entry = PluginMarketplaceEntry::local_default(name);
+        entry.path = inferred_path;
+        entry.quarantined = quarantined;
+        entry.quarantine_reason = quarantined.then(|| {
+            reason
+                .clone()
+                .unwrap_or_else(|| "operator quarantine".into())
+        });
+        enabled = entry.enabled;
+        marketplace.plugins.push(entry);
+        entry_added = true;
+    }
+
+    write_marketplace(skills_dir, marketplace)?;
+
+    Ok(PluginMarketplaceUpdate {
+        name: name.to_owned(),
+        enabled,
+        quarantined,
+        quarantine_reason: quarantined
+            .then(|| reason.unwrap_or_else(|| "operator quarantine".into())),
         marketplace_path: marketplace_path(skills_dir),
         entry_added,
     })

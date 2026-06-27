@@ -35,12 +35,16 @@ pub struct TaskRunOptions {
     pub dry_run: bool,
     pub agent_loop: bool,
     pub loop_max_iterations: u32,
+    pub delegation_depth: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_source: Option<SessionSource>,
+    pub safe_tools: bool,
 }
 
 impl TaskRunOptions {
@@ -71,6 +75,16 @@ impl TaskRunOptions {
         self.session_source = Some(source);
         self
     }
+
+    pub fn with_parent_session(mut self, parent_session_id: impl Into<String>) -> Self {
+        self.parent_session_id = Some(parent_session_id.into());
+        self
+    }
+
+    pub fn with_safe_tools(mut self, safe_tools: bool) -> Self {
+        self.safe_tools = safe_tools;
+        self
+    }
 }
 
 impl Default for TaskRunOptions {
@@ -79,9 +93,12 @@ impl Default for TaskRunOptions {
             dry_run: false,
             agent_loop: false,
             loop_max_iterations: 6,
+            delegation_depth: 0,
             session_id: None,
             turn_id: None,
+            parent_session_id: None,
             session_source: None,
+            safe_tools: false,
         }
     }
 }

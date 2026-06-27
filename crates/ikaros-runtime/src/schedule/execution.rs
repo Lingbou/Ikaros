@@ -3,8 +3,8 @@
 use super::{delivery::deliver_scheduled_job, types::ScheduledJobRunReport};
 use crate::session::{
     RuntimeSessionEntryInput, active_leaf_entry_id, append_runtime_session_entry,
-    append_runtime_session_event, delivery_payload, runtime_session_target, schedule_session_id,
-    schedule_session_source, schedule_turn_id, upsert_runtime_session,
+    append_runtime_session_event, delivery_payload, runtime_session_target_for_evidence,
+    schedule_session_id, schedule_session_source, schedule_turn_id, upsert_runtime_session,
 };
 use crate::{TaskRunOptions, execute_task_text_with_options, task_report_summary};
 use ikaros_automation::{LocalScheduleStore, ScheduledJob};
@@ -118,7 +118,12 @@ struct ScheduledJobSessionInput<'a> {
 }
 
 fn record_scheduled_job_session(input: ScheduledJobSessionInput<'_>) -> Result<()> {
-    let target = runtime_session_target(input.paths, input.workspace, input.agent)?;
+    let target = runtime_session_target_for_evidence(
+        input.paths,
+        input.workspace,
+        input.agent,
+        &fallback_schedule_agent_id(input.agent, input.job),
+    )?;
     let session_id = schedule_session_id(&input.job.id);
     upsert_runtime_session(&target, &session_id, schedule_session_source(&input.job.id))?;
     let run_id = input
@@ -241,6 +246,14 @@ fn record_scheduled_job_session(input: ScheduledJobSessionInput<'_>) -> Result<(
             "status": schedule_status_str(input.task_state),
         }),
     )
+}
+
+fn fallback_schedule_agent_id(agent: Option<&str>, job: &ScheduledJob) -> String {
+    agent
+        .or(job.agent.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("build")
+        .to_owned()
 }
 
 fn schedule_status_str(state: &TaskState) -> &'static str {

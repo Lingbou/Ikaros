@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    factory::{with_embedding_provider, with_embedding_provider_config},
+    EmbeddingProvider,
+    factory::with_embedding_provider,
     jsonl::LocalRagIndex,
     sqlite::SqliteRagIndex,
     types::{
         IngestOptions, IngestReport, IngestSourceFile, RagHit, RagIndexedFile, RagQuery, RagStore,
     },
 };
-use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result};
+use ikaros_core::{IkarosError, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -45,45 +46,15 @@ impl LocalRagStore {
         }
     }
 
-    pub fn ingest_path_with_embedding_config(
-        &self,
-        path: &Path,
-        options: IngestOptions,
-        config: &RagConfig,
-        provider_settings: &RemoteProviderConfig,
-    ) -> Result<IngestReport> {
-        match self {
-            Self::Jsonl(store) => {
-                with_embedding_provider_config(config, provider_settings, |provider| {
-                    store.ingest_path_with_embedding(path, options, provider)
-                })
-            }
-            Self::Sqlite(store) => {
-                with_embedding_provider_config(config, provider_settings, |provider| {
-                    store.ingest_path_with_embedding(path, options, provider)
-                })
-            }
-        }
-    }
-
-    pub fn ingest_sources_with_embedding_config(
+    pub fn ingest_sources_with_embedding(
         &self,
         sources: Vec<IngestSourceFile>,
         options: IngestOptions,
-        config: &RagConfig,
-        provider_settings: &RemoteProviderConfig,
+        provider: &dyn EmbeddingProvider,
     ) -> Result<IngestReport> {
         match self {
-            Self::Jsonl(store) => {
-                with_embedding_provider_config(config, provider_settings, |provider| {
-                    store.ingest_sources_with_embedding(sources, options, provider)
-                })
-            }
-            Self::Sqlite(store) => {
-                with_embedding_provider_config(config, provider_settings, |provider| {
-                    store.ingest_sources_with_embedding(sources, options, provider)
-                })
-            }
+            Self::Jsonl(store) => store.ingest_sources_with_embedding(sources, options, provider),
+            Self::Sqlite(store) => store.ingest_sources_with_embedding(sources, options, provider),
         }
     }
 
@@ -102,23 +73,14 @@ impl LocalRagStore {
         }
     }
 
-    pub fn search_with_embedding_config(
+    pub fn search_with_embedding(
         &self,
         query: RagQuery,
-        config: &RagConfig,
-        provider_settings: &RemoteProviderConfig,
+        provider: &dyn EmbeddingProvider,
     ) -> Result<Vec<RagHit>> {
         match self {
-            Self::Jsonl(store) => {
-                with_embedding_provider_config(config, provider_settings, |provider| {
-                    store.search_with_embedding(query, provider)
-                })
-            }
-            Self::Sqlite(store) => {
-                with_embedding_provider_config(config, provider_settings, |provider| {
-                    store.search_with_embedding(query, provider)
-                })
-            }
+            Self::Jsonl(store) => store.search_with_embedding(query, provider),
+            Self::Sqlite(store) => store.search_with_embedding(query, provider),
         }
     }
 }

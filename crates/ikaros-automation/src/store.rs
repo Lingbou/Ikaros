@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{ScheduleDeliveryTarget, ScheduleRunUpdate, ScheduledJob};
+use crate::{
+    ScheduleDeliveryTarget, ScheduleJobOptions, ScheduleRetryPolicy, ScheduleRunHistoryEntry,
+    ScheduleRunUpdate, ScheduledJob,
+};
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
 use std::{
     fs::{self, OpenOptions},
@@ -8,6 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+use uuid::Uuid;
+
+const SCHEDULE_HISTORY_LIMIT: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct LocalScheduleStore {
@@ -53,12 +59,29 @@ impl LocalScheduleStore {
         agent: Option<String>,
         deliveries: Vec<ScheduleDeliveryTarget>,
     ) -> Result<ScheduledJob> {
-        if let Some(interval_seconds) = interval_seconds {
-            validate_interval_seconds(interval_seconds)?;
-        }
+        self.add_with_options(
+            task,
+            run_at,
+            ScheduleJobOptions {
+                interval_seconds,
+                agent,
+                deliveries,
+                ..ScheduleJobOptions::default()
+            },
+        )
+    }
+
+    pub fn add_with_options(
+        &self,
+        task: impl Into<String>,
+        run_at: impl Into<String>,
+        mut options: ScheduleJobOptions,
+    ) -> Result<ScheduledJob> {
+        validate_schedule_options(&options)?;
+        normalize_timezone(&mut options)?;
         let run_at = normalize_schedule_time(&run_at.into())?;
         let mut jobs = self.read_all()?;
-        let job = ScheduledJob::new(task, run_at, interval_seconds, agent, deliveries)?;
+        let job = ScheduledJob::new_with_options(task, run_at, options)?;
         jobs.push(job.clone());
         self.write_all(&jobs)?;
         Ok(job)
@@ -122,7 +145,10 @@ impl LocalScheduleStore {
         let mut update = None;
         for job in &mut jobs {
             if job.id == id {
-                let next_run_at = next_run_at(job, now)?;
+                let failed_attempt = failed_attempt_for_status(job, &status);
+                let retrying_after_failure =
+                    failed_attempt.is_some_and(|attempt| should_retry_failed_job(job, attempt));
+                let next_run_at = next_run_at(job, now, &status)?;
                 job.last_run_at = Some(ran_at.clone());
                 job.last_status = Some(status.clone());
                 job.last_summary = Some(summary.clone());
@@ -131,6 +157,23 @@ impl LocalScheduleStore {
                 if let Some(next_run_at) = &next_run_at {
                     job.run_at = next_run_at.clone();
                 }
+                job.retry_attempts = next_retry_attempts(
+                    &status,
+                    failed_attempt,
+                    retrying_after_failure,
+                    next_run_at.is_none(),
+                );
+                append_history(
+                    job,
+                    ScheduleRunHistoryEntry {
+                        ran_at: ran_at.clone(),
+                        status: status.clone(),
+                        summary: summary.clone(),
+                        next_run_at: next_run_at.clone(),
+                        enabled: job.enabled,
+                        attempt: failed_attempt.unwrap_or(1),
+                    },
+                );
                 update = Some(ScheduleRunUpdate {
                     ran_at: ran_at.clone(),
                     status: status.clone(),
@@ -197,18 +240,56 @@ impl LocalScheduleStore {
 
     fn write_all(&self, jobs: &[ScheduledJob]) -> Result<()> {
         self.ensure_parent()?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&self.path)
-            .map_err(|source| IkarosError::io(&self.path, source))?;
-        for job in jobs {
-            writeln!(file, "{}", serde_json::to_string(job)?)
-                .map_err(|source| IkarosError::io(&self.path, source))?;
+        let lines = jobs
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let temp_path = schedule_temp_path(&self.path);
+        let write_result = (|| -> Result<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp_path)
+                .map_err(|source| IkarosError::io(&temp_path, source))?;
+            for line in &lines {
+                writeln!(file, "{line}").map_err(|source| IkarosError::io(&temp_path, source))?;
+            }
+            file.flush()
+                .map_err(|source| IkarosError::io(&temp_path, source))?;
+            file.sync_all()
+                .map_err(|source| IkarosError::io(&temp_path, source))?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
         }
+        if let Err(source) = fs::rename(&temp_path, &self.path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(IkarosError::io(&self.path, source));
+        }
+        sync_parent_dir(&self.path);
         Ok(())
     }
+}
+
+fn schedule_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("schedules.jsonl");
+    path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()))
+}
+
+fn sync_parent_dir(path: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 fn safe_path_fragment(value: &str) -> String {
@@ -236,10 +317,38 @@ pub fn normalize_schedule_time(value: &str) -> Result<String> {
 }
 
 fn is_due(job: &ScheduledJob, now: OffsetDateTime) -> bool {
-    parse_time(&job.run_at).is_ok_and(|run_at| run_at <= now)
+    let Ok(run_at) = parse_time(&job.run_at) else {
+        return false;
+    };
+    if run_at > now {
+        return false;
+    }
+    if let Some(grace_period_seconds) = job.grace_period_seconds {
+        let Ok(grace) = schedule_interval_duration(grace_period_seconds) else {
+            return false;
+        };
+        let Some(deadline) = run_at.checked_add(grace) else {
+            return false;
+        };
+        if now > deadline {
+            return false;
+        }
+    }
+    true
 }
 
-fn next_run_at(job: &ScheduledJob, now: OffsetDateTime) -> Result<Option<String>> {
+fn next_run_at(job: &ScheduledJob, now: OffsetDateTime, status: &str) -> Result<Option<String>> {
+    if let Some(attempt) = failed_attempt_for_status(job, status)
+        && should_retry_failed_job(job, attempt)
+    {
+        let backoff = schedule_interval_duration(job.retry.backoff_seconds)?;
+        let next = now.checked_add(backoff).ok_or_else(|| {
+            IkarosError::Message(
+                "schedule retry backoff moves next run outside supported time range".into(),
+            )
+        })?;
+        return Ok(Some(format_time(next)?));
+    }
     let Some(interval_seconds) = job.interval_seconds else {
         return Ok(None);
     };
@@ -253,6 +362,92 @@ fn next_run_at(job: &ScheduledJob, now: OffsetDateTime) -> Result<Option<String>
         })?;
     }
     Ok(Some(format_time(next)?))
+}
+
+fn failed_attempt_for_status(job: &ScheduledJob, status: &str) -> Option<u32> {
+    is_failed_status(status).then(|| job.retry_attempts.saturating_add(1))
+}
+
+fn should_retry_failed_job(job: &ScheduledJob, attempt: u32) -> bool {
+    attempt < job.retry.max_attempts
+}
+
+fn next_retry_attempts(
+    status: &str,
+    failed_attempt: Option<u32>,
+    retrying_after_failure: bool,
+    terminal: bool,
+) -> u32 {
+    if !is_failed_status(status) {
+        return 0;
+    }
+    let failed_attempt = failed_attempt.unwrap_or(1);
+    if retrying_after_failure || terminal {
+        failed_attempt
+    } else {
+        0
+    }
+}
+
+fn is_failed_status(status: &str) -> bool {
+    !matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "complete" | "success" | "succeeded" | "ok"
+    )
+}
+
+fn append_history(job: &mut ScheduledJob, entry: ScheduleRunHistoryEntry) {
+    job.history.push(entry);
+    if job.history.len() > SCHEDULE_HISTORY_LIMIT {
+        let excess = job.history.len() - SCHEDULE_HISTORY_LIMIT;
+        job.history.drain(0..excess);
+    }
+}
+
+fn validate_schedule_options(options: &ScheduleJobOptions) -> Result<()> {
+    if let Some(interval_seconds) = options.interval_seconds {
+        validate_interval_seconds(interval_seconds)?;
+    }
+    validate_retry_policy(&options.retry)?;
+    if let Some(grace_period_seconds) = options.grace_period_seconds {
+        validate_interval_seconds(grace_period_seconds).map_err(|_| {
+            IkarosError::Message("schedule grace period must be greater than zero".into())
+        })?;
+    }
+    if let Some(timezone) = &options.timezone
+        && timezone.trim().is_empty()
+    {
+        return Err(IkarosError::Message(
+            "schedule timezone must not be empty".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_retry_policy(retry: &ScheduleRetryPolicy) -> Result<()> {
+    if retry.max_attempts == 0 {
+        return Err(IkarosError::Message(
+            "schedule retry max attempts must be greater than zero".into(),
+        ));
+    }
+    if retry.max_attempts > 1 {
+        validate_interval_seconds(retry.backoff_seconds).map_err(|_| {
+            IkarosError::Message("schedule retry backoff must be greater than zero".into())
+        })?;
+    }
+    Ok(())
+}
+
+fn normalize_timezone(options: &mut ScheduleJobOptions) -> Result<()> {
+    if let Some(timezone) = &mut options.timezone {
+        *timezone = timezone.trim().to_string();
+        if timezone.is_empty() {
+            return Err(IkarosError::Message(
+                "schedule timezone must not be empty".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_interval_seconds(interval_seconds: u64) -> Result<()> {

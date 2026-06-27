@@ -4,7 +4,7 @@
 
 ## 受保护资产
 
-- 存在本地 `IKAROS_HOME/config.yaml` `providers.*` 条目里的 API key。
+- 存在本地 `IKAROS_HOME/config.yaml` model/provider 字段里的 API key。
 - 用户记忆和关系笔记。
 - 聊天历史。
 - 项目文件。
@@ -23,9 +23,10 @@
 
 ## 当前控制
 
-- 默认拒绝 destructive action、direct secret access、publish/commit action、workspace-external write 和普通 self-modify。
+- 默认拒绝 destructive action、direct secret access、publish/commit action、
+  workspace-external write 和普通 self-modify。
 - 默认本地优先存储。
-- 默认是协议级 provider 配置；远程调用前要求本地 key、base URL 和模型名齐全。
+- 远程调用前要求本地 model/provider key、base URL 和模型名齐全。
 - 本地 provider 设置在写入日志和审计输出前脱敏。
 - 为 policy decision 和 tool result 写 audit log。
 - 拒绝疑似 secret 的 memory 内容。
@@ -34,8 +35,9 @@
 ## 已知限制
 
 - Redaction 是启发式的，可能漏掉 secret。
-- Shell/test skill 使用结构化 allowlist command，但这仍不是 process sandbox。
-- 这不是 process sandbox 或 VM 边界。
+- Shell/test skill 使用结构化 allowlist command。可选 Docker backend 提供第一版进程容器边界，
+  但默认 local backend 仍是带 workspace/env/time/output guardrail 的 host process execution。
+- 这不是 VM 或多租户 sandbox 边界。
 - 没有多租户隔离。
 - Browser/dashboard hardening 仅按本地 preview 假设。
 - 远程部署仍是手动测试环境事项，不是生产 hardening。

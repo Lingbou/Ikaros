@@ -13,6 +13,20 @@ The only cloud voice provider name is `openai-compatible`. It selects the wire
 format; the configured remote service must actually expose the requested TTS or
 ASR endpoint.
 
+The default config uses `mock` for both TTS and ASR, so voice credentials are
+not required unless a workflow explicitly needs a cloud voice provider:
+
+```yaml
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
+```
+
 Example:
 
 ```yaml
@@ -36,16 +50,19 @@ voice:
 
 ## Safety
 
-- Mock providers require no credentials or network and must be selected explicitly.
+- Mock providers require no credentials or network and are the default voice providers.
 - Cloud providers read plaintext keys and base URLs from the local `IKAROS_HOME/config.yaml`.
 - TTS text is redacted before provider calls.
 - Cloud voice calls are network actions and return approval requests when the active policy gates network access.
-- `voice tts --output <path>` is a workspace write and requires approval when policy asks. Approved audio writes go through the session `ExecutionEnv` byte filesystem interface.
-- `voice asr <path>` reads workspace audio through the session `ExecutionEnv` before calling the provider. ASR providers receive bytes and do not read host paths directly.
+- `voice tts --output <path>` is a workspace write and requires approval when policy asks. Approved
+  audio writes go through the session `ExecutionEnv` byte filesystem interface.
+- `voice asr <path>` reads workspace audio through the session `ExecutionEnv` before calling the
+  provider. ASR providers receive bytes and do not read host paths directly.
 - ASR transcript output should not echo the source path.
 
 TTS success output reports provider, format, optional output path, byte length,
 and redacted text preview; it does not print raw audio bytes. ASR sends the audio
 bytes as multipart form data and renders only transcript metadata.
 
-Voice schemas carry audio path, format, sample rate, and language metadata. Adapters use provider-supported fields and keep unsupported fields as Ikaros-side metadata.
+Voice schemas carry audio path, format, sample rate, and language metadata. Adapters use
+provider-supported fields and keep unsupported fields as Ikaros-side metadata.

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::policy::{rag_path_policy_request, rag_risk_level};
+use super::{
+    egress_embedding::with_execution_env_embedding_provider,
+    policy::{rag_approval_context, rag_path_policy_request, rag_risk_level},
+};
 use crate::support::input_path;
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, RagConfig, RemoteProviderConfig, Result, RiskLevel};
-use ikaros_harness::{FileSystem, PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_rag::{IngestOptions, IngestSourceFile, LocalRagStore};
+use ikaros_toolkit::{FileSystem, PolicyRequest, Skill, SkillContext, SkillOutput};
 use serde_json::json;
 use std::path::Path;
 
@@ -52,6 +55,22 @@ impl Skill for RagIngestSkill {
         rag_path_policy_request(self.name(), self.risk_level(), input, workspace_root, true)
     }
 
+    fn approval_context(
+        &self,
+        input: &serde_json::Value,
+        workspace_root: &Path,
+    ) -> Option<serde_json::Value> {
+        Some(rag_approval_context(
+            self.name(),
+            &self.rag_config,
+            &self.provider_settings,
+            input,
+            workspace_root,
+            true,
+            true,
+        ))
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
         let path = input_path(&input, &ctx.session.sandbox.workspace_root)?;
         let scope = input
@@ -60,14 +79,18 @@ impl Skill for RagIngestSkill {
             .unwrap_or("project")
             .to_string();
         let sources = collect_ingest_sources(ctx.session.env.as_ref(), &path).await?;
-        let report = self.index.ingest_sources_with_embedding_config(
-            sources,
-            IngestOptions {
-                scope,
-                ..IngestOptions::default()
-            },
+        let options = IngestOptions {
+            scope,
+            ..IngestOptions::default()
+        };
+        let report = with_execution_env_embedding_provider(
             &self.rag_config,
             &self.provider_settings,
+            ctx.session.env.clone(),
+            |provider| {
+                self.index
+                    .ingest_sources_with_embedding(sources, options, provider)
+            },
         )?;
         Ok(SkillOutput::new("rag ingest complete", json!(report)))
     }
@@ -116,6 +139,22 @@ impl Skill for RagReindexSkill {
         rag_path_policy_request(self.name(), self.risk_level(), input, workspace_root, true)
     }
 
+    fn approval_context(
+        &self,
+        input: &serde_json::Value,
+        workspace_root: &Path,
+    ) -> Option<serde_json::Value> {
+        Some(rag_approval_context(
+            self.name(),
+            &self.rag_config,
+            &self.provider_settings,
+            input,
+            workspace_root,
+            true,
+            true,
+        ))
+    }
+
     async fn execute(&self, input: serde_json::Value, ctx: SkillContext) -> Result<SkillOutput> {
         let path = input_path(&input, &ctx.session.sandbox.workspace_root)?;
         let scope = input
@@ -124,14 +163,18 @@ impl Skill for RagReindexSkill {
             .unwrap_or("project")
             .to_string();
         let sources = collect_ingest_sources(ctx.session.env.as_ref(), &path).await?;
-        let report = self.index.ingest_sources_with_embedding_config(
-            sources,
-            IngestOptions {
-                scope,
-                ..IngestOptions::default()
-            },
+        let options = IngestOptions {
+            scope,
+            ..IngestOptions::default()
+        };
+        let report = with_execution_env_embedding_provider(
             &self.rag_config,
             &self.provider_settings,
+            ctx.session.env.clone(),
+            |provider| {
+                self.index
+                    .ingest_sources_with_embedding(sources, options, provider)
+            },
         )?;
         Ok(SkillOutput::new("rag reindex complete", json!(report)))
     }
