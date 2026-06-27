@@ -5,6 +5,7 @@ use ikaros_body::{BodyEvent, BodyEventKind, BodyFrame, BodyKind, BodyStatus};
 use ikaros_core::{IkarosPaths, PolicyDecision, Result};
 use ikaros_harness::{AuditEvent, AuditLog};
 use ikaros_soul::load_or_default;
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub fn current_body_frame(
@@ -62,23 +63,24 @@ pub fn audit_event_to_body_event(event: AuditEvent) -> BodyEvent {
 }
 
 pub fn audit_event_to_body_event_for_body(event: AuditEvent, body: BodyKind) -> BodyEvent {
-    let mut data = BTreeMap::new();
-    data.insert("at".into(), event.at);
-    data.insert("kind".into(), event.kind.clone());
+    let mut data: BTreeMap<String, Value> = BTreeMap::new();
+    data.insert("at".into(), Value::String(event.at));
+    data.insert("kind".into(), Value::String(event.kind.clone()));
     if let Some(decision) = event.decision {
-        data.insert("decision".into(), format!("{decision:?}"));
+        data.insert("decision".into(), Value::String(format!("{decision:?}")));
     }
     if let Some(object) = event.data.as_object() {
         let keys = object.keys().cloned().collect::<Vec<_>>().join(",");
         if !keys.is_empty() {
-            data.insert("data_keys".into(), keys);
+            data.insert("data_keys".into(), Value::String(keys));
         }
         for key in ["call_id", "approval_id", "task_id", "emotion", "signal"] {
             if let Some(value) = object.get(key).and_then(serde_json::Value::as_str) {
-                data.insert(key.into(), value.into());
+                data.insert(key.into(), Value::String(value.into()));
             }
         }
     }
+    data.insert("audit_data".into(), event.data);
     BodyEvent::new(
         body,
         body_event_kind_from_audit(&event.kind),
@@ -124,7 +126,10 @@ mod tests {
 
         assert_eq!(body_event.kind, BodyEventKind::Skill);
         assert_eq!(
-            body_event.data.get("call_id").map(String::as_str),
+            body_event
+                .data
+                .get("call_id")
+                .and_then(serde_json::Value::as_str),
             Some("call-1")
         );
         assert!(!body_event.message.contains("abc123"));
@@ -132,7 +137,40 @@ mod tests {
             !body_event
                 .data
                 .values()
-                .any(|value| value.contains("abc123"))
+                .any(|value| value.to_string().contains("abc123"))
+        );
+    }
+
+    #[test]
+    fn audit_event_mapping_preserves_typed_json_data() {
+        let event = AuditEvent::new(
+            "task_step_result",
+            None,
+            "task event",
+            json!({
+                "task_id": "job-1",
+                "attempt": 2,
+                "ok": false,
+                "details": {
+                    "file": "src/main.rs",
+                    "token": "api_key=abc123"
+                }
+            }),
+        )
+        .expect("event");
+        let body_event = audit_event_to_body_event(event);
+
+        assert_eq!(body_event.kind, BodyEventKind::Task);
+        assert_eq!(body_event.data["task_id"], "job-1");
+        assert_eq!(body_event.data["audit_data"]["attempt"], 2);
+        assert_eq!(body_event.data["audit_data"]["ok"], false);
+        assert_eq!(
+            body_event.data["audit_data"]["details"]["file"],
+            "src/main.rs"
+        );
+        assert_eq!(
+            body_event.data["audit_data"]["details"]["token"],
+            "[REDACTED_SECRET]"
         );
     }
 
@@ -181,7 +219,10 @@ mod tests {
         assert_eq!(frame.events.len(), 1);
         assert_eq!(frame.events[0].kind, BodyEventKind::Emotion);
         assert_eq!(
-            frame.events[0].data.get("emotion").map(String::as_str),
+            frame.events[0]
+                .data
+                .get("emotion")
+                .and_then(serde_json::Value::as_str),
             Some("Concerned")
         );
     }

@@ -34,8 +34,9 @@
 ## 已知限制
 
 - Redaction 是启发式的，可能漏掉 secret。
-- Shell/test skill 使用结构化 allowlist command，但这仍不是 process sandbox。
-- 这不是 process sandbox 或 VM 边界。
+- Shell/test skill 使用结构化 allowlist command。可选 Docker backend 提供第一版进程容器边界，
+  但默认 local backend 仍是带 workspace/env/time/output guardrail 的 host process execution。
+- 这不是 VM 或多租户 sandbox 边界。
 - 没有多租户隔离。
 - Browser/dashboard hardening 仅按本地 preview 假设。
 - 远程部署仍是手动测试环境事项，不是生产 hardening。

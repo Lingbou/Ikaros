@@ -3,7 +3,7 @@
 use crate::{print_skill_result, session_and_registry};
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use ikaros_core::{IkarosConfig, IkarosPaths};
+use ikaros_core::{IkarosConfig, IkarosPaths, redact_json};
 use ikaros_memory::{
     JsonlMemoryCandidateStore, JsonlMemoryJournal, JsonlWorkingMemoryStore, LocalMemoryStore,
     MemoryCandidate, MemoryCandidateQuery, MemoryCandidateStatus, MemoryJournal,
@@ -29,6 +29,7 @@ pub(crate) enum MemoryCommand {
         #[command(subcommand)]
         command: MemoryCandidateCommand,
     },
+    Supersession(MemorySupersession),
     Working {
         #[command(subcommand)]
         command: MemoryWorkingCommand,
@@ -109,6 +110,11 @@ pub(crate) struct MemoryCandidateReview {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct MemorySupersession {
+    id: String,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct MemoryAdd {
     content: String,
     #[arg(long, default_value = "project")]
@@ -135,6 +141,8 @@ pub(crate) struct MemoryList {
     subject: Option<String>,
     #[arg(long, default_value_t = 20)]
     limit: usize,
+    #[arg(long)]
+    include_inactive: bool,
 }
 
 #[derive(Debug, Args)]
@@ -150,6 +158,8 @@ pub(crate) struct MemorySearch {
     subject: Option<String>,
     #[arg(long, default_value_t = 5)]
     limit: usize,
+    #[arg(long)]
+    include_inactive: bool,
 }
 
 #[derive(Debug, Args)]
@@ -191,6 +201,9 @@ pub(crate) async fn memory_command(
     if let MemoryCommand::Candidate { command } = command {
         return memory_candidate_command(command, paths);
     }
+    if let MemoryCommand::Supersession(args) = command {
+        return memory_supersession_command(args, paths);
+    }
     if let MemoryCommand::Working { command } = command {
         return memory_working_command(command, paths);
     }
@@ -211,6 +224,9 @@ pub(crate) async fn memory_command(
         }
         MemoryCommand::List(args) => {
             let mut input = json!({"limit": args.limit});
+            if args.include_inactive {
+                input["include_inactive"] = json!(true);
+            }
             if let Some(kind) = args.kind {
                 input["kind"] = json!(kind);
             }
@@ -224,6 +240,9 @@ pub(crate) async fn memory_command(
         }
         MemoryCommand::Search(args) => {
             let mut input = json!({"query": args.query, "limit": args.limit});
+            if args.include_inactive {
+                input["include_inactive"] = json!(true);
+            }
             if let Some(kind) = args.kind {
                 input["kind"] = json!(kind);
             }
@@ -264,6 +283,7 @@ pub(crate) async fn memory_command(
         }
         MemoryCommand::Projection { .. }
         | MemoryCommand::Candidate { .. }
+        | MemoryCommand::Supersession(..)
         | MemoryCommand::Working { .. } => {
             unreachable!("local memory maintenance commands return before session")
         }
@@ -272,6 +292,99 @@ pub(crate) async fn memory_command(
     print_skill_result(&result)?;
     println!("audit: {}", session.audit.path().display());
     Ok(())
+}
+
+fn memory_supersession_command(args: MemorySupersession, paths: &IkarosPaths) -> Result<()> {
+    let config = IkarosConfig::load(&paths.config)?;
+    let store = LocalMemoryStore::new(&paths.memory_dir, &config.memory.backend)?;
+    let records = store.list(MemoryQuery {
+        include_inactive: true,
+        limit: Some(usize::MAX),
+        ..MemoryQuery::default()
+    })?;
+    let record = records
+        .iter()
+        .find(|record| record.id == args.id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("memory record not found: {}", args.id))?;
+    let replaces = record
+        .supersedes
+        .iter()
+        .filter_map(|id| memory_record_by_id(&records, id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let replaced_by = record
+        .superseded_by
+        .as_deref()
+        .and_then(|id| memory_record_by_id(&records, id))
+        .cloned();
+    let status = memory_supersession_status(&record, replaced_by.as_ref());
+    let chain = memory_supersession_chain(&record, &replaces, replaced_by.as_ref());
+    let output = json!({
+        "summary": "memory supersession explained",
+        "query_id": args.id,
+        "status": status,
+        "record": record,
+        "replaces": replaces,
+        "replaced_by": replaced_by,
+        "chain": chain,
+    });
+    println!("{}", serde_json::to_string_pretty(&redact_json(output))?);
+    Ok(())
+}
+
+fn memory_record_by_id<'a>(records: &'a [MemoryRecord], id: &str) -> Option<&'a MemoryRecord> {
+    records.iter().find(|record| record.id == id)
+}
+
+fn memory_supersession_status(
+    record: &MemoryRecord,
+    replaced_by: Option<&MemoryRecord>,
+) -> &'static str {
+    if record.active {
+        "active"
+    } else if replaced_by.is_some() {
+        "superseded"
+    } else {
+        "inactive"
+    }
+}
+
+fn memory_supersession_chain(
+    record: &MemoryRecord,
+    replaces: &[MemoryRecord],
+    replaced_by: Option<&MemoryRecord>,
+) -> Vec<serde_json::Value> {
+    let mut chain = Vec::with_capacity(replaces.len() + 1 + usize::from(replaced_by.is_some()));
+    for replaced in replaces {
+        chain.push(json!({
+            "role": "replaces",
+            "id": replaced.id,
+            "active": replaced.active,
+            "valid_from": replaced.valid_from,
+            "valid_until": replaced.valid_until,
+            "content": replaced.content,
+        }));
+    }
+    chain.push(json!({
+        "role": "record",
+        "id": record.id,
+        "active": record.active,
+        "valid_from": record.valid_from,
+        "valid_until": record.valid_until,
+        "content": record.content,
+    }));
+    if let Some(replacement) = replaced_by {
+        chain.push(json!({
+            "role": "replaced_by",
+            "id": replacement.id,
+            "active": replacement.active,
+            "valid_from": replacement.valid_from,
+            "valid_until": replacement.valid_until,
+            "content": replacement.content,
+        }));
+    }
+    chain
 }
 
 fn memory_working_command(command: MemoryWorkingCommand, paths: &IkarosPaths) -> Result<()> {

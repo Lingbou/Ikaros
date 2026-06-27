@@ -3,9 +3,9 @@
 use crate::http::{ModelHttpClient, ModelHttpRequest, ReqwestModelHttpClient};
 use crate::transport::{ModelTransport, ModelTransportDescriptor, descriptor};
 use crate::types::{
-    ModelContextProfile, ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions,
-    ModelResponse, ModelStream, ModelStreamEvent, ModelTokenizerKind, ModelToolCall,
-    ModelToolDefinition, TokenUsage,
+    ModelContentBlock, ModelContextProfile, ModelMessage, ModelProvider, ModelProviderCapabilities,
+    ModelRequest, ModelRequestDiagnostic, ModelRequestOptions, ModelResponse, ModelStream,
+    ModelStreamEvent, ModelTokenizerKind, ModelToolCall, ModelToolDefinition, TokenUsage,
 };
 use async_trait::async_trait;
 use ikaros_core::{
@@ -89,6 +89,20 @@ impl ModelProvider for OllamaProvider {
             ModelTokenizerKind::Ollama,
             "ollama",
         )
+    }
+
+    fn capabilities(&self) -> ModelProviderCapabilities {
+        ModelProviderCapabilities {
+            chat: true,
+            streaming: true,
+            tool_calls: true,
+            reasoning: false,
+            json_mode: false,
+            network: false,
+            image_input: true,
+            audio_input: false,
+            file_input: false,
+        }
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -194,6 +208,8 @@ struct OllamaMessage {
     content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<OllamaToolCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_name: Option<String>,
 }
@@ -259,6 +275,8 @@ fn ollama_messages(messages: Vec<ModelMessage>) -> Vec<OllamaMessage> {
     messages
         .into_iter()
         .map(|message| {
+            let content = redact_secrets(&ollama_message_text(&message));
+            let images = ollama_message_images(&message);
             let tool_calls = if message.role == "assistant" {
                 ollama_tool_calls(message.tool_calls)
             } else {
@@ -266,12 +284,66 @@ fn ollama_messages(messages: Vec<ModelMessage>) -> Vec<OllamaMessage> {
             };
             OllamaMessage {
                 role: message.role,
-                content: redact_secrets(&message.content),
+                content,
                 tool_calls,
+                images,
                 tool_name: message.tool_name.map(|name| redact_secrets(&name)),
             }
         })
         .collect()
+}
+
+fn ollama_message_text(message: &ModelMessage) -> String {
+    if message.content_blocks.is_empty() {
+        return message.content.clone();
+    }
+    let block_text = message
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ModelContentBlock::Text { text } => Some(text.clone()),
+            ModelContentBlock::Image { image_url, .. } if !image_url.starts_with("data:image/") => {
+                Some(format!("[image url omitted: {image_url}]"))
+            }
+            ModelContentBlock::Audio { audio_url, .. } => {
+                Some(format!("[audio url omitted: {audio_url}]"))
+            }
+            ModelContentBlock::File { file_url, name, .. } => Some(format!(
+                "[file url omitted: {} name={}]",
+                file_url,
+                name.as_deref().unwrap_or("unnamed")
+            )),
+            ModelContentBlock::ToolResult { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if message.content.trim().is_empty() || message.content == block_text {
+        block_text
+    } else if block_text.trim().is_empty() {
+        message.content.clone()
+    } else {
+        format!("{}\n{}", message.content, block_text)
+    }
+}
+
+fn ollama_message_images(message: &ModelMessage) -> Vec<String> {
+    message
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ModelContentBlock::Image { image_url, .. } => {
+                parse_data_url_image_base64(image_url).map(redact_secrets)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn parse_data_url_image_base64(image_url: &str) -> Option<&str> {
+    let rest = image_url.strip_prefix("data:image/")?;
+    let (_, data) = rest.split_once(";base64,")?;
+    Some(data)
 }
 
 fn ollama_tool_calls(calls: Vec<ModelToolCall>) -> Vec<OllamaToolCall> {
@@ -331,6 +403,7 @@ pub(crate) fn parse_chat_response(
         role: "assistant".into(),
         content: String::new(),
         tool_calls: Vec::new(),
+        images: Vec::new(),
         tool_name: None,
     });
     Ok(ModelResponse {
@@ -342,6 +415,7 @@ pub(crate) fn parse_chat_response(
             prompt_tokens: parsed.prompt_eval_count,
             completion_tokens: parsed.eval_count,
             total_tokens: token_total(parsed.prompt_eval_count, parsed.eval_count),
+            ..TokenUsage::default()
         },
         diagnostics: Vec::new(),
     })
@@ -372,7 +446,11 @@ pub(crate) fn parse_stream_response(
             tool_calls: response.tool_calls,
             usage: response.usage,
             events,
-            diagnostics: response.diagnostics,
+            diagnostics: response
+                .diagnostics
+                .into_iter()
+                .map(ModelRequestDiagnostic::sanitized)
+                .collect(),
         });
     }
 
@@ -399,6 +477,7 @@ pub(crate) fn parse_stream_response(
                 prompt_tokens: parsed.prompt_eval_count,
                 completion_tokens: parsed.eval_count,
                 total_tokens: token_total(parsed.prompt_eval_count, parsed.eval_count),
+                ..TokenUsage::default()
             };
         }
         if let Some(message) = parsed.message {

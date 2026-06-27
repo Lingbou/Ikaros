@@ -32,6 +32,8 @@ pub(crate) struct AgentRun {
     agent_loop: bool,
     #[arg(long, default_value_t = 6)]
     loop_max_iterations: u32,
+    #[arg(long, value_name = "SESSION_ID")]
+    parent_session: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -50,6 +52,8 @@ pub(crate) struct AgentBatch {
     agent_loop: bool,
     #[arg(long, default_value_t = 6)]
     loop_max_iterations: u32,
+    #[arg(long, value_name = "SESSION_ID")]
+    parent_session: Option<String>,
 }
 
 pub(crate) async fn agent_command(
@@ -84,6 +88,7 @@ pub(crate) async fn agent_command(
                     dry_run: args.dry_run,
                     agent_loop: args.agent_loop,
                     loop_max_iterations: args.loop_max_iterations,
+                    parent_session_id: args.parent_session,
                     ..TaskRunOptions::default()
                 },
             )
@@ -94,6 +99,8 @@ pub(crate) async fn agent_command(
                     "agent": report.agent,
                     "mode": report.mode,
                     "task_id": report.task_id,
+                    "session_id": report.session_id,
+                    "parent_session_id": report.parent_session_id,
                     "dry_run": report.dry_run,
                     "agent_loop": report.agent_loop,
                     "state": report.report.state,
@@ -119,6 +126,7 @@ pub(crate) async fn agent_command(
                     dry_run: args.dry_run,
                     agent_loop: args.agent_loop,
                     loop_max_iterations: args.loop_max_iterations,
+                    parent_session_id: args.parent_session,
                     ..TaskRunOptions::default()
                 },
                 args.concurrency,
@@ -242,6 +250,7 @@ mod tests {
             dry_run: true,
             agent_loop: false,
             loop_max_iterations: 6,
+            parent_session: None,
         })
         .expect("tasks");
 

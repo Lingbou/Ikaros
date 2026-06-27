@@ -2,6 +2,7 @@
 
 use ikaros_core::{IkarosError, Result, redact_secrets};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TestFailureCategory {
@@ -81,7 +82,7 @@ pub fn validate_test_command(command: &str) -> Result<()> {
         Ok(())
     } else {
         Err(IkarosError::Message(format!(
-            "test command is outside the allowed test/check command set: {command}"
+            "test command is outside the allowed test/check command set or contains a workspace-escaping path: {command}"
         )))
     }
 }
@@ -97,6 +98,13 @@ pub fn is_allowed_test_command(command: &str) -> bool {
     }
 
     let parts = trimmed.split_whitespace().collect::<Vec<_>>();
+    if parts.iter().any(|part| {
+        part.as_bytes().contains(&0)
+            || part.chars().any(char::is_control)
+            || command_part_escapes_workspace(part)
+    }) {
+        return false;
+    }
     match parts.as_slice() {
         ["cargo", subcommand, ..] => matches!(
             *subcommand,
@@ -120,6 +128,38 @@ pub fn is_allowed_test_command(command: &str) -> bool {
         | ["uv", "run", "pytest", ..] => true,
         _ => false,
     }
+}
+
+fn command_part_escapes_workspace(part: &str) -> bool {
+    command_part_value_escapes_workspace(part)
+        || part
+            .split_once('=')
+            .is_some_and(|(_, value)| command_part_value_escapes_workspace(value))
+}
+
+fn command_part_value_escapes_workspace(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    if Path::new(value).is_absolute()
+        || looks_like_rooted_path(value)
+        || looks_like_windows_absolute_path(value)
+    {
+        return true;
+    }
+    value.split(['/', '\\']).any(|component| component == "..")
+}
+
+fn looks_like_rooted_path(value: &str) -> bool {
+    value.starts_with('/') || value.starts_with('\\')
+}
+
+fn looks_like_windows_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 fn failed_tests_from_output(output: &str) -> Vec<String> {

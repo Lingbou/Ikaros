@@ -5,21 +5,23 @@ use super::{
     AgentHarnessPendingCounts, AgentHarnessPhase,
 };
 use crate::agent_loop::{
-    AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason, AgentRuntime,
-    HarnessAgentRuntime,
+    AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason, AgentLoopToolResult,
+    AgentRuntime, HarnessAgentRuntime,
 };
 use async_trait::async_trait;
-use ikaros_core::{IkarosError, Result};
-use ikaros_harness::{ExecutionSession, SkillRegistry};
+use ikaros_core::{IkarosError, Result, RiskLevel};
+use ikaros_harness::{ExecutionSession, Skill, SkillContext, SkillOutput, SkillRegistry};
 use ikaros_models::{MockModelProvider, ModelProvider, ModelRequest, ModelResponse, TokenUsage};
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentEventSource, PersistingAgentEventSink,
-    PersistingAgentTurnSink, SessionContinuationStatus, SessionEntry, SessionEntryKind, SessionId,
-    SessionSource, SessionStore, SqliteSessionStore, TurnId, noop_agent_event_sink,
+    PersistingAgentTurnSink, SessionContinuationKind, SessionContinuationStatus, SessionEntry,
+    SessionEntryKind, SessionId, SessionSource, SessionStore, SqliteSessionStore, TurnId,
+    noop_agent_event_sink,
 };
 use serde_json::json;
 use std::{
     future::Future,
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
         Mutex,
@@ -37,6 +39,9 @@ struct RecordingRuntime {
 struct SinkOnlyRuntime;
 
 #[derive(Default)]
+struct RecoverableToolRuntime;
+
+#[derive(Default)]
 struct RecordingSink {
     events: Mutex<Vec<AgentEvent>>,
 }
@@ -52,6 +57,8 @@ struct CountingProvider {
 struct SlowProvider {
     calls: AtomicUsize,
 }
+
+struct EchoTool;
 
 #[async_trait]
 impl ModelProvider for CountingProvider {
@@ -89,6 +96,32 @@ impl ModelProvider for SlowProvider {
             usage: TokenUsage::default(),
             diagnostics: Vec::new(),
         })
+    }
+}
+
+#[async_trait]
+impl Skill for EchoTool {
+    fn name(&self) -> &'static str {
+        "echo_tool"
+    }
+
+    fn description(&self) -> &'static str {
+        "Echo test input"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::SafeRead
+    }
+
+    async fn execute(&self, input: serde_json::Value, _ctx: SkillContext) -> Result<SkillOutput> {
+        Ok(SkillOutput::new(
+            "echoed",
+            json!({"received": input, "source": "echo_tool"}),
+        ))
     }
 }
 
@@ -208,6 +241,48 @@ impl AgentRuntime for SinkOnlyRuntime {
                 iterations: 1,
                 tool_call_diagnostics: Vec::new(),
                 tool_results: Vec::new(),
+                events: Vec::new(),
+            })
+        })
+    }
+}
+
+impl AgentRuntime for RecoverableToolRuntime {
+    fn run_turn_with_events<'a>(
+        &'a self,
+        _input: AgentLoopInput,
+        _provider: &'a dyn ModelProvider,
+        _session: &'a ExecutionSession,
+        _registry: &'a SkillRegistry,
+        _event_sink: &'a dyn AgentEventSink,
+        _options: AgentLoopOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentLoopReport>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(AgentLoopReport {
+                stop_reason: AgentLoopStopReason::ToolError,
+                final_content: String::new(),
+                provider: "recoverable-runtime".into(),
+                model: "recoverable-model".into(),
+                usage: TokenUsage::default(),
+                streamed: false,
+                stream_chunks: Vec::new(),
+                iterations: 1,
+                tool_call_diagnostics: Vec::new(),
+                tool_results: vec![AgentLoopToolResult {
+                    iteration: 1,
+                    name: "echo_tool".into(),
+                    harness_call_id: None,
+                    ok: false,
+                    summary: "tool echo_tool timed out after 5 ms".into(),
+                    output: json!({
+                        "error": "tool timeout",
+                        "retry": {
+                            "tool_name": "echo_tool",
+                            "tool_input": {"value": 42},
+                        },
+                    }),
+                    recoverable: true,
+                }],
                 events: Vec::new(),
             })
         })
@@ -693,6 +768,20 @@ async fn agent_harness_cancel_aborts_next_turn_before_provider_request() {
 }
 
 #[test]
+fn agent_harness_phase_guard_resets_phase_during_unwind() {
+    let mut phase = AgentHarnessPhase::Idle;
+
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _guard = super::AgentHarnessPhaseGuard::enter(&mut phase, AgentHarnessPhase::Turn)
+            .expect("phase guard");
+        panic!("forced phase unwind");
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(phase, AgentHarnessPhase::Idle);
+}
+
+#[test]
 fn agent_harness_phase_operations_append_session_tree_entries() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = SqliteSessionStore::new(temp.path().join("state"));
@@ -871,4 +960,96 @@ async fn agent_harness_runs_retry_and_compaction_as_durable_continuations() {
             AgentEventKind::ContinuationCompleted,
         ]
     );
+}
+
+#[tokio::test]
+async fn agent_harness_runs_tool_result_continuation_with_tool_output() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let runtime = RecordingRuntime::default();
+    let provider = MockModelProvider::default();
+    let session = test_session();
+    let mut registry = SkillRegistry::new();
+    registry.register(EchoTool);
+    let sink = RecordingSink::default();
+    let mut harness = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &sink,
+    )
+    .with_continuation_store(&store);
+    let turn_id = TurnId::from("tool-turn");
+
+    let queued = harness
+        .enqueue_tool_result(turn_id.clone(), "echo_tool", json!({"value": 42}))
+        .expect("enqueue tool result continuation");
+    let continuation_result = harness
+        .run_next_continuation()
+        .await
+        .expect("run tool result continuation");
+
+    let AgentHarnessContinuation::ToolResult {
+        continuation,
+        turn_id: completed_turn_id,
+        tool_name,
+        result,
+    } = continuation_result
+    else {
+        panic!("expected tool result continuation");
+    };
+    assert_eq!(continuation.continuation_id, queued.continuation_id);
+    assert_eq!(continuation.status, SessionContinuationStatus::Completed);
+    assert_eq!(completed_turn_id, turn_id);
+    assert_eq!(tool_name, "echo_tool");
+    assert_eq!(result["ok"], json!(true));
+    assert_eq!(result["summary"], json!("echoed"));
+    assert_eq!(result["output"]["received"]["value"], json!(42));
+
+    let persisted = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations");
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].status, SessionContinuationStatus::Completed);
+    assert_eq!(
+        persisted[0].payload["tool_result"]["output"]["received"]["value"],
+        json!(42)
+    );
+}
+
+#[tokio::test]
+async fn agent_harness_enqueues_tool_result_continuation_for_recoverable_tool_report() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = SqliteSessionStore::new(temp.path().join("state"));
+    let runtime = RecoverableToolRuntime;
+    let provider = MockModelProvider::default();
+    let session = test_session();
+    let registry = SkillRegistry::new();
+    let sink = RecordingSink::default();
+    let mut harness = AgentHarness::new(
+        harness_config(),
+        &runtime,
+        &provider,
+        &session,
+        &registry,
+        &sink,
+    )
+    .with_continuation_store(&store);
+
+    let turn = harness
+        .run_turn("trigger recoverable tool")
+        .await
+        .expect("run turn");
+
+    let continuations = store
+        .continuations(&SessionId::from("session-a"))
+        .expect("continuations");
+    assert_eq!(continuations.len(), 1);
+    assert_eq!(continuations[0].kind, SessionContinuationKind::ToolResult);
+    assert_eq!(continuations[0].status, SessionContinuationStatus::Queued);
+    assert_eq!(continuations[0].turn_id, Some(turn.turn_id));
+    assert_eq!(continuations[0].payload["tool_name"], json!("echo_tool"));
+    assert_eq!(continuations[0].payload["tool_input"]["value"], json!(42));
 }

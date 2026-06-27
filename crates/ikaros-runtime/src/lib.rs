@@ -30,39 +30,44 @@ pub use agent_loop::{
     AgentLoopHooks, AgentLoopInput, AgentLoopOptions, AgentLoopReport, AgentLoopStopReason,
     AgentLoopToolCall, AgentLoopToolCallDiagnostic, AgentLoopToolCallParseStrategy,
     AgentLoopToolDefinition, AgentLoopToolResult, AgentRuntime, HarnessAgentRuntime,
-    RecordingAgentRuntime, agent_loop_tool_definitions, noop_agent_event_sink, run_agent_loop,
-    run_agent_loop_with_events,
+    RecordingAgentRuntime, agent_loop_tool_definitions, agent_toolset_selection,
+    noop_agent_event_sink, run_agent_loop, run_agent_loop_with_events,
 };
 pub use body::{
     audit_event_to_body_event, audit_event_to_body_event_for_body, base_body_status,
     body_event_kind_from_audit, current_body_frame,
 };
 pub use chat::{
-    ChatContext, ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, ChatMessageResult,
-    ChatRunOptions, ChatTurnEventOptions, ChatTurnReport, CompactInput, CompactReport,
-    ContextAssembleInput, ContextBundle, ContextEngine, ContextEvent, ContextModelBudget,
-    DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET, LocalChatContextEngine, TurnRecord, build_chat_context,
-    build_chat_context_bundle_with_engine, build_chat_context_bundle_with_model_context,
-    build_chat_context_with_engine, context_lookup_is_safe_read, extract_rag_context,
-    extract_retrieved_memory_context, new_chat_session_id, render_chat_system_prompt,
-    render_persona_agent_context, run_chat_message, run_chat_turn, run_chat_turn_with_events,
+    CHAT_HISTORY_DELETE_SESSION_OPERATION, ChatContext, ChatHistoryRecord,
+    ChatHistorySessionSummary, ChatMessageResult, ChatRunOptions, ChatTurnEventOptions,
+    ChatTurnReport, CompactInput, CompactReport, ContextAssembleInput, ContextBundle,
+    ContextEngine, ContextEvent, ContextModelBudget, DEFAULT_CHAT_CONTEXT_TOKEN_BUDGET,
+    LocalChatContextEngine, TurnRecord, build_chat_context, build_chat_context_bundle_with_engine,
+    build_chat_context_bundle_with_model_context, build_chat_context_with_engine,
+    chat_history_records_from_session_replay, chat_history_session_summaries_from_session_replays,
+    context_lookup_is_safe_read, extract_rag_context, extract_retrieved_memory_context,
+    new_chat_session_id, render_chat_system_prompt, render_persona_agent_context, run_chat_message,
+    run_chat_turn, run_chat_turn_with_events, search_chat_history_records,
 };
 pub use diagnostics::{
-    AgentSummary, AutomationSummary, GatewaySummary, ModelSummary, PersonaSummary, PluginSummary,
-    RagSummary, RuntimeDoctorReport, RuntimeInitReport, StoreSummary, VoiceSummary,
-    initialize_runtime_home, runtime_doctor_report,
+    AgentSummary, AutomationSummary, ExecutionSummary, GatewaySummary, ModelSummary,
+    PersonaSummary, PluginSummary, RagSummary, RuntimeDoctorReport, RuntimeInitReport,
+    StoreSummary, VoiceSummary, initialize_runtime_home, initialize_runtime_home_with_options,
+    runtime_doctor_report,
 };
 pub use emotion::{
     EMOTION_EVENT_KIND, latest_emotion_from_events, parse_emotion_state, record_emotion_signal,
+    record_emotion_signal_with_correlation,
 };
 pub use environment::{
-    RuntimeHarness, recent_policy_decisions, resolve_agent, resolve_agent_instance,
-    runtime_execution_env, session_and_registry, session_and_registry_for_agent,
-    session_and_registry_for_instance, skill_environment,
+    HostServices, RuntimeHarness, RuntimeLocation, recent_policy_decisions, resolve_agent,
+    resolve_agent_instance, runtime_execution_env, session_and_registry,
+    session_and_registry_for_agent, session_and_registry_for_instance, skill_environment,
 };
 pub use message::{
-    GatewayDrainContext, GatewayDrainReport, GatewayWorkerTickReport, drain_gateway_message,
-    drain_gateway_messages, run_gateway_worker_tick,
+    GatewayDrainContext, GatewayDrainReport, GatewayWorkerTickReport, PlatformDeliveryReport,
+    deliver_to_platform, drain_gateway_message, drain_gateway_messages,
+    platform_webhook_config_key, run_gateway_worker_tick,
 };
 pub use model_http::{EgressModelHttpClient, provider_egress_allowed_hosts};
 pub use persona::{

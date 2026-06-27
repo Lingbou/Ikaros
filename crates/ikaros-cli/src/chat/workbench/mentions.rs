@@ -232,13 +232,7 @@ mod tests {
     #[test]
     fn generated_workspace_mentions_are_single_line_terminal_candidates() {
         let temp = tempdir().expect("tempdir");
-        let names = [
-            "normal.rs",
-            "with\ttab.rs",
-            "with\nnewline.rs",
-            "with\rcarriage.rs",
-        ];
-        for name in names {
+        for name in ["normal.rs", "with-space.rs"] {
             fs::write(temp.path().join(name), "pub fn sample() {}\n").expect("sample file");
         }
 
@@ -254,5 +248,15 @@ mod tests {
                 "mention candidate must be single-line safe: {mention:?}"
             );
         }
+    }
+
+    #[test]
+    fn relative_slash_path_replaces_control_characters() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("with\ttab\nnewline\rcarriage.rs");
+
+        let relative = relative_slash_path(temp.path(), &path);
+
+        assert_eq!(relative, "with_tab_newline_carriage.rs");
     }
 }

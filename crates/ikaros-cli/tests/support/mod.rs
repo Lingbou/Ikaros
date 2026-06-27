@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs,
     io::{Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
+
+const CLI_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct TestHome {
     _temp: tempfile::TempDir,
@@ -61,7 +63,9 @@ impl TestHome {
     pub fn use_offline_mock_config(&self) {
         fs::write(
             self.home.join("config.yaml"),
-            r#"model:
+            r#"schema_version: 1
+
+model:
   default:
     provider: mock
     runtime: harness-agent-loop
@@ -92,15 +96,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = Command::new(env!("CARGO_BIN_EXE_ikaros"))
-        .arg("--ikaros-home")
-        .arg(home)
-        .arg("--workspace")
-        .arg(workspace)
-        .env_remove("IKAROS_RUN_LIVE_MODEL_TESTS")
-        .args(args)
-        .output()
-        .expect("run ikaros");
+    let args = collect_args(args);
+    let output = run_ikaros_command(home, workspace, &args, None).expect("run ikaros");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -124,15 +121,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = Command::new(env!("CARGO_BIN_EXE_ikaros"))
-        .arg("--ikaros-home")
-        .arg(home)
-        .arg("--workspace")
-        .arg(workspace)
-        .env_remove("IKAROS_RUN_LIVE_MODEL_TESTS")
-        .args(args)
-        .output()
-        .expect("run ikaros failure");
+    let args = collect_args(args);
+    let output = run_ikaros_command(home, workspace, &args, None).expect("run ikaros failure");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -155,25 +145,9 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ikaros"))
-        .arg("--ikaros-home")
-        .arg(home)
-        .arg("--workspace")
-        .arg(workspace)
-        .env_remove("IKAROS_RUN_LIVE_MODEL_TESTS")
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn ikaros with stdin");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin.as_bytes())
-        .expect("write ikaros stdin");
-    let output = child.wait_with_output().expect("wait ikaros stdin");
+    let args = collect_args(args);
+    let output =
+        run_ikaros_command(home, workspace, &args, Some(stdin)).expect("run ikaros with stdin");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -190,6 +164,103 @@ where
         stderr
     );
     stdout
+}
+
+fn collect_args<I, S>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter()
+        .map(|arg| arg.as_ref().to_os_string())
+        .collect()
+}
+
+fn run_ikaros_command(
+    home: &Path,
+    workspace: &Path,
+    args: &[OsString],
+    stdin: Option<&str>,
+) -> std::io::Result<Output> {
+    let stdout_file = tempfile::NamedTempFile::new()?;
+    let stderr_file = tempfile::NamedTempFile::new()?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ikaros"));
+    command
+        .arg("--ikaros-home")
+        .arg(home)
+        .arg("--workspace")
+        .arg(workspace)
+        .env_remove("IKAROS_RUN_LIVE_MODEL_TESTS")
+        .args(args)
+        .stdout(Stdio::from(stdout_file.reopen()?))
+        .stderr(Stdio::from(stderr_file.reopen()?));
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command.spawn()?;
+    if let Some(stdin) = stdin {
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(stdin.as_bytes())?;
+    }
+    Ok(wait_for_ikaros_output(
+        child,
+        stdout_file,
+        stderr_file,
+        args,
+    ))
+}
+
+fn wait_for_ikaros_output(
+    mut child: Child,
+    stdout_file: tempfile::NamedTempFile,
+    stderr_file: tempfile::NamedTempFile,
+    args: &[OsString],
+) -> Output {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("poll ikaros command") {
+            return collect_ikaros_output(status, stdout_file, stderr_file);
+        }
+        if start.elapsed() >= CLI_COMMAND_TIMEOUT {
+            let _ = child.kill();
+            let status = child.wait().expect("wait timed-out ikaros command");
+            let output = collect_ikaros_output(status, stdout_file, stderr_file);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "timed out after {:?} running ikaros {}\nstdout:\n{}\nstderr:\n{}",
+                CLI_COMMAND_TIMEOUT,
+                format_args(args),
+                stdout,
+                stderr
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn collect_ikaros_output(
+    status: ExitStatus,
+    stdout_file: tempfile::NamedTempFile,
+    stderr_file: tempfile::NamedTempFile,
+) -> Output {
+    let stdout = fs::read(stdout_file.path()).expect("read ikaros stdout");
+    let stderr = fs::read(stderr_file.path()).expect("read ikaros stderr");
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
+fn format_args(args: &[OsString]) -> String {
+    args.iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn spawn_ikaros<I, S>(home: &Path, workspace: &Path, args: I) -> Child

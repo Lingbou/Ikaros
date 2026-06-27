@@ -3,13 +3,19 @@
 use crate::support::{input_path, input_string, optional_input_path};
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, RemoteProviderConfig, Result, RiskLevel, redact_secrets};
-use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
+use ikaros_harness::{
+    ExecutionEnv, NetworkEgressRequest, PolicyRequest, Skill, SkillContext, SkillOutput,
+};
 use ikaros_voice::{
-    AsrRequest, AudioFormat, TtsRequest, VoiceProviderConfig, asr_provider_from_config,
-    tts_provider_from_config,
+    AsrProvider, AsrRequest, AudioFormat, OpenAiCompatibleVoiceProvider, TtsProvider, TtsRequest,
+    VoiceHttpBody, VoiceHttpClient, VoiceHttpRequest, VoiceHttpResponse, VoiceProviderConfig,
+    asr_provider_from_config, tts_provider_from_config,
 };
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Debug, Clone)]
 pub struct VoiceTtsSkill {
@@ -101,7 +107,11 @@ impl Skill for VoiceTtsSkill {
             .map(ToOwned::to_owned);
         let sample_rate_hz = optional_u32(&input, "sample_rate_hz")?;
         let redacted_text = redact_secrets(&text);
-        let provider = tts_provider_from_config(&self.config, &self.provider_settings)?;
+        let provider = tts_provider_for_session(
+            &self.config,
+            &self.provider_settings,
+            ctx.session.env.clone(),
+        )?;
         let mut output = provider
             .synthesize(TtsRequest {
                 text: redacted_text,
@@ -219,7 +229,11 @@ impl Skill for VoiceAsrSkill {
             .map(parse_audio_format)
             .transpose()?;
         let sample_rate_hz = optional_u32(&input, "sample_rate_hz")?;
-        let provider = asr_provider_from_config(&self.config, &self.provider_settings)?;
+        let provider = asr_provider_for_session(
+            &self.config,
+            &self.provider_settings,
+            ctx.session.env.clone(),
+        )?;
         let transcript = provider
             .transcribe(AsrRequest {
                 audio,
@@ -249,6 +263,86 @@ fn is_mock_provider(provider: &str) -> bool {
         provider.to_ascii_lowercase().as_str(),
         "mock" | "mock-tts" | "mock-asr"
     )
+}
+
+fn tts_provider_for_session(
+    config: &VoiceProviderConfig,
+    provider_settings: &RemoteProviderConfig,
+    env: Arc<dyn ExecutionEnv>,
+) -> Result<Box<dyn TtsProvider>> {
+    if is_mock_provider(&config.provider) {
+        return tts_provider_from_config(config, provider_settings);
+    }
+    if config.provider.eq_ignore_ascii_case("openai-compatible") {
+        return Ok(Box::new(
+            OpenAiCompatibleVoiceProvider::from_config_with_http_client(
+                config.provider.to_string(),
+                config,
+                provider_settings,
+                Arc::new(EgressVoiceHttpClient::new(env)),
+            )?,
+        ));
+    }
+    tts_provider_from_config(config, provider_settings)
+}
+
+fn asr_provider_for_session(
+    config: &VoiceProviderConfig,
+    provider_settings: &RemoteProviderConfig,
+    env: Arc<dyn ExecutionEnv>,
+) -> Result<Box<dyn AsrProvider>> {
+    if is_mock_provider(&config.provider) {
+        return asr_provider_from_config(config, provider_settings);
+    }
+    if config.provider.eq_ignore_ascii_case("openai-compatible") {
+        return Ok(Box::new(
+            OpenAiCompatibleVoiceProvider::from_config_with_http_client(
+                config.provider.to_string(),
+                config,
+                provider_settings,
+                Arc::new(EgressVoiceHttpClient::new(env)),
+            )?,
+        ));
+    }
+    asr_provider_from_config(config, provider_settings)
+}
+
+#[derive(Clone)]
+struct EgressVoiceHttpClient {
+    env: Arc<dyn ExecutionEnv>,
+}
+
+impl EgressVoiceHttpClient {
+    fn new(env: Arc<dyn ExecutionEnv>) -> Self {
+        Self { env }
+    }
+}
+
+#[async_trait]
+impl VoiceHttpClient for EgressVoiceHttpClient {
+    async fn send(&self, request: VoiceHttpRequest) -> Result<VoiceHttpResponse> {
+        let (body, body_bytes) = match request.body {
+            VoiceHttpBody::Text(body) => (Some(body), None),
+            VoiceHttpBody::Bytes(body) => (None, Some(body)),
+        };
+        let response = self
+            .env
+            .send_network_request(NetworkEgressRequest {
+                method: request.method,
+                url: request.url,
+                headers: request.headers,
+                body,
+                body_bytes,
+            })
+            .await?;
+        Ok(VoiceHttpResponse {
+            status: response.status,
+            headers: response.headers,
+            body: response
+                .body_bytes
+                .unwrap_or_else(|| response.body.into_bytes()),
+        })
+    }
 }
 
 fn parse_audio_format(value: &str) -> Result<AudioFormat> {

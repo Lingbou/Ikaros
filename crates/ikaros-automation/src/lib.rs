@@ -5,7 +5,10 @@ mod store;
 mod types;
 
 pub use store::LocalScheduleStore;
-pub use types::{ScheduleDeliveryTarget, ScheduleRunUpdate, ScheduledJob};
+pub use types::{
+    ScheduleDeliveryTarget, ScheduleJobOptions, ScheduleRetryPolicy, ScheduleRunHistoryEntry,
+    ScheduleRunUpdate, ScheduledJob,
+};
 
 #[cfg(test)]
 mod tests;

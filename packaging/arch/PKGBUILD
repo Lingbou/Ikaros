@@ -1,0 +1,30 @@
+# Maintainer: Ikaros contributors
+pkgname=ikaros
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Persona-first local agent runtime"
+arch=('x86_64' 'aarch64')
+url="https://github.com/lingbou/Ikaros"
+license=('GPL-3.0-only')
+depends=('gcc-libs' 'openssl')
+makedepends=('cargo' 'git')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "Ikaros-$pkgver"
+  cargo build --release --locked -p ikaros-cli
+}
+
+check() {
+  cd "Ikaros-$pkgver"
+  cargo test --workspace --locked
+}
+
+package() {
+  cd "Ikaros-$pkgver"
+  install -Dm755 target/release/ikaros "$pkgdir/usr/bin/ikaros"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 README_zh-CN.md "$pkgdir/usr/share/doc/$pkgname/README_zh-CN.md"
+}

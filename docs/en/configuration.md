@@ -1,6 +1,7 @@
 # Configuration
 
-Ikaros stores local state under `~/.ikaros` by default. Use `IKAROS_HOME` or `--ikaros-home` to isolate a run:
+Ikaros stores local state under `~/.ikaros` by default. Use `IKAROS_HOME` or
+`--ikaros-home` to isolate a run:
 
 ```bash
 export IKAROS_HOME=/tmp/ikaros-dev
@@ -11,41 +12,65 @@ ikaros --ikaros-home /tmp/ikaros-dev doctor
 `IKAROS_HOME/config.yaml`. It does not read configuration from repository
 example directories.
 
+## Schema Version
+
+Generated configs include a top-level `schema_version: 1`. Runtime loading and
+`ikaros config validate` require that field explicitly. Missing or unsupported
+schema versions fail before the runtime uses the config.
+
 ## Provider Settings
 
 Do not put real API keys in docs, tests, examples, or tracked files. A local
 untracked `IKAROS_HOME/config.yaml` may store third-party API keys directly for
 ordinary runs and smoke tests.
 
-`ikaros init` puts external-resource settings at the top of the file. Every
-remote API-backed provider has both an `api_key` and a `base_url`; model names
-stay in the feature section that sends the request.
+`ikaros init` writes a minimal model config only:
 
 ```yaml
-providers:
-  model:
-    api_key: ""
-    base_url: ""
-  embedding:
-    api_key: ""
-    base_url: ""
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
+schema_version: 1
+
+model:
+  default:
+    preset: auto
+    model: ""
     api_key: ""
     base_url: ""
 ```
 
-`providers.*` is a schema-only credentials and endpoint section. It is not
-merged into `model.default`, `rag`, or `voice`; runtime code passes the matching
-provider settings to the model, embedding, TTS, and ASR factories alongside the
-feature config that selects provider family, transport, model, timeout, and
-budgets.
+Fill `model.default.model`, `api_key`, and `base_url` for the common single-model
+case. `preset: auto` keeps runtime provider-profile detection enabled; use a
+specific preset such as `kimi`, `openai`, `anthropic`, or `ollama` when the
+provider is known. Presets expand at config-load time into the provider family,
+wire transport, and compatibility profile, so most users never need to write
+`provider`, `transport`, or `compat_profile` manually.
 
-Provider settings are read only from this section. Plaintext keys should only
-live in the local runtime home and must not be committed to the repository.
-Generated configs use these plaintext local fields directly.
+`ikaros init --full` writes the complete default YAML, including optional
+sections for providers, agent profiles, memory, RAG, voice, gateway, and
+execution settings. It is still comment-free YAML.
+
+Model credentials can be written inline under `model.default` or in the shared
+pool under `providers.model`. Inline `model.default.api_key` and
+`model.default.base_url` take precedence; empty inline values fall back to
+`providers.model`. Fallback model entries use their own `api_key` and `base_url`
+when present, otherwise they inherit the shared model provider settings.
+
+`providers.embedding`, `providers.tts`, `providers.asr`, and `providers.search`
+remain the shared provider settings for those resource types. Plaintext keys
+should only live in the local runtime home and must not be committed to the
+repository.
+
+`providers.search` supplies defaults for `web_search` when the selected provider
+needs a key or endpoint. The built-in `duckduckgo-html` provider can run with an
+empty `base_url`; Brave, Bing, SerpAPI, and Tavily-style providers can use
+`providers.search.api_key` and `providers.search.base_url`, or per-command
+`ikaros web search --provider ... --endpoint ... --api-key ...` overrides.
+
+`ikaros setup` writes the same fields without printing secret values. When one
+OpenAI-compatible endpoint handles several resource types, pass
+`--reuse-model-provider-for-embedding`, `--reuse-model-provider-for-tts`, or
+`--reuse-model-provider-for-asr` together with the resource model flag. The
+interactive setup asks the same reuse question after the model provider is
+configured.
 
 ## Validation
 
@@ -53,19 +78,35 @@ Validate the local runtime config after editing it:
 
 ```bash
 ikaros config validate
+ikaros config show
 ```
 
-Normal runtime config loading already checks YAML shape and rejects unknown
-fields before returning an `IkarosConfig`. The explicit validator runs the same
-shape checks plus semantic checks for provider/runtime/transport/backend
-combinations, missing keys, URLs, model names, and descriptor-only external
-memory providers before a remote call is attempted. Validation output uses field
+Normal runtime config loading and the explicit validator share the same shape
+and semantic checks before returning an `IkarosConfig`. They reject unknown
+fields, invalid provider/runtime/transport/backend combinations, missing keys,
+URLs, model names, and descriptor-only external memory providers before a remote
+call is attempted. Validation output uses field
 paths such as `providers.model.api_key`; it reports whether a value is missing
 or invalid but never prints secret values.
 
+For automation, use:
+
+```bash
+ikaros config validate --json
+ikaros config show --json
+```
+
+`config show` prints only a redacted runtime summary: provider families, model
+ids, storage backends, execution settings, and booleans such as
+`model_api_key_configured`. It does not print plaintext credentials or base
+URLs. The JSON mode writes only the report to stdout. Invalid configs still
+exit non-zero for validation, but the validation report is stable enough for
+scripts to read `valid`, `path`, `errors[]`, and `warnings[]`.
+
 ## Execution Boundary
 
-Runtime sessions build an `ExecutionEnv` from the `execution` section:
+Runtime sessions ask `ikaros-host` to build an `ExecutionEnv` from the
+`execution` section:
 
 ```yaml
 execution:
@@ -76,22 +117,76 @@ execution:
     timeout_ms: 30000
   sandbox:
     backend: local
+    image: rust:1.85-bookworm
     read_scope: workspace
 ```
 
 `network.enabled` turns on the HTTP egress backend. Egress remains
-deny-by-default: `allow_provider_hosts` adds exact hosts parsed from
-`providers.*.base_url` plus local Ollama defaults, and `allowed_hosts` adds
-extra exact host names for future network-capable tools. Use host names only,
-not full URLs or `host:port` strings.
+deny-by-default: `allow_provider_hosts` adds exact hosts parsed from the active
+model provider, configured agent-instance model provider overrides,
+embedding/TTS/ASR/search providers, built-in web-search provider defaults, and
+local Ollama defaults. `allowed_hosts` adds extra exact host names for future
+network-capable tools. Use host names only, not full URLs or `host:port`
+strings.
+Network egress rejects non-HTTP schemes, private/link-local/multicast literal
+IP addresses, and automatic redirects. Effective provider base URLs include
+inline `model.default.base_url` values, shared `providers.*.base_url` values,
+per-agent instance model provider overrides, and local Ollama defaults.
+Built-in web-search defaults currently cover DuckDuckGo HTML, Brave, Bing,
+SerpAPI, and Tavily-style endpoints. Explicit loopback hosts remain available
+for local providers such as Ollama; ordinary domains that resolve to restricted
+addresses are rejected by the HTTP egress transport. Resolved socket addresses
+are pinned into the per-request HTTP client after validation to avoid a second
+independent DNS lookup for the same request. This is a runtime guardrail, not a
+complete OS-level network sandbox.
 
-`sandbox.backend` is `local` or `dry-run`. Local sessions use a workspace-scoped
-filesystem/process environment and a governed HTTP egress backend. Dry-run
-sessions keep read access but skip file writes and process execution. Network
-egress is controlled separately by `execution.network.enabled` and the host
-allowlist; set `network.enabled: false` when a dry run must also avoid network
-side effects. `read_scope` is currently fixed to `workspace`; existing paths are
-canonicalized so symlink escapes are rejected for reads and writes.
+`sandbox.backend` is `local`, `dry-run`, or `docker`. Local sessions use a
+workspace-scoped filesystem/process environment and a governed HTTP egress
+backend. Dry-run sessions keep read access but skip file writes and process
+execution. Docker sessions run process execution through `docker run`, bind
+mount the workspace at `/workspace`, set the process working directory inside
+that mount, and start the container with `--network none`; `sandbox.image`
+selects the container image. File reads/writes still pass through the
+workspace-scoped `ExecutionEnv`, and provider HTTP egress still uses the
+governed runtime transport outside the process container. Network egress is
+controlled separately by `execution.network.enabled` and the host allowlist; set
+`network.enabled: false` when a dry run must also avoid network side effects.
+`read_scope` is currently fixed to `workspace`; existing paths are canonicalized
+so symlink escapes are rejected for reads and writes.
+
+## MCP Servers
+
+External MCP servers are configured under `mcp.servers` and are opt-in:
+
+```yaml
+mcp:
+  servers:
+    - id: local-tools
+      enabled: false
+      transport: stdio
+      command: /path/to/mcp-server
+      args: []
+      include_tools: []
+      exclude_tools: []
+      timeout_ms: 5000
+      max_output_bytes: 65536
+```
+
+Only `stdio` transport is supported in the current client slice. A configured
+server is never trusted as a local command: `ikaros mcp probe <id>` launches it
+through the harness process boundary and therefore still uses policy, approval,
+audit, workspace scope, timeout, and output caps. `include_tools` and
+`exclude_tools` are exact tool-name filters applied to the discovered
+`tools/list` report. HTTP MCP transport is intentionally not enabled yet; it
+must be implemented through `NetworkEgress`.
+
+Useful commands:
+
+```bash
+ikaros mcp status
+ikaros mcp status --json
+ikaros mcp probe local-tools --force
+```
 
 ## Agent Profiles
 
@@ -108,6 +203,7 @@ agent:
       network: ask
       memory_context: true
       rag_context: false
+      toolsets: [core, workspace, memory, rag, coding, voice, plugin]
     plan:
       mode: plan
       workspace_writes: deny
@@ -115,10 +211,23 @@ agent:
       network: ask
       memory_context: true
       rag_context: false
+      toolsets: [core, workspace, memory, rag, coding, voice, plugin]
 ```
 
 Keep `rag_context` false for ordinary chat. Enable it on a profile, or pass
 `--rag-top-k`, when the turn needs cited local reference snippets.
+Long-term memory search is also opt-in. Ordinary chat reads accepted memory
+projections and session working memory; use `--memory-search-limit` or the
+`memory_search` tool when a turn needs retrieved memory results.
+`toolsets` controls which skill groups are enabled for the profile. Only the
+direct surface, `core`, `workspace`, and `memory`, is injected into the model
+tool manifest. `rag`, `coding`, `voice`, and `plugin` are enabled in the
+default profiles but remain deferred; model turns discover and call them through
+`tool_search`,
+`tool_describe`, and `tool_call`. The bridge refuses deferred tools from
+toolsets that the active profile did not enable. Target execution still routes
+through harness policy, approval, and audit. Profiles that enable any deferred
+toolset must also keep `core` enabled, because the bridge tools live in `core`.
 
 Use a profile with:
 
@@ -127,7 +236,8 @@ ikaros --agent plan chat --message "review only"
 ikaros agent run --profile build --dry-run "inspect this repo"
 ```
 
-Profiles cannot bypass hard denials for destructive commands, direct secret access, protected paths, publishing actions, workspace-external writes, or self-modification.
+Profiles cannot bypass hard denials for destructive commands, direct secret access, protected paths,
+publishing actions, workspace-external writes, or self-modification.
 
 ## Agent Instances
 
@@ -144,10 +254,21 @@ agent:
       profile: build
       workspace: /home/user/src/project
       state_dir: /home/user/.ikaros/agents/repo-build
+      toolsets: [core, workspace, memory, coding]
+      providers:
+        model:
+          api_key: "sk-..."
+          base_url: "https://api.example.com/v1"
+      model:
+        provider: openai-compatible
+        runtime: harness-agent-loop
+        transport: openai-compatible-chat-completions
+        model: repo-specialist-model
       session_policy:
         history_scope: workspace
         allow_session_switch: true
         max_parallel_subagents: 4
+        max_delegation_depth: 2
       auth_scope:
         local_only: true
         allow_network: ask
@@ -162,11 +283,20 @@ Fields:
   used.
 - `state_dir`: optional state directory override. If omitted, the instance uses
   `IKAROS_HOME/agents/<agent_id>`.
+- `toolsets`: optional model-visible/deferred toolset allowlist override. If
+  omitted, the selected profile's toolsets are used. Keep `core` enabled when
+  deferred toolsets such as `rag`, `coding`, `voice`, or `plugin` are enabled.
+- `providers.model`: optional model endpoint and key override for this identity.
+  If omitted, `providers.model` is used.
+- `model`: optional full `ModelConfig` override for this identity. If omitted,
+  `model.default` is used.
 - `session_policy.history_scope`: `agent`, `session`, or `workspace`.
 - `session_policy.allow_session_switch`: whether runtime may switch sessions for
   this identity.
 - `session_policy.max_parallel_subagents`: upper bound for concurrent delegated
   work.
+- `session_policy.max_delegation_depth`: upper bound for nested agent handoff
+  depth; requests above this fail before starting the delegated task.
 - `auth_scope.local_only`: whether the identity is local-only by default.
 - `auth_scope.allow_network`: network default for this identity.
 - `route_bindings`: channel/account/peer/thread bindings used by gateway routing.
@@ -179,6 +309,11 @@ Resolution rules:
 
 Approval and audit records should use the resolved `agent_id` from the instance,
 not just the profile name.
+
+Chat, TUI, coding model loops, task agent-loop execution, `doctor`, and
+`provider inspect|health|matrix` resolve model settings through the active
+`AgentInstance`. Embedding, TTS, and ASR resources remain global unless their
+own runtime path explicitly adds an instance override.
 
 ## Local Stores
 
@@ -193,13 +328,15 @@ memory:
     forget_threshold: 0.15
     max_records_per_scope: 2000
 
-chat_history:
-  backend: sqlite
-
 rag:
   backend: sqlite
   embedding_provider: hash
 ```
+
+The agent `state.db` session store is the authoritative chat timeline. The
+runtime does not write a separate chat history mirror for ordinary chat turns.
+History, search, replay, context assembly, and workbench views project from
+session replay.
 
 Memory policy fields:
 
@@ -216,7 +353,6 @@ Memory policy fields:
 The main local paths are:
 
 - `IKAROS_HOME/memory/`
-- `IKAROS_HOME/chat/`
 - `IKAROS_HOME/rag/`
 - `IKAROS_HOME/audit/`
 - `IKAROS_HOME/automation/`
@@ -225,31 +361,27 @@ The main local paths are:
 
 ## Model Provider
 
-The generated config uses the protocol-level `openai-compatible` provider with
-empty key, URL, and model fields. A model call fails before the network request
-until all required fields are configured.
+The minimal config starts with `preset: auto` and empty key, URL, and model
+fields. A remote model call fails before the network request until all required
+fields are configured. Supported preset IDs are documented in
+`model-providers.md`; supported provider families are `openai-compatible`,
+`anthropic`, `ollama`, and `mock`.
 
-Supported model provider names are `mock`, `openai-compatible`, `anthropic`, and `ollama`.
+Provider calls made by runtime chat, task agent loops, provider-backed coding
+commands, and provider-backed RAG embedding skills now go through the session
+environment instead of a raw HTTP client. Use `ikaros provider health` to
+inspect the local health ledger and `ikaros provider health --live` to run a
+real health probe.
 
-Provider calls made by runtime chat, task agent loops, and provider-backed
-coding commands now go through session `NetworkEgress`, not a raw HTTP client.
-Use `ikaros provider health` to inspect the local health ledger and
-`ikaros provider health --live` to run a real health probe.
-
-OpenAI-compatible example:
+Single-provider OpenAI-compatible example using inline credentials:
 
 ```yaml
-providers:
-  model:
-    api_key: "replace-with-provider-key"
-    base_url: "https://api.example.com/v1"
-
 model:
   default:
-    provider: openai-compatible
-    transport: openai-compatible-chat-completions
+    preset: kimi
     model: provider-model-id
-    compat_profile: auto
+    api_key: "replace-with-provider-key"
+    base_url: "https://api.moonshot.cn/v1"
     params:
       max_tokens: null
       temperature: null
@@ -263,14 +395,31 @@ model:
       enabled: null
       effort: null
     extra_body: {}
+    cost:
+      currency: USD
+      input_per_million: null
+      output_per_million: null
+      cache_read_per_million: null
+      cache_write_per_million: null
     rate_limit_per_minute: 60
-    daily_token_budget: 100000
+    daily_token_budget: null
     max_retries: 2
 ```
 
-Provider names are adapter families, not vendor names. Use `openai-compatible`
-for any Chat Completions-compatible service and put the selected endpoint and
-model in `providers.model.base_url` and `model.default.model`.
+Preset names are the user-facing provider shortcut. Provider names are adapter
+families, not vendor names. Use an OpenAI-compatible preset for any Chat
+Completions-compatible service and put the selected endpoint and model in
+`model.default.base_url` and `model.default.model`. Multi-provider setups can
+move the shared model key and endpoint to `providers.model`; inline model fields
+continue to override that shared pool.
+
+`model.default.cost` is local pricing metadata used by `provider inspect`,
+`provider matrix`, workbench cost cells, and usage estimates. Ikaros does not
+hard-code live vendor pricing. Fill `currency`, `input_per_million`,
+`output_per_million`, `cache_read_per_million`, and `cache_write_per_million`
+from your provider account when you want cost estimates. Unknown values can stay
+`null`; cache read/write pricing falls back to input pricing when those fields
+are omitted.
 
 `max_retries` controls the governance retry policy around retryable provider
 failures such as rate limits, transient server failures, and network failures.
@@ -279,8 +428,9 @@ default uses short capped exponential backoff; this is separate from the
 OpenAI-compatible adapter's single unsupported-parameter retry.
 
 `compat_profile` controls provider/model request quirks inside the
-OpenAI-compatible adapter. `auto` first matches `providers.model.base_url`, then
-model-name hints, then falls back to `generic`. Supported explicit values are:
+OpenAI-compatible adapter. Presets fill it automatically. `auto` first matches
+the effective model base URL, then model-name hints, then falls back to
+`generic`. Supported explicit values are:
 
 - `generic`: standard Chat Completions fields only.
 - `moonshot-kimi`: Kimi/Moonshot. Omits `temperature`, defaults missing
@@ -301,9 +451,14 @@ model-name hints, then falls back to `generic`. Supported explicit values are:
   `max_tokens` default so local servers that default to very short completions
   do not truncate normal agent turns.
 
-Provider-specific `compat_profile` values are valid only with
-`provider: openai-compatible`. Native `anthropic`, `ollama`, and `mock`
-providers accept only `auto` or `generic`.
+The Moonshot sanitizer is request-only: it repairs the provider payload without
+mutating the registered tool schema. See [Model providers](model-providers.md)
+for the exact schema repair rules.
+
+OpenAI-compatible profile values are valid only with
+`provider: openai-compatible`. Native providers accept `auto`, `generic`, or
+their preset-resolved native profile (`anthropic-native`, `ollama-native`, or
+`mock`).
 
 For optional numeric `params` fields, `null` means the adapter does not send
 that parameter unless the selected profile supplies a provider default.
@@ -341,15 +496,12 @@ validation failures are not retried through this path.
 Anthropic example:
 
 ```yaml
-providers:
-  model:
-    api_key: "replace-with-anthropic-key"
-    base_url: "https://api.anthropic.com/v1"
-
 model:
   default:
-    provider: anthropic
+    preset: anthropic
     model: claude-sonnet-4-5
+    api_key: "replace-with-anthropic-key"
+    base_url: "https://api.anthropic.com"
 ```
 
 The Anthropic adapter always sends a positive `max_tokens` value. When
@@ -361,16 +513,12 @@ thinking. Claude 4.7 and newer omit sampling fields such as `temperature` and
 Ollama local example:
 
 ```yaml
-providers:
-  model:
-    api_key: ""
-    # Optional. Empty uses http://127.0.0.1:11434.
-    base_url: ""
-
 model:
   default:
-    provider: ollama
+    preset: ollama
     model: llama3.2
+    # Optional. Empty uses http://127.0.0.1:11434.
+    base_url: ""
 ```
 
 Ollama can also provide local embeddings:
@@ -395,7 +543,17 @@ Usage records are written under local audit state and do not include prompt text
 
 ## RAG
 
-The generated config uses the same provider shape for remote embeddings:
+The default config uses local `hash` embeddings, so RAG does not require a
+provider key for local indexing:
+
+```yaml
+rag:
+  backend: jsonl
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
+```
+
+For remote embeddings, use the provider settings explicitly:
 
 ```yaml
 providers:
@@ -409,30 +567,34 @@ rag:
   embedding_model: ""
 ```
 
-For fully local indexing without provider credentials, select a local embedding
-adapter explicitly:
-
-```yaml
-rag:
-  backend: jsonl
-  embedding_provider: hash
-  embedding_model: text-embedding-3-small
-```
-
 Embedding provider names are `hash`, `sparse`, `mock`, `ollama`, and
 `openai-compatible`. `hash`, `sparse`, and `mock` are local deterministic/test
-adapters. `ollama` calls a local Ollama `/api/embed` endpoint and does not need
-an API key. Cloud embeddings use the OpenAI-compatible shape and require
-approval through the harness before provider calls.
+adapters implemented by the RAG core. `ollama` and `openai-compatible` are
+remote egress adapters implemented by RAG skills, not by `ikaros-rag`. They
+require approval through the harness before provider calls; after approval, RAG
+skills route the embedding HTTP through session `NetworkEgress`.
 
 External memory providers are descriptor metadata only in the current runtime.
-`ikaros config validate` rejects enabled external memory providers because
-remote append/search adapters are not implemented.
+Runtime config loading and `ikaros config validate` reject enabled external
+memory providers because remote append/search adapters are not implemented.
 
 ## Voice
 
-The generated config uses remote OpenAI-compatible TTS and ASR slots with empty
-credentials and model names:
+The default config uses local mock voice providers, so ordinary model chat does
+not require TTS or ASR credentials:
+
+```yaml
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
+```
+
+Remote OpenAI-compatible TTS and ASR must be configured explicitly:
 
 ```yaml
 providers:
@@ -453,10 +615,9 @@ voice:
     model: ""
 ```
 
-Offline tests can explicitly choose `mock`. The only cloud voice provider name
-is `openai-compatible`; the configured remote service must actually expose the
-requested TTS or ASR endpoint. TTS text is redacted before provider calls; output
-files are treated as workspace writes.
+The only cloud voice provider name is `openai-compatible`; the configured
+remote service must actually expose the requested TTS or ASR endpoint. TTS text
+is redacted before provider calls; output files are treated as workspace writes.
 
 ## Self-Modify Checks
 

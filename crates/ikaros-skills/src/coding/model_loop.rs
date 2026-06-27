@@ -9,8 +9,9 @@ use ikaros_coding::{
     TestRunnerPlan, TurnDiffTracker,
 };
 use ikaros_core::{IkarosError, Result, redact_secrets};
-use ikaros_harness::{CancellationToken, SkillContext};
+use ikaros_harness::CancellationToken;
 use ikaros_models::{ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions};
+use ikaros_tools::SkillContext;
 use serde::Deserialize;
 use serde_json::json;
 use std::{path::Path, sync::Arc};

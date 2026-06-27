@@ -38,7 +38,10 @@ pub use relationship::{
     RelationshipMemoryNote, relationship_context_lines, relationship_notes_from_output,
 };
 pub use sqlite::SqliteMemoryStore;
-pub use types::{MemoryKind, MemoryPerspective, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore};
+pub use types::{
+    MemoryChangeReport, MemoryKind, MemoryPerspective, MemoryQuery, MemoryRecord, MemoryRef,
+    MemoryStore, MemoryUpdateReport, MemoryUpdateSnapshot,
+};
 pub use working::{JsonlWorkingMemoryStore, WorkingMemoryQuery, WorkingMemoryRecord};
 
 #[cfg(test)]

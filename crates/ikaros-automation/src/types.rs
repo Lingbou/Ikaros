@@ -40,6 +40,60 @@ impl FromStr for ScheduleDeliveryTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduleRetryPolicy {
+    pub max_attempts: u32,
+    pub backoff_seconds: u64,
+}
+
+impl ScheduleRetryPolicy {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl Default for ScheduleRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            backoff_seconds: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleJobOptions {
+    pub interval_seconds: Option<u64>,
+    pub agent: Option<String>,
+    pub deliveries: Vec<ScheduleDeliveryTarget>,
+    pub retry: ScheduleRetryPolicy,
+    pub grace_period_seconds: Option<u64>,
+    pub timezone: Option<String>,
+}
+
+impl Default for ScheduleJobOptions {
+    fn default() -> Self {
+        Self {
+            interval_seconds: None,
+            agent: None,
+            deliveries: ScheduleDeliveryTarget::default_targets(),
+            retry: ScheduleRetryPolicy::default(),
+            grace_period_seconds: None,
+            timezone: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduleRunHistoryEntry {
+    pub ran_at: String,
+    pub status: String,
+    pub summary: String,
+    pub next_run_at: Option<String>,
+    pub enabled: bool,
+    pub attempt: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScheduledJob {
     pub id: String,
     pub title: String,
@@ -51,6 +105,14 @@ pub struct ScheduledJob {
     pub interval_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<ScheduleDeliveryTarget>,
+    #[serde(default, skip_serializing_if = "ScheduleRetryPolicy::is_default")]
+    pub retry: ScheduleRetryPolicy,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retry_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_period_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -60,6 +122,8 @@ pub struct ScheduledJob {
     pub last_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<ScheduleRunHistoryEntry>,
 }
 
 impl ScheduledJob {
@@ -70,22 +134,45 @@ impl ScheduledJob {
         agent: Option<String>,
         deliveries: Vec<ScheduleDeliveryTarget>,
     ) -> Result<Self> {
+        Self::new_with_options(
+            task,
+            run_at,
+            ScheduleJobOptions {
+                interval_seconds,
+                agent,
+                deliveries,
+                ..ScheduleJobOptions::default()
+            },
+        )
+    }
+
+    pub fn new_with_options(
+        task: impl Into<String>,
+        run_at: impl Into<String>,
+        options: ScheduleJobOptions,
+    ) -> Result<Self> {
+        validate_schedule_job_options(&options)?;
         let task = redact_secrets(&task.into());
         let now = now_rfc3339()?;
         Ok(Self {
             id: Uuid::new_v4().to_string(),
             title: title_from_task(&task),
             task,
-            agent: agent.map(|value| redact_secrets(&value)),
+            agent: options.agent.map(|value| redact_secrets(&value)),
             run_at: run_at.into(),
-            interval_seconds,
-            deliveries,
+            interval_seconds: options.interval_seconds,
+            deliveries: options.deliveries,
+            retry: options.retry,
+            retry_attempts: 0,
+            grace_period_seconds: options.grace_period_seconds,
+            timezone: options.timezone.map(|value| redact_secrets(&value)),
             enabled: true,
             created_at: now.clone(),
             updated_at: now,
             last_run_at: None,
             last_status: None,
             last_summary: None,
+            history: Vec::new(),
         })
     }
 }
@@ -97,6 +184,10 @@ pub struct ScheduleRunUpdate {
     pub summary: String,
     pub next_run_at: Option<String>,
     pub enabled: bool,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 fn title_from_task(task: &str) -> String {
@@ -114,4 +205,32 @@ fn title_from_task(task: &str) -> String {
         title.push_str("...");
     }
     title
+}
+
+fn validate_schedule_job_options(options: &ScheduleJobOptions) -> Result<()> {
+    if let Some(interval_seconds) = options.interval_seconds {
+        validate_schedule_duration("schedule interval", interval_seconds)?;
+    }
+    if let Some(grace_period_seconds) = options.grace_period_seconds {
+        validate_schedule_duration("schedule grace period", grace_period_seconds)?;
+    }
+    validate_schedule_duration("schedule retry backoff", options.retry.backoff_seconds)?;
+    if options.retry.max_attempts == 0 {
+        return Err(IkarosError::Message(
+            "schedule retry max_attempts must be at least 1".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_schedule_duration(label: &str, seconds: u64) -> Result<()> {
+    if seconds == 0 {
+        return Err(IkarosError::Message(format!("{label} must be positive")));
+    }
+    if i64::try_from(seconds).is_err() {
+        return Err(IkarosError::Message(format!(
+            "{label} exceeds supported duration range"
+        )));
+    }
+    Ok(())
 }

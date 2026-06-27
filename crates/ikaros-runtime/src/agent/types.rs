@@ -11,6 +11,9 @@ pub struct AgentHandoffReport {
     pub agent: String,
     pub mode: AgentMode,
     pub task_id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     pub dry_run: bool,
     pub agent_loop: bool,
     pub policy_decisions: Vec<PolicyDecision>,

@@ -6,10 +6,21 @@ use ikaros_soul::PersonaLoader;
 use std::fs;
 
 pub fn initialize_runtime_home(paths: &IkarosPaths) -> Result<RuntimeInitReport> {
+    initialize_runtime_home_with_options(paths, false)
+}
+
+pub fn initialize_runtime_home_with_options(
+    paths: &IkarosPaths,
+    full_config: bool,
+) -> Result<RuntimeInitReport> {
     paths.ensure()?;
     let config_created = !paths.config.exists();
     if config_created {
-        IkarosConfig::write_default_config(&paths.config)?;
+        if full_config {
+            IkarosConfig::write_full_config(&paths.config)?;
+        } else {
+            IkarosConfig::write_default_config(&paths.config)?;
+        }
     }
     let persona_created = !paths.persona.exists();
     if persona_created {

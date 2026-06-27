@@ -3,7 +3,7 @@
 use crate::support::input_path;
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, RiskLevel};
-use ikaros_harness::{Skill, SkillContext, SkillOutput};
+use ikaros_tools::{Skill, SkillContext, SkillOutput};
 use serde_json::json;
 
 #[derive(Debug, Clone)]

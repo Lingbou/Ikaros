@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::payload::parse_webhook_payload;
+use super::{
+    acl::MessageWebhookAcl,
+    payload::{parse_webhook_pairing_code, parse_webhook_payload},
+};
 use anyhow::Result;
 use ikaros_core::redact_secrets;
 use ikaros_gateway::LocalGatewayStore;
@@ -47,12 +50,20 @@ impl MessageWebhookHttpResponse {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct MessageWebhookIngressPolicy<'a> {
+    pub(super) acl: Option<&'a MessageWebhookAcl>,
+    pub(super) require_pairing: bool,
+    pub(super) safe_tools: bool,
+}
+
 pub(super) fn webhook_http_response(
     method: &str,
     route: &str,
     content_type: Option<&str>,
     body: &[u8],
     store: &LocalGatewayStore,
+    policy: MessageWebhookIngressPolicy<'_>,
 ) -> Result<MessageWebhookHttpResponse> {
     match (method, route) {
         ("GET" | "HEAD", "/healthz") => Ok(MessageWebhookHttpResponse::plain(200, "OK", "ok\n")),
@@ -73,7 +84,7 @@ pub(super) fn webhook_http_response(
                     "expected application/json\n",
                 ));
             }
-            let route = match parse_webhook_payload(body) {
+            let mut route = match parse_webhook_payload(body) {
                 Ok(route) => route,
                 Err(error) => {
                     return MessageWebhookHttpResponse::json(
@@ -83,6 +94,28 @@ pub(super) fn webhook_http_response(
                     );
                 }
             };
+            if let Some(acl) = policy.acl {
+                if let Err(field) = acl.validate_route(&route) {
+                    return Ok(MessageWebhookHttpResponse::plain(
+                        403,
+                        "Forbidden",
+                        format!("webhook ACL rejected {field}\n"),
+                    ));
+                }
+            }
+            if policy.require_pairing
+                && !store.route_has_paired_peer(&route)?
+                && !confirm_webhook_pairing(store, &route, body)?
+            {
+                return Ok(MessageWebhookHttpResponse::plain(
+                    403,
+                    "Forbidden",
+                    "webhook pairing required\n",
+                ));
+            }
+            if policy.safe_tools {
+                route = route.with_safe_tools(true);
+            }
             let message = store.enqueue(route)?;
             MessageWebhookHttpResponse::json(
                 202,
@@ -107,4 +140,15 @@ pub(super) fn webhook_http_response(
 
 pub(super) fn is_message_route(route: &str) -> bool {
     matches!(route, "/message" | "/messages")
+}
+
+fn confirm_webhook_pairing(
+    store: &LocalGatewayStore,
+    route: &ikaros_gateway::GatewayRoute,
+    body: &[u8],
+) -> Result<bool> {
+    let Some(code) = parse_webhook_pairing_code(body) else {
+        return Ok(false);
+    };
+    Ok(store.confirm_pairing_for_route(route, &code)?.is_some())
 }

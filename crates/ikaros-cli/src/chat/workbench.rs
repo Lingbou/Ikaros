@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+mod input;
 mod mentions;
+mod screen;
 mod slash;
 mod status;
 
 use anyhow::Result;
 use ikaros_core::{IkarosPaths, redact_secrets};
+use ikaros_models::ModelStreamEvent;
 use ikaros_session::{AgentEvent, AgentEventKind, SessionEntry};
 use std::{
     fs::{self, OpenOptions},
@@ -13,13 +16,45 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) use super::output::render_terminal_markdown;
+
+pub(super) use input::{
+    WorkbenchInputAction, WorkbenchInputEvent, WorkbenchInputState, WorkbenchTerminalInputOutcome,
+    apply_workbench_terminal_input_event, format_workbench_input_model_detail,
+    format_workbench_input_state, parse_workbench_input_event, parse_workbench_terminal_event,
+};
 pub(super) use mentions::print_context_mentions;
-pub(super) use slash::{print_slash_commands, suggest_slash_command};
+#[cfg(test)]
+pub(super) use screen::apply_workbench_screen_key_event;
+pub(super) use screen::{
+    PersistentWorkbenchTerminal, WorkbenchScreen, WorkbenchScreenApprovalAction,
+    WorkbenchScreenContinuationAction, WorkbenchScreenInputAction, WorkbenchScreenOpenAction,
+    WorkbenchScreenState, apply_workbench_screen_args, apply_workbench_screen_key_event_with_view,
+    apply_workbench_screen_mouse_event_with_view, command_requires_explicit_action,
+    draw_persistent_fullscreen_terminal_frame, fullscreen_terminal_exit_sequence,
+    render_fullscreen_terminal_frame, render_fullscreen_workbench_with_state,
+    render_persistent_fullscreen_terminal_frame, screen_json_line,
+    screen_selected_actions_json_line, screen_selected_actions_line, screen_selected_cell_line,
+    screen_selected_primary_action,
+};
+pub(super) use slash::{
+    SlashCommandPaletteItem, format_slash_command_help, print_slash_commands,
+    slash_command_completion_candidates, slash_command_palette_items,
+    slash_command_palette_summary, slash_command_registry_summary, suggest_slash_command,
+};
 pub(super) use status::{
-    TimelineVerbosity, print_approval_status, print_context_status, print_diff_status,
-    print_gateway_status, print_memory_status, print_rag_status, print_replay_status,
-    print_session_history, print_session_status, print_session_summaries, print_tasks_status,
-    print_trace_status, print_workbench_status,
+    TimelineRequest, TimelineVerbosity, WorkbenchScreenStatusContext,
+    apply_input_state_to_cached_screen, apply_live_model_stream_to_cached_screen,
+    apply_pending_user_input_to_cached_screen, apply_progress_to_cached_screen,
+    build_screen_status, draw_persistent_screen_status_with_input_state,
+    draw_persistent_screen_status_with_state, format_model_budget_status, print_api_status,
+    print_approval_status, print_context_status, print_diff_status, print_gateway_status,
+    print_mcp_status, print_memory_status, print_model_status,
+    print_persistent_screen_status_with_input_state, print_persistent_screen_status_with_state,
+    print_rag_status, print_replay_status, print_screen_status, print_screen_status_with_state,
+    print_session_export, print_session_history, print_session_status, print_session_summaries,
+    print_tasks_status, print_tools_status, print_trace_status, print_workbench_status,
+    selected_screen_primary_action,
 };
 
 pub(super) const MULTILINE_TERMINATOR: &str = ".";
@@ -40,8 +75,44 @@ pub(super) fn append_workbench_history(paths: &IkarosPaths, input: &str) -> Resu
     Ok(path)
 }
 
-pub(super) fn format_workbench_help() -> &'static str {
-    "commands: /help, /commands [query], /queue [message|clear], /agents, /agent <profile>, /status, /sessions, /session status|resume|history, /resume <session>, /new, /fork [summary], /timeline, /replay, /debug, /trace, /mentions [query], /context, /memory, /rag, /model, /provider [inspect|health [--live]|matrix [--live]], /gateway, /tasks, /approval, /diff, /clear, /code <plan|apply|test|review|rollback> ..., /multi, /quit"
+pub(super) fn load_workbench_history_entries(
+    paths: &IkarosPaths,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let path = workbench_history_path(paths);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&path)?;
+    let mut entries = content
+        .split("\n---\n")
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(terminal_message)
+        .collect::<Vec<_>>();
+    let limit = limit.max(1);
+    let start = entries.len().saturating_sub(limit);
+    Ok(entries.split_off(start))
+}
+
+pub(super) fn print_workbench_input_history(paths: &IkarosPaths, limit: usize) -> Result<()> {
+    let path = workbench_history_path(paths);
+    let entries = load_workbench_history_entries(paths, limit)?;
+    if entries.is_empty() {
+        println!("workbench_input_history: 0");
+        println!("workbench_history: {}", path_display(&path));
+        return Ok(());
+    }
+    println!("workbench_input_history: {}", entries.len());
+    println!("workbench_history: {}", path_display(&path));
+    for (index, entry) in entries.iter().enumerate() {
+        println!("- index={} input={}", index + 1, entry);
+    }
+    Ok(())
+}
+
+pub(super) fn format_workbench_help() -> String {
+    format_slash_command_help()
 }
 
 pub(super) fn normalize_session_id(input: &str) -> String {
@@ -55,10 +126,68 @@ pub(super) fn path_display(path: &Path) -> String {
 }
 
 pub(super) fn terminal_inline(input: &str) -> String {
-    redact_secrets(input)
+    redact_secrets(&strip_terminal_control_sequences(input))
         .chars()
         .map(|ch| if ch.is_control() { '_' } else { ch })
         .collect()
+}
+
+pub(super) fn terminal_message(input: &str) -> String {
+    redact_secrets(&strip_terminal_control_sequences(input))
+        .chars()
+        .filter_map(|ch| match ch {
+            '\n' => Some('\n'),
+            '\r' => None,
+            ch if ch.is_control() => Some('_'),
+            ch => Some(ch),
+        })
+        .collect()
+}
+
+fn strip_terminal_control_sequences(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            output.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                skip_until_string_terminator(&mut chars);
+            }
+            Some('P' | '_' | '^') => {
+                chars.next();
+                skip_until_string_terminator(&mut chars);
+            }
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    output
+}
+
+fn skip_until_string_terminator(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(ch) = chars.next() {
+        if ch == '\u{7}' {
+            break;
+        }
+        if ch == '\u{1b}' && chars.peek() == Some(&'\\') {
+            chars.next();
+            break;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +205,7 @@ pub(super) enum WorkbenchCellKind {
 }
 
 impl WorkbenchCellKind {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Session => "session",
             Self::Model => "model",
@@ -197,15 +326,397 @@ pub(super) fn session_entry_cell(entry: &SessionEntry) -> WorkbenchCell {
 }
 
 pub(super) fn agent_event_cell(event: &AgentEvent) -> WorkbenchCell {
-    WorkbenchCell {
-        kind: agent_event_cell_kind(&event.kind),
-        title: format!(
+    let correlation_id = agent_event_correlation_id(event);
+    let (title_extra, detail) = match &event.kind {
+        AgentEventKind::ModelStream(stream_event) => {
+            let label = format!("stream_event={}", model_stream_event_label(stream_event));
+            let detail = model_stream_event_detail(stream_event, &correlation_id, event);
+            (Some(label), detail)
+        }
+        AgentEventKind::ModelDiagnostic(diagnostic) => {
+            let label = format!("diagnostic={}", terminal_inline(&diagnostic.kind));
+            let detail = if diagnostic.message.trim().is_empty() {
+                format!(
+                    "{} correlation={} event={}",
+                    label,
+                    correlation_id,
+                    terminal_inline(event.event_id.as_str())
+                )
+            } else {
+                format!(
+                    "{} correlation={} message={} event={}",
+                    label,
+                    correlation_id,
+                    terminal_inline(&diagnostic.message),
+                    terminal_inline(event.event_id.as_str())
+                )
+            };
+            (Some(label), detail)
+        }
+        AgentEventKind::ToolCallStarted
+        | AgentEventKind::ToolCallOutputDelta
+        | AgentEventKind::ToolCallCompleted
+        | AgentEventKind::ToolCallFailed
+        | AgentEventKind::ToolCallCancelled => {
+            let detail = tool_progress_detail(event, &correlation_id);
+            let label = format!(
+                "tool={} status={}",
+                json_str(&event.payload, "name").unwrap_or("unknown"),
+                json_str(&event.payload, "status")
+                    .unwrap_or_else(|| default_tool_event_status(&event.kind))
+            );
+            (Some(terminal_inline(&label)), detail)
+        }
+        AgentEventKind::ContextDiff | AgentEventKind::ContextCompacted => {
+            let detail = context_progress_detail(event, &correlation_id);
+            let label = match event.kind {
+                AgentEventKind::ContextDiff => format!(
+                    "sections={} references={}",
+                    json_array_len(&event.payload, "sections"),
+                    json_array_len(&event.payload, "references")
+                ),
+                AgentEventKind::ContextCompacted => format!(
+                    "compressed_sections={}",
+                    json_array_len(&event.payload, "compressed_sections")
+                ),
+                _ => unreachable!("context progress branch only receives context events"),
+            };
+            (Some(terminal_inline(&label)), detail)
+        }
+        AgentEventKind::ContinuationStarted
+        | AgentEventKind::ContinuationCompleted
+        | AgentEventKind::ContinuationFailed
+        | AgentEventKind::ContinuationCancelled => {
+            let detail = continuation_progress_detail(event, &correlation_id);
+            let label = format!(
+                "continuation_id={} status={}",
+                json_str(&event.payload, "continuation_id").unwrap_or("unknown"),
+                json_str(&event.payload, "status")
+                    .unwrap_or_else(|| { default_continuation_event_status(&event.kind) })
+            );
+            (Some(terminal_inline(&label)), detail)
+        }
+        AgentEventKind::Error => {
+            let detail = error_event_detail(event, &correlation_id);
+            let label = format!(
+                "phase={}",
+                terminal_inline(json_str(&event.payload, "phase").unwrap_or("unknown"))
+            );
+            (Some(label), detail)
+        }
+        _ => (
+            None,
+            format!(
+                "correlation={} event={}",
+                correlation_id,
+                terminal_inline(event.event_id.as_str())
+            ),
+        ),
+    };
+    let title = if let Some(extra) = title_extra {
+        format!(
+            "event {} {} turn={}",
+            agent_event_label(&event.kind),
+            extra,
+            terminal_inline(event.turn_id.as_str())
+        )
+    } else {
+        format!(
             "event {} turn={}",
             agent_event_label(&event.kind),
             terminal_inline(event.turn_id.as_str())
-        ),
-        detail: terminal_inline(event.event_id.as_str()),
+        )
+    };
+    WorkbenchCell {
+        kind: agent_event_cell_kind(&event.kind),
+        title,
+        detail,
     }
+}
+
+fn error_event_detail(event: &AgentEvent, correlation_id: &str) -> String {
+    let phase = json_str(&event.payload, "phase").unwrap_or("unknown");
+    let message = json_str(&event.payload, "message").unwrap_or("unknown error");
+    let error_kind = workbench_error_kind(message);
+    format!(
+        "phase={} kind={} message={} {} correlation={} event={}",
+        terminal_inline(phase),
+        error_kind,
+        render_terminal_markdown(message),
+        error_recovery_commands(error_kind, message),
+        correlation_id,
+        terminal_inline(event.event_id.as_str())
+    )
+}
+
+fn workbench_error_kind(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("cancelled") || lower.contains("canceled") {
+        "cancelled"
+    } else {
+        super::interactive_chat_turn_error_kind(message)
+    }
+}
+
+fn error_recovery_commands(error_kind: &str, message: &str) -> String {
+    match error_kind {
+        "budget_exceeded" => {
+            let raise = super::suggested_budget_command(message)
+                .unwrap_or_else(|| "/budget set <tokens>".into());
+            format!(
+                "command=/status budget=/budget raise={} disable=/budget disable trace=/trace --failed",
+                terminal_inline(&raise)
+            )
+        }
+        "provider_error" => {
+            "command=/provider debug health=/provider health --live trace=/trace --failed".into()
+        }
+        "unsupported_content" => {
+            "command=/attach list clear=/attach clear matrix=/provider matrix trace=/trace --failed"
+                .into()
+        }
+        "cancelled" => "command=/trace --failed".into(),
+        _ => "command=/trace --failed".into(),
+    }
+}
+
+fn model_stream_event_label(event: &ModelStreamEvent) -> &'static str {
+    match event {
+        ModelStreamEvent::Start { .. } => "start",
+        ModelStreamEvent::TextDelta(_) => "text_delta",
+        ModelStreamEvent::ReasoningDelta(_) => "reasoning_delta",
+        ModelStreamEvent::ToolCallStart { .. } => "tool_call_start",
+        ModelStreamEvent::ToolCallDelta { .. } => "tool_call_delta",
+        ModelStreamEvent::ToolCallEnd { .. } => "tool_call_end",
+        ModelStreamEvent::RefusalDelta(_) => "refusal_delta",
+        ModelStreamEvent::Usage(_) => "usage",
+        ModelStreamEvent::Error { .. } => "error",
+        ModelStreamEvent::Done => "done",
+    }
+}
+
+fn model_stream_event_detail(
+    stream_event: &ModelStreamEvent,
+    correlation_id: &str,
+    event: &AgentEvent,
+) -> String {
+    let event_id = terminal_inline(event.event_id.as_str());
+    match stream_event {
+        ModelStreamEvent::Start { provider, model } => format!(
+            "provider={} model={} correlation={} event={}",
+            terminal_inline(provider),
+            terminal_inline(model),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::TextDelta(text) => format!(
+            "markdown={} correlation={} event={}",
+            render_terminal_markdown(text),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::ReasoningDelta(text) => format!(
+            "reasoning_markdown={} correlation={} event={}",
+            render_terminal_markdown(text),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::RefusalDelta(text) => format!(
+            "refusal_markdown={} correlation={} event={}",
+            render_terminal_markdown(text),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::ToolCallStart { id, name } => format!(
+            "tool_call_id={} name={} correlation={} event={}",
+            terminal_inline(id),
+            terminal_inline(name),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::ToolCallDelta { id, args_delta } => format!(
+            "tool_call_id={} args_delta={} correlation={} event={}",
+            terminal_inline(id),
+            terminal_inline(args_delta),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::ToolCallEnd { id } => format!(
+            "tool_call_id={} correlation={} event={}",
+            terminal_inline(id),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::Usage(usage) => format!(
+            "prompt_tokens={} completion_tokens={} total_tokens={} cache_read_tokens={} cache_write_tokens={} correlation={} event={}",
+            usage
+                .prompt_tokens
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            usage
+                .completion_tokens
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            usage
+                .total_tokens
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            usage
+                .cache_read_tokens
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            usage
+                .cache_write_tokens
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::Error { message } => format!(
+            "error_markdown={} correlation={} event={}",
+            render_terminal_markdown(message),
+            correlation_id,
+            event_id
+        ),
+        ModelStreamEvent::Done => format!("correlation={} event={}", correlation_id, event_id),
+    }
+}
+
+fn tool_progress_detail(event: &AgentEvent, correlation_id: &str) -> String {
+    let payload = &event.payload;
+    let tool = json_str(payload, "name").unwrap_or("unknown");
+    let status =
+        json_str(payload, "status").unwrap_or_else(|| default_tool_event_status(&event.kind));
+    let call = json_str(payload, "tool_call_id")
+        .or_else(|| json_str(payload, "id"))
+        .unwrap_or("unknown");
+    let mode = json_str(payload, "execution_mode").unwrap_or("unknown");
+    let timeout = json_u64(payload, "timeout_ms")
+        .map(|timeout| timeout.to_string())
+        .unwrap_or_else(|| "none".into());
+    let summary = json_str(payload, "summary").unwrap_or("none");
+    format!(
+        "tool={} status={} call={} mode={} timeout_ms={} summary={} correlation={} event={}",
+        terminal_inline(tool),
+        terminal_inline(status),
+        terminal_inline(call),
+        terminal_inline(mode),
+        timeout,
+        terminal_inline(summary),
+        correlation_id,
+        terminal_inline(event.event_id.as_str())
+    )
+}
+
+fn default_tool_event_status(kind: &AgentEventKind) -> &'static str {
+    match kind {
+        AgentEventKind::ToolCallStarted => "started",
+        AgentEventKind::ToolCallOutputDelta => "output",
+        AgentEventKind::ToolCallCompleted => "completed",
+        AgentEventKind::ToolCallFailed => "failed",
+        AgentEventKind::ToolCallCancelled => "cancelled",
+        _ => "unknown",
+    }
+}
+
+fn continuation_progress_detail(event: &AgentEvent, correlation_id: &str) -> String {
+    let payload = &event.payload;
+    let continuation_id = json_str(payload, "continuation_id").unwrap_or("unknown");
+    let kind = json_str(payload, "kind").unwrap_or("unknown");
+    let status = json_str(payload, "status")
+        .unwrap_or_else(|| default_continuation_event_status(&event.kind));
+    let reason = json_str(payload, "reason").unwrap_or("none");
+    let attempts = json_u64(payload, "attempt_count")
+        .map(|attempts| attempts.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    format!(
+        "continuation_id={} continuation_kind={} status={} reason={} attempts={} correlation={} event={}",
+        terminal_inline(continuation_id),
+        terminal_inline(kind),
+        terminal_inline(status),
+        terminal_inline(reason),
+        attempts,
+        correlation_id,
+        terminal_inline(event.event_id.as_str())
+    )
+}
+
+fn default_continuation_event_status(kind: &AgentEventKind) -> &'static str {
+    match kind {
+        AgentEventKind::ContinuationStarted => "started",
+        AgentEventKind::ContinuationCompleted => "completed",
+        AgentEventKind::ContinuationFailed => "failed",
+        AgentEventKind::ContinuationCancelled => "cancelled",
+        _ => "unknown",
+    }
+}
+
+fn context_progress_detail(event: &AgentEvent, correlation_id: &str) -> String {
+    match event.kind {
+        AgentEventKind::ContextDiff => {
+            let budget = event
+                .payload
+                .get("budget")
+                .unwrap_or(&serde_json::Value::Null);
+            format!(
+                "sections={} references={} used={} max={} context_window={} estimator={} compressed={} continuation_prompt={} correlation={} event={}",
+                json_array_len(&event.payload, "sections"),
+                json_array_len(&event.payload, "references"),
+                json_u64(budget, "used_tokens").unwrap_or(0),
+                json_u64(budget, "max_tokens").unwrap_or(0),
+                json_u64(budget, "context_window").unwrap_or(0),
+                terminal_inline(json_str(budget, "estimator").unwrap_or("unknown")),
+                yes_no(
+                    event.payload.get("compression_summary").is_some()
+                        || json_array_len(&event.payload, "compressed_sections") > 0
+                ),
+                yes_no(event.payload.get("continuation_prompt").is_some()),
+                correlation_id,
+                terminal_inline(event.event_id.as_str())
+            )
+        }
+        AgentEventKind::ContextCompacted => format!(
+            "compressed_sections={} continuation_prompt={} summary={} correlation={} event={}",
+            json_array_len(&event.payload, "compressed_sections"),
+            yes_no(event.payload.get("continuation_prompt").is_some()),
+            terminal_inline(json_str(&event.payload, "summary").unwrap_or("none")),
+            correlation_id,
+            terminal_inline(event.event_id.as_str())
+        ),
+        _ => format!(
+            "correlation={} event={}",
+            correlation_id,
+            terminal_inline(event.event_id.as_str())
+        ),
+    }
+}
+
+fn json_str<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    payload.get(key).and_then(serde_json::Value::as_str)
+}
+
+fn json_u64(payload: &serde_json::Value, key: &str) -> Option<u64> {
+    payload.get(key).and_then(serde_json::Value::as_u64)
+}
+
+fn json_array_len(payload: &serde_json::Value, key: &str) -> usize {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn agent_event_correlation_id(event: &AgentEvent) -> String {
+    format!(
+        "session:{}:turn:{}",
+        terminal_inline(event.session_id.as_str()),
+        terminal_inline(event.turn_id.as_str())
+    )
 }
 
 pub(super) fn coding_event_cells<'a>(
@@ -231,8 +742,9 @@ pub(super) fn coding_event_cells<'a>(
                     kind: WorkbenchCellKind::Coding,
                     title: format!("coding {group}"),
                     detail: format!(
-                        "turn={} kind={} summary={}",
+                        "turn={} correlation={} kind={} summary={}",
                         terminal_inline(event.turn_id.as_str()),
+                        agent_event_correlation_id(event),
                         terminal_inline(kind),
                         terminal_inline(summary)
                     ),
@@ -260,7 +772,9 @@ fn optional_turn(turn_id: &Option<ikaros_session::TurnId>) -> String {
 
 fn agent_event_cell_kind(kind: &AgentEventKind) -> WorkbenchCellKind {
     match kind {
-        AgentEventKind::ModelStream(_) => WorkbenchCellKind::Model,
+        AgentEventKind::ModelStream(_) | AgentEventKind::ModelDiagnostic(_) => {
+            WorkbenchCellKind::Model
+        }
         AgentEventKind::ToolCallStarted
         | AgentEventKind::ToolCallOutputDelta
         | AgentEventKind::ToolCallCompleted
@@ -293,6 +807,7 @@ fn agent_event_label(kind: &AgentEventKind) -> &'static str {
         AgentEventKind::TurnStart => "turn_start",
         AgentEventKind::UserMessage => "user_message",
         AgentEventKind::ModelStream(_) => "model_stream",
+        AgentEventKind::ModelDiagnostic(_) => "model_diagnostic",
         AgentEventKind::ToolCallStarted => "tool_call_started",
         AgentEventKind::ToolCallOutputDelta => "tool_call_output_delta",
         AgentEventKind::ToolCallCompleted => "tool_call_completed",
@@ -333,12 +848,30 @@ mod tests {
     }
 
     #[test]
+    fn workbench_history_preserves_multiline_entries_without_secret_leakage() {
+        let temp = tempdir().expect("tempdir");
+        let paths = IkarosPaths::from_home(temp.path());
+
+        append_workbench_history(&paths, "first\napi_key=sk-secret-value\nthird").expect("append");
+
+        let entries = load_workbench_history_entries(&paths, 10).expect("history entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], "first\n[REDACTED_SECRET]\nthird");
+    }
+
+    #[test]
     fn terminal_inline_redacts_and_replaces_control_characters() {
         let rendered = terminal_inline("token sk-secret-value\nnext\tcell\r");
 
         assert!(!rendered.contains("sk-secret-value"));
         assert!(!rendered.chars().any(char::is_control));
         assert_eq!(rendered, "token [REDACTED_SECRET]_next_cell_");
+    }
+
+    #[test]
+    fn terminal_message_strips_mouse_escape_sequences() {
+        let rendered = terminal_message("\u{1b}[<35;55;37Mhello\u{1b}[<35;55;37m");
+        assert_eq!(rendered, "hello");
     }
 
     #[test]
@@ -384,6 +917,177 @@ mod tests {
         assert!(rendered.contains("kind=coding"));
         assert!(rendered.contains("coding_turn"));
         assert!(rendered.contains("turn=turn-one"));
+    }
+
+    #[test]
+    fn agent_event_cell_renders_tool_progress_payload_without_secret_leakage() {
+        let event = AgentEvent {
+            event_id: EventId::from("event-tool"),
+            session_id: SessionId::from("session-tool"),
+            turn_id: TurnId::from("turn-tool"),
+            parent_event_id: None,
+            at: time::OffsetDateTime::now_utc(),
+            source: ikaros_session::AgentEventSource::Tool,
+            kind: AgentEventKind::ToolCallFailed,
+            payload: serde_json::json!({
+                "tool_call_id": "call-123",
+                "tool_event_id": "event-started",
+                "name": "shell_exec",
+                "status": "failed",
+                "ok": false,
+                "execution_mode": "sequential",
+                "timeout_ms": 5000,
+                "summary": "command failed with api_key=sk-secret-value",
+                "output": {
+                    "error": "exit 1 token=sk-secret-value",
+                    "recoverable": true
+                }
+            }),
+        };
+
+        let rendered = agent_event_cell(&event).render();
+
+        assert!(rendered.contains("kind=tool"));
+        assert!(rendered.contains("tool_call_failed"));
+        assert!(rendered.contains("tool=shell_exec"));
+        assert!(rendered.contains("status=failed"));
+        assert!(rendered.contains("call=call-123"));
+        assert!(rendered.contains("mode=sequential"));
+        assert!(rendered.contains("timeout_ms=5000"));
+        assert!(rendered.contains("summary=command failed"));
+        assert!(!rendered.contains("sk-secret-value"));
+        assert!(rendered.contains("[REDACTED_SECRET]"));
+    }
+
+    #[test]
+    fn agent_event_cell_renders_continuation_payload_without_secret_leakage() {
+        let event = AgentEvent {
+            event_id: EventId::from("event-continuation"),
+            session_id: SessionId::from("session-continuation"),
+            turn_id: TurnId::from("turn-continuation"),
+            parent_event_id: None,
+            at: time::OffsetDateTime::now_utc(),
+            source: ikaros_session::AgentEventSource::Runtime,
+            kind: AgentEventKind::ContinuationCancelled,
+            payload: serde_json::json!({
+                "continuation_id": "continuation-one",
+                "kind": "next_turn",
+                "status": "cancelled",
+                "reason": "operator cancelled token=sk-secret-value",
+                "attempt_count": 2,
+            }),
+        };
+
+        let rendered = agent_event_cell(&event).render();
+
+        assert!(rendered.contains("kind=continuation"));
+        assert!(rendered.contains("continuation_cancelled"));
+        assert!(rendered.contains("continuation_id=continuation-one"));
+        assert!(rendered.contains("continuation_kind=next_turn"));
+        assert!(rendered.contains("status=cancelled"));
+        assert!(rendered.contains("reason=operator cancelled"));
+        assert!(rendered.contains("[REDACTED_SECRET]"));
+        assert!(rendered.contains("attempts=2"));
+        assert!(!rendered.contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn agent_event_cell_renders_context_progress_payload_without_secret_leakage() {
+        let event = AgentEvent {
+            event_id: EventId::from("event-context"),
+            session_id: SessionId::from("session-context"),
+            turn_id: TurnId::from("turn-context"),
+            parent_event_id: None,
+            at: time::OffsetDateTime::now_utc(),
+            source: ikaros_session::AgentEventSource::Context,
+            kind: AgentEventKind::ContextDiff,
+            payload: serde_json::json!({
+                "budget": {
+                    "used_tokens": 1024,
+                    "max_tokens": 4096,
+                    "context_window": 8192,
+                    "estimator": "heuristic-v1"
+                },
+                "sections": [
+                    {"kind": "history"},
+                    {"kind": "references", "lines": ["token sk-secret-value"]}
+                ],
+                "references": [
+                    {"raw": "@file:src/lib.rs:1-4"}
+                ],
+                "compression_summary": "compressed token sk-secret-value",
+                "continuation_prompt": "continue"
+            }),
+        };
+
+        let rendered = agent_event_cell(&event).render();
+
+        assert!(rendered.contains("kind=context"));
+        assert!(rendered.contains("context_diff"));
+        assert!(rendered.contains("sections=2"));
+        assert!(rendered.contains("references=1"));
+        assert!(rendered.contains("used=1024"));
+        assert!(rendered.contains("max=4096"));
+        assert!(rendered.contains("context_window=8192"));
+        assert!(rendered.contains("estimator=heuristic-v1"));
+        assert!(rendered.contains("compressed=yes"));
+        assert!(rendered.contains("continuation_prompt=yes"));
+        assert!(!rendered.contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn agent_event_cell_renders_model_stream_markdown_without_secret_leakage() {
+        let event = AgentEvent {
+            event_id: EventId::from("event-model"),
+            session_id: SessionId::from("session-model"),
+            turn_id: TurnId::from("turn-model"),
+            parent_event_id: None,
+            at: time::OffsetDateTime::now_utc(),
+            source: ikaros_session::AgentEventSource::Model,
+            kind: AgentEventKind::ModelStream(ikaros_models::ModelStreamEvent::TextDelta(
+                "Here is code:\n\n```rust\nlet token = \"sk-secret-value\";\n```\n\n| File | Status |\n| --- | --- |\n| src/lib.rs | changed |\n".into(),
+            )),
+            payload: serde_json::Value::Null,
+        };
+
+        let rendered = agent_event_cell(&event).render();
+
+        assert!(rendered.contains("kind=model"));
+        assert!(rendered.contains("model_stream"));
+        assert!(rendered.contains("stream_event=text_delta"));
+        assert!(rendered.contains("[code rust]"));
+        assert!(rendered.contains("[REDACTED_SECRET]"));
+        assert!(rendered.contains("[table]"));
+        assert!(rendered.contains("File | Status"));
+        assert!(!rendered.contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn agent_event_cell_renders_error_phase_message_and_recovery_actions() {
+        let event = AgentEvent {
+            event_id: EventId::from("event-error"),
+            session_id: SessionId::from("session-error"),
+            turn_id: TurnId::from("turn-error"),
+            parent_event_id: None,
+            at: time::OffsetDateTime::now_utc(),
+            source: ikaros_session::AgentEventSource::Runtime,
+            kind: AgentEventKind::Error,
+            payload: serde_json::json!({
+                "phase": "model_call",
+                "message": "temporary failure in name resolution api_key=sk-secret-value"
+            }),
+        };
+
+        let rendered = agent_event_cell(&event).render();
+
+        assert!(rendered.contains("kind=error"));
+        assert!(rendered.contains("error"));
+        assert!(rendered.contains("phase=model_call"));
+        assert!(rendered.contains("kind=provider_error"));
+        assert!(rendered.contains("/provider debug"));
+        assert!(rendered.contains("/provider health --live"));
+        assert!(rendered.contains("[REDACTED_SECRET]"));
+        assert!(!rendered.contains("sk-secret-value"));
     }
 
     #[test]
@@ -463,4 +1167,330 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn fullscreen_workbench_frame_renders_core_panels_without_secret_leakage() {
+        let screen = WorkbenchScreen {
+            title: "Ikaros Workbench".into(),
+            status: vec![
+                WorkbenchCell {
+                    kind: WorkbenchCellKind::Model,
+                    title: "model".into(),
+                    detail: "provider=openai-compatible model=kimi-k2.6".into(),
+                },
+                WorkbenchCell {
+                    kind: WorkbenchCellKind::Continuation,
+                    title: "queue".into(),
+                    detail: "running=1 pending=2".into(),
+                },
+            ],
+            timeline: vec![WorkbenchCell {
+                kind: WorkbenchCellKind::Coding,
+                title: "coding test failed".into(),
+                detail: "turn=turn-one cargo test failed".into(),
+            }],
+            main: vec![WorkbenchCell {
+                kind: WorkbenchCellKind::Context,
+                title: "context".into(),
+                detail: "budget=8192 references=2".into(),
+            }],
+            side: vec![WorkbenchCell {
+                kind: WorkbenchCellKind::Approval,
+                title: "approval pending".into(),
+                detail: "write=true shell=true token=sk-secret-value".into(),
+            }],
+            footer: "session=session-one /approval approve <id>".into(),
+            input_hint: "/code apply --run-tests".into(),
+        };
+
+        let frame = render_fullscreen_workbench_with_state(
+            &screen,
+            &WorkbenchScreenState::default(),
+            72,
+            18,
+        );
+
+        assert!(frame.contains("Ikaros"));
+        assert!(frame.contains("kimi-k2.6"));
+        assert!(frame.contains("Ask Ikaros to do anything"));
+        assert!(!frame.contains("Timeline"));
+        assert!(!frame.contains("Approvals / Queue"));
+        assert!(!frame.contains("selected panel="));
+        assert!(!frame.contains("actions selector="));
+        assert!(!frame.contains("sk-secret-value"));
+        for line in frame.lines() {
+            assert!(
+                line.chars().count() <= 72,
+                "frame line exceeds width: {line}"
+            );
+        }
+        assert_eq!(frame.lines().count(), 18);
+    }
+
+    #[test]
+    fn workbench_input_state_recalls_history_and_completes_slash_commands() {
+        let mut input = WorkbenchInputState::default();
+        input.record_history("first message");
+        input.record_history("/status");
+
+        assert_eq!(
+            input.apply(WorkbenchInputAction::HistoryPrevious),
+            Some("/status".into())
+        );
+        assert_eq!(
+            input.apply(WorkbenchInputAction::HistoryPrevious),
+            Some("first message".into())
+        );
+        assert_eq!(
+            input.apply(WorkbenchInputAction::HistoryNext),
+            Some("/status".into())
+        );
+
+        input.set_buffer("/sta");
+        assert_eq!(input.completion_candidates(), vec!["/status"]);
+        assert_eq!(
+            input.apply(WorkbenchInputAction::Complete),
+            Some("/status ".into())
+        );
+        assert_eq!(input.buffer(), "/status ");
+
+        input.record_history("token=sk-secret-value");
+        assert!(
+            !input
+                .history_entries()
+                .iter()
+                .any(|entry| entry.contains("sk-secret-value"))
+        );
+    }
+
+    #[test]
+    fn workbench_input_state_edits_at_cursor_and_undoes_last_change() {
+        let mut input = WorkbenchInputState::default();
+
+        input.insert_text("helo");
+        assert_eq!(input.buffer(), "helo");
+        assert_eq!(input.cursor(), 4);
+
+        input.apply(WorkbenchInputAction::MoveLeft);
+        input.insert_text("l");
+        assert_eq!(input.buffer(), "hello");
+        assert_eq!(input.cursor(), 4);
+
+        input.apply(WorkbenchInputAction::DeletePrevious);
+        assert_eq!(input.buffer(), "helo");
+        assert_eq!(input.cursor(), 3);
+
+        input.apply(WorkbenchInputAction::Undo);
+        assert_eq!(input.buffer(), "hello");
+        assert_eq!(input.cursor(), 4);
+
+        input.apply(WorkbenchInputAction::MoveRight);
+        input.apply(WorkbenchInputAction::DeleteNext);
+        assert_eq!(input.buffer(), "hello");
+        assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn workbench_input_state_completion_keeps_cursor_at_end() {
+        let mut input = WorkbenchInputState::default();
+
+        input.insert_text("/sta");
+        assert_eq!(
+            input.apply(WorkbenchInputAction::Complete),
+            Some("/status ".into())
+        );
+
+        assert_eq!(input.buffer(), "/status ");
+        assert_eq!(input.cursor(), "/status ".chars().count());
+        input.apply(WorkbenchInputAction::Undo);
+        assert_eq!(input.buffer(), "/sta");
+        assert_eq!(input.cursor(), 4);
+    }
+
+    #[test]
+    fn workbench_input_state_renders_cursor_view_and_completion_candidates() {
+        let mut input = WorkbenchInputState::default();
+        input.insert_text("/sta");
+        input.apply(WorkbenchInputAction::MoveLeft);
+
+        let line = format_workbench_input_state("move_left", &input);
+
+        assert!(line.contains("input_state: action=move_left"));
+        assert!(line.contains("cursor=3"));
+        assert!(line.contains("buffer=/sta"));
+        assert!(line.contains("view=/st|a"));
+        assert!(line.contains("completion_candidates=/status"));
+
+        input.set_buffer("token=sk-secret-value");
+        let redacted = format_workbench_input_state("set_buffer", &input);
+        assert!(redacted.contains("[REDACTED_SECRET]"));
+        assert!(!redacted.contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn workbench_input_state_moves_to_line_start_and_end() {
+        let mut input = WorkbenchInputState::default();
+
+        input.insert_text("abc");
+        input.apply(WorkbenchInputAction::MoveStart);
+        input.insert_text(">");
+        assert_eq!(input.buffer(), ">abc");
+        assert_eq!(input.cursor(), 1);
+
+        input.apply(WorkbenchInputAction::MoveEnd);
+        input.insert_text("<");
+        assert_eq!(input.buffer(), ">abc<");
+        assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn workbench_input_state_kills_text_around_cursor() {
+        let mut input = WorkbenchInputState::default();
+
+        input.insert_text("hello world");
+        for _ in 0..5 {
+            input.apply(WorkbenchInputAction::MoveLeft);
+        }
+        input.apply(WorkbenchInputAction::DeleteBeforeCursor);
+        assert_eq!(input.buffer(), "world");
+        assert_eq!(input.cursor(), 0);
+
+        input.apply(WorkbenchInputAction::Undo);
+        assert_eq!(input.buffer(), "hello world");
+        assert_eq!(input.cursor(), 6);
+
+        input.apply(WorkbenchInputAction::MoveLeft);
+        input.apply(WorkbenchInputAction::DeleteAfterCursor);
+        assert_eq!(input.buffer(), "hello");
+        assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn workbench_input_event_adapter_maps_terminal_control_sequences() {
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[A"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::HistoryPrevious)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[B"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::HistoryNext)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[D"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::MoveLeft)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[C"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::MoveRight)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[H"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::MoveStart)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[F"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::MoveEnd)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{7f}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::DeletePrevious)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1b}[3~"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::DeleteNext)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{10}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::HistoryPrevious)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{e}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::HistoryNext)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{2}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::MoveLeft)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{6}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::MoveRight)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{4}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::DeleteNext)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{15}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::DeleteBeforeCursor)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{b}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::DeleteAfterCursor)
+        );
+        assert_eq!(
+            parse_workbench_input_event("\u{1a}"),
+            WorkbenchInputEvent::Action(WorkbenchInputAction::Undo)
+        );
+    }
+
+    #[test]
+    fn workbench_input_event_adapter_extracts_completion_prefix_without_redaction_leakage() {
+        assert_eq!(
+            parse_workbench_input_event("/sta\t"),
+            WorkbenchInputEvent::CompletePrefix("/sta".into())
+        );
+        assert_eq!(
+            parse_workbench_input_event("hello"),
+            WorkbenchInputEvent::SubmitLine("hello".into())
+        );
+        assert_eq!(
+            parse_workbench_input_event("token=sk-secret\t"),
+            WorkbenchInputEvent::CompletePrefix("[REDACTED_SECRET]".into())
+        );
+    }
+
+    #[test]
+    fn workbench_input_state_loads_persisted_history_for_navigation() {
+        let temp = tempdir().expect("tempdir");
+        let paths = IkarosPaths::from_home(temp.path());
+        append_workbench_history(&paths, "first message").expect("append first");
+        append_workbench_history(&paths, "second token=sk-secret-value").expect("append second");
+
+        let entries = load_workbench_history_entries(&paths, 8).expect("history entries");
+        let mut input = WorkbenchInputState::from_history(entries);
+
+        let selected = input
+            .apply(WorkbenchInputAction::HistoryPrevious)
+            .expect("latest history entry");
+        assert!(selected.contains("second"));
+        assert!(!selected.contains("sk-secret-value"));
+        assert!(selected.contains("[REDACTED_SECRET]"));
+    }
+}
+
+#[test]
+fn agent_event_cell_renders_model_diagnostic_kind_and_message() {
+    let event = AgentEvent {
+        event_id: ikaros_session::EventId::from("event-diag"),
+        session_id: ikaros_session::SessionId::from("session-diag"),
+        turn_id: ikaros_session::TurnId::from("turn-diag"),
+        parent_event_id: None,
+        at: time::OffsetDateTime::now_utc(),
+        source: ikaros_session::AgentEventSource::Model,
+        kind: AgentEventKind::ModelDiagnostic(ikaros_models::ModelRequestDiagnostic {
+            kind: "fallback_provider_selected".into(),
+            message: "provider openai-compatible/qwen-2.5-72b selected after 1 fallback attempt(s)"
+                .into(),
+            parameter: None,
+        }),
+        payload: serde_json::Value::Null,
+    };
+
+    let rendered = agent_event_cell(&event).render();
+
+    assert!(rendered.contains("kind=model"));
+    assert!(rendered.contains("model_diagnostic"));
+    assert!(rendered.contains("turn=turn-diag"));
+    assert!(rendered.contains("diagnostic=fallback_provider_selected"));
+    assert!(rendered.contains("qwen-2.5-72b"));
 }

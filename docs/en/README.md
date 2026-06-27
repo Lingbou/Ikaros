@@ -26,6 +26,17 @@ Read subsystem documents next, based on the code being changed. Planned future
 work belongs in [the root roadmap](../../ROADMAP.md), not in subsystem contract
 pages.
 
+## Writing Style
+
+- Write for people first. Start with what the subsystem owns and how callers use
+  it.
+- Keep overview pages short. Move JSON schemas, protocol lines, and exhaustive
+  command output into [API reference](api-reference.md) or the relevant subsystem
+  page.
+- Prefer short paragraphs, categorized command lists, and stable headings.
+- Keep future plans in [the root roadmap](../../ROADMAP.md), not scattered
+  through subsystem documents.
+
 ## Core Documents
 
 - [Architecture](architecture.md)
@@ -54,3 +65,4 @@ pages.
 
 - [Plugin system](plugin-system.md)
 - [Self-modify](self-modify.md)
+- [Deployment](deployment.md)

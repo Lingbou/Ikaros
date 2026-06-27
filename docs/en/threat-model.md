@@ -23,7 +23,8 @@ This document describes the current local MVP threat model. It is not sufficient
 
 ## Current Controls
 
-- Deny-by-default destructive actions, direct secret access, publish/commit actions, workspace-external writes, and ordinary self-modify.
+- Deny-by-default destructive actions, direct secret access, publish/commit actions,
+  workspace-external writes, and ordinary self-modify.
 - Local-first default storage.
 - Protocol-level provider defaults with required local key, base URL, and model fields before remote calls.
 - Local provider settings with redaction before logs and audit output.
@@ -34,12 +35,17 @@ This document describes the current local MVP threat model. It is not sufficient
 ## Known Limitations
 
 - Redaction is heuristic and can miss secrets.
-- Shell/test skills use structured allowlisted commands, but this is still not a process sandbox.
-- This is not a process sandbox or VM boundary.
+- Shell/test skills use structured allowlisted commands. The optional Docker
+  backend gives process execution a first container boundary, but the default
+  local backend is still host process execution with workspace/env/time/output
+  guardrails.
+- This is not a VM or multi-tenant sandbox boundary.
 - There is no multi-tenant isolation.
 - Browser/dashboard hardening is limited to local preview assumptions.
 - Remote deployment remains a manual test-environment concern, not production hardening.
 
 ## Release Blockers For Hosted Use
 
-Before any hosted or multi-user deployment, Ikaros needs stronger sandboxing, authentication, network exposure review, secret storage integration, dependency review, and operational incident procedures.
+Before any hosted or multi-user deployment, Ikaros needs stronger sandboxing, authentication,
+network exposure review, secret storage integration, dependency review, and operational incident
+procedures.

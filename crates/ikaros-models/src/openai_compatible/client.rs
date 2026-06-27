@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::profile::OpenAiCompatProfile;
+use super::profile::ProviderProfile;
 use crate::{
     http::{ModelHttpClient, ReqwestModelHttpClient},
     params::model_request_options_from_config,
@@ -19,7 +19,7 @@ pub struct OpenAiCompatibleProvider {
     pub(super) model: String,
     pub(super) api_key: String,
     pub(super) max_retries: u8,
-    pub(super) profile: OpenAiCompatProfile,
+    pub(super) profile: ProviderProfile,
     pub(super) default_options: ModelRequestOptions,
     pub(super) http: Arc<dyn ModelHttpClient>,
 }
@@ -53,7 +53,8 @@ impl OpenAiCompatibleProvider {
         .trim_end_matches('/')
         .to_owned();
         let model = resolve_config_value(&config.model, "model.default.model")?;
-        let profile = OpenAiCompatProfile::resolve(&config.compat_profile, &base_url, &model)?;
+        let profile =
+            ProviderProfile::resolve_configured(&config.compat_profile, &base_url, &model)?;
         Ok(Self {
             name: provider_name.into(),
             base_url,
@@ -76,7 +77,12 @@ impl OpenAiCompatibleProvider {
 
     #[cfg(test)]
     pub(crate) fn compat_profile_id(&self) -> &'static str {
-        self.profile.id()
+        self.profile.id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolved_profile(&self) -> &ProviderProfile {
+        &self.profile
     }
 
     #[cfg(test)]
@@ -88,7 +94,7 @@ impl OpenAiCompatibleProvider {
         super::request_builder::build_chat_completion_request(
             &self.model,
             &self.base_url,
-            self.profile,
+            &self.profile,
             &self.default_options,
             request.redacted(),
             stream,

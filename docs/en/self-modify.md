@@ -74,4 +74,5 @@ Shell chaining, redirection, command substitution, publishing, and git commit/pu
 
 ## Not Implemented
 
-Autonomous apply is not part of the current contract. The current version only supports explicit proposal, approval, apply-approved, and rollback flows.
+Autonomous apply is not part of the current contract. The current version only supports explicit
+proposal, approval, apply-approved, and rollback flows.

@@ -27,6 +27,26 @@ fn parses_webhook_payload_task_profile_and_alias_text() {
 }
 
 #[test]
+fn parses_webhook_payload_session_source_and_idempotency_key() {
+    let route = parse_webhook_payload(
+        br#"{"content":"reply","kind":"chat","source":"telegram","account":"bot","peer":"token=abc123","thread":"chat-1","message_id":"msg-1","idempotency_key":"telegram:chat-1:msg-1"}"#,
+    )
+    .expect("payload");
+    let source = route.session_source.as_ref().expect("session source");
+    assert_eq!(source.channel, "telegram");
+    assert_eq!(source.account.as_deref(), Some("bot"));
+    assert_eq!(source.thread.as_deref(), Some("chat-1"));
+    assert_eq!(source.message_id.as_deref(), Some("msg-1"));
+    assert_ne!(source.peer.as_deref(), Some("token=abc123"));
+    assert_eq!(source.peer.as_deref(), Some("token=[REDACTED_SECRET]"));
+    assert_eq!(
+        route.idempotency_key.as_deref(),
+        Some("telegram:chat-1:msg-1")
+    );
+    assert!(route.idempotency_key_digest.is_some());
+}
+
+#[test]
 fn rejects_invalid_webhook_payloads() {
     assert!(parse_webhook_payload(br#"{"kind":"chat"}"#).is_err());
     assert!(parse_webhook_payload(br#"{"content":"   "}"#).is_err());
@@ -52,6 +72,7 @@ fn webhook_http_response_enqueues_redacted_message() {
         Some("application/json"),
         br#"{"content":"hello token=abc123","kind":"chat"}"#,
         &store,
+        Default::default(),
     )
     .expect("response");
     assert_eq!(response.status_code, 202);

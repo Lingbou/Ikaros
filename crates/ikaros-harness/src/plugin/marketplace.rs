@@ -14,6 +14,9 @@ pub struct PluginMarketplace {
 pub struct PluginMarketplaceEntry {
     pub name: String,
     pub enabled: bool,
+    pub quarantined: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine_reason: Option<String>,
     pub priority: i32,
     pub source: String,
     pub path: Option<PathBuf>,
@@ -38,6 +41,8 @@ impl Default for PluginMarketplaceEntry {
         Self {
             name: String::new(),
             enabled: true,
+            quarantined: false,
+            quarantine_reason: None,
             priority: 100,
             source: "local".into(),
             path: None,

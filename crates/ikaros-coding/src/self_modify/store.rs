@@ -5,7 +5,7 @@ use super::{
     diff::workspace_relative_path,
 };
 use ikaros_core::{IkarosError, Result, now_rfc3339, redact_secrets};
-use ikaros_harness::FileSystem as ExecutionFileSystem;
+use ikaros_sandbox::FileSystem as ExecutionFileSystem;
 use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},

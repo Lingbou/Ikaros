@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+services:
+  ikaros:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ikaros:local
+    environment:
+      IKAROS_HOME: /data/ikaros
+      RUST_LOG: ${RUST_LOG:-}
+    working_dir: /workspace
+    volumes:
+      - ikaros-home:/data/ikaros
+      - ..:/workspace
+    stdin_open: true
+    tty: true
+    command: ["--help"]
+
+volumes:
+  ikaros-home:

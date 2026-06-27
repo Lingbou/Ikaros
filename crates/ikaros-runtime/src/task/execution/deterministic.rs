@@ -69,6 +69,7 @@ pub async fn execute_task_text_with_options(
             task_id: &task.id,
             task_text: &task_text,
             config: &harness.config,
+            agent_instance: &harness.agent_instance,
             agent: &harness.agent,
             session: &session,
             registry: &harness.registry,

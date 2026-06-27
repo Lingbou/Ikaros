@@ -16,9 +16,18 @@ SQLite path:
 IKAROS_HOME/rag/index.sqlite
 ```
 
-Generated config uses the remote-provider shape with empty provider settings.
-This makes missing cloud configuration fail early instead of falling back to a
-mock provider:
+Generated config uses local hash embeddings by default, so local indexing works
+without provider credentials:
+
+```yaml
+rag:
+  backend: jsonl
+  embedding_provider: hash
+  embedding_model: text-embedding-3-small
+```
+
+Remote embeddings are opt-in. Configure provider settings when you select a
+remote provider:
 
 ```yaml
 providers:
@@ -30,16 +39,6 @@ rag:
   backend: jsonl
   embedding_provider: openai-compatible
   embedding_model: ""
-```
-
-For fully local indexing without provider credentials, select a local embedding
-provider explicitly:
-
-```yaml
-rag:
-  backend: jsonl
-  embedding_provider: hash
-  embedding_model: text-embedding-3-small
 ```
 
 ## Ingestion
@@ -62,6 +61,11 @@ index storage, embedding, search, stale checks, and deletion.
 `rag_stale` reads indexed source metadata from the backend, then checks current
 workspace metadata through `ExecutionEnv`; it does not let the tool path inspect
 host files outside the harness boundary.
+
+`ikaros-rag` is intentionally network-free. It owns local chunk storage,
+retrieval, and local embedding primitives (`hash`, `sparse`, `mock`). Remote
+embedding providers are constructed only by RAG skills after harness approval,
+and execute through the session `ExecutionEnv` / `NetworkEgress` boundary.
 
 Common commands:
 
@@ -97,9 +101,12 @@ provider name. Provider endpoints are configured through
 `providers.embedding.base_url`, not through provider-name aliases.
 
 OpenAI-compatible and Ollama embedding calls are network actions and require
-harness approval for ingest, reindex, and search. Text is redacted before
-provider calls. Tests use explicit local/mock providers and do not require
-credentials.
+harness approval for ingest, reindex, and search. After approval, model-facing
+RAG skills replay the original request and route provider-backed embedding HTTP
+through the session `ExecutionEnv` / `NetworkEgress` boundary. Text is redacted
+before provider calls. Approval payloads describe the provider call, local file
+read, and RAG index write scope without storing API keys. Tests use explicit
+local/mock providers and do not require credentials.
 
 RAG search output is intentionally rendered without raw embedding vectors. The
 local index may store vectors, but CLI and skill output expose only the chunk

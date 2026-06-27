@@ -3,7 +3,7 @@
 use super::{SelfModifyChangeKind, SelfModifyCheckProfile, SelfModifyCheckReport, SelfModifyStore};
 use crate::{TestFailureAnalyzer, validate_test_command};
 use ikaros_core::{IkarosError, Result, SelfModifyConfig, redact_secrets};
-use ikaros_harness::{FileSystem as ExecutionFileSystem, ProcessRequest, ProcessRunner};
+use ikaros_sandbox::{FileSystem as ExecutionFileSystem, ProcessRequest, ProcessRunner};
 use std::path::Path;
 #[cfg(test)]
 use std::process::Command;

@@ -44,40 +44,60 @@ fn repair_schema(node: Value, is_schema: bool) -> Value {
 fn repair_schema_object(map: Map<String, Value>, is_schema: bool) -> Value {
     let mut repaired = Map::new();
     for (key, value) in map {
-        let value = match key.as_str() {
-            "properties" | "patternProperties" | "$defs" | "definitions" => {
+        match key.as_str() {
+            "properties" => {
                 if let Value::Object(sub) = value {
-                    Value::Object(
-                        sub.into_iter()
-                            .map(|(sub_key, sub_value)| (sub_key, repair_schema(sub_value, true)))
-                            .collect(),
-                    )
-                } else {
-                    value
+                    repaired.insert(
+                        key,
+                        Value::Object(
+                            sub.into_iter()
+                                .map(|(sub_key, sub_value)| {
+                                    (
+                                        sub_key,
+                                        ensure_schema_object(repair_schema(sub_value, true)),
+                                    )
+                                })
+                                .collect(),
+                        ),
+                    );
                 }
             }
-            "anyOf" | "oneOf" | "allOf" | "prefixItems" => {
+            "anyOf" | "oneOf" => {
                 if let Value::Array(items) = value {
-                    Value::Array(
-                        items
-                            .into_iter()
-                            .map(|item| repair_schema(item, true))
-                            .collect(),
-                    )
-                } else {
-                    value
+                    let repaired_items = items
+                        .into_iter()
+                        .map(|item| ensure_schema_object(repair_schema(item, true)))
+                        .collect::<Vec<_>>();
+                    repaired
+                        .entry("anyOf")
+                        .and_modify(|existing| {
+                            if let Value::Array(existing_items) = existing {
+                                existing_items.extend(repaired_items.clone());
+                            }
+                        })
+                        .or_insert_with(|| Value::Array(repaired_items));
                 }
             }
-            "items" | "contains" | "not" | "additionalProperties" | "propertyNames" => {
+            "items" => {
                 if value.is_object() {
+                    repaired.insert(key, repair_schema(value, true));
+                }
+            }
+            "additionalProperties" => {
+                let value = if value.is_object() {
                     repair_schema(value, true)
                 } else {
                     value
+                };
+                if matches!(value, Value::Object(_) | Value::Bool(_)) {
+                    repaired.insert(key, value);
                 }
             }
-            _ => value,
-        };
-        repaired.insert(key, value);
+            "type" | "description" | "default" | "enum" | "required" => {
+                repaired.insert(key, value);
+            }
+            _ => {}
+        }
     }
 
     if !is_schema {
@@ -89,6 +109,7 @@ fn repair_schema_object(map: Map<String, Value>, is_schema: bool) -> Value {
         let non_null = any_of
             .into_iter()
             .filter(|branch| branch.get("type").and_then(Value::as_str) != Some("null"))
+            .map(ensure_schema_object)
             .collect::<Vec<_>>();
         match non_null.as_slice() {
             [single] => {
@@ -99,20 +120,50 @@ fn repair_schema_object(map: Map<String, Value>, is_schema: bool) -> Value {
             [] => {}
             _ => {
                 repaired.insert("anyOf".into(), Value::Array(non_null));
-                return Value::Object(repaired);
             }
         }
     }
 
     repaired.remove("nullable");
-    if !repaired.contains_key("$ref") {
-        fill_missing_type(&mut repaired);
-    }
+    fill_missing_type(&mut repaired);
+    clean_required(&mut repaired);
     clean_scalar_enum(&mut repaired);
+    retain_supported_schema_keys(&mut repaired);
     Value::Object(repaired)
 }
 
+fn ensure_schema_object(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(map),
+        Value::Bool(_) | Value::Null => serde_json::json!({"type": "object", "properties": {}}),
+        Value::Array(_) => serde_json::json!({"type": "array"}),
+        Value::Number(number) if number.is_i64() || number.is_u64() => {
+            serde_json::json!({"type": "integer"})
+        }
+        Value::Number(_) => serde_json::json!({"type": "number"}),
+        Value::String(_) => serde_json::json!({"type": "string"}),
+    }
+}
+
+fn retain_supported_schema_keys(map: &mut Map<String, Value>) {
+    const SUPPORTED: &[&str] = &[
+        "type",
+        "description",
+        "default",
+        "anyOf",
+        "properties",
+        "additionalProperties",
+        "items",
+        "enum",
+        "required",
+    ];
+    map.retain(|key, _| SUPPORTED.contains(&key.as_str()));
+}
+
 fn fill_missing_type(map: &mut Map<String, Value>) {
+    if map.contains_key("anyOf") {
+        return;
+    }
     match map.get("type") {
         Some(Value::String(value)) if !value.trim().is_empty() => return,
         Some(Value::Array(values)) => {
@@ -147,17 +198,34 @@ fn fill_missing_type(map: &mut Map<String, Value>) {
     map.insert("type".into(), Value::String(inferred.into()));
 }
 
-fn clean_scalar_enum(map: &mut Map<String, Value>) {
-    let Some(kind) = map.get("type").and_then(Value::as_str) else {
+fn clean_required(map: &mut Map<String, Value>) {
+    let Some(Value::Array(values)) = map.get_mut("required") else {
         return;
     };
-    if !matches!(kind, "string" | "integer" | "number" | "boolean") {
+    values.retain(|value| value.as_str().is_some_and(|item| !item.trim().is_empty()));
+    if values.is_empty() {
+        map.remove("required");
+    }
+}
+
+fn clean_scalar_enum(map: &mut Map<String, Value>) {
+    let Some(kind) = map.get("type").and_then(Value::as_str).map(str::to_owned) else {
+        return;
+    };
+    if !matches!(kind.as_str(), "string" | "integer" | "number" | "boolean") {
+        map.remove("enum");
         return;
     }
     let Some(Value::Array(values)) = map.get_mut("enum") else {
         return;
     };
-    values.retain(|value| !value.is_null() && value.as_str() != Some(""));
+    values.retain(|value| match kind.as_str() {
+        "string" => value.as_str().is_some_and(|text| !text.is_empty()),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.as_f64().is_some(),
+        "boolean" => value.as_bool().is_some(),
+        _ => false,
+    });
     if values.is_empty() {
         map.remove("enum");
     }

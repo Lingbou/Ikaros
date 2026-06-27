@@ -3,13 +3,14 @@
 use crate::support::input_string;
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, RiskLevel};
-use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_memory::{
-    JsonlMemoryCandidateStore, JsonlWorkingMemoryStore, LocalMemoryStore, MemoryCandidate,
-    MemoryCandidateQuery, MemoryCandidateReason, MemoryCandidateStatus, MemoryKind,
+    JsonlMemoryCandidateStore, JsonlMemoryJournal, JsonlWorkingMemoryStore, LocalMemoryStore,
+    MemoryCandidate, MemoryCandidateQuery, MemoryCandidateReason, MemoryCandidateStatus,
+    MemoryChangeReport, MemoryJournal, MemoryJournalAction, MemoryJournalEntry, MemoryKind,
     MemoryPerspective, MemoryProjectionInput, MemoryQuery, MemoryRecord, MemoryRef, MemoryStore,
     ProjectionRenderer, WorkingMemoryQuery,
 };
+use ikaros_tools::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use serde_json::json;
 use std::path::Path;
 
@@ -102,7 +103,7 @@ impl Skill for MemorySearchSkill {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        json!({"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string"}, "scope": {"type": "string"}, "observer": {"type": "string"}, "subject": {"type": "string"}, "limit": {"type": "integer"}}})
+        json!({"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string"}, "scope": {"type": "string"}, "observer": {"type": "string"}, "subject": {"type": "string"}, "limit": {"type": "integer"}, "include_inactive": {"type": "boolean"}}})
     }
 
     fn risk_level(&self) -> RiskLevel {
@@ -130,6 +131,10 @@ impl Skill for MemorySearchSkill {
                 .get("limit")
                 .and_then(serde_json::Value::as_u64)
                 .map(|value| value as usize),
+            include_inactive: input
+                .get("include_inactive")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         };
         let records = self.store.search(query)?;
         Ok(SkillOutput::new("memory search complete", json!(records)))
@@ -139,12 +144,15 @@ impl Skill for MemorySearchSkill {
 #[derive(Debug, Clone)]
 pub struct MemoryCandidateCreateSkill {
     store: JsonlMemoryCandidateStore,
+    journal: JsonlMemoryJournal,
 }
 
 impl MemoryCandidateCreateSkill {
     pub(crate) fn new(memory_store: LocalMemoryStore) -> Self {
+        let memory_dir = memory_store.memory_dir().to_path_buf();
         Self {
-            store: JsonlMemoryCandidateStore::new(memory_store.memory_dir()),
+            store: JsonlMemoryCandidateStore::new(&memory_dir),
+            journal: JsonlMemoryJournal::new(memory_dir),
         }
     }
 }
@@ -218,6 +226,17 @@ impl Skill for MemoryCandidateCreateSkill {
             )?;
         }
         let candidate = self.store.create(candidate)?;
+        let mut entry =
+            MemoryJournalEntry::new(MemoryJournalAction::CandidateCreated, "candidate_created")?
+                .with_memory(
+                    candidate.id.clone(),
+                    candidate.kind.clone(),
+                    candidate.scope.clone(),
+                )?;
+        if let Some(source_ref) = candidate.source_ref.clone() {
+            entry = entry.with_source_ref(source_ref)?;
+        }
+        self.journal.append(entry)?;
         Ok(SkillOutput::new(
             "memory candidate created",
             json!({"created": true, "id": candidate.id, "status": candidate.status}),
@@ -387,15 +406,20 @@ impl Skill for MemoryUpdateSkill {
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>()
             });
-        let updated = self.store.update(&id, content, tags)?;
-        let ok = updated.is_some();
+        let report = self.store.update(&id, content.clone(), tags.clone())?;
+        let ok = report.is_some();
+        let updated = report.as_ref().map(|report| &report.record);
+        let change_report = report
+            .as_ref()
+            .map(|report| report.change.clone())
+            .unwrap_or_else(|| MemoryChangeReport::not_found(id.clone()));
         Ok(SkillOutput::new(
             if ok {
                 "memory updated"
             } else {
                 "memory record not found"
             },
-            json!({"updated": updated}),
+            json!({"updated": updated, "change_report": change_report}),
         ))
     }
 }
@@ -445,6 +469,7 @@ impl Skill for MemoryDeleteSkill {
                         perspective: None,
                         text: None,
                         limit: None,
+                        include_inactive: true,
                     })?
                     .iter()
                     .any(|record| record.id == id);

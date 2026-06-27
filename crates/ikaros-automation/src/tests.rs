@@ -91,6 +91,84 @@ fn schedule_store_advances_recurring_jobs() {
 }
 
 #[test]
+fn schedule_store_retries_failed_one_shot_jobs_with_backoff() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = LocalScheduleStore::new(temp.path());
+    let job = store
+        .add_with_options(
+            "retry once",
+            "2000-01-01T00:00:00Z",
+            ScheduleJobOptions {
+                retry: ScheduleRetryPolicy {
+                    max_attempts: 3,
+                    backoff_seconds: 60,
+                },
+                ..ScheduleJobOptions::default()
+            },
+        )
+        .expect("add");
+
+    let first = store
+        .record_run(&job.id, "Failed", "temporary failure")
+        .expect("record first failure")
+        .expect("first update");
+    let after_first = store.list().expect("list after first failure")[0].clone();
+    assert!(first.enabled);
+    assert!(first.next_run_at.is_some());
+    assert_eq!(after_first.retry_attempts, 1);
+    assert_eq!(after_first.history.len(), 1);
+    assert_eq!(after_first.history[0].attempt, 1);
+
+    let second = store
+        .record_run(&job.id, "Failed", "temporary failure again")
+        .expect("record second failure")
+        .expect("second update");
+    let after_second = store.list().expect("list after second failure")[0].clone();
+    assert!(second.enabled);
+    assert!(second.next_run_at.is_some());
+    assert_eq!(after_second.retry_attempts, 2);
+
+    let third = store
+        .record_run(&job.id, "Failed", "permanent failure")
+        .expect("record third failure")
+        .expect("third update");
+    let after_third = store.list().expect("list after third failure")[0].clone();
+    assert!(!third.enabled);
+    assert!(third.next_run_at.is_none());
+    assert_eq!(after_third.retry_attempts, 3);
+    assert_eq!(after_third.history.len(), 3);
+}
+
+#[test]
+fn schedule_store_does_not_run_jobs_past_grace_period() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = LocalScheduleStore::new(temp.path());
+    store
+        .add_with_options(
+            "missed long ago",
+            "2000-01-01T00:00:00Z",
+            ScheduleJobOptions {
+                grace_period_seconds: Some(60),
+                ..ScheduleJobOptions::default()
+            },
+        )
+        .expect("add stale job");
+    store
+        .add(
+            "still due without grace",
+            "2000-01-01T00:00:00Z",
+            None,
+            None,
+        )
+        .expect("add ordinary job");
+
+    let due = store.due_now().expect("due");
+
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].title, "still due without grace");
+}
+
+#[test]
 fn schedule_store_rejects_intervals_that_exceed_duration_range() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = LocalScheduleStore::new(temp.path());
@@ -104,29 +182,27 @@ fn schedule_store_rejects_intervals_that_exceed_duration_range() {
     assert!(!store.path().exists());
 }
 
+#[cfg(unix)]
 #[test]
-fn schedule_store_rejects_stored_intervals_that_exceed_duration_range() {
+fn schedule_store_preserves_existing_file_when_atomic_temp_cannot_be_created() {
+    use std::os::unix::fs::PermissionsExt;
+
     let temp = tempfile::tempdir().expect("tempdir");
     let store = LocalScheduleStore::new(temp.path());
-    let job = ScheduledJob::new(
-        "bad legacy recurring",
-        "2000-01-01T00:00:00Z",
-        Some(i64::MAX as u64 + 1),
-        None,
-        ScheduleDeliveryTarget::default_targets(),
-    )
-    .expect("legacy job");
-    fs::write(
-        store.path(),
-        format!("{}\n", serde_json::to_string(&job).expect("job json")),
-    )
-    .expect("write job");
+    let job = store
+        .add("keep original file", "2000-01-01T00:00:00Z", None, None)
+        .expect("add");
+    let original = fs::read_to_string(store.path()).expect("schedule file");
 
-    let error = store
-        .record_run(&job.id, "Completed", "ok")
-        .expect_err("bad stored interval should be rejected");
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o500))
+        .expect("make schedule dir readonly");
+    let result = store.set_enabled(&job.id, false);
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+        .expect("restore schedule dir permissions");
 
-    assert!(error.to_string().contains("schedule interval"));
+    result.expect_err("schedule write should fail before replacing the old file");
+    let after = fs::read_to_string(store.path()).expect("schedule file after failed write");
+    assert_eq!(after, original);
 }
 
 #[test]

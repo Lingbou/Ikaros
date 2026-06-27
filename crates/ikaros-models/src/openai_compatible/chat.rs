@@ -2,15 +2,16 @@
 
 use super::{
     client::OpenAiCompatibleProvider, request_builder::build_chat_completion_request,
-    stream::parse_stream_response, tools::model_tool_calls, types::ChatCompletionResponse,
+    stream::OpenAiStreamAccumulator, tools::model_tool_calls, types::ChatCompletionResponse,
 };
-use crate::http::ModelHttpRequest;
+use crate::http::{ModelHttpRequest, ModelHttpStreamResponse};
 use crate::params::merge_request_options;
 use crate::types::{
-    ModelContextProfile, ModelProvider, ModelRequest, ModelRequestDiagnostic, ModelResponse,
-    ModelStream,
+    ModelContextProfile, ModelProvider, ModelProviderCapabilities, ModelRequest,
+    ModelRequestDiagnostic, ModelResponse, ModelStream, ModelStreamEventSink,
 };
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use ikaros_core::{IkarosError, Result, redact_secrets};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -27,14 +28,26 @@ impl ModelProvider for OpenAiCompatibleProvider {
 
     fn estimate_request_tokens(&self, request: &ModelRequest) -> u32 {
         let options = merge_request_options(&self.default_options, &request.options);
-        let output_tokens = options
-            .max_tokens
-            .or_else(|| self.profile.default_max_tokens(&self.model));
+        let output_tokens = options.max_tokens.or(self.profile.default_max_tokens);
         request.estimated_tokens_with_output_limit(output_tokens)
     }
 
     fn context_profile(&self) -> ModelContextProfile {
-        self.profile.context_profile(&self.model)
+        self.profile.context.clone()
+    }
+
+    fn capabilities(&self) -> ModelProviderCapabilities {
+        ModelProviderCapabilities {
+            chat: true,
+            streaming: true,
+            tool_calls: true,
+            reasoning: !matches!(self.profile.reasoning_policy, super::ReasoningPolicy::None),
+            json_mode: true,
+            network: self.profile.network_access,
+            image_input: true,
+            audio_input: true,
+            file_input: true,
+        }
     }
 
     async fn generate(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -43,7 +56,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let prepared = build_chat_completion_request(
             &self.model,
             &self.base_url,
-            self.profile,
+            &self.profile,
             &self.default_options,
             request,
             false,
@@ -60,11 +73,12 @@ impl ModelProvider for OpenAiCompatibleProvider {
             let attempt_error = match result {
                 Ok(response) => {
                     let status = response.status;
+                    let headers = response.headers.clone();
                     let text = response.body;
                     if !(200..=299).contains(&status) {
                         if !unsupported_parameter_retry_used {
                             if let Some(parameter) =
-                                unsupported_parameter_to_omit(self.profile, &text, &body)
+                                unsupported_parameter_to_omit(&self.profile, &text, &body)
                             {
                                 remove_body_parameter(&mut body, parameter);
                                 diagnostics.push(unsupported_parameter_retry_diagnostic(parameter));
@@ -72,10 +86,16 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 continue;
                             }
                         }
-                        redacted_model_http_error(status, &text)
+                        redacted_model_http_error(status, &headers, &text)
                     } else {
                         let mut parsed =
                             parse_chat_completion_response(&text, &self.name, &self.model)?;
+                        diagnostics.extend(
+                            parsed
+                                .diagnostics
+                                .into_iter()
+                                .map(ModelRequestDiagnostic::sanitized),
+                        );
                         parsed.diagnostics = diagnostics;
                         return Ok(parsed);
                     }
@@ -90,12 +110,21 @@ impl ModelProvider for OpenAiCompatibleProvider {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        let mut sink = crate::types::NoopModelStreamEventSink;
+        self.stream_with_events(request, &mut sink).await
+    }
+
+    async fn stream_with_events(
+        &self,
+        request: ModelRequest,
+        event_sink: &mut dyn ModelStreamEventSink,
+    ) -> Result<ModelStream> {
         let key = self.api_key()?;
         let request = request.redacted();
         let prepared = build_chat_completion_request(
             &self.model,
             &self.base_url,
-            self.profile,
+            &self.profile,
             &self.default_options,
             request,
             true,
@@ -108,15 +137,19 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let mut unsupported_parameter_retry_used = false;
         let mut diagnostics = Vec::new();
         loop {
-            let result = self.http.send(model_http_post(&url, &key, &body)?).await;
+            let result = self
+                .http
+                .send_stream(model_http_post(&url, &key, &body)?)
+                .await;
             let attempt_error = match result {
                 Ok(response) => {
                     let status = response.status;
-                    let text = response.body;
+                    let headers = response.headers.clone();
                     if !(200..=299).contains(&status) {
+                        let text = read_model_http_stream_body(response).await?;
                         if !unsupported_parameter_retry_used {
                             if let Some(parameter) =
-                                unsupported_parameter_to_omit(self.profile, &text, &body)
+                                unsupported_parameter_to_omit(&self.profile, &text, &body)
                             {
                                 remove_body_parameter(&mut body, parameter);
                                 diagnostics.push(unsupported_parameter_retry_diagnostic(parameter));
@@ -124,10 +157,23 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 continue;
                             }
                         }
-                        redacted_model_http_error(status, &text)
+                        redacted_model_http_error(status, &headers, &text)
                     } else {
-                        match parse_stream_response(&text, &self.name, &self.model) {
+                        match parse_stream_response_body(
+                            response,
+                            &self.name,
+                            &self.model,
+                            event_sink,
+                        )
+                        .await
+                        {
                             Ok(mut stream) => {
+                                diagnostics.extend(
+                                    stream
+                                        .diagnostics
+                                        .into_iter()
+                                        .map(ModelRequestDiagnostic::sanitized),
+                                );
                                 stream.diagnostics = diagnostics;
                                 return Ok(stream);
                             }
@@ -151,6 +197,79 @@ impl ModelProvider for OpenAiCompatibleProvider {
     }
 }
 
+async fn parse_stream_response_body(
+    mut response: ModelHttpStreamResponse,
+    provider: &str,
+    fallback_model: &str,
+    event_sink: &mut dyn ModelStreamEventSink,
+) -> Result<ModelStream> {
+    let mut accumulator = OpenAiStreamAccumulator::new(provider, fallback_model);
+    let mut pending_utf8 = Vec::<u8>::new();
+    while let Some(chunk) = response.body.next().await {
+        if let Some(text) = decode_utf8_stream_chunk(&mut pending_utf8, chunk?)? {
+            accumulator.push_text(&text, event_sink)?;
+        }
+    }
+    if !pending_utf8.is_empty() {
+        let text = String::from_utf8(std::mem::take(&mut pending_utf8)).map_err(|source| {
+            IkarosError::Message(format!(
+                "failed to decode model stream response as UTF-8: {source}"
+            ))
+        })?;
+        accumulator.push_text(&text, event_sink)?;
+    }
+    accumulator.finish(event_sink)
+}
+
+async fn read_model_http_stream_body(mut response: ModelHttpStreamResponse) -> Result<String> {
+    let mut body = String::new();
+    let mut pending_utf8 = Vec::<u8>::new();
+    while let Some(chunk) = response.body.next().await {
+        if let Some(text) = decode_utf8_stream_chunk(&mut pending_utf8, chunk?)? {
+            body.push_str(&text);
+        }
+    }
+    if !pending_utf8.is_empty() {
+        let text = String::from_utf8(std::mem::take(&mut pending_utf8)).map_err(|source| {
+            IkarosError::Message(format!(
+                "failed to decode model stream error response as UTF-8: {source}"
+            ))
+        })?;
+        body.push_str(&text);
+    }
+    Ok(body)
+}
+
+fn decode_utf8_stream_chunk(pending: &mut Vec<u8>, chunk: Vec<u8>) -> Result<Option<String>> {
+    pending.extend(chunk);
+    match String::from_utf8(std::mem::take(pending)) {
+        Ok(text) => Ok((!text.is_empty()).then_some(text)),
+        Err(error) => {
+            let utf8_error = error.utf8_error();
+            let valid_up_to = utf8_error.valid_up_to();
+            if utf8_error.error_len().is_some() {
+                return Err(IkarosError::Message(format!(
+                    "failed to decode model stream response as UTF-8: {utf8_error}"
+                )));
+            }
+            let bytes = error.into_bytes();
+            let valid = if valid_up_to > 0 {
+                Some(
+                    String::from_utf8(bytes[..valid_up_to].to_vec()).map_err(|source| {
+                        IkarosError::Message(format!(
+                            "failed to decode model stream response as UTF-8: {source}"
+                        ))
+                    })?,
+                )
+            } else {
+                None
+            };
+            pending.extend_from_slice(&bytes[valid_up_to..]);
+            Ok(valid.filter(|text| !text.is_empty()))
+        }
+    }
+}
+
 fn model_http_post(url: &str, key: &str, body: &Value) -> Result<ModelHttpRequest> {
     let mut headers = BTreeMap::new();
     headers.insert("authorization".into(), format!("Bearer {key}"));
@@ -166,23 +285,44 @@ fn model_http_post(url: &str, key: &str, body: &Value) -> Result<ModelHttpReques
 }
 
 fn unsupported_parameter_retry_diagnostic(parameter: &str) -> ModelRequestDiagnostic {
-    ModelRequestDiagnostic {
-        kind: "unsupported_parameter_retry".into(),
-        message: "provider rejected an unsupported request parameter; retried once without it"
-            .into(),
-        parameter: Some(parameter.into()),
-    }
+    ModelRequestDiagnostic::new(
+        "unsupported_parameter_retry",
+        "provider rejected an unsupported request parameter; retried once without it",
+        Some(parameter.into()),
+    )
 }
 
-pub(crate) fn redacted_model_http_error(status: u16, text: &str) -> String {
+pub(crate) fn redacted_model_http_error(
+    status: u16,
+    headers: &BTreeMap<String, String>,
+    text: &str,
+) -> String {
+    let retry_after = retry_after_error_context(headers)
+        .map(|value| format!(" {value}"))
+        .unwrap_or_default();
     format!(
-        "model provider returned HTTP {status}: {}",
+        "model provider returned HTTP {status}{retry_after}: {}",
         redact_secrets(text)
     )
 }
 
+fn retry_after_error_context(headers: &BTreeMap<String, String>) -> Option<String> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+        .map(|(_, value)| format!("Retry-After: {}", sanitized_header_value(value)))
+}
+
+fn sanitized_header_value(value: &str) -> String {
+    let one_line = value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    redact_secrets(one_line.trim())
+}
+
 pub(crate) fn unsupported_parameter_to_omit(
-    profile: super::profile::OpenAiCompatProfile,
+    profile: &super::profile::ProviderProfile,
     text: &str,
     body: &Value,
 ) -> Option<&'static str> {

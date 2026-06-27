@@ -8,14 +8,19 @@ members = [
   "crates/ikaros-core",
   "crates/ikaros-gateway",
   "crates/ikaros-harness",
+  "crates/ikaros-host",
   "crates/ikaros-memory",
+  "crates/ikaros-mcp",
   "crates/ikaros-models",
+  "crates/ikaros-protocol",
   "crates/ikaros-rag",
   "crates/ikaros-runtime",
+  "crates/ikaros-sandbox",
   "crates/ikaros-session",
   "crates/ikaros-service",
   "crates/ikaros-skills",
   "crates/ikaros-soul",
+  "crates/ikaros-tools",
   "crates/ikaros-voice",
 ]
 resolver = "2"
@@ -31,29 +36,64 @@ rust-version = "1.85"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28.1"
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
+futures-util = "0.3"
 fs4 = { version = "1", features = ["sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+libc = "0.2"
+ratatui = "0.29.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
 ring = "0.17.14"
 rusqlite = { version = "0.37", features = ["bundled"] }
+rustix = { version = "1.1", features = ["process"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.10"
 thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
-tokio = { version = "1.38", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.38", features = ["fs", "io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.27", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 toml = "0.9"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
 uuid = { version = "1.10", features = ["serde", "v4"] }
 yaml_serde = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+noop_method_call = "allow"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
 dbg_macro = "deny"
 todo = "deny"
+manual_div_ceil = "allow"
+manual_saturating_arithmetic = "allow"
+needless_option_as_deref = "allow"
+too_many_arguments = "allow"
+unnecessary_lazy_evaluations = "allow"
+needless_lifetimes = "allow"
+nonminimal_bool = "allow"
+useless_conversion = "allow"
+manual_contains = "allow"
+needless_borrow = "allow"
+explicit_auto_deref = "allow"
+redundant_closure = "allow"
+len_zero = "allow"
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.0"
+ci = ["github"]
+installers = ["shell", "powershell"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+install-path = "CARGO_HOME"
+pr-run-mode = "plan"

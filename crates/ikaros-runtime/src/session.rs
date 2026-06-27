@@ -37,6 +37,25 @@ pub(crate) fn runtime_session_target(
     })
 }
 
+pub(crate) fn runtime_session_target_for_evidence(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    agent_override: Option<&str>,
+    fallback_agent_id: &str,
+) -> Result<RuntimeSessionTarget> {
+    match runtime_session_target(paths, workspace, agent_override) {
+        Ok(target) => Ok(target),
+        Err(_) => {
+            let agent_id = sanitize_runtime_path_segment(&redact_secrets(fallback_agent_id));
+            Ok(RuntimeSessionTarget {
+                store: SqliteSessionStore::new(paths.home.join("agents").join(&agent_id)),
+                agent_id,
+                workspace: workspace.to_path_buf(),
+            })
+        }
+    }
+}
+
 pub(crate) fn upsert_runtime_session(
     target: &RuntimeSessionTarget,
     session_id: &SessionId,
@@ -207,30 +226,30 @@ pub fn record_approval_resolution(
             "result": &record.result,
         })))
     };
+    let session_id = existing.session_id.clone();
+    let event_turn_id = existing.turn_id.clone().unwrap_or_default();
     target.store.append_approval(&SessionApprovalRecord {
         approval_id: record.request.id.clone(),
-        session_id: existing.session_id.clone(),
+        session_id: session_id.clone(),
         turn_id: existing.turn_id.clone(),
         at: time::OffsetDateTime::now_utc(),
         status,
         request: redact_json(serde_json::to_value(&record.request)?),
         decision: decision.clone(),
     })?;
-    if let Some(turn_id) = existing.turn_id {
-        target.store.append_agent_event(&AgentEvent::new(
-            existing.session_id,
-            turn_id,
-            None,
-            AgentEventSource::Harness,
-            AgentEventKind::ApprovalResolved,
-            json!({
-                "approval_id": &record.request.id,
-                "status": format!("{:?}", record.status),
-                "tool": &record.request.call.name,
-                "decision": decision.unwrap_or(serde_json::Value::Null),
-            }),
-        ))?;
-    }
+    target.store.append_agent_event(&AgentEvent::new(
+        session_id,
+        event_turn_id,
+        None,
+        AgentEventSource::Harness,
+        AgentEventKind::ApprovalResolved,
+        json!({
+            "approval_id": &record.request.id,
+            "status": format!("{:?}", record.status),
+            "tool": &record.request.call.name,
+            "decision": decision.unwrap_or(serde_json::Value::Null),
+        }),
+    ))?;
     Ok(true)
 }
 
@@ -250,7 +269,16 @@ pub(crate) fn delivery_payload(
 }
 
 fn redact_session_segment(value: &str) -> String {
-    redact_secrets(value).replace(['/', '\\', ':', '\n', '\r', '\t'], "_")
+    sanitize_runtime_path_segment(&redact_secrets(value))
+}
+
+fn sanitize_runtime_path_segment(value: &str) -> String {
+    let sanitized = value.replace(['/', '\\', ':', '\n', '\r', '\t'], "_");
+    if sanitized.trim().is_empty() {
+        "build".into()
+    } else {
+        sanitized
+    }
 }
 
 fn session_approval_status(status: HarnessApprovalStatus) -> SessionApprovalStatus {

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::types::{AgentPolicyOverlay, PolicyEvaluation, PolicyRequest, SandboxProfile};
+use super::types::{AgentPolicyOverlay, PolicyEvaluation, SandboxProfile};
 use ikaros_core::{PolicyDecision, RiskLevel};
+use ikaros_tools::PolicyRequest;
 
 pub(super) fn evaluate_agent_policy_overlay(
     request: &PolicyRequest,

@@ -13,10 +13,10 @@ use ikaros_coding::{
     RepoScanner, TestCommand, TestFailureAnalysis, TestFailureAnalyzer, TestRunnerPlan,
 };
 use ikaros_core::{IkarosError, Result, RiskLevel, redact_secrets};
-use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use ikaros_session::{
     AgentEvent, AgentEventKind, AgentEventSource, SessionEntry, SessionEntryKind, SessionRecord,
 };
+use ikaros_tools::{PolicyRequest, Skill, SkillContext, SkillOutput};
 use serde_json::{Value, json};
 use std::path::Path;
 

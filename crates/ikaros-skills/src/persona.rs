@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use ikaros_core::{Result, RiskLevel};
-use ikaros_harness::{Skill, SkillContext, SkillOutput};
 use ikaros_soul::load_or_default;
+use ikaros_tools::{Skill, SkillContext, SkillOutput};
 use serde_json::json;
 use std::path::PathBuf;
 

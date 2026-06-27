@@ -11,6 +11,19 @@
 
 Cloud voice provider 只接受 `openai-compatible`。这个名称选择 wire format；配置的远端服务必须实际提供对应的 TTS 或 ASR endpoint。
 
+默认配置的 TTS 和 ASR 都使用 `mock`，因此普通运行不需要语音凭证；只有确实需要 cloud voice provider 的 workflow 才需要显式配置远程 provider：
+
+```yaml
+voice:
+  tts:
+    provider: mock
+    model: mock-tts
+    voice: default
+  asr:
+    provider: mock
+    model: mock-asr
+```
+
 示例：
 
 ```yaml
@@ -34,7 +47,7 @@ voice:
 
 ## 安全
 
-- Mock provider 不需要凭证或网络，但必须显式选择。
+- Mock provider 不需要凭证或网络，并且是默认 voice provider。
 - Cloud provider 从本机 `IKAROS_HOME/config.yaml` 读取明文 key 和 base URL。
 - TTS 文本在 provider 调用前脱敏。
 - Cloud voice call 是网络动作；active policy 对网络设为审批时会先返回 approval request。
@@ -42,6 +55,7 @@ voice:
 - `voice asr <path>` 会先通过 session `ExecutionEnv` 读取 workspace 音频，再调用 provider。ASR provider 接收音频 bytes，不直接读取 host path。
 - ASR transcript 输出不应回显 source path。
 
-TTS 成功输出只报告 provider、format、可选输出路径、字节长度和脱敏文本预览，不打印原始音频字节。ASR 以 multipart form data 发送音频 bytes，CLI 只渲染 transcript metadata。
+TTS 成功输出只报告 provider、format、可选输出路径、字节长度和脱敏文本预览，不打印原始音频字节。ASR 以 multipart form data 发送音频 bytes，CLI
+只渲染 transcript metadata。
 
 语音 schema 携带 audio path、format、sample rate 和 language 元数据。Adapter 使用 provider 支持的字段，不支持的字段保留为 Ikaros 侧元数据。

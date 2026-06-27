@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub struct PluginMarketplaceUpdate {
     pub name: String,
     pub enabled: bool,
+    pub quarantined: bool,
+    pub quarantine_reason: Option<String>,
     pub marketplace_path: PathBuf,
     pub entry_added: bool,
 }
@@ -51,6 +53,7 @@ pub struct PluginAuditReport {
     pub plugin_count: usize,
     pub enabled_plugin_count: usize,
     pub disabled_plugin_count: usize,
+    pub quarantined_plugin_count: usize,
     pub skill_count: usize,
     pub enabled_skill_count: usize,
     pub command_skill_count: usize,
@@ -65,6 +68,8 @@ pub struct PluginAuditPlugin {
     pub name: String,
     pub version: String,
     pub enabled: bool,
+    pub quarantined: bool,
+    pub quarantine_reason: Option<String>,
     pub priority: i32,
     pub source: String,
     pub marketplace_path: Option<PathBuf>,

@@ -1,6 +1,8 @@
 # Agent Loop
 
-The agent loop is the model-guided execution path in `ikaros-runtime`. It lets a model request harness skills, receive tool results, and continue until it returns a final answer or hits a stop condition.
+The agent loop is the model-guided execution path in `ikaros-runtime`. It lets a model request
+harness skills, receive tool results, and continue until it returns a final answer or hits a stop
+condition.
 
 The loop owns turn orchestration. It does not own provider authentication,
 provider wire format, policy decisions, or host execution. Those responsibilities
@@ -40,6 +42,14 @@ event stream it forwards to the caller's sink. It is the replay/test adapter for
 callers that need a complete in-memory event trace without making
 `AgentLoopReport` the source of truth.
 
+Agent-loop system prompts are assembled through the shared `PromptBuilder`
+pipeline. The base system text, strict tool-call protocol, deferred tool
+disclosure guidance, and available tool manifest are separate typed prompt
+sections before rendering. `TurnStart` events persist prompt metadata
+(`kind`, `source`, `title`, priority, token estimate, and redaction state) but
+do not persist raw prompt section content. Replay and UI callers can inspect why
+tool guidance was present without scraping prompt text or storing secrets.
+
 `AgentHarness` is the stateful wrapper above `AgentRuntime` for callers that
 need a stable session id, per-turn ids, phase tracking, and continuation queues.
 It owns the harness phase and can run steer, follow-up, next-turn, resume,
@@ -47,7 +57,7 @@ compact, and retry continuations, then delegates model turns to
 `AgentRuntime::run_turn_with_events()`. The
 returned `AgentHarnessTurn` keeps typed events first. The harness collects the
 same emitted event stream it forwards to the caller's sink and uses that stream
-to backfill `AgentLoopReport.events` as a compatibility summary. Built-in chat
+to populate `AgentLoopReport.events` as the in-process turn snapshot. Built-in chat
 and task agent-loop entry points use this wrapper. Agent-loop handoff also uses
 this path and supplies a subagent session source when the caller did not provide
 one. Gateway task drains and scheduled task execution also use the session-aware
@@ -70,20 +80,24 @@ increments its attempt count, records a status reason, and reclaims expired
 running leases before selecting the next item. Failed or cancelled continuations
 can be requeued with an explicit reason. The harness can claim and complete
 message continuations (`steer`, `follow_up`, `next_turn`, `resume`) and
-maintenance continuations (`compact`, `retry`). Message continuations run a real
-turn. Maintenance continuations append session entries and emit
+maintenance continuations (`compact`, `retry`), plus first-pass recoverable
+tool-result continuations. Message continuations run a real turn. Maintenance
+continuations append session entries and emit
 `ContinuationStarted` / `ContinuationCompleted` / `ContinuationFailed` events
-without inventing a model response. Explicit harness cancellation writes a
-`ContinuationCancelled` event. A running durable message continuation polls the
-store for external cancellation, cancels its turn token, and emits an
-acknowledgement event when the worker stops. `ikaros debug continuations
+without inventing a model response. Tool-result continuations re-run the
+recoverable tool through the harness session, redact the terminal payload, and
+complete or fail the queued continuation without fabricating a model response.
+Explicit harness cancellation writes a `ContinuationCancelled` event. A running
+durable message continuation polls the store for external cancellation, cancels
+its turn token, and emits an acknowledgement event when the worker stops.
+`ikaros debug continuations
 <session-id>` reports queue status, status reason, lease owner, lease expiry,
 attempts, terminal summaries, worker-lease timeout evidence, errors, and
 redacted payloads. Without a continuation store, the harness keeps the old
 in-memory queues for tests and specialized one-shot callers.
 This is still a continuation queue, not a complete scheduler. Poll interval
-tuning, scheduler-grade worker coordination, tool-result continuations, and
-automation-facing timeout reports are still runtime hardening work.
+tuning, scheduler-grade worker coordination, richer tool-result scheduling
+policy, and automation-facing timeout reports are still runtime hardening work.
 
 `AgentLoopOptions::with_hooks()` installs observer-only `AgentLoopHooks` for
 provider request/response and tool call boundaries. Hook payloads carry
@@ -95,18 +109,21 @@ policy observation, UI, and replay diagnostics.
 
 Callers that need durable timelines should call `run_turn_with_events()` with an
 `AgentEventSink`. `ikaros-session` provides `PersistingAgentEventSink` for
-per-event writes and `PersistingAgentTurnSink` for turn-scoped transaction
-writes into the local SQLite `SessionStore`.
+per-event writes, `PersistingAgentTurnSink` for turn-scoped transaction writes
+into the local SQLite `SessionStore`, `CollectingAgentEventSink` for replay/test
+and live UI collectors, and `FanoutAgentEventSink` for delivering the same
+typed event stream to persistence plus observers. Runtime wrappers should use
+these sinks instead of implementing local callback fan-out.
 
 `session_id` is the persistence identity for the event timeline. `turn_id`
 identifies one persisted turn inside that timeline. Callers may supply a turn id
-when they need chat history, session entries, and agent events to share the same
-turn identity. `task_id` remains task/report metadata. If no session id is
+when they need chat session entries, projected history records, and agent events
+to share the same turn identity. `task_id` remains task/report metadata. If no session id is
 supplied, the loop creates a fresh `SessionId` for that turn instead of reusing a
 global fallback session.
 
 `AgentHarnessConfig` may also carry a caller-supplied `turn_id`. Chat uses that
-to keep the chat history record, append-only session entries, and agent events
+to keep append-only session entries, projected history records, and agent events
 on the same turn. This is a one-turn override: after that turn runs, continuation
 turns receive fresh ids unless the caller explicitly supplies another one. Task
 agent-loop runs let the harness create a fresh turn id inside the task session.
@@ -179,7 +196,8 @@ The loop can stop because:
 - a provider error was observed
 - a cancellation, compaction, tool error, or context limit stopped the turn
 
-Task and agent commands can opt into the loop with `--agent-loop`. Non-stream chat uses it by default; `--no-agent-loop` forces a single provider call.
+Task and agent commands can opt into the loop with `--agent-loop`. Non-stream chat uses it by
+default; `--no-agent-loop` forces a single provider call.
 
 Structured reports use these stop reasons:
 
@@ -213,6 +231,13 @@ Fallback path:
 {"tool_calls":[{"id":"optional_call_id","name":"tool_name","input":{}}]}
 ```
 
+Progressive-disclosure bridge tools follow an additional contract. Deferred
+tools are not callable merely because the model can guess their names. The model
+must first call `tool_search` and receive the target in the returned descriptors,
+or call `tool_describe` for the target. Only then may it call that disclosed
+deferred tool through `tool_call` in the same execution session. The target tool
+still goes through harness policy, approval, audit, and `ExecutionEnv`.
+
 Final answer:
 
 ```json
@@ -222,8 +247,9 @@ Final answer:
 The fallback parser only accepts the canonical top-level JSON object shown
 above. It does not accept fenced JSON, embedded JSON, top-level arrays, or alias
 keys such as `tools`, `calls`, `tool_call`, `function_call`, `args`,
-`arguments`, `answer`, or `response`. Each iteration records the parse strategy
-in the report.
+`arguments`, `answer`, or `response`. `final_answer`, each tool `name`, and any
+present tool `id` must be non-empty after trimming whitespace. Each iteration
+records the parse strategy in the report.
 
 Parse strategies reported by the loop are:
 
@@ -267,10 +293,11 @@ call starts produces a `ToolCallCancelled` payload and stops the turn with
 also stops the turn and drops the pending future. Process-backed local tools
 rely on `kill_on_drop` in the local `ExecutionEnv` process runner.
 
-`AgentLoopReport.events` is a compatibility summary for current callers. The
-durable fact source is the `ikaros-session` event stream when a persisting sink
-is attached. Replay, gateway, schedule, and UI paths should read the session
-store instead of reconstructing timelines from human output.
+`AgentLoopReport.events` is an in-process snapshot of the events emitted during
+the current turn. The durable fact source is the `ikaros-session` event stream
+when a persisting sink is attached. Replay, gateway, schedule, and UI paths
+should read the session store instead of reconstructing timelines from human
+output.
 
 The built-in chat path uses `PersistingAgentTurnSink`. Agent-loop chat and
 single-call chat selected with `--no-agent-loop` both write user/assistant
@@ -285,15 +312,16 @@ and `AuditAnchor` may appear after `TurnEnd`; consumers should use event kinds
 rather than assuming the last event is always the turn end.
 
 Those session entries and chat agent events for one turn commit or roll back
-together. Chat history, core memory records, memory candidates, and audit writes
-are still separate stores for now. Memory sync writes safe redacted turn context
-into session working memory with `MemoryRef::SessionTurn`; ordinary turn
-summaries are not promoted into long-term `Task` memory. Automatic relationship
-observations enter the candidate inbox instead of core memory. The session
-timeline only stores the high-level lifecycle evidence. The local memory journal
-records the matching `sync_turn` append/skipped-write decision and any
-turn-scoped promote, demote, forget, or quota policy action so debug callers can
-inspect memory lifecycle behavior without reading the memory store directly.
+together. Chat history is projected from the same `state.db` replay; core
+memory records, memory candidates, and audit writes remain separate stores for
+now. Memory sync writes safe redacted turn context into session working memory
+with `MemoryRef::SessionTurn`; ordinary turn summaries are not promoted into
+long-term `Task` memory. Automatic relationship observations enter the
+candidate inbox instead of core memory. The session timeline only stores the
+high-level lifecycle evidence. The local memory journal records the matching
+`sync_turn` append/skipped-write decision and any turn-scoped promote, demote,
+forget, or quota policy action so debug callers can inspect memory lifecycle
+behavior without reading the memory store directly.
 Approval requests
 created by a persisting agent-loop turn are double-written into the session
 approval table with redacted request data; later approve, deny, or execute
@@ -304,6 +332,12 @@ turn is reported as failed. A failed chat turn keeps the user `SessionEntry`,
 emits an `Error` event with a redacted message and phase, and ends with a
 failed `TurnEnd` event so replay/debug callers do not lose the timeline.
 
+Ordinary chat turns do not write a separate history mirror. User/assistant
+entries, model stream events, context diff, memory lifecycle evidence, and audit
+anchors are committed through the session store. Replay, workbench history,
+search, and context assembly read `state.db` session replay as the single chat
+timeline.
+
 ## Invariants
 
 - The prompt may describe tools, but only the harness registry defines what can
@@ -313,5 +347,6 @@ failed `TurnEnd` event so replay/debug callers do not lose the timeline.
   different tool to bypass policy.
 - Guardrails observe repeated failures and lack of progress after each tool
   dispatch.
-- The fallback JSON protocol is compatibility behavior. Provider-native tool
-  calls remain the preferred path.
+- The fallback JSON protocol is the strict text envelope for providers that do
+  not expose native tool calls. Provider-native tool calls remain the preferred
+  path.

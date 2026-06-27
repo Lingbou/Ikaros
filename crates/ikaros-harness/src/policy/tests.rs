@@ -5,6 +5,7 @@ use ikaros_core::{
     AgentAuthScope, AgentInstance, AgentPermission, AgentProfile, PolicyDecision,
     ResolvedAgentProfile, RiskLevel,
 };
+use ikaros_tools::PolicyRequest;
 #[cfg(unix)]
 use std::{fs, os::unix::fs::symlink, path::PathBuf};
 

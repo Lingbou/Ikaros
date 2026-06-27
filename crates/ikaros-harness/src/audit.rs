@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use ikaros_core::{IkarosError, PolicyDecision, Result, now_rfc3339, redact_json, redact_secrets};
-use serde::{Deserialize, Serialize};
+use ikaros_core::{IkarosError, Result};
+use ikaros_tools::AuditEvent;
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Write},
@@ -11,39 +11,10 @@ use std::{
 use time::{
     OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339, macros::format_description,
 };
-use uuid::Uuid;
 
 const DEFAULT_AUDIT_ROTATION_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const ROTATED_AUDIT_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'_>] =
     format_description!("[year][month][day]T[hour][minute][second]Z");
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AuditEvent {
-    pub id: String,
-    pub at: String,
-    pub kind: String,
-    pub decision: Option<PolicyDecision>,
-    pub message: String,
-    pub data: serde_json::Value,
-}
-
-impl AuditEvent {
-    pub fn new(
-        kind: impl Into<String>,
-        decision: Option<PolicyDecision>,
-        message: impl Into<String>,
-        data: serde_json::Value,
-    ) -> Result<Self> {
-        Ok(Self {
-            id: Uuid::new_v4().to_string(),
-            at: now_rfc3339()?,
-            kind: kind.into(),
-            decision,
-            message: redact_secrets(&message.into()),
-            data: redact_json(data),
-        })
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuditRotationPolicy {

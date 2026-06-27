@@ -4,9 +4,9 @@ use crate::support::input_string;
 use async_trait::async_trait;
 use ikaros_core::{IkarosError, Result, RiskLevel};
 use ikaros_harness::{
-    ExecutionSession, PolicyRequest, ProcessOutput, ProcessRequest, Skill, SkillContext,
-    SkillOutput,
+    PolicyRequest, ProcessOutput, ProcessRequest, Skill, SkillContext, SkillOutput,
 };
+use ikaros_tools::SkillRuntimeSession;
 use serde_json::json;
 use std::path::Path;
 
@@ -160,7 +160,10 @@ pub(crate) fn is_allowed_test_command(command: &str) -> bool {
     ikaros_coding::is_allowed_test_command(command)
 }
 
-pub(crate) async fn run_shell(command: &str, session: &ExecutionSession) -> Result<ProcessOutput> {
+pub(crate) async fn run_shell(
+    command: &str,
+    session: &SkillRuntimeSession,
+) -> Result<ProcessOutput> {
     validate_test_command(command)?;
     let (program, args) = parse_allowlisted_command(command)?;
     run_program(&program, args, session).await
@@ -169,7 +172,7 @@ pub(crate) async fn run_shell(command: &str, session: &ExecutionSession) -> Resu
 async fn run_program(
     program: &str,
     args: Vec<String>,
-    session: &ExecutionSession,
+    session: &SkillRuntimeSession,
 ) -> Result<ProcessOutput> {
     session
         .env

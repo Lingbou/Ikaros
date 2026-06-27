@@ -3,8 +3,8 @@
 use super::super::loader::load_plugin_manifest;
 use super::{
     fs_ops::{
-        copy_plugin_dir, copy_regular_file, ensure_install_target_path, reject_self_replacement,
-        reject_temp_path, remove_existing_target, resolve_manifest_path,
+        copy_plugin_dir, ensure_install_target_path, reject_self_replacement, reject_temp_path,
+        remove_existing_target, resolve_manifest_path,
     },
     marketplace_update::set_plugin_enabled,
     types::PluginInstallReport,
@@ -22,6 +22,12 @@ pub fn install_local_plugin(
     let skills_dir = skills_dir.as_ref();
     let source_path = source_path.as_ref();
     reject_temp_path(source_path, "plugin source path")?;
+    if !source_path.is_dir() {
+        return Err(IkarosError::Message(format!(
+            "plugin source path must be a directory containing plugin.toml: {}",
+            source_path.display()
+        )));
+    }
     fs::create_dir_all(skills_dir).map_err(|source| IkarosError::io(skills_dir, source))?;
 
     let manifest_path = resolve_manifest_path(source_path);
@@ -54,12 +60,7 @@ pub fn install_local_plugin(
         remove_existing_target(&target_dir)?;
     }
 
-    if source_path.is_dir() {
-        copy_plugin_dir(source_path, &target_dir)?;
-    } else {
-        fs::create_dir_all(&target_dir).map_err(|source| IkarosError::io(&target_dir, source))?;
-        copy_regular_file(source_path, &target_dir.join("plugin.toml"))?;
-    }
+    copy_plugin_dir(source_path, &target_dir)?;
 
     let marketplace_update = set_plugin_enabled(skills_dir, &manifest.name, enabled)?;
 

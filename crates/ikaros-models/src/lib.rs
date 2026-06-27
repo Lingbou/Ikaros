@@ -23,20 +23,26 @@ pub use governance::{
     FallbackModelProvider, GovernedModelProvider, ModelRuntimeLimits, ProviderCooldownPolicy,
     ProviderRetryPolicy,
 };
-pub use http::{ModelHttpClient, ModelHttpRequest, ModelHttpResponse, ReqwestModelHttpClient};
+pub use http::{
+    ModelHttpClient, ModelHttpRequest, ModelHttpResponse, ModelHttpStreamResponse,
+    ReqwestModelHttpClient,
+};
+pub use ikaros_core::preset::{ModelPresetSpec, preset_catalog, preset_ids, resolve_preset};
 pub use mock::MockModelProvider;
 pub use ollama::OllamaProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
+pub use params::model_request_options_from_config;
 pub use registry::ProviderRegistry;
 pub use transport::{
     ModelTransport, ModelTransportDescriptor, model_transport_descriptor_from_config,
 };
 pub use types::{
-    ModelContextProfile, ModelMessage, ModelProvider, ModelProviderCapabilities, ModelProviderCost,
-    ModelProviderDescriptor, ModelRequest, ModelRequestDiagnostic, ModelRequestOptions,
-    ModelResponse, ModelStream, ModelStreamEvent, ModelTokenizerKind, ModelToolCall,
-    ModelToolDefinition, ProviderErrorKind, ProviderHealthState, ProviderHealthStatus,
-    ReasoningConfig, ReasoningEffort, TokenUsage,
+    ModelContentBlock, ModelContextProfile, ModelMessage, ModelProvider, ModelProviderCapabilities,
+    ModelProviderCost, ModelProviderDescriptor, ModelProviderProfileCatalogEntry,
+    ModelProviderProfilePolicy, ModelRequest, ModelRequestDiagnostic, ModelRequestOptions,
+    ModelResponse, ModelStream, ModelStreamEvent, ModelStreamEventSink, ModelTokenizerKind,
+    ModelToolCall, ModelToolDefinition, NoopModelStreamEventSink, ProviderErrorKind,
+    ProviderHealthState, ProviderHealthStatus, ReasoningConfig, ReasoningEffort, TokenUsage,
 };
 pub use usage::{ModelUsageLedger, ModelUsageRecord, ProviderHealthLedger, ProviderHealthRecord};
 

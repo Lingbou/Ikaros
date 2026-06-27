@@ -1,0 +1,12 @@
+target
+.git
+.temp
+.agents
+.codex
+.claude
+docker/*.log
+**/*.tmp
+**/*.swp
+**/.DS_Store
+**/.idea
+**/.vscode

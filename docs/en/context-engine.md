@@ -1,9 +1,16 @@
 # Context Engine
 
 The context boundary controls what local state is allowed to enter a model turn.
-It is not a prompt string builder. It owns structured context sections,
-reference parsing, token budgeting, and the diff record that explains why a
-turn saw the context it saw.
+It owns structured context sections, reference parsing, token budgeting, prompt
+sections, and the diff record that explains why a turn saw the context it saw.
+The final system prompt is renderer output from these structured sections; UI
+and replay code should inspect the sections, not reverse-parse the prompt text.
+`PromptBuildReport::system_messages_for_prompt_cache()` splits cache-stable
+persona, policy, and tool guidance from dynamic context sections so provider
+adapters can mark only the stable prefix for prompt caching. Prompt metadata
+also carries a deterministic stable-prefix hash, message count, and token
+estimate so replay/debug can prove whether the cacheable prefix changed without
+storing prompt text.
 
 ## Ownership
 
@@ -14,13 +21,22 @@ turn saw the context it saw.
 - `ContextReference`
 - `ContextBudget`
 - `ContextDiff`
+- `PromptBuilder`
+- `PromptSection`
 - provider-aware token estimator adapters
 - `PriorityContextEngine`
 - `TrajectoryCompressor`
+- `LlmSummaryCompressor`, which prepares a provider summary request and turns
+  the redacted provider summary into a budgeted `ContextCompressionReport`
 
 `ikaros-runtime` owns orchestration around those primitives. Runtime chat still
 calls harness safe-read skills for memory and RAG, resolves workspace-local
-references, renders the final system prompt, and emits the session event.
+references, adds runtime/tool guidance, renders the final system prompt through
+`PromptBuilder`, sends cache-stable and dynamic system prompt layers as
+separate model messages where supported, and emits the session event. The
+default context engine is `deterministic`; `--context-engine llm-summary`
+explicitly enables the provider-backed summary compressor. Unknown engine names
+fail fast instead of silently falling back.
 
 This split keeps context accounting and replay/debug data reusable without
 letting the context crate depend on runtime, harness, or model providers.
@@ -46,24 +62,65 @@ Each persisted `ContextSection` also carries a contract:
 - `trust_level`
 - `source_kind`
 - `injection_reason`
-- optional `freshness`
-- optional `scope`
+- `freshness`
+- `scope`
 
 The default mapping is:
 
-| Section | Trust | Source | Injection reason |
-| --- | --- | --- | --- |
-| relationship | high | accepted memory | relationship core |
-| references | high | explicit reference | user explicit reference |
-| history | medium | session history | recent episode history |
-| memory_projection | high | memory projection | accepted memory projection |
-| working_memory | medium | working memory | session working memory |
-| retrieved_memory | medium-low | retrieved memory | on-demand memory search |
-| RAG | medium-low | RAG index | explicit reference retrieval |
+- `relationship`: high trust, accepted-memory source, stable freshness, user
+  scope, injected for relationship core facts.
+- `references`: high trust, explicit-reference source, current freshness,
+  workspace scope, injected because the user explicitly referenced it.
+- `history`: medium trust, session-history source, recent freshness, session
+  scope, injected as recent episode history.
+- `memory_projection`: high trust, memory-projection source, stable freshness,
+  user scope, injected as accepted memory projection.
+- `working_memory`: medium trust, working-memory source, current freshness,
+  session scope, injected as session working memory.
+- `retrieved_memory`: medium-low trust, retrieved-memory source, retrieved
+  freshness, user scope, injected by explicit `memory_search` or
+  `--memory-search-limit`.
+- `RAG`: medium-low trust, RAG-index source, retrieved freshness, workspace
+  scope, injected as explicit reference retrieval.
 
 This contract is intentionally part of the event payload. Replay, debug, and UI
 callers can explain whether a visible line came from accepted memory, session
 scratchpad/history, explicit local references, or cited RAG snippets.
+
+## Prompt Sections
+
+`ContextSection` records what local context was assembled. `PromptSection`
+records how that context, persona text, policy text, compression guidance, and
+tool guidance became the actual system prompt.
+
+Each prompt section carries:
+
+- `kind`
+- `title`
+- `content`
+- `source`
+- `priority`
+- `estimated_tokens`
+- `redaction`
+
+Current chat prompt section kinds include persona, policy, relationship,
+references, history, memory projection, working memory, retrieved memory, RAG,
+context compression, and tool guidance. `content` exists only in the in-memory
+render input. Persisted `ContextDiff`, audit, replay, and debug output use
+`PromptSectionMetadata`, which contains only kind, title, source, priority,
+estimated token count, and redaction state. Secret-like values are redacted
+before prompt content reaches the renderer, and full prompt section content is
+not stored as session evidence.
+
+Optional local-context sections are emitted only when they contain content.
+Empty relationship, reference, history, memory, or RAG inputs remain visible in
+context accounting, but they are not rendered as `none` blocks in the system
+prompt and do not appear as prompt section metadata.
+
+Ordinary chat does not run long-term memory search by default. The default
+memory surface is accepted projection plus session working memory. Retrieved
+memory is only populated when a caller opts in with `--memory-search-limit` or a
+tool explicitly performs `memory_search`.
 
 ## Token Budget
 
@@ -142,10 +199,23 @@ Local reference resolution is workspace-bound:
 - `@staged` uses local `git diff --cached -- .`.
 
 Paths that escape the workspace fail the turn. Missing local paths also fail
-the turn because the user explicitly requested that context.
+the turn because the user explicitly requested that context. Binary or non-UTF8
+`@file` targets do not fail the turn; they are represented as a structured
+reference notice with the workspace-relative path and byte size. Text `@file`
+content is capped before compression so explicit references cannot consume more
+than half of the effective local-context token budget; capped references include
+a truncation marker explaining the limit.
 
-`@url` is parsed but not fetched. Network-backed context references require a
-separate network policy boundary before they become executable.
+`@url` is fetched through the session `NetworkEgress` boundary. The governed
+egress policy is deny-by-default and only allows exact hosts from
+`execution.network.allowed_hosts` or configured provider defaults, and only for
+`http` or `https` URLs. Denied hosts or unsupported schemes fail the turn.
+Successful responses are still guarded before entering context: missing content
+type is accepted for local test transports, but explicit content types must be
+plain text, Markdown, JSON, XML, or YAML. HTML and binary responses are
+represented as skipped reference notices. Response bodies larger than 64 KiB are
+skipped rather than truncated into the prompt, and URL/body text is redacted
+before any visible reference notice is emitted.
 
 ## Session Events
 
@@ -156,6 +226,7 @@ payload includes:
 - sections
 - compressed sections
 - compression summary
+- prompt section metadata
 - parsed references
 - before/after token estimates
 - added, removed, and compressed context previews
@@ -173,8 +244,9 @@ ikaros debug context-diff <session-id> --turn-id <turn-id>
 
 The command fails if the session or requested turn is missing. JSON output is
 redacted and includes the estimator, model-derived budget, section token
-counts, parsed references, compressed/protected context evidence, compaction
-summary, continuation prompt, and any context-limit error event for the turn.
+counts, prompt section source/priority/token metadata, parsed references,
+compressed/protected context evidence, compaction summary, continuation prompt,
+and any context-limit error event for the turn.
 
 ## Safety
 

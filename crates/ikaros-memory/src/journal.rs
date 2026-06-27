@@ -79,6 +79,7 @@ pub enum MemoryJournalAction {
     Demote,
     Forget,
     Skip,
+    CandidateCreated,
     CandidateAccepted,
     CandidateRejected,
     ProjectionRendered,

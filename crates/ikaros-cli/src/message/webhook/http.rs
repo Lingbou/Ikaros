@@ -22,6 +22,7 @@ pub(super) fn parse_http_request_line(line: &str) -> Option<(&str, &str)> {
 pub(super) struct HttpHeaders {
     pub(super) content_length: Option<usize>,
     pub(super) content_type: Option<String>,
+    pub(super) ikaros_signature: Option<String>,
 }
 
 pub(super) fn read_http_headers(reader: &mut impl BufRead) -> Result<HttpHeaders> {
@@ -48,6 +49,8 @@ pub(super) fn read_http_headers(reader: &mut impl BufRead) -> Result<HttpHeaders
             );
         } else if name.eq_ignore_ascii_case("content-type") {
             headers.content_type = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("x-ikaros-signature") {
+            headers.ikaros_signature = Some(value.to_string());
         }
     }
     anyhow::bail!("message webhook headers are too large")

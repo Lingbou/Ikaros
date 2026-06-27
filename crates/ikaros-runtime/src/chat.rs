@@ -18,7 +18,9 @@ pub use context_engine::{
     build_chat_context_with_engine,
 };
 pub use history::{
-    ChatHistoryRecord, ChatHistorySessionSummary, ChatHistoryStore, new_chat_session_id,
+    CHAT_HISTORY_DELETE_SESSION_OPERATION, ChatHistoryRecord, ChatHistorySessionSummary,
+    chat_history_records_from_session_replay, chat_history_session_summaries_from_session_replays,
+    new_chat_session_id, search_chat_history_records,
 };
 pub use prompt::{render_chat_system_prompt, render_persona_agent_context};
 pub use turn::{ChatTurnEventOptions, run_chat_message, run_chat_turn, run_chat_turn_with_events};

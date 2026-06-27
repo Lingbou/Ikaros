@@ -14,6 +14,7 @@ ikaros-context = { path = "../ikaros-context" }
 ikaros-core = { path = "../ikaros-core" }
 ikaros-gateway = { path = "../ikaros-gateway" }
 ikaros-harness = { path = "../ikaros-harness" }
+ikaros-host = { path = "../ikaros-host" }
 ikaros-memory = { path = "../ikaros-memory" }
 ikaros-models = { path = "../ikaros-models" }
 ikaros-rag = { path = "../ikaros-rag" }
@@ -23,8 +24,8 @@ ikaros-soul = { path = "../ikaros-soul" }
 serde.workspace = true
 serde_json.workspace = true
 ring.workspace = true
-rusqlite.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 time.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -33,6 +34,7 @@ uuid.workspace = true
 tempfile.workspace = true
 ikaros-voice = { path = "../ikaros-voice" }
 async-trait.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

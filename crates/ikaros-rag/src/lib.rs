@@ -5,8 +5,6 @@ mod embedding;
 mod factory;
 mod files;
 mod jsonl;
-mod ollama;
-mod openai_compatible;
 mod sqlite;
 mod store;
 mod types;
@@ -16,8 +14,6 @@ pub use embedding::{
 };
 pub use factory::embedding_provider_uses_network;
 pub use jsonl::LocalRagIndex;
-pub use ollama::OllamaEmbeddingProvider;
-pub use openai_compatible::OpenAiCompatibleEmbeddingProvider;
 pub use sqlite::SqliteRagIndex;
 pub use store::LocalRagStore;
 pub use types::{

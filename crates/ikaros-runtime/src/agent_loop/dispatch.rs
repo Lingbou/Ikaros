@@ -43,6 +43,7 @@ pub(super) async fn dispatch_agent_loop_tool_call(
             ok: false,
             summary: redact_secrets(&error.to_string()),
             output: json!({"error": redact_secrets(&error.to_string())}),
+            recoverable: false,
         },
     }
 }
@@ -71,6 +72,7 @@ fn timed_out_agent_loop_tool_result(
                 "ended_at": format_rfc3339(ended_at),
             }
         }),
+        recoverable: true,
     }
 }
 
@@ -158,6 +160,7 @@ fn agent_loop_tool_result_from_tool_result(
         ok: result.ok,
         summary: redact_secrets(&result.summary),
         output: redact_json(result.output),
+        recoverable: false,
     }
 }
 
@@ -172,16 +175,19 @@ fn audit_agent_loop_guardrail(
     } else {
         "agent_loop_guardrail_warning"
     };
-    session.audit.append(AuditEvent::new(
-        kind,
-        None,
-        signal.message(),
-        json!({
-            "task_id": task_id,
-            "signal": signal,
-            "halted": halted,
-        }),
-    )?)
+    session
+        .audit
+        .append(session.correlate_audit_event(AuditEvent::new(
+            kind,
+            None,
+            signal.message(),
+            json!({
+                "correlation_id": session.correlation_id(),
+                "task_id": task_id,
+                "signal": signal,
+                "halted": halted,
+            }),
+        )?))
 }
 
 fn should_observe_agent_loop_result(result: &AgentLoopToolResult) -> bool {
