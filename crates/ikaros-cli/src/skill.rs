@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{print_approval_hint, print_skill_result, session_and_registry, skill_env};
+use crate::{print_approval_hint, print_skill_result};
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use ikaros_core::{IkarosConfig, IkarosPaths};
-use ikaros_harness::{
-    PluginCatalog, audit_plugins, install_local_plugin, set_plugin_enabled, uninstall_local_plugin,
-    validate_plugin_file,
+use ikaros_agent::agent_loop::agent_toolset_selection;
+use ikaros_core::IkarosPaths;
+use ikaros_execution::harness::{
+    PluginCatalog, ToolVisibility, audit_plugins, install_local_plugin, set_plugin_enabled,
+    set_plugin_quarantine, uninstall_local_plugin, validate_plugin_file,
 };
-use ikaros_skills::builtin_registry;
+use ikaros_host::runtime_harness;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,8 @@ pub(crate) enum SkillCommand {
     Uninstall { name: String },
     Enable { name: String },
     Disable { name: String },
+    Quarantine(SkillQuarantine),
+    Unquarantine { name: String },
     Run(SkillRun),
 }
 
@@ -43,6 +46,13 @@ pub(crate) struct SkillRun {
     dry_run: bool,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct SkillQuarantine {
+    name: String,
+    #[arg(long, default_value = "operator quarantine")]
+    reason: String,
+}
+
 pub(crate) async fn skill_command(
     command: SkillCommand,
     paths: &IkarosPaths,
@@ -50,28 +60,30 @@ pub(crate) async fn skill_command(
     agent_override: Option<&str>,
 ) -> Result<()> {
     paths.ensure()?;
-    let config = IkarosConfig::load(&paths.config)?;
-    let registry = builtin_registry(skill_env(paths, workspace, &config)?);
+    let harness = runtime_harness(paths, workspace, agent_override)?;
+    let session = harness.session;
+    let registry = harness.registry;
     let plugins = PluginCatalog::load(&paths.skills_dir)?;
+    let toolsets = agent_toolset_selection(&harness.agent)?;
     match command {
         SkillCommand::List => {
             println!("builtins:");
-            for name in registry.names() {
-                let skill = registry.get(&name).ok_or_else(|| {
-                    anyhow::anyhow!("skill missing after registry listing: {name}")
-                })?;
-                println!("- {} [{:?}]", skill.name(), skill.risk_level());
+            for descriptor in registry.descriptors() {
+                let visibility = model_visibility(&registry, &descriptor.name, &toolsets);
+                println!(
+                    "- {} [{:?} toolset={} visibility={}]",
+                    descriptor.name, descriptor.risk_level, descriptor.toolset, visibility
+                );
             }
             println!("plugins:");
             if plugins.plugins.is_empty() {
                 println!("- none");
             } else {
                 for plugin in &plugins.plugins {
-                    let state = if plugin.marketplace.enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    };
+                    let state = plugin_marketplace_state(
+                        plugin.marketplace.enabled,
+                        plugin.marketplace.quarantined,
+                    );
                     println!(
                         "- {} {} [{} priority={} source={}]: {}",
                         plugin.manifest.name,
@@ -81,7 +93,7 @@ pub(crate) async fn skill_command(
                         plugin.marketplace.source,
                         plugin.manifest.description
                     );
-                    if plugin.marketplace.enabled {
+                    if plugin.marketplace.enabled && !plugin.marketplace.quarantined {
                         for skill in &plugin.manifest.skills {
                             let execution = if skill.command.is_some() {
                                 "command"
@@ -93,6 +105,8 @@ pub(crate) async fn skill_command(
                                 plugin.manifest.name, skill.name, skill.risk, execution
                             );
                         }
+                    } else if plugin.marketplace.quarantined {
+                        println!("  - skills quarantined by marketplace metadata");
                     } else {
                         println!("  - skills disabled by marketplace metadata");
                     }
@@ -102,10 +116,20 @@ pub(crate) async fn skill_command(
         }
         SkillCommand::Inspect { name } => {
             if let Some(skill) = registry.get(&name) {
+                let descriptor = registry
+                    .descriptors()
+                    .into_iter()
+                    .find(|descriptor| descriptor.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("skill descriptor missing: {name}"))?;
                 println!("name: {}", skill.name());
                 println!("kind: builtin");
                 println!("description: {}", skill.description());
                 println!("risk: {:?}", skill.risk_level());
+                println!("toolset: {}", descriptor.toolset);
+                println!(
+                    "model_visibility: {}",
+                    model_visibility(&registry, &descriptor.name, &toolsets)
+                );
                 println!(
                     "input_schema: {}",
                     serde_json::to_string_pretty(&skill.input_schema())?
@@ -116,6 +140,10 @@ pub(crate) async fn skill_command(
                 println!("plugin: {}", plugin.manifest.name);
                 println!("version: {}", plugin.manifest.version);
                 println!("enabled: {}", plugin.marketplace.enabled);
+                println!("quarantined: {}", plugin.marketplace.quarantined);
+                if let Some(reason) = &plugin.marketplace.quarantine_reason {
+                    println!("quarantine_reason: {reason}");
+                }
                 println!("priority: {}", plugin.marketplace.priority);
                 println!("source: {}", plugin.marketplace.source);
                 if let Some(path) = &plugin.marketplace.path {
@@ -167,6 +195,7 @@ pub(crate) async fn skill_command(
             println!("plugins: {}", report.plugin_count);
             println!("enabled: {}", report.enabled_plugin_count);
             println!("disabled: {}", report.disabled_plugin_count);
+            println!("quarantined: {}", report.quarantined_plugin_count);
             println!("skills: {}", report.skill_count);
             println!("enabled_skills: {}", report.enabled_skill_count);
             println!("command_skills: {}", report.command_skill_count);
@@ -177,11 +206,7 @@ pub(crate) async fn skill_command(
             } else {
                 println!("plugin_details:");
                 for plugin in &report.plugins {
-                    let state = if plugin.enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    };
+                    let state = plugin_marketplace_state(plugin.enabled, plugin.quarantined);
                     let risks = plugin
                         .risk_levels
                         .iter()
@@ -200,6 +225,9 @@ pub(crate) async fn skill_command(
                         plugin.command_skill_count,
                         plugin.missing_commands.len()
                     );
+                    if let Some(reason) = &plugin.quarantine_reason {
+                        println!("  quarantine_reason: {reason}");
+                    }
                     println!("  manifest: {}", plugin.manifest_path.display());
                     if let Some(path) = &plugin.marketplace_path {
                         println!("  marketplace_path: {}", path.display());
@@ -282,6 +310,10 @@ pub(crate) async fn skill_command(
             let update = set_plugin_enabled(&paths.skills_dir, &name, true)?;
             println!("plugin: {}", update.name);
             println!("enabled: {}", update.enabled);
+            println!("quarantined: {}", update.quarantined);
+            if let Some(reason) = update.quarantine_reason {
+                println!("quarantine_reason: {reason}");
+            }
             println!("entry_added: {}", update.entry_added);
             println!("marketplace: {}", update.marketplace_path.display());
         }
@@ -289,6 +321,30 @@ pub(crate) async fn skill_command(
             let update = set_plugin_enabled(&paths.skills_dir, &name, false)?;
             println!("plugin: {}", update.name);
             println!("enabled: {}", update.enabled);
+            println!("quarantined: {}", update.quarantined);
+            if let Some(reason) = update.quarantine_reason {
+                println!("quarantine_reason: {reason}");
+            }
+            println!("entry_added: {}", update.entry_added);
+            println!("marketplace: {}", update.marketplace_path.display());
+        }
+        SkillCommand::Quarantine(args) => {
+            let update =
+                set_plugin_quarantine(&paths.skills_dir, &args.name, true, Some(&args.reason))?;
+            println!("plugin: {}", update.name);
+            println!("enabled: {}", update.enabled);
+            println!("quarantined: {}", update.quarantined);
+            if let Some(reason) = update.quarantine_reason {
+                println!("quarantine_reason: {reason}");
+            }
+            println!("entry_added: {}", update.entry_added);
+            println!("marketplace: {}", update.marketplace_path.display());
+        }
+        SkillCommand::Unquarantine { name } => {
+            let update = set_plugin_quarantine(&paths.skills_dir, &name, false, None)?;
+            println!("plugin: {}", update.name);
+            println!("enabled: {}", update.enabled);
+            println!("quarantined: {}", update.quarantined);
             println!("entry_added: {}", update.entry_added);
             println!("marketplace: {}", update.marketplace_path.display());
         }
@@ -297,20 +353,45 @@ pub(crate) async fn skill_command(
             if !input.is_object() {
                 anyhow::bail!("skill run --input-json must be a JSON object");
             }
-            let (session, registry) = session_and_registry(paths, workspace, agent_override)?;
             let session = session.with_dry_run(args.dry_run);
-            let result = session
-                .execute_skill(
-                    &registry,
-                    "plugin_command_run",
-                    json!({"name": args.name, "input": input}),
-                )
-                .await?;
+            let result = if registry.get(&args.name).is_some() {
+                session.execute_skill(&registry, &args.name, input).await?
+            } else {
+                session
+                    .execute_skill(
+                        &registry,
+                        "plugin_command_run",
+                        json!({"name": args.name, "input": input}),
+                    )
+                    .await?
+            };
             print_skill_result(&result)?;
             print_approval_hint(&result);
         }
     }
     Ok(())
+}
+
+fn model_visibility(
+    registry: &ikaros_execution::harness::SkillRegistry,
+    name: &str,
+    toolsets: &ikaros_execution::harness::ToolsetSelection,
+) -> &'static str {
+    match registry.visibility_for(name, toolsets) {
+        Some(ToolVisibility::Direct) => "direct",
+        Some(ToolVisibility::Deferred) => "deferred",
+        Some(ToolVisibility::Disabled) | Some(ToolVisibility::Hidden) | None => "disabled",
+    }
+}
+
+fn plugin_marketplace_state(enabled: bool, quarantined: bool) -> &'static str {
+    if quarantined {
+        "quarantined"
+    } else if enabled {
+        "enabled"
+    } else {
+        "disabled"
+    }
 }
 
 fn print_plugin_warnings(plugins: &PluginCatalog) {

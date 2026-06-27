@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::{bounded_redacted_text, primary_test_analysis, run_coding_test_matrix};
-use ikaros_coding::{
-    ChangePlan, ChangePlanner, CodeReviewAssistant, CodingLoopReport, CodingLoopStatus,
-    CodingTurnContext, CodingTurnDiffReport, CodingTurnEvent, CodingTurnEventKind, CodingTurnInput,
-    CodingTurnReport, GuardedPatchApplier, PatchApplyReport, PatchFailure, PatchIterationPlan,
-    PatchIterationPlanner, RepoMap, RepoScanner, ReviewReport, TestCommand, TestFailureAnalysis,
-    TestRunnerPlan, TurnDiffTracker,
-};
 use ikaros_core::{IkarosError, Result, redact_secrets};
-use ikaros_harness::{CancellationToken, SkillContext};
-use ikaros_models::{ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions};
+use ikaros_execution::coding_context::CodingTurnContext;
+use ikaros_execution::coding_runtime::{
+    CodingLoopReport, CodingLoopStatus, CodingTurnDiffReport, CodingTurnEvent, CodingTurnEventKind,
+    CodingTurnInput, CodingTurnReport,
+};
+use ikaros_execution::diff::TurnDiffTracker;
+use ikaros_execution::harness::CancellationToken;
+use ikaros_execution::iteration::{PatchIterationPlan, PatchIterationPlanner};
+use ikaros_execution::patch::{GuardedPatchApplier, PatchApplyReport, PatchFailure};
+use ikaros_execution::repo::{
+    ChangePlan, ChangePlanner, RepoMap, RepoScanner, TestCommand, TestRunnerPlan,
+};
+use ikaros_execution::review::{CodeReviewAssistant, ReviewReport};
+use ikaros_execution::testing::TestFailureAnalysis;
+use ikaros_execution::toolkit::SkillContext;
+use ikaros_providers::model::{ModelMessage, ModelProvider, ModelRequest, ModelRequestOptions};
 use serde::Deserialize;
 use serde_json::json;
 use std::{path::Path, sync::Arc};

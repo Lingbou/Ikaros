@@ -6,15 +6,21 @@ use crate::{
     support::input_string,
 };
 use async_trait::async_trait;
-use ikaros_coding::{
-    ChangePlanner, CodeReviewAssistant, CodingMode, CodingModeCapabilities,
-    CodingPermissionProfile, CodingTurnContext, CodingTurnContextInput, CodingTurnInput,
-    DeterministicCodingRuntime, DiffSummarizer, GuardedPatchApplier, PatchIterationPlanner,
-    RepoScanner, TestCommand, TestFailureAnalysis, TestFailureAnalyzer, TestRunnerPlan,
-};
 use ikaros_core::{IkarosError, Result, RiskLevel, redact_secrets};
-use ikaros_harness::{PolicyRequest, Skill, SkillContext, SkillOutput};
-use ikaros_session::{
+use ikaros_execution::coding_context::{
+    CodingMode, CodingModeCapabilities, CodingPermissionProfile, CodingTurnContext,
+    CodingTurnContextInput,
+};
+use ikaros_execution::coding_runtime::{
+    CodingTurnEvent, CodingTurnInput, CodingTurnReport, DeterministicCodingRuntime,
+};
+use ikaros_execution::iteration::PatchIterationPlanner;
+use ikaros_execution::patch::GuardedPatchApplier;
+use ikaros_execution::repo::{ChangePlanner, RepoScanner, TestCommand, TestRunnerPlan};
+use ikaros_execution::review::{CodeReviewAssistant, DiffSummarizer};
+use ikaros_execution::testing::{TestFailureAnalysis, TestFailureAnalyzer};
+use ikaros_execution::toolkit::{PolicyRequest, Skill, SkillContext, SkillOutput};
+use ikaros_state::session::{
     AgentEvent, AgentEventKind, AgentEventSource, SessionEntry, SessionEntryKind, SessionRecord,
 };
 use serde_json::{Value, json};
@@ -567,7 +573,7 @@ fn primary_test_analysis(test_matrix: &[TestFailureAnalysis]) -> Option<TestFail
 
 pub(crate) fn persist_coding_turn_report(
     config: Option<&CodingSessionConfig>,
-    report: &ikaros_coding::CodingTurnReport,
+    report: &CodingTurnReport,
 ) -> Result<()> {
     let Some(config) = config else {
         return Ok(());
@@ -595,7 +601,7 @@ pub(crate) fn persist_coding_turn_report(
     writer.commit()
 }
 
-fn coding_event_payload(event: &ikaros_coding::CodingTurnEvent) -> Result<Value> {
+fn coding_event_payload(event: &CodingTurnEvent) -> Result<Value> {
     Ok(json!({
         "kind": serde_json::to_value(event.kind)?,
         "summary": event.summary,

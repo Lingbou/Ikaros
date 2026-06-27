@@ -13,27 +13,31 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
-ikaros-body = { path = "../ikaros-body" }
-ikaros-automation = { path = "../ikaros-automation" }
-ikaros-coding = { path = "../ikaros-coding" }
+ikaros-agent = { path = "../ikaros-agent" }
 ikaros-core = { path = "../ikaros-core" }
-ikaros-gateway = { path = "../ikaros-gateway" }
-ikaros-harness = { path = "../ikaros-harness" }
-ikaros-memory = { path = "../ikaros-memory" }
-ikaros-models = { path = "../ikaros-models" }
-ikaros-rag = { path = "../ikaros-rag" }
-ikaros-runtime = { path = "../ikaros-runtime" }
-ikaros-service = { path = "../ikaros-service" }
-ikaros-session = { path = "../ikaros-session" }
+ikaros-execution = { path = "../ikaros-execution" }
+ikaros-host = { path = "../ikaros-host" }
+ikaros-providers = { path = "../ikaros-providers" }
+ikaros-protocol = { path = "../ikaros-protocol" }
 ikaros-skills = { path = "../ikaros-skills" }
-ikaros-soul = { path = "../ikaros-soul" }
-ikaros-voice = { path = "../ikaros-voice" }
+ikaros-state = { path = "../ikaros-state" }
+ikaros-surfaces = { path = "../ikaros-surfaces" }
+ikaros-terminal = { path = "../ikaros-terminal" }
+base64.workspace = true
+crossterm.workspace = true
+futures-util.workspace = true
+ratatui.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+unicode-width.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

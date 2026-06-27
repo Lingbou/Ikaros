@@ -2,11 +2,16 @@
 
 use anyhow::Result;
 use clap::Subcommand;
-use ikaros_body::{BodyAdapter, BodyStatus, CliBodyAdapter};
+use ikaros_agent::soul::{EmotionState, RuntimeSignal, load_or_default};
+use ikaros_agent::task_loop::{
+    TaskAgentLoopContext, TaskExecutionContext, TaskRunOptions, execute_task_text_with_context,
+};
 use ikaros_core::{ContextBuilder, IkarosPaths};
-use ikaros_harness::{PlanStepStatus, TaskExecutionReport};
-use ikaros_runtime::{TaskRunOptions, execute_task_text_with_options};
-use ikaros_soul::{EmotionState, RuntimeSignal, load_or_default};
+use ikaros_execution::harness::{PlanStepStatus, TaskExecutionReport};
+use ikaros_host::{RuntimeHarness, runtime_harness, runtime_harness_model_provider};
+use ikaros_protocol::BodyStatus;
+use ikaros_state::session::{RuntimeSessionTarget, SqliteSessionStore};
+use ikaros_terminal::{BodyAdapter, CliBodyAdapter};
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
@@ -61,13 +66,42 @@ async fn run_task(
     agent_override: Option<&str>,
 ) -> Result<()> {
     paths.ensure()?;
-    let persona = load_or_default(&paths.persona)?;
-    let run = execute_task_text_with_options(
+    let persona = load_or_default(&paths.persona_dir)?;
+    let harness = runtime_harness(paths, workspace, agent_override)?;
+    let provider = if options.agent_loop {
+        Some(runtime_harness_model_provider(paths, &harness)?)
+    } else {
+        None
+    };
+    let RuntimeHarness {
+        agent,
+        agent_instance,
+        session,
+        registry,
+        ..
+    } = harness;
+    let session_target = options.agent_loop.then(|| RuntimeSessionTarget {
+        store: SqliteSessionStore::new(&agent_instance.state_dir),
+        agent_id: agent_instance.agent_id.clone(),
+        workspace: agent_instance.workspace.clone(),
+    });
+    let agent_loop = match (&provider, &session_target) {
+        (Some(provider), Some(session_target)) => Some(TaskAgentLoopContext {
+            persona: &persona,
+            provider: provider.as_ref(),
+            session_target,
+        }),
+        _ => None,
+    };
+    let run = execute_task_text_with_context(
         task_text,
         options.clone(),
-        paths,
-        workspace,
-        agent_override,
+        TaskExecutionContext {
+            agent: &agent,
+            session,
+            registry,
+            agent_loop,
+        },
     )
     .await?;
     let task = run.task.clone();

@@ -4,10 +4,10 @@ use super::{
     dashboard::{dashboard_output_path, dashboard_snapshot_href, ikaros_home_output_path},
     server::{dashboard_http_response, parse_http_request_line},
 };
-use ikaros_body::BodyEventKind;
+use ikaros_agent::body_status::audit_event_to_body_event;
 use ikaros_core::IkarosPaths;
-use ikaros_harness::{AuditEvent, ExecutionSession};
-use ikaros_runtime::audit_event_to_body_event;
+use ikaros_execution::harness::{AuditEvent, ExecutionSession};
+use ikaros_protocol::BodyEventKind;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -63,7 +63,10 @@ fn dashboard_event_mapping_redacts_data_values() {
     let body_event = audit_event_to_body_event(event);
     assert_eq!(body_event.kind, BodyEventKind::Skill);
     assert_eq!(
-        body_event.data.get("call_id").map(String::as_str),
+        body_event
+            .data
+            .get("call_id")
+            .and_then(serde_json::Value::as_str),
         Some("call-1")
     );
     assert!(!body_event.message.contains("abc123"));
@@ -71,7 +74,7 @@ fn dashboard_event_mapping_redacts_data_values() {
         !body_event
             .data
             .values()
-            .any(|value| value.contains("abc123"))
+            .any(|value| value.to_string().contains("abc123"))
     );
 }
 

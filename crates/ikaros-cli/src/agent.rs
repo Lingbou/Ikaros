@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::resolve_agent;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use ikaros_core::{AgentProfile, IkarosConfig, IkarosPaths, redact_json};
-use ikaros_runtime::{
-    AgentPoolTask, TaskRunOptions, run_agent_handoff_with_options, run_agent_pool_with_options,
+use ikaros_agent::agent_pool::{
+    AgentHandoffContext, AgentHandoffReport, AgentPoolItemReport, AgentPoolReport, AgentPoolTask,
+    agent_pool_report_from_items, pool_item_from_result, run_agent_handoff_with_options,
 };
-use serde_json::{Map, Value, json};
+use ikaros_agent::soul::load_or_default;
+use ikaros_agent::task_loop::{TaskAgentLoopContext, TaskRunOptions};
+use ikaros_core::IkarosPaths;
+use ikaros_host::{
+    RuntimeHarness, agent_profile_report, agent_profiles_report, runtime_harness,
+    runtime_harness_model_provider,
+};
+use ikaros_state::session::{RuntimeSessionTarget, SqliteSessionStore};
+use serde_json::json;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -32,6 +39,8 @@ pub(crate) struct AgentRun {
     agent_loop: bool,
     #[arg(long, default_value_t = 6)]
     loop_max_iterations: u32,
+    #[arg(long, value_name = "SESSION_ID")]
+    parent_session: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -50,6 +59,8 @@ pub(crate) struct AgentBatch {
     agent_loop: bool,
     #[arg(long, default_value_t = 6)]
     loop_max_iterations: u32,
+    #[arg(long, value_name = "SESSION_ID")]
+    parent_session: Option<String>,
 }
 
 pub(crate) async fn agent_command(
@@ -59,31 +70,32 @@ pub(crate) async fn agent_command(
     agent_override: Option<&str>,
 ) -> Result<()> {
     paths.ensure()?;
-    let config = IkarosConfig::load(&paths.config)?;
     match command {
         AgentCommand::List => {
-            println!("{}", serde_json::to_string_pretty(&agent_list(&config))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&agent_profiles_report(paths)?)?
+            );
         }
         AgentCommand::Show { profile } => {
             let requested = profile.as_deref().or(agent_override);
-            let agent = resolve_agent(&config, requested)?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&agent_show(&agent.name, &agent.profile))?
+                serde_json::to_string_pretty(&agent_profile_report(paths, requested)?)?
             );
         }
         AgentCommand::Run(args) => {
             let requested = args.profile.as_deref().or(agent_override);
-            let agent = resolve_agent(&config, requested)?;
-            let report = run_agent_handoff_with_options(
+            let report = run_agent_handoff_with_host_context(
                 paths,
                 workspace,
-                Some(&agent.name),
+                requested,
                 args.task,
                 TaskRunOptions {
                     dry_run: args.dry_run,
                     agent_loop: args.agent_loop,
                     loop_max_iterations: args.loop_max_iterations,
+                    parent_session_id: args.parent_session,
                     ..TaskRunOptions::default()
                 },
             )
@@ -94,6 +106,8 @@ pub(crate) async fn agent_command(
                     "agent": report.agent,
                     "mode": report.mode,
                     "task_id": report.task_id,
+                    "session_id": report.session_id,
+                    "parent_session_id": report.parent_session_id,
                     "dry_run": report.dry_run,
                     "agent_loop": report.agent_loop,
                     "state": report.report.state,
@@ -104,21 +118,18 @@ pub(crate) async fn agent_command(
             );
         }
         AgentCommand::Batch(args) => {
-            let requested = args.profile.as_deref().or(agent_override);
-            let profile = match requested {
-                Some(profile) => Some(resolve_agent(&config, Some(profile))?.name),
-                None => None,
-            };
+            let default_profile = args.profile.as_deref().or(agent_override);
             let tasks = load_agent_batch_tasks(&args)?;
-            let report = run_agent_pool_with_options(
+            let report = run_agent_pool_with_host_context(
                 paths,
                 workspace,
                 tasks,
-                profile.as_deref(),
+                default_profile,
                 TaskRunOptions {
                     dry_run: args.dry_run,
                     agent_loop: args.agent_loop,
                     loop_max_iterations: args.loop_max_iterations,
+                    parent_session_id: args.parent_session,
                     ..TaskRunOptions::default()
                 },
                 args.concurrency,
@@ -128,6 +139,130 @@ pub(crate) async fn agent_command(
         }
     }
     Ok(())
+}
+
+async fn run_agent_handoff_with_host_context(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    profile: Option<&str>,
+    task_text: impl Into<String>,
+    options: TaskRunOptions,
+) -> Result<AgentHandoffReport> {
+    let harness = runtime_harness(paths, workspace, profile)?;
+    let provider = if options.agent_loop {
+        Some(runtime_harness_model_provider(paths, &harness)?)
+    } else {
+        None
+    };
+    let session_target = RuntimeSessionTarget {
+        store: SqliteSessionStore::new(harness.agent_instance.state_dir.clone()),
+        agent_id: harness.agent_instance.agent_id.clone(),
+        workspace: harness.agent_instance.workspace.clone(),
+    };
+    let max_delegation_depth = harness.agent_instance.session_policy.max_delegation_depth;
+    let RuntimeHarness {
+        agent,
+        session,
+        registry,
+        ..
+    } = harness;
+    if options.agent_loop {
+        let persona = load_or_default(&paths.persona_dir)?;
+        let provider = provider.expect("agent-loop provider");
+        Ok(run_agent_handoff_with_options(
+            task_text,
+            options,
+            AgentHandoffContext {
+                agent: &agent,
+                session,
+                registry,
+                agent_loop: Some(TaskAgentLoopContext {
+                    persona: &persona,
+                    provider: provider.as_ref(),
+                    session_target: &session_target,
+                }),
+                parent_evidence_target: Some(&session_target),
+                max_delegation_depth,
+            },
+        )
+        .await?)
+    } else {
+        Ok(run_agent_handoff_with_options(
+            task_text,
+            options,
+            AgentHandoffContext {
+                agent: &agent,
+                session,
+                registry,
+                agent_loop: None,
+                parent_evidence_target: Some(&session_target),
+                max_delegation_depth,
+            },
+        )
+        .await?)
+    }
+}
+
+async fn run_agent_pool_with_host_context(
+    paths: &IkarosPaths,
+    workspace: &Path,
+    tasks: Vec<AgentPoolTask>,
+    default_profile: Option<&str>,
+    options: TaskRunOptions,
+    concurrency: usize,
+) -> Result<AgentPoolReport> {
+    if tasks.is_empty() {
+        anyhow::bail!("agent pool requires at least one task");
+    }
+    if concurrency == 0 {
+        anyhow::bail!("agent pool concurrency must be greater than zero");
+    }
+    let concurrency = concurrency.min(tasks.len());
+    let indexed_tasks = tasks.into_iter().enumerate().collect::<Vec<_>>();
+    let mut reports = Vec::new();
+    for chunk in indexed_tasks.chunks(concurrency) {
+        let mut handles = Vec::new();
+        for (index, task) in chunk.iter().cloned() {
+            let paths = paths.clone();
+            let workspace = workspace.to_path_buf();
+            let default_profile = default_profile.map(ToOwned::to_owned);
+            let task_text = task.task.clone();
+            let requested_profile = task.profile.clone();
+            let profile = requested_profile.clone().or(default_profile);
+            let options = options.clone();
+            let handle = tokio::spawn(async move {
+                let result = run_agent_handoff_with_host_context(
+                    &paths,
+                    &workspace,
+                    profile.as_deref(),
+                    task_text.clone(),
+                    options,
+                )
+                .await
+                .map_err(|error| ikaros_core::IkarosError::Message(error.to_string()));
+                pool_item_from_result(index, task_text, profile, result)
+            });
+            handles.push((index, task.task, requested_profile, handle));
+        }
+        for (index, task_text, profile, handle) in handles {
+            match handle.await {
+                Ok(report) => reports.push(report),
+                Err(error) => reports.push(AgentPoolItemReport {
+                    index,
+                    task: ikaros_core::redact_secrets(&task_text),
+                    profile,
+                    ok: false,
+                    state: None,
+                    report: None,
+                    error: Some(ikaros_core::redact_secrets(&format!(
+                        "agent worker task join failed: {error}"
+                    ))),
+                }),
+            }
+        }
+    }
+    reports.sort_by_key(|report| report.index);
+    Ok(agent_pool_report_from_items(&options, concurrency, reports))
 }
 
 fn load_agent_batch_tasks(args: &AgentBatch) -> Result<Vec<AgentPoolTask>> {
@@ -153,81 +288,9 @@ fn load_agent_batch_tasks(args: &AgentBatch) -> Result<Vec<AgentPoolTask>> {
     Ok(tasks)
 }
 
-fn agent_list(config: &IkarosConfig) -> Value {
-    let profiles = config
-        .agent
-        .profiles
-        .iter()
-        .map(|(name, profile)| {
-            (
-                name.clone(),
-                json!({
-                    "mode": profile.mode,
-                    "description": profile.description,
-                    "memory_context": profile.memory_context,
-                    "rag_context": profile.rag_context,
-                    "permissions": permissions_json(profile),
-                }),
-            )
-        })
-        .collect::<Map<_, _>>();
-    redact_json(json!({
-        "default": config.agent.default,
-        "profiles": profiles,
-    }))
-}
-
-fn agent_show(name: &str, profile: &AgentProfile) -> Value {
-    redact_json(json!({
-        "name": name,
-        "mode": profile.mode,
-        "description": profile.description,
-        "persona_overlay": profile.persona_overlay,
-        "memory_context": profile.memory_context,
-        "rag_context": profile.rag_context,
-        "permissions": permissions_json(profile),
-    }))
-}
-
-fn permissions_json(profile: &AgentProfile) -> Value {
-    json!({
-        "workspace_writes": profile.workspace_writes,
-        "shell": profile.shell,
-        "network": profile.network,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ikaros_core::AgentPermission;
-
-    #[test]
-    fn agent_show_redacts_secret_like_profile_text() {
-        let mut profile = AgentProfile::general();
-        profile.description = "use token=abc123 for nothing".into();
-        profile.persona_overlay = "never echo sk-test-secret".into();
-
-        let rendered = serde_json::to_string(&agent_show("safe", &profile)).expect("json");
-
-        assert!(!rendered.contains("abc123"));
-        assert!(!rendered.contains("sk-test-secret"));
-        assert!(rendered.contains("[REDACTED_SECRET]"));
-    }
-
-    #[test]
-    fn permissions_snapshot_preserves_policy_intent() {
-        let mut profile = AgentProfile::plan();
-        profile.workspace_writes = AgentPermission::Deny;
-        profile.shell = AgentPermission::Ask;
-        profile.network = AgentPermission::Allow;
-
-        let rendered = permissions_json(&profile);
-
-        assert_eq!(rendered["workspace_writes"], "deny");
-        assert_eq!(rendered["shell"], "ask");
-        assert_eq!(rendered["network"], "allow");
-    }
 
     #[test]
     fn agent_batch_loads_inline_and_file_tasks() {
@@ -242,6 +305,7 @@ mod tests {
             dry_run: true,
             agent_loop: false,
             loop_max_iterations: 6,
+            parent_session: None,
         })
         .expect("tasks");
 

@@ -1,6 +1,8 @@
 # Memory Providers
 
-The memory provider boundary keeps local memory as the default and gives local stores, registries, and provider lifecycle hooks a single interface. In the MVP, executable append/search/update/delete operations still use local JSONL or SQLite stores.
+The memory provider boundary keeps local memory as the default and gives local stores, registries,
+and provider lifecycle hooks a single interface. In the MVP, executable append/search/update/delete
+operations still use local JSONL or SQLite stores.
 
 The provider API is a lifecycle boundary, not just a database abstraction. Runtime
 turns can notify memory at specific points without knowing whether the active
@@ -27,7 +29,8 @@ Registry states:
 
 The built-in local provider is always active. External provider descriptors are
 metadata until a remote adapter exists; declaring one does not redirect local
-writes. `ikaros config validate` rejects enabled external providers.
+writes. Runtime config loading and `ikaros config validate` reject enabled
+external providers.
 
 The memory policy boundary includes:
 
@@ -42,10 +45,10 @@ chat writes `sync_turn` append or skipped-write decisions to the journal, then
 records promote, demote, forget, and quota-eviction decisions for affected core
 memory scopes when any exist. Quota evictions are journaled as `forget` actions
 with a quota reason.
-Projection renders, candidate accept/reject decisions, working-memory expiry,
-and supersession events are also journaled so debug tooling can explain why a
-projected memory surface changed, why a scratchpad record disappeared, and
-which old memory was replaced.
+Projection renders, candidate create/accept/reject decisions, working-memory
+expiry, and supersession events are also journaled so debug tooling can explain
+why a projected memory surface changed, why a candidate entered the inbox, why a
+scratchpad record disappeared, and which old memory was replaced.
 It does not replace the memory store, and it does not enable external memory
 providers. The current policy pass is turn-scoped rather than a full-store
 compactor.
@@ -131,14 +134,15 @@ redaction-related notes, action counts, and runtime memory policy actions.
 
 Chat context assembly uses memory through harness safe-read skills. Projection
 and working-memory reads are separate safe-read tools, and retrieved memory
-search remains available for explicit local lookup. The skills execute with the
-real local query but record a redacted audit input, so the audit log does not
-store full prompts. Relationship memory is `MemoryKind::Relationship` and
-normal memory search excludes that kind from the retrieved-memory section
-because it is rendered in the relationship section. Ordinary `Task` turn
-summaries are also excluded from retrieved memory context. The persisted context
-event keeps projection, working memory, and retrieved memory as separate
-sections with separate trust/source metadata.
+search remains available for explicit local lookup through the `memory_search`
+tool or `--memory-search-limit`; it is not part of ordinary chat context by
+default. The skills execute with the real local query but record a redacted audit
+input, so the audit log does not store full prompts. Relationship memory is
+`MemoryKind::Relationship` and normal memory search excludes that kind from the
+retrieved-memory section because it is rendered in the relationship section.
+Ordinary `Task` turn summaries are also excluded from retrieved memory context.
+The persisted context event keeps projection, working memory, and retrieved
+memory as separate sections with separate trust/source metadata.
 Neither path bypasses policy.
 
 `ContextEngine` owns when memory is assembled and compacted. `MemoryProvider`
@@ -159,9 +163,9 @@ memory:
       api_key: "replace-with-your-provider-key"
 ```
 
-Keep `enabled: false`. Enabled external memory providers are rejected by
-`ikaros config validate` because remote append/search adapters are not
-implemented.
+Keep `enabled: false`. Enabled external memory providers are rejected by runtime
+config loading and `ikaros config validate` because remote append/search
+adapters are not implemented.
 
 ## Boundaries
 

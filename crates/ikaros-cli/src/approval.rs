@@ -10,8 +10,8 @@ use crate::{
 use anyhow::Result;
 use clap::Subcommand;
 use ikaros_core::IkarosPaths;
-use ikaros_harness::{ApprovalStatus, CancellationToken};
-use ikaros_runtime::record_approval_resolution;
+use ikaros_execution::harness::{ApprovalStatus, CancellationToken};
+use ikaros_host::record_approval_resolution;
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]

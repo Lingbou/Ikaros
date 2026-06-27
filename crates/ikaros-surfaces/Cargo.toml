@@ -1,0 +1,30 @@
+[package]
+name = "ikaros-surfaces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ikaros-core = { path = "../ikaros-core" }
+ikaros-execution = { path = "../ikaros-execution" }
+ikaros-host = { path = "../ikaros-host" }
+ikaros-providers = { path = "../ikaros-providers" }
+ikaros-protocol = { path = "../ikaros-protocol" }
+ikaros-skills = { path = "../ikaros-skills" }
+ikaros-state = { path = "../ikaros-state" }
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

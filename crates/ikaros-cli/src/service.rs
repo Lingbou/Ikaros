@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use ikaros_core::IkarosPaths;
-use ikaros_service::{ServiceKind, ServiceManager, ServiceTemplateConfig};
+use ikaros_surfaces::service::{ServiceKind, ServiceManager, ServiceTemplateConfig};
 use std::{
     fs,
     path::{Component, Path, PathBuf},

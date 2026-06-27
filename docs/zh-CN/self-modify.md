@@ -1,6 +1,6 @@
 # Self-Modify
 
-Self-modify 是一个很窄的 proposal/apply 工作流。它不是让 agent 任意改写自己的通用权限。
+Self-modify 是一个很窄的 proposal/apply 工作流。它不是�?agent 任意改写自己的通用权限�?
 
 ## 流程
 
@@ -11,7 +11,7 @@ ikaros approval approve <approval-id>
 ikaros self-modify apply-approved <proposal-id> --approval-id <approval-id>
 ```
 
-回滚：
+回滚�?
 
 ```bash
 ikaros self-modify rollback <proposal-id>
@@ -27,20 +27,20 @@ ikaros self-modify heartbeat
 
 ## 保证
 
-- `RiskLevel::SelfModify` 对普通 tool dispatch 是拒绝的。
-- Proposal 保存脱敏 diff summary 和 rollback snapshot。
-- Apply 需要专用 approval id。
-- Approval 必须匹配 proposal 和 workspace。
-- Target 不能相对 snapshot 发生 drift。
-- Apply 前后会运行受限 check command。
-- Pre-check 失败会在 mutation 前停止。
-- Post-check 失败会触发 rollback。
-- Operation 记录在本地 self-modify state。
-- Workspace target 读取、审批后的 patch 写入、rollback 写回和 check 进程都会通过
-  session `ExecutionEnv` 执行。本地 self-modify JSONL 文件和 rollback snapshot
-  是控制面状态，不是直接修改 workspace 的旁路。
+- `RiskLevel::SelfModify` 对普�?tool dispatch 是拒绝的�?
+- Proposal 保存脱敏 diff summary �?rollback snapshot�?
+- Apply 需要专�?approval id�?
+- Approval 必须匹配 proposal �?workspace�?
+- Target 不能相对 snapshot 发生 drift�?
+- Apply 前后会运行受�?check command�?
+- Pre-check 失败会在 mutation 前停止�?
+- Post-check 失败会触�?rollback�?
+- Operation 记录在本�?self-modify state�?
+- Workspace target 读取、审批后�?patch 写入、rollback 写回�?check 进程都会通过
+  session `ExecutionEnv` 执行。本�?self-modify JSONL 文件�?rollback snapshot
+  是控制面状态，不是直接修改 workspace 的旁路�?
 
-## 状态
+## 状�?
 
 ```text
 IKAROS_HOME/self-modify/proposals.jsonl
@@ -61,7 +61,7 @@ self_modify:
       reason: "Runtime patches must keep the workspace compiling."
 ```
 
-允许的 kind：
+允许�?kind�?
 
 - `skill_patch`
 - `persona_patch`
@@ -69,8 +69,8 @@ self_modify:
 - `runtime_patch`
 - `documentation_patch`
 
-Shell chaining、redirection、command substitution、publishing 和 git commit/push/tag 仍然拒绝。
+Shell chaining、redirection、command substitution、publishing �?git commit/push/tag 仍然拒绝�?
 
-## 未实现
+## 未实�?
 
-自动 apply 不属于当前合约。当前版本只支持显式 proposal、审批、apply-approved 和 rollback 流程。
+自动 apply 不属于当前合约。当前版本只支持显式 proposal、审批、apply-approved �?rollback 流程�?

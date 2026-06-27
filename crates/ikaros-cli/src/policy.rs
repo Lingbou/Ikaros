@@ -4,7 +4,7 @@ use crate::session_and_registry;
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
 use ikaros_core::{IkarosPaths, RiskLevel};
-use ikaros_harness::PolicyRequest;
+use ikaros_execution::harness::PolicyRequest;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 

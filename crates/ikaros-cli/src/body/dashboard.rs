@@ -2,9 +2,10 @@
 
 use super::BodyDashboard;
 use anyhow::{Context, Result};
-use ikaros_body::{BodyKind, DashboardRenderOptions, WebDashboardAdapter};
+use ikaros_agent::body_status::current_body_frame;
 use ikaros_core::IkarosPaths;
-use ikaros_runtime::current_body_frame;
+use ikaros_protocol::BodyKind;
+use ikaros_surfaces::body::{DashboardRenderOptions, WebDashboardAdapter};
 use std::{
     fs,
     path::{Component, Path, PathBuf},

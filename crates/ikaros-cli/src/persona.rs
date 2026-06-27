@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use ikaros_agent::soul::{EmotionState, load_or_default};
 use ikaros_core::IkarosPaths;
-use ikaros_runtime::{PersonaPatch, reset_persona, update_persona};
-use ikaros_soul::{EmotionState, load_or_default};
+use ikaros_host::{PersonaPatch, reset_persona, update_persona};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum PersonaCommand {
@@ -39,7 +39,7 @@ pub(crate) struct PersonaSet {
 pub(crate) fn persona_command(command: PersonaCommand, paths: &IkarosPaths) -> Result<()> {
     match command {
         PersonaCommand::Show => {
-            let persona = load_or_default(&paths.persona)?;
+            let persona = load_or_default(&paths.persona_dir)?;
             println!("name: {}", persona.identity.name);
             println!("role: {}", persona.identity.role);
             println!("tone: {}", persona.tone.style);
@@ -48,7 +48,7 @@ pub(crate) fn persona_command(command: PersonaCommand, paths: &IkarosPaths) -> R
             println!("{}", persona.context_summary());
         }
         PersonaCommand::Path => {
-            println!("{}", paths.persona.display());
+            println!("{}", paths.persona_dir.display());
         }
         PersonaCommand::Set(args) => {
             let args = *args;
@@ -76,7 +76,7 @@ pub(crate) fn persona_command(command: PersonaCommand, paths: &IkarosPaths) -> R
     Ok(())
 }
 
-fn print_persona_write_report(report: &ikaros_runtime::PersonaWriteReport) {
+fn print_persona_write_report(report: &ikaros_host::PersonaWriteReport) {
     println!("ok: true");
     println!("name: {}", report.name);
     println!("role: {}", report.role);

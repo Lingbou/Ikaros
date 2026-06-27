@@ -4,7 +4,7 @@ use crate::{print_approval_hint, print_skill_result};
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use ikaros_core::IkarosPaths;
-use ikaros_runtime::{
+use ikaros_host::{
     forget_relationship_note_by_id, forget_relationship_scope, relationship_snapshot,
     remember_relationship_note,
 };

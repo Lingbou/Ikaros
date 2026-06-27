@@ -6,32 +6,45 @@ mod config;
 mod context;
 mod error;
 mod paths;
+pub mod preset;
 mod redaction;
 mod secret;
+mod soul;
 mod task;
 mod time;
+mod trace;
 
 pub use agent::{
-    AgentAuthScope, AgentConfig, AgentHistoryScope, AgentInstance, AgentInstanceConfig, AgentMode,
-    AgentPermission, AgentProfile, AgentRouteBinding, AgentSessionPolicy, ResolvedAgentProfile,
+    AgentAuthScope, AgentConfig, AgentHistoryScope, AgentInstance, AgentInstanceConfig,
+    AgentInstanceProvidersConfig, AgentMode, AgentPermission, AgentProfile, AgentRouteBinding,
+    AgentSessionPolicy, ResolvedAgentProfile, resolve_agent, resolve_agent_instance,
 };
 pub use config::{
-    ConfigValidationIssue, ConfigValidationReport, ExternalMemoryProviderConfig,
-    ExternalProvidersConfig, IkarosConfig, LocalStoreConfig, MemoryConfig, MemoryPolicyConfig,
-    ModelConfig, ModelParamsConfig, ModelReasoningConfig, ModelTable, PolicyConfig, RagConfig,
-    RemoteProviderConfig, SelfModifyCheckProfileConfig, SelfModifyConfig, VoiceConfig,
-    VoiceProviderConfig,
+    CURRENT_CONFIG_SCHEMA_VERSION, ConfigValidationIssue, ConfigValidationReport,
+    EmbeddingProviderKind, ExecutionConfig, ExecutionNetworkConfig, ExecutionSandboxConfig,
+    ExternalMemoryProviderConfig, ExternalProvidersConfig, IkarosConfig, LocalStoreConfig,
+    McpConfig, McpServerConfig, MemoryConfig, MemoryPolicyConfig, ModelConfig, ModelCostConfig,
+    ModelFallbackConfig, ModelParamsConfig, ModelProviderKind, ModelReasoningConfig, ModelTable,
+    ModelTransportKind, PolicyConfig, RagConfig, RemoteProviderConfig, SandboxBackend,
+    SandboxReadScope, SelfModifyCheckProfileConfig, SelfModifyConfig, StoreBackend, VoiceConfig,
+    VoiceProviderConfig, VoiceProviderKind,
 };
 pub use context::{ContextBuilder, RuntimeContext};
 pub use error::{IkarosError, Result};
 pub use paths::IkarosPaths;
 pub use redaction::{contains_secret_like, redact_json, redact_secrets, reject_secret_like};
 pub use secret::{resolve_config_secret, resolve_config_value};
+pub use soul::{
+    BehaviorRule, EmotionState, Identity, PersonaDocument, PersonaLoader, PersonaProfile,
+    PersonalityTrait, RelationshipMemory, RelationshipModel, RuntimeSignal, ToneConfig,
+    load_or_default,
+};
 pub use task::{
     Plan, PlanStep, PolicyDecision, RiskLevel, RuntimeCoordinator, RuntimeEvent, Task,
     TaskRunnerReport, TaskState, ToolCall, ToolResult,
 };
 pub use time::now_rfc3339;
+pub use trace::{STRUCTURED_TRACE_SCHEMA, StructuredTraceEvent, StructuredTraceLog};
 
 #[cfg(test)]
 mod tests {
@@ -46,24 +59,26 @@ mod tests {
         assert!(agent.profile.memory_context);
         assert!(!agent.profile.rag_context);
         assert!(config.agent.profiles.contains_key("plan"));
-        assert_eq!(config.model.default.provider, "openai-compatible");
-        assert_eq!(config.policy.workspace_writes, "ask");
-        assert_eq!(config.rag.backend, "jsonl");
+        assert_eq!(config.model.default.provider.as_str(), "openai-compatible");
+        assert_eq!(config.policy.workspace_writes.as_str(), "ask");
+        assert_eq!(config.rag.backend.as_str(), "jsonl");
         assert!(config.memory.external_providers.is_empty());
+        assert_eq!(config.schema_version, CURRENT_CONFIG_SCHEMA_VERSION);
         assert_eq!(config.model.default.runtime, "harness-agent-loop");
         assert_eq!(
-            config.model.default.transport,
+            config.model.default.transport.as_str(),
             "openai-compatible-chat-completions"
         );
         assert!(config.providers.model.base_url.is_empty());
         assert!(config.providers.model.api_key.is_empty());
         assert!(config.model.default.model.is_empty());
-        assert_eq!(config.rag.embedding_provider, "openai-compatible");
+        assert_eq!(config.rag.embedding_provider.as_str(), "hash");
         assert!(config.providers.embedding.base_url.is_empty());
         assert!(config.providers.embedding.api_key.is_empty());
-        assert!(config.rag.embedding_model.is_empty());
-        assert_eq!(config.voice.tts.provider, "openai-compatible");
-        assert_eq!(config.voice.asr.provider, "openai-compatible");
+        assert_eq!(config.rag.embedding_model, "text-embedding-3-small");
+        assert_eq!(config.voice.tts.provider.as_str(), "mock");
+        assert_eq!(config.voice.asr.provider.as_str(), "mock");
+        assert!(config.mcp.servers.is_empty());
         assert!(config.self_modify.check_profiles.is_empty());
     }
 
@@ -92,6 +107,7 @@ agent:
         history_scope: agent
         allow_session_switch: false
         max_parallel_subagents: 2
+        max_delegation_depth: 3
       auth_scope:
         local_only: true
         allow_network: deny
@@ -126,6 +142,7 @@ agent:
             AgentHistoryScope::Agent
         );
         assert_eq!(instance.session_policy.max_parallel_subagents, 2);
+        assert_eq!(instance.session_policy.max_delegation_depth, 3);
         assert_eq!(instance.auth_scope.allow_network, AgentPermission::Deny);
         assert_eq!(instance.route_bindings[0].channel, "cli");
     }
@@ -146,7 +163,7 @@ memory:
         )
         .expect("config");
 
-        assert_eq!(config.memory.backend, "sqlite");
+        assert_eq!(config.memory.backend.as_str(), "sqlite");
         assert_eq!(config.memory.external_providers.len(), 1);
         let provider = &config.memory.external_providers[0];
         assert_eq!(provider.id, "remote-a");
@@ -168,6 +185,7 @@ agent:
       persona_overlay: "Stay read-heavy and cite local context."
       memory_context: false
       rag_context: false
+      toolsets: [core, workspace, memory, rag]
       workspace_writes: deny
       shell: ask
       network: deny
@@ -181,6 +199,15 @@ agent:
         assert_eq!(agent.name, "research");
         assert_eq!(agent.mode(), &AgentMode::General);
         assert!(!agent.profile.memory_context);
+        assert_eq!(
+            agent.profile.toolsets,
+            vec![
+                "core".to_string(),
+                "workspace".to_string(),
+                "memory".to_string(),
+                "rag".to_string()
+            ]
+        );
         assert_eq!(agent.profile.network, AgentPermission::Deny);
     }
 
@@ -218,6 +245,11 @@ self_modify:
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = IkarosPaths::from_home(temp.path());
         assert_eq!(paths.config, temp.path().join("config.yaml"));
+        assert_eq!(paths.persona_dir, temp.path().join("persona"));
+        assert_eq!(
+            paths.persona_profile,
+            temp.path().join("persona").join("profile.md")
+        );
         assert_eq!(paths.rag_dir, temp.path().join("rag"));
         assert_eq!(paths.automation_dir, temp.path().join("automation"));
         assert_eq!(paths.gateway_dir, temp.path().join("gateway"));
@@ -229,6 +261,18 @@ self_modify:
         assert!(!redacted.contains("sk-test-secret"));
         assert!(!redacted.contains("abc"));
         assert!(redacted.contains("[REDACTED_SECRET]"));
+    }
+
+    #[test]
+    fn redaction_keeps_token_accounting_fields_visible() {
+        let redacted = redact_secrets(
+            "default_output_tokens=32000 cache_read_tokens_today=0 tokenizer=OpenAiCompatible token=abc",
+        );
+        assert!(redacted.contains("default_output_tokens=32000"));
+        assert!(redacted.contains("cache_read_tokens_today=0"));
+        assert!(redacted.contains("tokenizer=OpenAiCompatible"));
+        assert!(!redacted.contains("token=abc"));
+        assert!(redacted.contains("token=[REDACTED_SECRET]"));
     }
 
     #[test]

@@ -5,9 +5,9 @@ mod server;
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use ikaros_body::{BodyAdapter, CliBodyAdapter};
+use ikaros_agent::body_status::base_body_status;
 use ikaros_core::IkarosPaths;
-use ikaros_runtime::base_body_status;
+use ikaros_terminal::{BodyAdapter, CliBodyAdapter};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Subcommand)]
