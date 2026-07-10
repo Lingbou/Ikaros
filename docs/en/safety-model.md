@@ -2,8 +2,8 @@
 
 Ikaros treats tool use as a controlled operation. `ikaros-execution::toolkit` defines the
 shared tool contracts, `ikaros-execution::sandbox` provides concrete local execution
-backends, and the harness decides whether a model, persona, command, or
-scheduler may use them.
+backends, and the harness decides whether a model, persona, command, or task
+runner may use them.
 
 ## Default Policy
 
@@ -44,7 +44,7 @@ file does not grow without bound.
 
 ## Provider Safety
 
-Model, RAG embedding, and voice providers are adapter-based. Requests are redacted before provider
+Model and RAG embedding providers are adapter-based. Requests are redacted before provider
 calls where the current implementation supports it. Usage logs store provider/model/token metadata
 and do not store prompts.
 
@@ -53,32 +53,13 @@ The active model normally uses `model.default`; shared resource pools still use
 `providers.*`. Keys must not be stored in repository files, audit logs, memory,
 or RAG indexes.
 
-## Local Automation
+## Local Tasks
 
-Schedules and gateway messages request work; they do not grant permission. When a scheduled job or
-gateway task is processed, it goes through the same runtime and harness path as an explicit CLI
-task.
-
-The loopback message webhook only enqueues redacted inbox records. It does not
-execute tools or call models directly.
+Task requests do not grant permission. When a task is processed, it goes through
+the same runtime and harness path as an explicit CLI command.
 
 ## Plugins
 
 Command-backed plugins execute only through the built-in plugin runner skill. Plugin manifests
 declare risk and command metadata, but policy evaluation still happens at runtime. Plugin
 stdin/stdout/stderr are redacted in harness output.
-
-## Self-Modify
-
-Self-modify has its own command surface:
-
-```bash
-ikaros self-modify propose
-ikaros self-modify request-apply
-ikaros self-modify apply-approved
-ikaros self-modify rollback
-```
-
-It requires a stored proposal, rollback snapshot, explicit approval id, drift check, and restricted
-check commands. This path exists so proposed changes can be reviewed and rolled back; it does not
-make autonomous self-modification available.

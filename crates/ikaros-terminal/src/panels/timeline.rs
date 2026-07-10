@@ -218,7 +218,6 @@ pub(crate) fn screen_timeline_tabs(screen: &WorkbenchScreen) -> Vec<TimelineTabM
         ("audit", "Audit", Some("audit"), None),
         ("memory", "Memory", Some("memory"), None),
         ("queue", "Queue", Some("continuation"), None),
-        ("gateway", "Gateway", Some("gateway"), None),
         ("error", "Errors", Some("error"), None),
     ]
     .into_iter()
@@ -249,11 +248,6 @@ pub(crate) fn timeline_tab_commands(
 ) -> (String, String, String) {
     match (id, kind_filter) {
         ("all", _) => ("/timeline".into(), "/trace".into(), "/replay".into()),
-        ("gateway", _) => (
-            "/gateway".into(),
-            "/trace --kind gateway".into(),
-            "/replay --kind gateway".into(),
-        ),
         (_, Some(kind)) => (
             format!("/timeline --kind {kind}"),
             format!("/trace --kind {kind}"),
@@ -278,9 +272,6 @@ pub(crate) fn timeline_tab_count(screen: &WorkbenchScreen, id: &str) -> usize {
             screen,
             WorkbenchCellKind::Continuation,
         )),
-        "gateway" => timeline_cells_matching(screen, |cell| {
-            timeline_cell_contains(cell, &["gateway", "webhook", "outbox", "inbox"])
-        }),
         "error" => timeline_group_event_count(screen, "error")
             .max(timeline_cells_of_kind(screen, WorkbenchCellKind::Error)),
         category => timeline_group_event_count(screen, category).max(timeline_cells_matching(
@@ -407,14 +398,6 @@ pub(crate) fn timeline_tab_needs_attention(
             timeline_cells_matching(screen, |cell| {
                 matches!(cell.kind, WorkbenchCellKind::Memory)
                     && timeline_cell_contains(cell, &["skipped", "forget", "demote"])
-            }) > 0
-        }
-        "gateway" => {
-            timeline_cells_matching(screen, |cell| {
-                timeline_cell_contains(
-                    cell,
-                    &["gateway failed", "webhook failed", "delivery failed"],
-                )
             }) > 0
         }
         _ => false,

@@ -31,22 +31,20 @@ pub(super) use slash::{
     slash_command_registry_summary, slash_commands_human_lines, suggest_slash_command,
 };
 pub(super) use status::{
-    TimelineRequest, TimelineVerbosity, active_model_budget_status, api_status_human_lines,
-    context_status_human_lines, format_model_budget_status, gateway_status_human_lines,
-    mcp_status_human_lines, memory_status_human_lines, model_status_human_lines, print_api_status,
-    print_api_status_for_human, print_approval_status, print_context_status,
+    TimelineRequest, TimelineVerbosity, active_model_budget_status, context_status_human_lines,
+    format_model_budget_status, mcp_status_human_lines, memory_status_human_lines,
+    model_status_human_lines, print_approval_status, print_context_status,
     print_context_status_for_human, print_diff_status, print_diff_status_for_human,
-    print_gateway_status, print_gateway_status_for_human, print_mcp_status,
-    print_mcp_status_for_human, print_memory_status, print_memory_status_for_human,
-    print_model_status, print_model_status_for_human, print_provider_status_for_human,
-    print_rag_status, print_rag_status_for_human, print_replay_status,
-    print_replay_status_for_human, print_screen_status_with_state, print_session_export,
-    print_session_history, print_session_status, print_session_summaries, print_tasks_status,
+    print_mcp_status, print_mcp_status_for_human, print_memory_status,
+    print_memory_status_for_human, print_model_status, print_model_status_for_human,
+    print_provider_status_for_human, print_rag_status, print_rag_status_for_human,
+    print_replay_status, print_replay_status_for_human, print_screen_status_with_state,
+    print_session_export, print_session_history, print_session_status, print_session_summaries,
     print_tools_status, print_tools_status_for_human, print_trace_status,
     print_trace_status_for_human, print_workbench_status, print_workbench_status_for_human,
     provider_status_human_lines, rag_status_human_lines, selected_screen_primary_action,
     session_history_human_lines, session_status_human_lines, session_summaries_human_lines,
-    tasks_status_human_lines, tools_status_human_lines, workbench_status_human_lines,
+    tools_status_human_lines, workbench_status_human_lines,
 };
 
 pub(super) fn format_workbench_help() -> String {

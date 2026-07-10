@@ -4,12 +4,7 @@ use std::fs;
 
 use crate::support::TestHome;
 use ikaros_execution::harness::{AuditEvent, AuditLog};
-use ikaros_protocol::{
-    GatewayDelivery, GatewayDeliveryStatus, GatewayMessage, GatewayMessageKind,
-    GatewayMessageStatus, GatewayRoute,
-};
 use ikaros_providers::model::{ModelUsageLedger, ModelUsageRecord};
-use ikaros_state::gateway::LocalGatewayStore;
 use ikaros_state::memory::{
     JsonlMemoryCandidateStore, JsonlMemoryJournal, JsonlMemoryStore, JsonlWorkingMemoryStore,
     MemoryCandidate, MemoryCandidateReason, MemoryCandidateStatus, MemoryJournal,
@@ -40,7 +35,6 @@ fn init_doctor_chat_and_task_dry_run_work_with_explicit_offline_mock_config() {
     assert!(doctor.contains("model: provider=mock"));
     assert!(doctor.contains("agent_profiles:"));
     assert!(doctor.contains("memory_providers: local=local-jsonl external_active=none"));
-    assert!(doctor.contains("gateway: inbox="));
 
     let chat = env.run([
         "chat",
@@ -182,8 +176,6 @@ fn setup_writes_usable_model_config_without_printing_secret() {
     assert!(setup.contains("model_model: test-chat-model"));
     assert!(setup.contains("model_api_key_configured: true"));
     assert!(setup.contains("embedding_provider: hash"));
-    assert!(setup.contains("tts_provider: mock"));
-    assert!(setup.contains("asr_provider: mock"));
     assert!(!setup.contains("test-provider-key"));
 
     let config = fs::read_to_string(env.home.join("config.yaml")).expect("config");
@@ -193,7 +185,6 @@ fn setup_writes_usable_model_config_without_printing_secret() {
     assert!(config.contains(r#"provider: "openai-compatible""#));
     assert!(config.contains(r#"transport: "openai-compatible-chat-completions""#));
     assert!(config.contains("embedding_provider: \"hash\""));
-    assert!(config.contains("provider: \"mock\""));
 
     let validate = env.run(["config", "validate"]);
     assert!(validate.contains("config valid:"));
@@ -205,7 +196,6 @@ fn setup_writes_usable_model_config_without_printing_secret() {
         )
     );
     assert!(doctor.contains("rag: backend=jsonl embedding_provider=hash"));
-    assert!(doctor.contains("voice: tts_provider=mock"));
 }
 
 #[test]
@@ -249,14 +239,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write instance override config");
@@ -307,13 +289,6 @@ rag:
   backend: jsonl
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write invalid runtime config");
@@ -352,11 +327,6 @@ agent:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write toolset override config");
@@ -497,14 +467,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 
 agent:
   default: build
@@ -522,385 +484,6 @@ agent:
     let direct_bridge = env.run(["skill", "inspect", "tool_search"]);
     assert!(direct_bridge.contains("toolset: core"));
     assert!(direct_bridge.contains("model_visibility: direct"));
-}
-
-#[test]
-fn local_memory_and_message_gateway_smoke_paths_run_offline() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-
-    let added = env.run([
-        "memory",
-        "add",
-        "--kind",
-        "project",
-        "--scope",
-        "smoke",
-        "Ikaros smoke memory",
-    ]);
-    assert!(added.contains("summary: memory appended"));
-    assert!(added.contains("\"backend\": \"jsonl\""));
-
-    let search = env.run([
-        "memory", "search", "--kind", "project", "--scope", "smoke", "Ikaros",
-    ]);
-    assert!(search.contains("Ikaros smoke memory"));
-    assert!(search.contains("\"scope\": \"smoke\""));
-
-    let providers = env.run(["memory", "provider", "list"]);
-    assert!(providers.contains("\"id\": \"local-jsonl\""));
-    assert!(providers.contains("\"external\": []"));
-
-    let active_provider = env.run(["memory", "provider", "active"]);
-    assert!(active_provider.contains("\"local\""));
-    assert!(active_provider.contains("\"external\": null"));
-
-    let shown_provider = env.run(["memory", "provider", "show", "local-jsonl"]);
-    assert!(shown_provider.contains("\"kind\": \"builtin_local\""));
-
-    let sent = env.run([
-        "message",
-        "send",
-        "--kind",
-        "task",
-        "summarize smoke gateway",
-    ]);
-    assert!(sent.contains("enqueued:"));
-    assert!(sent.contains("\"kind\": \"Task\""));
-
-    let drained = env.run(["message", "drain", "--dry-run"]);
-    assert!(drained.contains("\"status\": \"Pending\""));
-    assert!(drained.contains("gateway_inbox:"));
-    assert!(drained.contains("gateway_outbox:"));
-}
-
-#[test]
-fn gateway_status_exposes_thread_resume_without_secret_leak() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    fs::create_dir_all(env.home.join("gateway")).expect("gateway dir");
-    fs::write(
-        env.home.join("gateway/message-worker.lock"),
-        "pid=999999999\nowner=worker-token=abc123\nstarted_at=2026-06-23T00:00:00Z\n",
-    )
-    .expect("worker lock");
-    fs::write(
-        env.home.join("gateway/message-worker-events.jsonl"),
-        r#"{"schema":"ikaros-message-worker-forensics-v1","version":1,"run_id":"old","event":"started","status":"running","at":"2026-06-23T00:00:00Z","pid":122}
-{"schema":"ikaros-message-worker-forensics-v1","version":1,"run_id":"old","event":"stopped","status":"failed","at":"2026-06-23T00:01:00Z","pid":122,"reason":"failed token=abc123"}
-"#,
-    )
-    .expect("worker events");
-
-    let sent = env.run([
-        "message",
-        "send",
-        "--kind",
-        "chat",
-        "--source",
-        "telegram",
-        "--account",
-        "account-1",
-        "--peer",
-        "peer-1",
-        "--thread",
-        "thread-1",
-        "--message-id",
-        "message-1",
-        "--idempotency-key",
-        "idem-token=abc123",
-        "gateway resume token=abc123",
-    ]);
-    assert!(sent.contains("enqueued:"));
-    assert!(!sent.contains("abc123"));
-
-    let status = env.run(["message", "status"]);
-    assert!(status.contains("gateway_status:"));
-    assert!(status.contains("gateway_sessions: 1"));
-    assert!(status.contains("gateway_dead_lettered: 0"));
-    assert!(status.contains("gateway_worker_lock: present=true"));
-    assert!(status.contains("stale=true"));
-    assert!(status.contains("message-worker.lock"));
-    assert!(status.contains("owner=pid=999999999 owner=[REDACTED_SECRET]"));
-    assert!(status.contains("gateway_worker_forensics: latest_event=stopped"));
-    assert!(status.contains("latest_status=failed"));
-    assert!(status.contains("reason=failed token=[REDACTED_SECRET]"));
-    assert!(status.contains("gateway_session:"));
-    assert!(status.contains("source=telegram"));
-    assert!(status.contains("thread=thread-1"));
-    assert!(status.contains("resume: ikaros chat --chat-session gateway-"));
-    assert!(!status.contains("abc123"));
-
-    let workbench = env.run_with_stdin(
-        ["chat", "--chat-session", "gateway-status-workbench"],
-        "/gateway\n/quit\n",
-    );
-    assert!(workbench.contains("gateway_sessions: 1"));
-    assert!(
-        workbench.contains(
-            "gateway_worker: processing=0 stale_processing=0 retryable=0 dead_lettered=0"
-        )
-    );
-    assert!(workbench.contains("gateway_worker_lock: present=true"));
-    assert!(workbench.contains("stale=true"));
-    assert!(workbench.contains("gateway_worker_forensics: latest_event=stopped"));
-    assert!(workbench.contains("gateway_session:"));
-    assert!(workbench.contains("resume: ikaros chat --chat-session gateway-"));
-    assert!(!workbench.contains("abc123"));
-}
-
-#[test]
-fn gateway_status_reports_worker_lease_and_dead_letter_without_secret_leak() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    let store = LocalGatewayStore::new(env.home.join("gateway"));
-    let processing = store
-        .enqueue(GatewayRoute::new(
-            "worker",
-            GatewayMessageKind::Task,
-            "processing token=abc123",
-            None,
-        ))
-        .expect("processing");
-    store
-        .claim_pending_with_owner(1, "worker-token=abc123")
-        .expect("claim");
-    let retry = store
-        .enqueue(GatewayRoute::new(
-            "worker",
-            GatewayMessageKind::Task,
-            "retry token=abc123",
-            None,
-        ))
-        .expect("retry");
-    let retry_claim = store
-        .claim_pending_with_owner(1, "retry-worker")
-        .expect("retry claim")
-        .pop()
-        .expect("retry claimed");
-    store
-        .record_failure_for_claim(&retry_claim, "retry failed token=abc123", 2)
-        .expect("retry failure");
-    rewrite_gateway_messages(&store, |messages| {
-        let processing = messages
-            .iter_mut()
-            .find(|message| message.id == processing.id)
-            .expect("processing message");
-        processing.lease_expires_at = Some("2000-01-01T00:00:00Z".into());
-    });
-    let dead = store
-        .enqueue(GatewayRoute::new(
-            "worker",
-            GatewayMessageKind::Task,
-            "dead token=abc123",
-            None,
-        ))
-        .expect("dead");
-    store
-        .record_status(
-            &dead.id,
-            GatewayMessageStatus::DeadLettered,
-            "failed token=abc123",
-        )
-        .expect("failure");
-    let retry_delivery = store
-        .deliver(
-            "message-one",
-            "chat_response",
-            "retry delivery token=abc123",
-        )
-        .expect("retry delivery");
-    let retry_delivery_claim = store
-        .claim_pending_deliveries_with_owner(1, "adapter-token=abc123")
-        .expect("delivery claim")
-        .pop()
-        .expect("claimed delivery");
-    assert_eq!(retry_delivery_claim.id, retry_delivery.id);
-    store
-        .record_delivery_failure_for_claim(
-            &retry_delivery_claim,
-            "delivery failed token=abc123",
-            2,
-            30,
-        )
-        .expect("delivery failure");
-    let dead_delivery = store
-        .deliver("message-two", "chat_response", "dead delivery token=abc123")
-        .expect("dead delivery");
-    let mut deliveries = store.deliveries().expect("deliveries");
-    let dead_delivery = deliveries
-        .iter_mut()
-        .find(|delivery| delivery.id == dead_delivery.id)
-        .expect("dead delivery listed");
-    dead_delivery.status = GatewayDeliveryStatus::DeadLettered;
-    dead_delivery.last_error = Some("terminal delivery token=abc123".into());
-    rewrite_gateway_deliveries(&store, &deliveries);
-
-    let status = env.run(["message", "status"]);
-    assert!(status.contains("gateway_processing: 1"));
-    assert!(status.contains("gateway_pending: 1"));
-    assert!(status.contains("gateway_dead_lettered: 1"));
-    assert!(
-        status.contains(
-            "gateway_worker: processing=1 stale_processing=1 retryable=1 dead_lettered=1"
-        )
-    );
-    assert!(status.contains("attempts=1"));
-    assert!(status.contains("lease_owner=worker-token=[REDACTED_SECRET]"));
-    assert!(status.contains("stale=true"));
-    assert!(status.contains("gateway_retryable_message:"));
-    assert!(status.contains(&retry.id));
-    assert!(status.contains("last_error=retry failed token=[REDACTED_SECRET]"));
-    assert!(status.contains("gateway_dead_lettered_message:"));
-    assert!(status.contains("dead_lettered=1"));
-    assert!(status.contains(&processing.id));
-    assert!(
-        status.contains(
-            "gateway_deliveries_status: pending=1 processing=0 delivered=0 dead_lettered=1"
-        )
-    );
-    assert!(status.contains("gateway_retryable_delivery:"));
-    assert!(status.contains("last_error=delivery failed token=[REDACTED_SECRET]"));
-    assert!(status.contains("gateway_dead_lettered_delivery:"));
-    assert!(status.contains("terminal delivery token=[REDACTED_SECRET]"));
-    assert!(!status.contains("abc123"));
-}
-
-#[test]
-fn gateway_delivery_cli_claim_fail_and_ack_are_lease_bound_and_redacted() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    let store = LocalGatewayStore::new(env.home.join("gateway"));
-    let delivery = store
-        .deliver("message-one", "chat_response", "deliver token=abc123")
-        .expect("delivery");
-
-    let claimed = env.run([
-        "message",
-        "delivery",
-        "claim",
-        "--limit",
-        "1",
-        "--owner",
-        "adapter-token=abc123",
-    ]);
-    assert!(claimed.contains("\"status\": \"Processing\""));
-    assert!(claimed.contains("\"attempt_count\": 1"));
-    assert!(claimed.contains("adapter-token=[REDACTED_SECRET]"));
-    assert!(!claimed.contains("abc123"));
-
-    let failed = env.run([
-        "message",
-        "delivery",
-        "fail",
-        &delivery.id,
-        "--lease-owner",
-        "adapter-token=abc123",
-        "--reason",
-        "remote token=abc123",
-        "--max-attempts",
-        "2",
-        "--backoff-seconds",
-        "30",
-    ]);
-    assert!(failed.contains("message_delivery_failed: true"));
-    assert!(failed.contains("status=Pending"));
-    assert!(failed.contains("remote token=[REDACTED_SECRET]"));
-    assert!(!failed.contains("abc123"));
-
-    let blocked_by_backoff = env.run([
-        "message",
-        "delivery",
-        "claim",
-        "--limit",
-        "1",
-        "--owner",
-        "adapter-b",
-    ]);
-    assert!(blocked_by_backoff.contains("message_delivery_claimed: 0"));
-
-    let mut deliveries = store.deliveries().expect("deliveries");
-    let retry = deliveries
-        .iter_mut()
-        .find(|candidate| candidate.id == delivery.id)
-        .expect("retry delivery");
-    retry.next_attempt_at = Some("2020-01-01T00:00:00Z".into());
-    rewrite_gateway_deliveries(&store, &deliveries);
-
-    let second_claim = env.run([
-        "message",
-        "delivery",
-        "claim",
-        "--limit",
-        "1",
-        "--owner",
-        "adapter-b",
-    ]);
-    assert!(second_claim.contains("message_delivery_claimed: 1"));
-    assert!(second_claim.contains("\"attempt_count\": 2"));
-
-    let wrong_owner = env.run_failure([
-        "message",
-        "delivery",
-        "ack",
-        &delivery.id,
-        "--lease-owner",
-        "adapter-a",
-        "--summary",
-        "wrong owner",
-    ]);
-    assert!(wrong_owner.contains("delivery lease owner mismatch"));
-
-    let ack = env.run([
-        "message",
-        "delivery",
-        "ack",
-        &delivery.id,
-        "--lease-owner",
-        "adapter-b",
-        "--summary",
-        "delivered token=abc123",
-    ]);
-    assert!(ack.contains("message_delivery_delivered: true"));
-    assert!(ack.contains("status=Delivered"));
-    assert!(ack.contains("delivered token=[REDACTED_SECRET]"));
-    assert!(!ack.contains("abc123"));
-
-    let final_delivery = store
-        .deliveries()
-        .expect("deliveries")
-        .into_iter()
-        .find(|candidate| candidate.id == delivery.id)
-        .expect("final delivery");
-    assert_eq!(final_delivery.status, GatewayDeliveryStatus::Delivered);
-    assert!(final_delivery.delivered_at.is_some());
-}
-
-fn rewrite_gateway_messages(
-    store: &LocalGatewayStore,
-    update: impl FnOnce(&mut Vec<GatewayMessage>),
-) {
-    let mut messages = store.list().expect("gateway messages");
-    update(&mut messages);
-    let jsonl = messages
-        .iter()
-        .map(|message| serde_json::to_string(message).expect("message json"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(store.inbox_path(), format!("{jsonl}\n")).expect("rewrite gateway inbox");
-}
-
-fn rewrite_gateway_deliveries(store: &LocalGatewayStore, deliveries: &[GatewayDelivery]) {
-    let jsonl = deliveries
-        .iter()
-        .map(|delivery| serde_json::to_string(delivery).expect("delivery json"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(store.outbox_path(), format!("{jsonl}\n")).expect("rewrite gateway outbox");
 }
 
 #[test]
@@ -1893,16 +1476,6 @@ fn debug_insights_reports_redacted_operational_summary() {
             estimated: false,
         })
         .expect("append usage");
-    let gateway = LocalGatewayStore::new(env.home.join("gateway"));
-    gateway
-        .enqueue(GatewayRoute::new(
-            "cli",
-            GatewayMessageKind::Chat,
-            "gateway insight token=abc123",
-            Some("local".into()),
-        ))
-        .expect("gateway enqueue");
-
     let output = env.run(["debug", "insights"]);
     let report: serde_json::Value = serde_json::from_str(&output).expect("insights json");
 
@@ -1916,13 +1489,12 @@ fn debug_insights_reports_redacted_operational_summary() {
     assert_eq!(report["logs"]["cache_write_tokens"], 3);
     assert_eq!(report["providers"]["rows"][0]["kind"], "model");
     assert_eq!(report["providers"]["rows"][0]["live_smoke"], "offline");
-    assert_eq!(report["gateway"]["pending"], 1);
-    assert_eq!(report["status"], "attention");
-    assert!(report["alerts"].as_array().is_some_and(|alerts| {
-        alerts
-            .iter()
-            .any(|alert| alert["kind"] == "gateway_pending")
-    }));
+    assert_eq!(report["status"], "ok");
+    assert!(
+        report["alerts"]
+            .as_array()
+            .is_some_and(|alerts| alerts.is_empty())
+    );
     assert!(output.contains("[REDACTED_SECRET]"));
     assert!(!output.contains("abc123"));
     assert!(!output.contains("sk-insight-secret"));
@@ -2265,14 +1837,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("policy config");
@@ -2515,13 +2079,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 
 memory:
   backend: jsonl

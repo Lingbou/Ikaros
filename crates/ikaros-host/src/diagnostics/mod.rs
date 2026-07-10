@@ -19,9 +19,8 @@ pub use provider::{
 };
 pub use sandbox::{configured_sandbox_debug_report, debug_sandbox_report, sandbox_probe};
 pub use types::{
-    AgentSummary, AutomationSummary, ExecutionSummary, GatewaySummary, ModelSummary,
-    PersonaSummary, PluginSummary, RagSummary, RuntimeDoctorReport, RuntimeInitReport,
-    StoreSummary, VoiceSummary,
+    AgentSummary, ExecutionSummary, ModelSummary, PersonaSummary, PluginSummary, RagSummary,
+    RuntimeDoctorReport, RuntimeInitReport, StoreSummary,
 };
 
 #[cfg(test)]

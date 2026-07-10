@@ -4,9 +4,7 @@ use crate::chat::interactive::InteractiveChatRuntime;
 use anyhow::Result;
 use ikaros_core::{IkarosConfig, IkarosPaths};
 use ikaros_host::{WorkbenchModelBudgetStatus, WorkbenchProviderStatusReport};
-use ikaros_protocol::GatewayMessageStatus;
 use ikaros_providers::model::ModelUsageLedger;
-use ikaros_state::gateway::LocalGatewayStore;
 use std::path::Path;
 
 use super::super::{path_display, terminal_inline};
@@ -24,11 +22,6 @@ pub(super) fn print_unified_status(
     _usage_ledger: &ModelUsageLedger,
 ) -> Result<()> {
     let provider = active_provider_status_report(paths, runtime)?;
-    let gateway_pending = LocalGatewayStore::new(&paths.gateway_dir)
-        .list()?
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::Pending)
-        .count();
     let approvals_pending = runtime.session.pending_approvals()?.len();
     let continuations = continuation_count(config, paths, workspace, runtime)?;
     println!(
@@ -74,7 +67,6 @@ pub(super) fn print_unified_status(
         runtime.agent.profile.shell,
         runtime.agent.profile.network
     );
-    println!("status_gateway_pending: {gateway_pending}");
     println!("status_approvals_pending: {approvals_pending}");
     println!("status_continuations: {continuations}");
     println!(
@@ -83,7 +75,6 @@ pub(super) fn print_unified_status(
             provider: &provider,
             runtime,
             workspace,
-            gateway_pending,
             approvals_pending,
             continuations,
         })?
@@ -99,11 +90,6 @@ pub(super) fn unified_status_human_lines(
     _usage_ledger: &ModelUsageLedger,
 ) -> Result<Vec<String>> {
     let provider = active_provider_status_report(paths, runtime)?;
-    let gateway_pending = LocalGatewayStore::new(&paths.gateway_dir)
-        .list()?
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::Pending)
-        .count();
     let approvals_pending = runtime.session.pending_approvals()?.len();
     let continuations = continuation_count(config, paths, workspace, runtime)?;
 
@@ -130,7 +116,6 @@ pub(super) fn unified_status_human_lines(
         format!("    shell: {}", runtime.agent.profile.shell),
         format!("    network: {}", runtime.agent.profile.network),
         "  pending:".to_owned(),
-        format!("    gateway: {gateway_pending}"),
         format!("    approvals: {approvals_pending}"),
         format!("    queued continuations: {continuations}"),
     ])
@@ -154,7 +139,6 @@ struct WorkbenchStatusJsonInput<'a> {
     provider: &'a WorkbenchProviderStatusReport,
     runtime: &'a InteractiveChatRuntime,
     workspace: &'a Path,
-    gateway_pending: usize,
     approvals_pending: usize,
     continuations: usize,
 }
@@ -193,7 +177,6 @@ fn workbench_status_json_line(input: WorkbenchStatusJsonInput<'_>) -> Result<Str
             "budget": model_budget_json(&input.provider.budget),
         },
         "counts": {
-            "gateway_pending": input.gateway_pending,
             "approvals_pending": input.approvals_pending,
             "continuations": input.continuations,
         },

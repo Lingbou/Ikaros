@@ -245,13 +245,7 @@ fn approval_replay_status(runtime: &InteractiveChatRuntime, id: &str) -> Result<
         .session
         .approvals
         .get(id)?
-        .map(|record| {
-            if record.request.call.name == "self_modify_apply" {
-                "approved_not_executed"
-            } else {
-                "executed"
-            }
-        })
+        .map(|_| "executed")
         .unwrap_or("unknown");
     Ok(status)
 }

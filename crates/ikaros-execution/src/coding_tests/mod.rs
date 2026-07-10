@@ -22,12 +22,8 @@ pub(super) use crate::sandbox::{
     FileMetadata, FileSystem as ExecutionFileSystem, LocalExecutionEnv, ProcessOutput,
     ProcessRequest, ProcessRunner,
 };
-pub(super) use crate::self_modify::{
-    SelfModifyChangeKind, SelfModifyOperationKind, SelfModifyStore,
-};
 pub(super) use crate::testing::{TestFailureAnalyzer, TestFailureCategory, validate_test_command};
-pub(super) use ikaros_core::{IkarosError, SelfModifyCheckProfileConfig, SelfModifyConfig};
-pub(super) use std::collections::BTreeMap;
+pub(super) use ikaros_core::IkarosError;
 #[cfg(unix)]
 pub(super) use std::os::unix::fs::symlink;
 pub(super) use std::{
@@ -46,7 +42,7 @@ pub(super) fn canonical_or_original(path: &Path) -> PathBuf {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct SelfModifyTrackingEnv {
+pub(super) struct TrackingExecutionEnv {
     read_to_string_calls: Arc<AtomicUsize>,
     read_bytes_calls: Arc<AtomicUsize>,
     write_string_calls: Arc<AtomicUsize>,
@@ -55,29 +51,13 @@ pub(super) struct SelfModifyTrackingEnv {
     process_calls: Arc<AtomicUsize>,
 }
 
-impl SelfModifyTrackingEnv {
-    fn read_bytes_count(&self) -> usize {
-        self.read_bytes_calls.load(Ordering::SeqCst)
-    }
-
+impl TrackingExecutionEnv {
     fn write_string_count(&self) -> usize {
         self.write_string_calls.load(Ordering::SeqCst)
     }
-
-    fn write_bytes_count(&self) -> usize {
-        self.write_bytes_calls.load(Ordering::SeqCst)
-    }
-
-    fn remove_file_count(&self) -> usize {
-        self.remove_file_calls.load(Ordering::SeqCst)
-    }
-
-    fn process_count(&self) -> usize {
-        self.process_calls.load(Ordering::SeqCst)
-    }
 }
 
-impl ExecutionFileSystem for SelfModifyTrackingEnv {
+impl ExecutionFileSystem for TrackingExecutionEnv {
     fn path_metadata<'a>(
         &'a self,
         path: &'a Path,
@@ -230,7 +210,7 @@ impl ExecutionFileSystem for FailingRemoveFileSystem {
     }
 }
 
-impl ProcessRunner for SelfModifyTrackingEnv {
+impl ProcessRunner for TrackingExecutionEnv {
     fn run_process<'a>(
         &'a self,
         request: ProcessRequest,
@@ -275,4 +255,3 @@ mod analysis;
 mod context;
 mod guarded_patch;
 mod runtime;
-mod self_modify;

@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! External surface facade for API, MCP, gateway adapters, and service manager.
-
-pub mod api;
-pub mod body;
-
-pub mod gateway;
+//! External surface facade for MCP integration.
 
 pub mod mcp;
-
-pub mod service;

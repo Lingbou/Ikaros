@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::browser::run_browser_workbench_command;
 use crate::code::{code_command, parse_interactive_code_command};
 use crate::debug::{debug_sandbox_json_line, print_sandbox_status_for_human};
 use anyhow::{Context, Result};
@@ -10,16 +9,16 @@ use serde_json::json;
 
 use crate::chat::notice::WorkbenchNotice;
 use crate::chat::workbench::{
-    TimelineVerbosity, api_status_human_lines, context_mentions_human_lines,
-    context_status_human_lines, format_workbench_help, memory_status_human_lines,
-    model_status_human_lines, print_api_status, print_context_mentions, print_context_status,
-    print_diff_status, print_diff_status_for_human, print_memory_status, print_model_status,
-    print_rag_status, print_replay_status, print_replay_status_for_human, print_session_summaries,
-    print_slash_commands, print_tasks_status, print_tools_status, print_trace_status,
-    print_trace_status_for_human, print_workbench_input_history, print_workbench_status,
-    provider_status_human_lines, rag_status_human_lines, session_summaries_human_lines,
-    slash_commands_human_lines, suggest_slash_command, tasks_status_human_lines,
-    tools_status_human_lines, workbench_input_history_human_lines, workbench_status_human_lines,
+    TimelineVerbosity, context_mentions_human_lines, context_status_human_lines,
+    format_workbench_help, memory_status_human_lines, model_status_human_lines,
+    print_context_mentions, print_context_status, print_diff_status, print_diff_status_for_human,
+    print_memory_status, print_model_status, print_rag_status, print_replay_status,
+    print_replay_status_for_human, print_session_summaries, print_slash_commands,
+    print_tools_status, print_trace_status, print_trace_status_for_human,
+    print_workbench_input_history, print_workbench_status, provider_status_human_lines,
+    rag_status_human_lines, session_summaries_human_lines, slash_commands_human_lines,
+    suggest_slash_command, tools_status_human_lines, workbench_input_history_human_lines,
+    workbench_status_human_lines,
 };
 
 use super::agent::handle_agent_command;
@@ -29,14 +28,11 @@ use super::code_alias::workbench_code_alias_command;
 use super::continuations::{handle_cancel_command, handle_queue_command};
 use super::debug::handle_debug_command;
 use super::evidence::append_workbench_evidence;
-use super::gateway::handle_gateway_command;
 use super::mcp::handle_mcp_command;
-use super::multimodal::{handle_image_command, handle_vision_command};
 use super::parse::{parse_timeline_request, parse_trace_request};
 use super::provider::{handle_budget_command, handle_provider_command};
 use super::screen::handle_screen_command;
 use super::session::{handle_fork_command, handle_session_command};
-use super::web::handle_web_command;
 use super::{
     InteractiveChatRuntime, InteractiveCommandContext, clear_interactive_session,
     print_default_inline_lines, suppress_fullscreen_stdout_command,
@@ -312,19 +308,6 @@ pub(in crate::chat) async fn handle_interactive_chat_command(
             }
             append_workbench_evidence(runtime, "model", json!({"args": ["inspect"]}))?;
         }
-        "/gateway" => {
-            let args = parts.collect::<Vec<_>>();
-            handle_gateway_command(args.clone(), paths, workspace, runtime)?;
-            append_workbench_evidence(runtime, "gateway", json!({"args": args}))?;
-        }
-        "/tasks" => {
-            if runtime.default_inline_stdout() {
-                print_default_inline_lines(tasks_status_human_lines(paths)?)?;
-            } else {
-                print_tasks_status(paths)?;
-            }
-            append_workbench_evidence(runtime, "tasks", json!({}))?;
-        }
         "/approval" | "/approvals" => {
             handle_approval_command(
                 parts.collect::<Vec<_>>(),
@@ -373,48 +356,6 @@ pub(in crate::chat) async fn handle_interactive_chat_command(
         "/mcp" => {
             let args = parts.collect::<Vec<_>>();
             handle_mcp_command(args, ctx, runtime).await?;
-        }
-        "/api" => {
-            let args = parts.collect::<Vec<_>>();
-            if args.is_empty() || args == ["status"] {
-                if runtime.default_inline_stdout() {
-                    print_default_inline_lines(api_status_human_lines(config))?;
-                } else {
-                    print_api_status(config);
-                }
-                append_workbench_evidence(runtime, "api", json!({"args": args}))?;
-            } else {
-                if runtime.default_inline_stdout() {
-                    print_default_inline_lines(vec![
-                        "* API".to_owned(),
-                        "  usage: /api status".to_owned(),
-                        "  server: start with `ikaros api serve ...`".to_owned(),
-                    ])?;
-                } else {
-                    println!("usage: /api status");
-                    println!("api_policy: start with explicit top-level `ikaros api serve ...`");
-                }
-            }
-        }
-        "/browser" => {
-            let args = parts.collect::<Vec<_>>();
-            run_browser_workbench_command(&runtime.session, paths, &args).await?;
-            append_workbench_evidence(runtime, "browser", json!({"args": args}))?;
-        }
-        "/web" => {
-            let args = parts.collect::<Vec<_>>();
-            handle_web_command(args.clone(), ctx, runtime).await?;
-            append_workbench_evidence(runtime, "web", json!({"args": args}))?;
-        }
-        "/vision" => {
-            let args = parts.collect::<Vec<_>>();
-            handle_vision_command(args.clone(), ctx, runtime).await?;
-            append_workbench_evidence(runtime, "vision", json!({"args": args}))?;
-        }
-        "/image" => {
-            let args = parts.collect::<Vec<_>>();
-            handle_image_command(args.clone(), ctx, runtime).await?;
-            append_workbench_evidence(runtime, "image", json!({"args": args}))?;
         }
         "/diff" => {
             if runtime.default_inline_stdout() {

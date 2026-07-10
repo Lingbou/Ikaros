@@ -10,7 +10,6 @@ pub(crate) fn screen_readiness_model_json(screen: &WorkbenchScreen) -> serde_jso
     let state_db = find_cell(screen, |cell| cell.title == "state db");
     let observability = find_cell(screen, |cell| cell.title == "observability");
     let sandbox = find_cell(screen, |cell| cell.title == "sandbox");
-    let gateway = find_cell(screen, |cell| cell.title == "gateway");
     let provider = screen_provider_panel_json(screen);
     let context = screen_context_panel_json(screen);
     let memory = screen_memory_panel_json(screen);
@@ -115,14 +114,6 @@ pub(crate) fn screen_readiness_model_json(screen: &WorkbenchScreen) -> serde_jso
                 "/debug logs",
                 "/debug dump",
             ],
-        ),
-        readiness_gate_json(
-            "gateway",
-            "Gateway evidence",
-            readiness_status(gateway.is_some(), false),
-            "gateway queue evidence without a separate agent loop",
-            "/gateway",
-            vec!["/gateway daemon status", "/gateway adapter status"],
         ),
     ];
     let attention_count = gates

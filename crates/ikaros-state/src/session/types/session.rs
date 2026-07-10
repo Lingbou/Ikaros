@@ -46,26 +46,7 @@ impl SessionRecord {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum SessionSource {
     Cli,
-    Gateway {
-        channel: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        account: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        peer: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        thread: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        message_id: Option<String>,
-    },
-    Schedule {
-        job_id: String,
-    },
-    Subagent {
-        parent_agent_id: String,
-    },
-    Service {
-        name: String,
-    },
+    Subagent { parent_agent_id: String },
     Runtime,
     Test,
 }

@@ -358,7 +358,7 @@ impl Skill for CodeWorkflowSkill {
                 "objective": {"type": "string"},
                 "mode": {
                     "type": "string",
-                    "enum": ["plan", "edit", "review", "test", "self_modify"]
+                    "enum": ["plan", "edit", "review", "test"]
                 },
                 "diff": {"type": "string"},
                 "apply_patch": {"type": "boolean"},
@@ -406,9 +406,7 @@ impl Skill for CodeWorkflowSkill {
         let writes = apply_patch && capabilities.can_apply_patch;
         PolicyRequest {
             action: self.name().into(),
-            risk: if capabilities.requires_self_modify_boundary {
-                RiskLevel::SelfModify
-            } else if invalid_request {
+            risk: if invalid_request {
                 RiskLevel::Destructive
             } else if writes {
                 RiskLevel::LocalWrite
@@ -619,7 +617,6 @@ fn parse_coding_mode(input: &serde_json::Value) -> Result<CodingMode> {
         "edit" => Ok(CodingMode::Edit),
         "review" => Ok(CodingMode::Review),
         "test" => Ok(CodingMode::Test),
-        "self_modify" => Ok(CodingMode::SelfModify),
         other => Err(IkarosError::Message(format!(
             "unsupported coding mode: {other}"
         ))),

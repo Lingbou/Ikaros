@@ -13,24 +13,6 @@ pub(crate) fn input_path(input: &serde_json::Value, workspace_root: &Path) -> Re
     }
 }
 
-pub(crate) fn optional_input_path(
-    input: &serde_json::Value,
-    key: &str,
-    workspace_root: &Path,
-) -> Option<PathBuf> {
-    input
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .map(|raw| {
-            let path = PathBuf::from(raw);
-            if path.is_absolute() {
-                path
-            } else {
-                workspace_root.join(path)
-            }
-        })
-}
-
 pub(crate) fn input_string(input: &serde_json::Value, key: &str) -> Result<String> {
     input
         .get(key)

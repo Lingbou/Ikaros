@@ -2,16 +2,13 @@
 //! Host-side assembly of runtime locations, execution sessions, and skill registries.
 
 mod agent;
-mod api_provider;
 mod approval;
-mod browser;
 mod builder;
 mod diagnostics;
 mod location;
 mod mcp;
 mod memory;
 mod model_http;
-mod multimodal;
 mod network;
 mod persona;
 mod provider_probe;
@@ -19,34 +16,28 @@ pub mod relationship;
 mod services;
 
 pub use agent::{agent_profile_report, agent_profiles_report};
-pub use api_provider::{
-    ApiEmbeddingServices, api_embedding_services_shape_checked,
-    send_model_json_request_for_instance, send_provider_bytes_request_for_instance,
-    send_provider_json_request_for_instance,
-};
 pub use approval::record_approval_resolution;
-pub use browser::{BrowserCdpHttpResponse, send_browser_cdp_http_request};
 pub use builder::{
-    ApiModelServices, ChatModelServices, ChatRuntimeServices, RuntimeHarnessModelServices,
-    api_model_services_shape_checked, chat_model_services_for_session,
-    chat_model_services_shape_checked, chat_runtime_services, chat_runtime_services_for_instance,
-    host_agent_context, host_agent_context_shape_checked, runtime_execution_env, runtime_harness,
-    runtime_harness_model_provider, runtime_harness_model_services, session_and_registry,
-    session_and_registry_for_agent, session_and_registry_for_instance, session_state_db_candidates,
+    ChatModelServices, ChatRuntimeServices, RuntimeHarnessModelServices,
+    chat_model_services_for_session, chat_model_services_shape_checked, chat_runtime_services,
+    chat_runtime_services_for_instance, host_agent_context, host_agent_context_shape_checked,
+    runtime_execution_env, runtime_harness, runtime_harness_model_provider,
+    runtime_harness_model_services, session_and_registry, session_and_registry_for_agent,
+    session_and_registry_for_instance, session_state_db_candidates,
     session_state_db_candidates_with_config, skill_environment,
 };
 pub use diagnostics::{
-    AgentSummary, AutomationSummary, ExecutionSummary, GatewaySummary, ModelSummary,
-    PersonaSummary, PluginSummary, ProviderDebugMatrixReport, ProviderHealthReport,
-    ProviderInspectFallbackRow, ProviderInspectReport, ProviderMatrixReport, ProviderMatrixRow,
-    ProviderProfileCatalogRow, ProviderProfilesReport, RagSummary, RuntimeDoctorReport,
-    RuntimeInitReport, StoreSummary, VoiceSummary, WorkbenchModelBudgetStatus,
-    WorkbenchModelCostStatus, WorkbenchProviderFallbackStatus, WorkbenchProviderHealthStatus,
-    WorkbenchProviderStatusReport, configured_sandbox_debug_report, debug_sandbox_report,
-    initialize_runtime_home, initialize_runtime_home_with_options, model_budget_status_report,
-    provider_debug_matrix_report, provider_debug_report, provider_health_report,
-    provider_inspect_report, provider_matrix_report, provider_profiles_report,
-    runtime_doctor_report, sandbox_probe, workbench_provider_status_report,
+    AgentSummary, ExecutionSummary, ModelSummary, PersonaSummary, PluginSummary,
+    ProviderDebugMatrixReport, ProviderHealthReport, ProviderInspectFallbackRow,
+    ProviderInspectReport, ProviderMatrixReport, ProviderMatrixRow, ProviderProfileCatalogRow,
+    ProviderProfilesReport, RagSummary, RuntimeDoctorReport, RuntimeInitReport, StoreSummary,
+    WorkbenchModelBudgetStatus, WorkbenchModelCostStatus, WorkbenchProviderFallbackStatus,
+    WorkbenchProviderHealthStatus, WorkbenchProviderStatusReport, configured_sandbox_debug_report,
+    debug_sandbox_report, initialize_runtime_home, initialize_runtime_home_with_options,
+    model_budget_status_report, provider_debug_matrix_report, provider_debug_report,
+    provider_health_report, provider_inspect_report, provider_matrix_report,
+    provider_profiles_report, runtime_doctor_report, sandbox_probe,
+    workbench_provider_status_report,
 };
 pub use ikaros_core::{resolve_agent, resolve_agent_instance};
 pub use ikaros_execution::harness::recent_policy_decisions;
@@ -60,17 +51,12 @@ pub use memory::{
     memory_projection_stores, memory_provider_registry,
 };
 pub use model_http::EgressModelHttpClient;
-pub use multimodal::{
-    GeneratedImage, HostImageGenerationRequest, ImageGenerationResult, VisionDescribeRequest,
-    VisionDescribeResult, describe_image, generate_image,
-};
 pub use network::provider_egress_allowed_hosts;
 pub use persona::{
     PersonaPatch, PersonaWriteReport, render_persona_markdown, reset_persona, update_persona,
 };
 pub use provider_probe::{
-    ModelProviderLiveProbeReport, asr_provider_live_probe, embedding_provider_live_probe,
-    model_provider_live_probe, tts_provider_live_probe,
+    ModelProviderLiveProbeReport, embedding_provider_live_probe, model_provider_live_probe,
 };
 pub use relationship::{
     RelationshipMutationReport, RelationshipNote, RelationshipSnapshot,
@@ -119,14 +105,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
             ),
         )
@@ -148,7 +126,6 @@ voice:
         assert_eq!(harness.location.audit_dir, paths.audit_dir);
         assert_eq!(harness.session.sandbox.workspace_root, configured_workspace);
         assert!(harness.registry.get("fs_read").is_some());
-        assert!(harness.registry.get("vision_describe").is_some());
         let overlay = harness
             .session
             .sandbox

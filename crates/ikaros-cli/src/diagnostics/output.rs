@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::setup_resources::SetupResource;
 use ikaros_host::{RuntimeDoctorReport, RuntimeInitReport};
 
 pub(super) fn print_init_report(report: &RuntimeInitReport) {
@@ -26,8 +25,6 @@ pub(super) fn print_init_report(report: &RuntimeInitReport) {
     println!("persona_profile: {}", report.persona_profile.display());
     println!("memory: {}", report.memory_dir.display());
     println!("rag: {}", report.rag_dir.display());
-    println!("automation: {}", report.automation_dir.display());
-    println!("gateway: {}", report.gateway_dir.display());
     println!("audit: {}", report.audit_dir.display());
 }
 
@@ -107,22 +104,6 @@ pub(super) fn print_doctor_report(report: &RuntimeDoctorReport) {
         report.rag.embedding_egress,
         report.rag.path.display()
     );
-    println!(
-        "voice: tts_provider={} tts_model={} asr_provider={} asr_model={}",
-        report.voice.tts_provider,
-        report.voice.tts_model,
-        report.voice.asr_provider,
-        report.voice.asr_model
-    );
-    println!(
-        "automation: schedules={}",
-        report.automation.schedules_path.display()
-    );
-    println!(
-        "gateway: inbox={} outbox={}",
-        report.gateway.inbox_path.display(),
-        report.gateway.outbox_path.display()
-    );
     println!("skills: {}", report.skills.join(", "));
     println!(
         "plugins: {} plugin(s), {} enabled, {} disabled, {} active declared skill(s), {} warning(s)",
@@ -145,14 +126,4 @@ fn display_optional_config_value(value: &str) -> &str {
 
 pub(super) fn display_optional_model(model: &str) -> &str {
     if model.is_empty() { "none" } else { model }
-}
-
-pub(super) fn resource_reuses_model_provider(
-    resource: &SetupResource<'_>,
-    model_api_key: &str,
-    model_base_url: &str,
-) -> bool {
-    !resource.api_key.trim().is_empty()
-        && resource.api_key == model_api_key.trim()
-        && resource.base_url == model_base_url.trim()
 }

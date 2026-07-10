@@ -319,9 +319,6 @@ fn default_inline_common_inspect_command_lines_do_not_leak_protocol_fields() {
         super::workbench::tools_status_human_lines(&registry, &runtime.agent).expect("tools lines"),
     );
     lines.extend(super::workbench::mcp_status_human_lines(&config));
-    lines.extend(super::workbench::api_status_human_lines(&config));
-    lines.extend(super::workbench::tasks_status_human_lines(&paths).expect("tasks lines"));
-    lines.extend(super::workbench::gateway_status_human_lines(&paths).expect("gateway lines"));
     lines.extend(
         super::workbench::context_mentions_human_lines(&workspace, Some("lib"))
             .expect("mentions lines"),
@@ -336,9 +333,6 @@ fn default_inline_common_inspect_command_lines_do_not_leak_protocol_fields() {
         "* RAG",
         "* Tools",
         "* MCP",
-        "* API",
-        "* Tasks",
-        "* Gateway",
         "* Mentions",
     ] {
         assert!(rendered.contains(title), "missing {title} in:\n{rendered}");
@@ -362,8 +356,6 @@ fn assert_default_inline_command_lines_are_human(command: &str, lines: &[String]
         "rag_status_json:",
         "tools_status_json:",
         "mcp_status_json:",
-        "api_status_json:",
-        "tasks_total:",
         "mentions_query:",
         "Tip: Use /mcp",
         "pending input queue is empty",

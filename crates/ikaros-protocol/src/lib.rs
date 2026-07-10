@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Stable protocol types shared by CLI, TUI, gateway, API, and replay surfaces.
+//! Stable protocol types shared by CLI, TUI, MCP, and replay surfaces.
 //!
 //! This crate is intentionally small and domain-facing. It contains the durable
 //! wire shapes that product surfaces should exchange, not provider adapters,
@@ -10,8 +10,6 @@ pub mod body;
 pub mod context;
 
 mod envelope;
-
-pub mod gateway;
 
 pub mod mcp;
 
@@ -24,14 +22,6 @@ pub mod trace;
 pub use envelope::{IKAROS_PROTOCOL_NAME, IKAROS_PROTOCOL_VERSION, WireEnvelope};
 
 pub use body::{BodyContextSources, BodyEvent, BodyEventKind, BodyFrame, BodyKind, BodyStatus};
-
-pub use gateway::{
-    GATEWAY_PROTOCOL_VERSION, GatewayCapability, GatewayClientIdentity, GatewayConnect,
-    GatewayDelivery, GatewayDeliveryStatus, GatewayEvent, GatewayFrame, GatewayFramePayload,
-    GatewayMessage, GatewayMessageKind, GatewayMessageStatus, GatewayOutboundEnvelope,
-    GatewayPairing, GatewayPairingStatus, GatewayPlatform, GatewayProtocolPolicy, GatewayRequest,
-    GatewayRequestKind, GatewayResponse, GatewayRoute, GatewaySessionSource,
-};
 
 pub use mcp::{
     JSONRPC_VERSION, JsonRpcError, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,

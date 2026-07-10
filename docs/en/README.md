@@ -1,6 +1,6 @@
 # Ikaros Documentation
 
-[Documentation index](../README.md) | [简体中文](../zh-CN/README.md)
+[Documentation index](../README.md)
 
 This directory contains the English subsystem documentation. The documents are
 written as interface notes: each page should explain what the subsystem owns,
@@ -31,8 +31,7 @@ pages.
 - Write for people first. Start with what the subsystem owns and how callers use
   it.
 - Keep overview pages short. Move JSON schemas, protocol lines, and exhaustive
-  command output into [API reference](api-reference.md) or the relevant subsystem
-  page.
+  command output into the relevant subsystem page.
 - Prefer short paragraphs, categorized command lists, and stable headings.
 - Keep future plans in [the root roadmap](../../ROADMAP.md), not scattered
   through subsystem documents.
@@ -44,7 +43,6 @@ pages.
 - [Harness model](harness-model.md)
 - [Agent loop](agent-loop.md)
 - [Configuration](configuration.md)
-- [API reference](api-reference.md)
 - [Threat model](threat-model.md)
 
 ## Runtime Subsystems
@@ -54,15 +52,9 @@ pages.
 - [Context engine](context-engine.md)
 - [RAG model](rag-model.md)
 - [Model providers](model-providers.md)
-- [Voice providers](voice-providers.md)
 - [Persona model](persona-model.md)
-- [Body model](body-model.md)
-- [Automation model](automation-model.md)
-- [Message gateway](message-gateway.md)
-- [Service manager templates](service-manager.md)
 
 ## Development And Operations
 
 - [Plugin system](plugin-system.md)
-- [Self-modify](self-modify.md)
 - [Deployment](deployment.md)

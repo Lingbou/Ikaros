@@ -14,15 +14,13 @@ mod presets;
 mod providers;
 mod rag;
 mod resolved;
-mod self_modify;
 mod store;
 mod validation;
-mod voice;
 
 pub use execution::{ExecutionConfig, ExecutionNetworkConfig, ExecutionSandboxConfig};
 pub use kinds::{
     EmbeddingProviderKind, ModelProviderKind, ModelTransportKind, SandboxBackend, SandboxReadScope,
-    StoreBackend, VoiceProviderKind,
+    StoreBackend,
 };
 pub use mcp::{McpConfig, McpServerConfig};
 pub use memory::{ExternalMemoryProviderConfig, MemoryConfig, MemoryPolicyConfig};
@@ -33,10 +31,8 @@ pub use model::{
 pub use policy::PolicyConfig;
 pub use providers::{ExternalProvidersConfig, RemoteProviderConfig};
 pub use rag::RagConfig;
-pub use self_modify::{SelfModifyCheckProfileConfig, SelfModifyConfig};
 pub use store::LocalStoreConfig;
 pub use validation::{ConfigValidationIssue, ConfigValidationReport};
-pub use voice::{VoiceConfig, VoiceProviderConfig};
 
 pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 
@@ -50,10 +46,8 @@ pub struct IkarosConfig {
     pub policy: PolicyConfig,
     pub memory: MemoryConfig,
     pub rag: RagConfig,
-    pub voice: VoiceConfig,
     pub mcp: McpConfig,
     pub execution: ExecutionConfig,
-    pub self_modify: SelfModifyConfig,
 }
 
 impl Default for IkarosConfig {
@@ -66,10 +60,8 @@ impl Default for IkarosConfig {
             policy: PolicyConfig::default(),
             memory: MemoryConfig::default(),
             rag: RagConfig::default(),
-            voice: VoiceConfig::default(),
             mcp: McpConfig::default(),
             execution: ExecutionConfig::default(),
-            self_modify: SelfModifyConfig::default(),
         }
     }
 }
@@ -91,12 +83,6 @@ providers:
   embedding:
     api_key: rag-secret
     base_url: https://embedding.example/v1
-  tts:
-    api_key: tts-secret
-    base_url: https://tts.example/v1
-  asr:
-    api_key: asr-secret
-    base_url: https://asr.example/v1
 "#;
 
         let config = validation::load_yaml_shape_checked(raw).expect("shape config");
@@ -107,10 +93,6 @@ providers:
             config.providers.embedding.base_url,
             "https://embedding.example/v1"
         );
-        assert_eq!(config.providers.tts.api_key, "tts-secret");
-        assert_eq!(config.providers.tts.base_url, "https://tts.example/v1");
-        assert_eq!(config.providers.asr.api_key, "asr-secret");
-        assert_eq!(config.providers.asr.base_url, "https://asr.example/v1");
     }
 
     #[test]
@@ -136,8 +118,6 @@ providers:
         assert!(config.providers.model.base_url.is_empty());
         assert_eq!(config.rag.embedding_provider.as_str(), "hash");
         assert!(config.providers.embedding.base_url.is_empty());
-        assert_eq!(config.voice.tts.provider.as_str(), "mock");
-        assert!(config.providers.tts.base_url.is_empty());
         assert!(config.execution.network.enabled);
         assert!(config.execution.network.allow_provider_hosts);
         assert_eq!(config.execution.sandbox.backend.as_str(), "local");
@@ -187,8 +167,6 @@ providers:
         assert_eq!(config.schema_version, CURRENT_CONFIG_SCHEMA_VERSION);
         assert_eq!(config.model.default.provider.as_str(), "openai-compatible");
         assert_eq!(config.rag.embedding_provider.as_str(), "hash");
-        assert_eq!(config.voice.tts.provider.as_str(), "mock");
-        assert_eq!(config.voice.asr.provider.as_str(), "mock");
     }
 
     #[test]
@@ -242,7 +220,7 @@ providers:
     }
 
     #[test]
-    fn empty_rag_and_voice_sections_keep_local_defaults() {
+    fn empty_rag_section_keeps_local_defaults() {
         let report = IkarosConfig::validate_yaml(
             r#"schema_version: 1
 
@@ -255,9 +233,6 @@ model:
 
 rag: {}
 
-voice:
-  tts: {}
-  asr: {}
 "#,
         )
         .expect("validate yaml");
@@ -276,15 +251,10 @@ model:
 
 rag: {}
 
-voice:
-  tts: {}
-  asr: {}
 "#,
         )
         .expect("shape config");
         assert_eq!(config.rag.embedding_provider.as_str(), "hash");
-        assert_eq!(config.voice.tts.provider.as_str(), "mock");
-        assert_eq!(config.voice.asr.provider.as_str(), "mock");
     }
 
     #[test]
@@ -303,13 +273,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 
 mcp:
   servers:
@@ -345,13 +308,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 
 mcp:
   servers:
@@ -399,13 +355,6 @@ rag:
   backend: jsonl
   embedding_provider: hash
   embedding_model: ""
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#;
 
         let report = IkarosConfig::validate_yaml(raw).expect("validate");
@@ -433,13 +382,6 @@ rag:
   backend: jsonl
   embedding_provider: hash
   embedding_model: ""
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#;
 
         let report = IkarosConfig::validate_yaml(raw).expect("validate");
@@ -521,13 +463,6 @@ rag:
   backend: sqlite
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
         )
         .expect("validate");
@@ -561,13 +496,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#;
         let config = validation::load_yaml_shape_checked(raw).expect("shape");
 
@@ -598,13 +526,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
         )
         .expect("validate");
@@ -615,54 +536,6 @@ voice:
                 .iter()
                 .any(|issue| issue.path == "model.default.cost.input_per_million"),
             "{report:#?}"
-        );
-    }
-
-    #[test]
-    fn config_validation_does_not_inherit_tts_voice_into_asr() {
-        let report = IkarosConfig::validate_yaml(
-            r#"
-schema_version: 1
-
-providers:
-  model:
-    api_key: model-secret
-    base_url: https://api.example/v1
-  tts:
-    api_key: tts-secret
-    base_url: https://tts.example/v1
-  asr:
-    api_key: asr-secret
-    base_url: https://asr.example/v1
-
-model:
-  default:
-    provider: openai-compatible
-    runtime: harness-agent-loop
-    transport: openai-compatible-chat-completions
-    model: example-chat
-
-rag:
-  embedding_provider: hash
-
-voice:
-  tts:
-    provider: openai-compatible
-    model: speech-model
-  asr:
-    provider: openai-compatible
-    model: transcription-model
-"#,
-        )
-        .expect("validate");
-
-        assert!(report.is_valid(), "{report:#?}");
-        assert!(
-            !report
-                .warnings
-                .iter()
-                .any(|issue| issue.path == "voice.asr.voice"),
-            "ASR should not inherit the TTS voice default: {report:#?}"
         );
     }
 
@@ -697,11 +570,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
         )
         .expect("validate");
@@ -763,11 +631,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
         )
         .expect("validate");
@@ -814,11 +677,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 
 agent:
   default: build
@@ -899,11 +757,6 @@ agent:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
         )
         .expect("validate");
@@ -939,11 +792,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 
 memory:
   external_providers:
@@ -984,13 +832,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 
 memory:
   external_providers:
@@ -1035,11 +876,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 
 memory:
   policy:
@@ -1085,11 +921,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 
 execution:
   network:
@@ -1138,7 +969,7 @@ model:
 
 {}
 "#,
-                mock_rag_and_voice_yaml()
+                mock_rag_yaml()
             ),
         )
         .expect("write config");
@@ -1175,7 +1006,7 @@ model:
 
 {}
 "#,
-                mock_rag_and_voice_yaml()
+                mock_rag_yaml()
             ),
         )
         .expect("write config");
@@ -1207,7 +1038,7 @@ model:
 
 {}
 "#,
-                mock_rag_and_voice_yaml()
+                mock_rag_yaml()
             ),
         )
         .expect("write config");
@@ -1231,8 +1062,6 @@ model:
 
         assert!(report.is_valid(), "{report:#?}");
         assert_eq!(config.rag.embedding_provider.as_str(), "hash");
-        assert_eq!(config.voice.tts.provider.as_str(), "mock");
-        assert_eq!(config.voice.asr.provider.as_str(), "mock");
     }
 
     #[test]
@@ -1291,16 +1120,9 @@ model:
         assert!(message.contains("unknown model preset"), "{message}");
     }
 
-    fn mock_rag_and_voice_yaml() -> &'static str {
+    fn mock_rag_yaml() -> &'static str {
         r#"rag:
   embedding_provider: hash
-
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr"#
+"#
     }
 }

@@ -11,9 +11,8 @@ calling context, persistent state, or user-visible behavior changes.
 
 ## Terms
 
-- Agent use case: code in `ikaros-agent` that drives chat, tasks, schedules,
-  gateway drain, body frames, and agent-loop reports for one command or worker
-  tick.
+- Agent use case: code in `ikaros-agent` that drives chat, tasks, coding
+  workflow, and agent-loop reports for one command or worker tick.
 - Host assembly: the boundary that loads config, resolves `AgentInstance`,
   builds `RuntimeLocation`, and wires `ExecutionSession`, sandbox-backed
   `ExecutionEnv`, and `SkillRegistry` for runtime callers.
@@ -23,7 +22,7 @@ calling context, persistent state, or user-visible behavior changes.
   filesystem, network, and audit shapes from `ikaros-execution::toolkit`.
 - Sandbox: the concrete local, dry-run, Docker, workspace, and governed network
   execution backends from `ikaros-execution::sandbox`.
-- Provider: an adapter that talks to a model, embedding, TTS, or ASR API.
+- Provider: an adapter that talks to a model or embedding API.
 - Transport: the wire-format description for a provider family.
 - Model stream event: a normalized model delta such as text, reasoning, tool-call
   start/update/end, usage, error, or done.
@@ -42,7 +41,7 @@ calling context, persistent state, or user-visible behavior changes.
   coding workflow.
 - Agent profile: persona and policy overlay.
 - Agent instance: runtime identity with `agent_id`, workspace, state directory,
-  session policy, auth scope, and route bindings.
+  session policy, and auth scope.
 - Context source: references, history, memory, RAG, relationship, or persona
   data that may be assembled into a model turn.
 
@@ -51,34 +50,32 @@ calling context, persistent state, or user-visible behavior changes.
 - `ikaros-core`: shared config, paths, task types, redaction, errors, agent
   profiles, persona/emotion primitives, and pure agent config resolution.
 - `ikaros-protocol`: stable versioned wire and session protocol types shared by
-  CLI, TUI, gateway, local API, replay, and external integration surfaces.
+  CLI, TUI, replay, and MCP.
 - `ikaros-state`: durable local state owner for session timelines, memory, RAG
-  indexes, automation metadata, and gateway queues.
+  indexes.
 - `ikaros-execution`: governed execution owner for policy, approvals, audit,
   sandbox, process/filesystem/network execution, reusable tool contracts,
   coding primitives, and task/plugin dispatch.
-- `ikaros-providers`: provider owner for model, embedding, voice, vision/image,
-  web, registry, and governance adapters.
+- `ikaros-providers`: provider owner for model, embedding, registry, and
+  governance adapters.
 - `ikaros-host`: composition root for config/path/agent instance/provider/store
   setup, execution environment wiring, diagnostics, persona file management,
   approval resolution, and host-owned adapters.
 - `ikaros-agent`: application use cases for chat, context assembly, coding
-  workflow, task loop, schedules, gateway drain, body status, agent loop,
-  agent handoff, and session runner logic. It receives assembled dependencies
-  rather than loading config or resolving host resources itself.
+  workflow, task loop, agent loop, agent handoff, and session runner logic. It
+  receives assembled dependencies rather than loading config or resolving host
+  resources itself.
 - `ikaros-skills`: built-in skill implementations exposed through shared tool
   contracts and governed by execution policy. Organize skills internally by
   groups or packs until a real reuse boundary justifies another crate.
-- `ikaros-surfaces`: external entry points: local API, MCP, gateway adapters,
-  webhooks, body dashboard, and service-manager integration. It must not expose
-  local state stores.
+- `ikaros-surfaces`: external entry points for MCP integration. It must not
+  expose local state stores.
 - `ikaros-terminal`: terminal/TUI screen models, input, rendering, slash
   commands, status, body rendering, and timelines. It must not own execution,
   provider setup, config loading, or local stores.
 - `ikaros-cli`: thin `clap`, dispatch, and terminal adapter for the `ikaros`
   binary. It should parse flags, call host/agent/surfaces/terminal APIs, and
-  render terminal output; it should not own host assembly, gateway queue logic,
-  or protocol schemas.
+  render terminal output; it should not own host assembly or protocol schemas.
 
 The current Cargo workspace contains the 11 architecture crates above. Former
 implementation crates have been folded into these architecture crates or
@@ -96,15 +93,10 @@ Use these rules when hardening or moving code across crate seams:
 - Keep `ikaros-cli` as the thin command and terminal adapter. Move reusable
   command behavior into agent, surfaces, terminal, host, or execution crates
   instead of growing CLI modules.
-- Route API server code through `ikaros-surfaces`; do not let it become a
-  second host assembly layer or own CLI, terminal, or gateway queue behavior.
 - Route terminal render/input code through `ikaros-terminal`; do not let
-  terminal UI code assemble runtime dependencies or drain gateway queues.
+  terminal UI code assemble runtime dependencies.
 - Keep stable wire/session/event shapes in `ikaros-protocol` before exposing
-  them as shared API, terminal, replay, MCP, gateway, or adapter contracts.
-- Keep gateway queue stores and leases in `ikaros-state::gateway`, route
-  adapter/webhook APIs through `ikaros-surfaces::gateway`, and keep the deleted
-  legacy gateway crate out of the workspace.
+  them as shared terminal, replay, MCP, or adapter contracts.
 - Keep application use cases in `ikaros-agent` over dependencies assembled by
   `ikaros-host`, CLI, or surfaces. Agent code must not load config, resolve
   agents, build registries, or select stores.
@@ -134,10 +126,8 @@ Most entry points follow the same path:
 4. Model turns run through `AgentRuntime`; the default implementation is
    `HarnessAgentRuntime`. Chat and task agent-loop entry points wrap it in
    `AgentHarness`, which owns phase, caller-provided turn ids, and durable
-   continuation queue handling when a `SessionStore` is available. Gateway task
-   drains, scheduled task execution, and agent-loop handoff now call the
-   session-aware task agent-loop path with explicit session id, turn id, and
-   source metadata. Agent execution emits typed `AgentEvent` records. Callers may attach
+   continuation queue handling when a `SessionStore` is available. Agent
+   execution emits typed `AgentEvent` records. Callers may attach
    an `AgentEventSink` to persist those records in `ikaros-state::session`, while
    existing CLI and worker callers can still use the final report.
 5. Tool dispatch must go through `ExecutionSession` and the attached
@@ -145,22 +135,15 @@ Most entry points follow the same path:
    `ikaros-execution::toolkit`, or reimplement host assembly.
 6. The harness evaluates policy, records audit events, and either executes,
    asks for approval, or denies.
-7. Agent use cases reduce the same turn path into stable reports for CLI, body,
-   schedule, gateway, chat, or agent callers.
+7. Agent use cases reduce the same turn path into stable reports for CLI, chat,
+   task, coding, or agent callers.
 
-Chat and task agent-loop execution now use the stateful harness path. Gateway
-task drain, scheduled task execution, and agent-loop handoff also enter that path
-with explicit session source metadata, so their agent-loop events and
-continuation state can land in the same `state.db` timeline as their
-gateway/schedule evidence.
+Chat and task agent-loop execution now use the stateful harness path. Their
+agent-loop events and continuation state land in the same `state.db` timeline.
 The durable continuation queue is a recovery and replay boundary, not yet a
-full scheduler. It now records leases, attempt counts, status reasons, requeue
+general scheduler. It records leases, attempt counts, status reasons, requeue
 status, terminal status, cancellation request/acknowledgement evidence,
-worker-lease timeout summaries, first-pass recoverable tool-result
-continuations, and user-facing debug query data. Running durable message
-continuations poll for external cancellation, but configurable worker
-coordination, richer tool-result scheduling policy, and scheduler-grade
-terminal accounting are still agent-loop hardening work.
+recoverable tool-result continuations, and user-facing debug query data.
 
 ## Agent Identity
 
@@ -197,14 +180,13 @@ services are not required for the MVP.
 State ownership:
 
 - `state.db`: session metadata, append-only session entries, persisted
-  chat/agent-loop events, gateway and schedule evidence, approval records,
+  chat/agent-loop events, approval records,
   durable continuation queue records, FTS5/trigram search indexes,
   branch/compact/retry markers, coding turn events, and replay data.
   Built-in chat turns write user/assistant entries through a turn-scoped
-  `SessionWriter` transaction. Gateway and schedule workers also map their
-  request/result/delivery evidence into the same store. Memory lifecycle and
-  audit logs still keep their own stores, with selected session evidence rather
-  than full prompt-bearing duplication. Ordinary chat does not write a separate
+  `SessionWriter` transaction. Memory lifecycle and audit logs still keep their
+  own stores, with selected session evidence rather than full prompt-bearing
+  duplication. Ordinary chat does not write a separate
   history mirror; session replay is the chat timeline. Operational helpers can
   report journal mode, integrity, WAL checkpoint state, search-index
   availability, and write policy; debug commands can checkpoint WAL, back up or
@@ -217,12 +199,7 @@ State ownership:
 - `rag/`: local RAG files, chunks, and embedding indexes.
 - `audit/`: policy decisions, approval records, usage logs, rotation archives,
   and forensic evidence.
-- `automation/`: schedule metadata and delivery reports.
-- `gateway/`: inbox/outbox records, worker lease/retry/dead-letter metadata,
-  and sibling lock files for local message routing.
-- `browser/`: local browser supervisor profiles, launch state, and browser
-  runtime metadata.
-- `logs/trace.jsonl`: structured tracing events for CLI, API, and local
+- `logs/trace.jsonl`: structured tracing events for CLI and local
   diagnostics.
 - `skills/`: locally installed plugins and marketplace metadata.
 - `agents/`: per-agent state directories when instances use the default state root.
@@ -245,16 +222,14 @@ State ownership:
   cache accounting separately from ordinary input/output tokens.
 - `AgentEvent`, session ids, turn ids, append-only session entries, and replay
   reads belong to `ikaros-state::session`, not to the runtime loop.
-- `ikaros-protocol` owns durable wire shapes for API, TUI, gateway, replay, and
+- `ikaros-protocol` owns durable wire shapes for TUI, replay, MCP, and
   external integration surfaces. `ikaros-agent`, `ikaros-state`, and
   `ikaros-providers` code may project into those shapes, but product surfaces
   should not invent incompatible event or state schemas.
 - `SessionWriter` owns turn-scoped session transactions. Built-in chat uses it
-  for session entries and typed events. Gateway and schedule workers write
-  high-level evidence entries/events into `state.db`. Memory and audit remain
-  separate stores, with session evidence kept explicit and redacted. Ordinary
-  chat does not write a separate history mirror; session replay is the chat
-  timeline.
+  for session entries and typed events. Memory and audit remain separate stores,
+  with session evidence kept explicit and redacted. Ordinary chat does not write
+  a separate history mirror; session replay is the chat timeline.
 - `AgentEventSink` is the event-bus boundary. `ikaros-state::session` provides
   no-op, collecting, fan-out, per-event persisting, and turn-transaction
   persisting sinks, so agent code can emit one typed event stream to
@@ -264,9 +239,6 @@ State ownership:
   `RuntimeHarness` or `HostServices` instead of rebuilding agent resolution,
   workspace scope, skill registry, provider egress allowlists, or execution
   environment composition in CLI or agent modules.
-- Gateway workers claim messages with a redacted lease owner, lease expiry, and
-  attempt count. Failed processing clears the lease and either requeues the
-  message or moves it to `DeadLettered` after the retry budget.
 - Built-in chat turns commit session entries and chat events together. Failed
   provider or local post-processing turns keep the user entry, a redacted error
   event, and a failed turn-end event for replay/debug callers.
@@ -329,27 +301,18 @@ State ownership:
   first slice when configured. That container backend runs process execution
   through `docker run --network none`, but it is not a VM, multi-tenant
   boundary, or complete OS sandbox.
-- Local API, MCP, browser/CDP, web, vision, and image-generation surfaces are
-  adapters over agent, execution, session, and provider boundaries. They must
-  reuse `NetworkEgress`, `ExecutionEnv`, provider governance, audit, and
-  session evidence instead of opening side channels around policy.
-- Browser CDP HTTP discovery goes through governed `NetworkEgress`, while the
-  browser process performs page network I/O until a stricter browser supervisor
-  sandbox exists. Docs and UI must describe that distinction clearly.
-- Web search and extract are explicit governed skills. Search may use the
-  built-in DuckDuckGo HTML provider or configured Brave, Bing, SerpAPI, and
-  Tavily-compatible endpoints; extract fetches one URL and returns bounded,
-  redacted citation text.
+- MCP is the only external surface kept for now. It is an adapter over agent,
+  execution, session, and provider boundaries, and must reuse `NetworkEgress`,
+  `ExecutionEnv`, provider governance, audit, and session evidence instead of
+  opening side channels around policy.
 - Coding workflow execution is a governed skill. It builds a
   `CodingTurnContext`, git baseline, repo map, change plan, optional patch
   attempt, turn diff, test matrix evidence, review, iteration plan, loop report,
   and final report. The git baseline records HEAD, branch/detached state,
   clean/dirty/not-git/unknown state, and staged/unstaged/untracked flags when
   available. The mode policy is explicit: `plan` and `review` stay read-only,
-  `test` may run the test matrix through the harness process path, `edit` may
-  apply an explicitly requested candidate patch, and `self_modify` is rejected
-  by ordinary `code workflow` until it enters the dedicated self-modify approval
-  path. Workspace instructions are loaded from `IKAROS.md` and
+  `test` may run the test matrix through the harness process path, and `edit`
+  may apply an explicitly requested candidate patch. Workspace instructions are loaded from `IKAROS.md` and
   `.ikaros/instructions.md` and redacted before entering prompts or events.
   With `--model-loop`, the configured model provider returns strict JSON
   candidate patches; approved execution records model request/response metadata,
@@ -372,10 +335,6 @@ State ownership:
   metadata. Cancellation is checked before and while awaiting provider requests,
   before planned tool calls start, and while tool futures are in flight; planned
   but unstarted calls are reported as cancelled, not executed.
-- Stable product-facing protocol types live in `ikaros-protocol`; gateway-local
-  inbox/outbox storage lives in `ikaros-state::gateway`, while external
-  adapter/webhook surfaces live in `ikaros-surfaces::gateway`.
-- Self-modification is a separate approval-gated path, not an ordinary write permission.
 - The current coding workflow is now a provider-backed controlled loop, but it
   is still pre-MVP. It has deterministic, mock-model, and provider-loop replay
   fixtures, multi-iteration patch/test/review evidence, test-matrix events, and
@@ -405,10 +364,6 @@ State ownership:
   audit log must not store full user prompts.
 - Approval replay must bind the workspace, exact approved input, and agent
   identity.
-- Gateway ingestion only queues work. It must not call models, tasks, plugins, or
-  tools directly.
-- Self-modify proposals use a dedicated proposal/apply/rollback path and do not
-  imply general write permission.
 
 ## Failure Reporting
 
@@ -419,7 +374,6 @@ are policy denial, waiting for approval, iteration budget, guardrail halt,
 provider error, command timeout, and local store errors.
 
 Session replay is currently strongest for completed and failed chat/agent-loop
-turns, and it also contains high-level gateway and schedule request/result/
-delivery evidence. Memory and audit still have dedicated stores, so long-running
-workers should treat `state.db` as the primary timeline and those stores as
-supporting evidence until their lifecycle records are fully modeled.
+turns. Memory and audit still have dedicated stores, so long-running workers
+should treat `state.db` as the primary timeline and those stores as supporting
+evidence until their lifecycle records are fully modeled.

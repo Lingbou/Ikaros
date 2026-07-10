@@ -9,9 +9,7 @@ mod continuations;
 mod debug;
 mod dispatch;
 mod evidence;
-mod gateway;
 mod mcp;
-mod multimodal;
 mod output;
 mod parse;
 mod provider;
@@ -22,11 +20,9 @@ mod state;
 mod status;
 #[cfg(test)]
 mod tests;
-mod web;
 
 use ikaros_terminal::terminal_inline;
 
-use crate::chat::workbench::print_api_status;
 use approval::handle_approval_command;
 pub(in crate::chat) use context::InteractiveCommandContext;
 use continuations::print_workbench_continuation_status;

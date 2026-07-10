@@ -6,10 +6,8 @@ mod support;
 mod config_validate;
 #[path = "cli_smoke/harness_storage.rs"]
 mod harness_storage;
-#[path = "cli_smoke/ingress_workers.rs"]
-mod ingress_workers;
-#[path = "cli_smoke/persona_voice_coding.rs"]
-mod persona_voice_coding;
+#[path = "cli_smoke/persona_coding.rs"]
+mod persona_coding;
 #[path = "cli_smoke/provider.rs"]
 mod provider;
 #[path = "cli_smoke/runtime_core.rs"]

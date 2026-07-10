@@ -7,11 +7,7 @@ use std::{fs, path::Path};
 pub(super) fn config_has_setup_paths(path: &Path) -> Result<bool> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", path.display()))?;
-    Ok(raw.contains("\nproviders:\n")
-        && raw.contains("\n  embedding:\n")
-        && raw.contains("\nvoice:\n")
-        && raw.contains("\n  tts:\n")
-        && raw.contains("\n  asr:\n"))
+    Ok(raw.contains("\nproviders:\n") && raw.contains("\n  embedding:\n"))
 }
 
 pub(super) fn format_setup_validation_failure(

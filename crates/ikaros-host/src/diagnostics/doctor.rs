@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::types::{
-    AgentSummary, AutomationSummary, ConfigIssueSummary, ConfigSummary, ExecutionSummary,
-    GatewaySummary, ModelSummary, PersonaSummary, PluginSummary, RagSummary, RuntimeDoctorReport,
-    StoreSummary, VoiceSummary,
+    AgentSummary, ConfigIssueSummary, ConfigSummary, ExecutionSummary, ModelSummary,
+    PersonaSummary, PluginSummary, RagSummary, RuntimeDoctorReport, StoreSummary,
 };
 use ikaros_core::{EmotionState, load_or_default};
 use ikaros_core::{IkarosConfig, IkarosPaths, Result};
 use ikaros_execution::harness::PluginCatalog;
 use ikaros_providers::model::ModelUsageLedger;
 use ikaros_skills::builtin_registry;
-use ikaros_state::automation::LocalScheduleStore;
-use ikaros_state::gateway::LocalGatewayStore;
 use ikaros_state::memory::{LocalMemoryStore, MemoryProviderRegistry, MemoryStore};
 use ikaros_state::rag::{LocalRagStore, RagStore, embedding_provider_uses_network};
 use std::path::Path;
@@ -41,7 +38,6 @@ pub fn runtime_doctor_report(
         &config.memory.external_providers,
     )?;
     let rag_store = LocalRagStore::new(&paths.rag_dir, &config.rag.backend)?;
-    let gateway_store = LocalGatewayStore::new(&paths.gateway_dir);
     let usage_ledger = ModelUsageLedger::new(&paths.audit_dir);
     let today = time::OffsetDateTime::now_utc().date().to_string();
     let daily_token_used_today = usage_ledger.total_for_day(&today)?;
@@ -105,21 +101,6 @@ pub fn runtime_doctor_report(
             embedding_api_key_configured: secret_configured(&config.providers.embedding.api_key),
             embedding_base_url_configured: !config.providers.embedding.base_url.trim().is_empty(),
             path: rag_store.path().to_path_buf(),
-        },
-        voice: VoiceSummary {
-            tts_provider: config.voice.tts.provider.to_string(),
-            tts_model: config.voice.tts.model,
-            asr_provider: config.voice.asr.provider.to_string(),
-            asr_model: config.voice.asr.model,
-        },
-        automation: AutomationSummary {
-            schedules_path: LocalScheduleStore::new(&paths.automation_dir)
-                .path()
-                .to_path_buf(),
-        },
-        gateway: GatewaySummary {
-            inbox_path: gateway_store.inbox_path().to_path_buf(),
-            outbox_path: gateway_store.outbox_path().to_path_buf(),
         },
         skills: registry.names(),
         plugins: PluginSummary {

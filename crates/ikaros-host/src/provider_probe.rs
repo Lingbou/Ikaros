@@ -6,13 +6,8 @@ use ikaros_core::{
     IkarosConfig, IkarosError, IkarosPaths, ModelConfig, RemoteProviderConfig, Result,
     redact_secrets, resolve_config_secret, resolve_config_value,
 };
-use ikaros_execution::harness::{ExecutionEnv, NetworkEgressRequest};
+use ikaros_execution::harness::NetworkEgressRequest;
 use ikaros_providers::model::{ModelRequest, governed_provider_from_config_with_http_client};
-use ikaros_providers::voice::{
-    AsrProvider, AsrRequest, AudioFormat, OpenAiCompatibleVoiceProvider, TtsProvider, TtsRequest,
-    VoiceHttpBody, VoiceHttpClient, VoiceHttpRequest, VoiceHttpResponse, asr_provider_from_config,
-    tts_provider_from_config,
-};
 use ikaros_state::rag::{LocalRagStore, RagQuery};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
@@ -70,41 +65,6 @@ pub async fn embedding_provider_live_probe(
         &config.rag.embedding_provider,
     )?;
     Ok(format!("hits={}", hits.len()))
-}
-
-pub async fn tts_provider_live_probe(workspace: &Path, config: &IkarosConfig) -> Result<String> {
-    let provider = tts_provider_for_egress(workspace, config)?;
-    let audio = provider
-        .synthesize(TtsRequest {
-            text: "Ikaros provider matrix TTS probe.".into(),
-            voice: config.voice.tts.voice.clone(),
-            format: AudioFormat::Wav,
-            sample_rate_hz: Some(16_000),
-            language: Some("en".into()),
-        })
-        .await?;
-    Ok(format!("bytes={}", audio.bytes.len()))
-}
-
-pub async fn asr_provider_live_probe(workspace: &Path, config: &IkarosConfig) -> Result<String> {
-    let provider = asr_provider_for_egress(workspace, config)?;
-    let transcript = provider
-        .transcribe(AsrRequest {
-            audio: asr_probe_wav(),
-            file_name: Some("probe.wav".into()),
-            format: Some(AudioFormat::Wav),
-            sample_rate_hz: Some(16_000),
-            language: Some("en".into()),
-        })
-        .await?;
-    Ok(format!(
-        "text_len={} confidence={}",
-        transcript.text.len(),
-        transcript
-            .confidence
-            .map(|confidence| confidence.to_string())
-            .unwrap_or_else(|| "unknown".into())
-    ))
 }
 
 async fn remote_embedding_live_probe(workspace: &Path, config: &IkarosConfig) -> Result<String> {
@@ -181,103 +141,6 @@ async fn remote_embedding_live_probe(workspace: &Path, config: &IkarosConfig) ->
     )))
 }
 
-fn tts_provider_for_egress(
-    workspace: &Path,
-    config: &IkarosConfig,
-) -> Result<Box<dyn TtsProvider>> {
-    if provider_matrix_voice_is_mock(&config.voice.tts.provider) {
-        return tts_provider_from_config(&config.voice.tts, &config.providers.tts);
-    }
-    if config
-        .voice
-        .tts
-        .provider
-        .eq_ignore_ascii_case("openai-compatible")
-    {
-        let env = runtime_execution_env(config, workspace)?;
-        return Ok(Box::new(
-            OpenAiCompatibleVoiceProvider::from_config_with_http_client(
-                config.voice.tts.provider.to_string(),
-                &config.voice.tts,
-                &config.providers.tts,
-                Arc::new(ProviderProbeVoiceHttpClient::new(env)),
-            )?,
-        ));
-    }
-    tts_provider_from_config(&config.voice.tts, &config.providers.tts)
-}
-
-fn asr_provider_for_egress(
-    workspace: &Path,
-    config: &IkarosConfig,
-) -> Result<Box<dyn AsrProvider>> {
-    if provider_matrix_voice_is_mock(&config.voice.asr.provider) {
-        return asr_provider_from_config(&config.voice.asr, &config.providers.asr);
-    }
-    if config
-        .voice
-        .asr
-        .provider
-        .eq_ignore_ascii_case("openai-compatible")
-    {
-        let env = runtime_execution_env(config, workspace)?;
-        return Ok(Box::new(
-            OpenAiCompatibleVoiceProvider::from_config_with_http_client(
-                config.voice.asr.provider.to_string(),
-                &config.voice.asr,
-                &config.providers.asr,
-                Arc::new(ProviderProbeVoiceHttpClient::new(env)),
-            )?,
-        ));
-    }
-    asr_provider_from_config(&config.voice.asr, &config.providers.asr)
-}
-
-fn provider_matrix_voice_is_mock(provider: &str) -> bool {
-    matches!(
-        provider.to_ascii_lowercase().as_str(),
-        "mock" | "mock-tts" | "mock-asr"
-    )
-}
-
-#[derive(Clone)]
-struct ProviderProbeVoiceHttpClient {
-    env: Arc<dyn ExecutionEnv>,
-}
-
-impl ProviderProbeVoiceHttpClient {
-    fn new(env: Arc<dyn ExecutionEnv>) -> Self {
-        Self { env }
-    }
-}
-
-#[async_trait::async_trait]
-impl VoiceHttpClient for ProviderProbeVoiceHttpClient {
-    async fn send(&self, request: VoiceHttpRequest) -> Result<VoiceHttpResponse> {
-        let (body, body_bytes) = match request.body {
-            VoiceHttpBody::Text(body) => (Some(body), None),
-            VoiceHttpBody::Bytes(body) => (None, Some(body)),
-        };
-        let response = self
-            .env
-            .send_network_request(NetworkEgressRequest {
-                method: request.method,
-                url: request.url,
-                headers: request.headers,
-                body,
-                body_bytes,
-            })
-            .await?;
-        Ok(VoiceHttpResponse {
-            status: response.status,
-            headers: response.headers,
-            body: response
-                .body_bytes
-                .unwrap_or_else(|| response.body.into_bytes()),
-        })
-    }
-}
-
 fn embedding_vector_count(body: &str) -> usize {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return 0;
@@ -306,34 +169,6 @@ fn embedding_value_non_empty(value: &Value) -> bool {
             .is_some_and(|embedding| !embedding.is_empty())
 }
 
-fn asr_probe_wav() -> Vec<u8> {
-    let sample_rate = 16_000_u32;
-    let channels = 1_u16;
-    let bits_per_sample = 16_u16;
-    let sample_count = sample_rate / 4;
-    let bytes_per_sample = u32::from(bits_per_sample / 8);
-    let data_len = sample_count * u32::from(channels) * bytes_per_sample;
-    let byte_rate = sample_rate * u32::from(channels) * bytes_per_sample;
-    let block_align = channels * (bits_per_sample / 8);
-    let mut wav = Vec::with_capacity(44 + data_len as usize);
-
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16_u32.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&channels.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    wav.resize(44 + data_len as usize, 0);
-    wav
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,19 +186,5 @@ mod tests {
             2
         );
         assert_eq!(embedding_vector_count(r#"{"embedding":"AACAPwAAIMA="}"#), 1);
-    }
-
-    #[test]
-    fn provider_matrix_asr_probe_audio_is_valid_wav() {
-        let wav = asr_probe_wav();
-
-        assert!(wav.starts_with(b"RIFF"));
-        assert_eq!(&wav[8..12], b"WAVE");
-        assert_eq!(&wav[12..16], b"fmt ");
-        assert!(wav.windows(4).any(|window| window == b"data"));
-        assert!(
-            wav.len() > 44,
-            "ASR live probe must send audio frames, not just a header"
-        );
     }
 }

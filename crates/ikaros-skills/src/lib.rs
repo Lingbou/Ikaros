@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Built-in Ikaros skills, all designed to run through the harness.
 
-mod browser;
 mod coding;
 mod fs;
 pub mod groups;
 mod mcp;
 mod memory;
-mod multimodal;
 mod persona;
 mod plugin;
 mod prompt_docs;
@@ -15,25 +13,17 @@ mod rag;
 mod shell;
 mod support;
 mod tool_bridge;
-mod voice;
-mod web;
 
-pub use browser::{
-    BrowserActivateTargetSkill, BrowserCdpSkill, BrowserClickSkill, BrowserCloseTargetSkill,
-    BrowserListSkill, BrowserNavigateSkill, BrowserNewTargetSkill, BrowserScreenshotSkill,
-    BrowserScrollSkill, BrowserSnapshotSkill, BrowserStatusSkill, BrowserTypeSkill,
-};
 pub use coding::{
     CodeEditGuardedSkill, CodeIterateSkill, CodeReviewSkill, CodeWorkflowSkill, RepoScanSkill,
     RunTestsSkill, TaskSummarizeSkill,
 };
 pub use fs::{FsReadSkill, FsWriteGuardedSkill, ListDirSkill};
 pub use groups::{BuiltinRegistryBuilder, BuiltinSkillGroup};
-use ikaros_core::{ModelConfig, RagConfig, RemoteProviderConfig};
+use ikaros_core::{RagConfig, RemoteProviderConfig};
 use ikaros_execution::harness::CancellationToken;
-use ikaros_execution::toolkit::{SkillRegistry, Toolset};
+use ikaros_execution::toolkit::SkillRegistry;
 use ikaros_providers::model::ModelProvider;
-use ikaros_providers::voice::VoiceProviderConfig;
 use ikaros_state::memory::LocalMemoryStore;
 use ikaros_state::rag::LocalRagStore;
 use ikaros_state::session::{SessionId, SessionSource, SessionStore, TurnId};
@@ -42,7 +32,6 @@ pub use memory::{
     MemoryAppendSkill, MemoryCandidateCreateSkill, MemoryDeleteSkill, MemoryProjectionSkill,
     MemorySearchSkill, MemoryUpdateSkill, WorkingMemoryListSkill,
 };
-pub use multimodal::{ImageGenerateSkill, VisionDescribeSkill};
 pub use persona::PersonaLoadSkill;
 pub use plugin::PluginCommandRunSkill;
 pub use rag::{
@@ -52,8 +41,6 @@ pub use rag::{
 pub use shell::{GitDiffSkill, GitStatusSkill, ShellGuardedSkill};
 use std::{path::PathBuf, sync::Arc};
 pub use tool_bridge::{ToolCallSkill, ToolDescribeSkill, ToolSearchSkill};
-pub use voice::{VoiceAsrSkill, VoiceTtsSkill};
-pub use web::{WebExtractSkill, WebSearchSkill};
 
 #[derive(Clone)]
 pub struct CodingSessionConfig {
@@ -93,28 +80,11 @@ pub struct SkillEnvironment {
     pub rag_provider: RemoteProviderConfig,
     pub persona_path: PathBuf,
     pub skills_dir: PathBuf,
-    pub voice_tts: VoiceProviderConfig,
-    pub voice_tts_provider: RemoteProviderConfig,
-    pub voice_asr: VoiceProviderConfig,
-    pub voice_asr_provider: RemoteProviderConfig,
-    pub web_search_provider: RemoteProviderConfig,
     pub coding_session: Option<CodingSessionConfig>,
 }
 
 pub fn builtin_registry(env: SkillEnvironment) -> SkillRegistry {
     BuiltinRegistryBuilder::new(env).build()
-}
-
-pub fn register_model_backed_skills(
-    registry: &mut SkillRegistry,
-    model: ModelConfig,
-    provider: RemoteProviderConfig,
-) {
-    registry.register_with_toolset(
-        VisionDescribeSkill::new(model.clone(), provider.clone()),
-        Toolset::Core,
-    );
-    registry.register_with_toolset(ImageGenerateSkill::new(model, provider), Toolset::Core);
 }
 
 #[cfg(test)]

@@ -384,9 +384,7 @@ fn slash_command_transcript_class(input: &str) -> &'static str {
     match (parts.next().unwrap_or_default(), parts.next()) {
         ("/session", Some("resume" | "export")) => "command",
         ("/session" | "/sessions" | "/context" | "/memory" | "/mentions", _) => "inspect_context",
-        ("/status" | "/model" | "/provider" | "/rag" | "/tools" | "/mcp" | "/api" | "/diff", _) => {
-            "inspect"
-        }
+        ("/status" | "/model" | "/provider" | "/rag" | "/tools" | "/mcp" | "/diff", _) => "inspect",
         ("/clear" | "/new", _) => "ui",
         ("/screen" | "/commands" | "/help", _) => "ui",
         _ => "command",

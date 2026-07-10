@@ -11,7 +11,6 @@ for hosted or multi-user deployment.
 - Project files.
 - RAG indexes.
 - Audit logs and approval records.
-- Self-modify proposals and rollback snapshots.
 
 ## Trust Boundaries
 
@@ -19,13 +18,13 @@ for hosted or multi-user deployment.
 - Approval replay before writes that require user approval.
 - Redaction before audit/model/RAG/provider storage.
 - Local state under `IKAROS_HOME`.
-- Provider adapters for cloud model, embedding, TTS, and ASR calls.
+- Provider adapters for cloud model and embedding calls.
 - Plugin manifests and command-backed plugin execution.
 
 ## Current Controls
 
-- Deny-by-default destructive actions, direct secret access, publish/commit actions,
-  workspace-external writes, and ordinary self-modify.
+- Deny-by-default destructive actions, direct secret access, publish/commit
+  actions, and workspace-external writes.
 - Local-first default storage.
 - Local model/provider settings with required key, base URL, and model fields
   before remote calls.

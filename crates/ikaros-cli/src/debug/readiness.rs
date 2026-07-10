@@ -35,8 +35,6 @@ pub(in crate::debug) fn debug_readiness_report(
     let agent = &host.agent_instance;
     let state_report = SqliteSessionStore::new(&agent.state_dir).operational_report()?;
     let logs = collect_debug_logs(paths, DebugLogSource::All)?;
-    let gateway_summary =
-        debug_insights_gateway_summary(&LocalGatewayStore::new(&paths.gateway_dir))?;
     let provider_matrix = provider_debug_matrix_report(config, agent, &paths.audit_dir)?;
     let provider_rows = provider_matrix.rows;
     let provider_attention = provider_rows.iter().any(|row| {
@@ -147,21 +145,17 @@ pub(in crate::debug) fn debug_readiness_report(
             ],
         ),
         readiness_row(
-            "m6_web_browser_multimodal",
-            "governed web, browser, vision, image, and multimodal attachment surfaces",
+            "m6_chat_attachments",
+            "chat attachment input for image, audio, and file content blocks",
             "first_slice",
             [
-                "web_search and web_extract are registered skills and run through NetworkEgress",
-                "browser CDP status/list/new/navigate/snapshot/click/type/scroll/screenshot/cdp skills are registered",
                 "chat accepts pending image/audio/file attachments and emits attachments_json",
-                "vision_describe and image_generate model-backed skills are registered",
                 "provider descriptors expose image_input, audio_input, and file_input capability flags",
                 "fallback providers skip unsupported content blocks and surface typed diagnostics",
             ],
             [
-                "browser supervisor lifecycle hardening",
-                "real provider smoke coverage for vision and image generation",
                 "image resize/compress helper before sending large local attachments",
+                "provider-backed smoke coverage for supported content block inputs",
             ],
         ),
         readiness_row(
@@ -178,47 +172,6 @@ pub(in crate::debug) fn debug_readiness_report(
                 "external MCP client lifecycle management",
                 "dynamic discovery/reload/status/shutdown controls",
                 "OAuth and credential flow",
-            ],
-        ),
-        readiness_row(
-            "openai_compatible_api",
-            "loopback OpenAI-compatible API surface backed by the configured Ikaros provider",
-            "first_slice",
-            [
-                "ikaros api serve exposes /v1/chat/completions for chat completions",
-                "ikaros api serve exposes /v1/responses for Responses-shaped model calls",
-                "ikaros api serve exposes /v1/embeddings backed by the configured RAG embedding provider",
-                "stream=true returns OpenAI SSE-shaped chunks from the normalized provider stream",
-                "model calls use the configured agent model/provider and runtime NetworkEgress",
-                "remote embedding calls use the configured execution environment and runtime NetworkEgress",
-                "/v1/models plus /healthz, /health, and /ready are available for local client discovery",
-                "optional bearer-token auth, process-local request limits, and redacted api_request audit events",
-                "chat, Responses, and embedding requests persist service session turns with response session_id and turn_id metadata",
-                "API responses and audit events expose matching session/turn correlation ids",
-                "OpenAI-style function tools and provider-returned tool_calls are forwarded without server-side execution",
-                "embedding encoding_format supports float and base64 output",
-                "/v1/models reports chat.completions, responses, and embeddings capabilities for local client discovery",
-                "API auth accepts repeated bearer tokens for local key rotation and records redacted X-Ikaros-Client-Id audit identity",
-                "invalid API requests and internal failures return redacted JSON error objects",
-            ],
-            [
-                "true live byte-by-byte provider stream forwarding",
-                "distributed rate limiting and persistent API credential lifecycle",
-            ],
-        ),
-        readiness_row(
-            "m6_gateway",
-            "gateway daemon control plane, session routing evidence, safe ingress, and delivery retry",
-            "first_slice",
-            [
-                "message daemon start/status/stop/restart exists",
-                "webhook ingress supports HMAC/ACL/pairing controls",
-                "gateway queues and delivery status are visible in debug/workbench",
-            ],
-            [
-                "external platform adapters",
-                "multi-client daemon hardening",
-                "long-running worker soak",
             ],
         ),
         readiness_row(
@@ -314,7 +267,6 @@ pub(in crate::debug) fn debug_readiness_report(
         "mcp_summary": mcp_debug_summary(config),
         "memory_summary": memory_debug_summary(config, paths)?,
         "rag_summary": rag_debug_summary(config, paths),
-        "gateway_summary": gateway_summary,
         "rows": rows,
         "note": "first_slice means usable but not complete; this report intentionally does not mark PRD completion.",
     }))

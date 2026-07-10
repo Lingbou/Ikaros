@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-mod browser;
 mod coding;
 mod core;
 mod memory;
 mod plugin;
 mod rag;
-mod voice;
 mod workspace;
 
 use crate::{SkillEnvironment, ToolCallSkill, ToolDescribeSkill, ToolSearchSkill, prompt_docs};
@@ -20,8 +18,6 @@ pub enum BuiltinSkillGroup {
     Memory,
     Rag,
     Coding,
-    Browser,
-    Voice,
     Plugin,
     PromptSkills,
     ToolBridge,
@@ -34,8 +30,6 @@ impl BuiltinSkillGroup {
         Self::Memory,
         Self::Rag,
         Self::Coding,
-        Self::Browser,
-        Self::Voice,
         Self::Plugin,
         Self::PromptSkills,
         Self::ToolBridge,
@@ -90,8 +84,6 @@ impl BuiltinRegistryBuilder {
                 BuiltinSkillGroup::Memory => memory::register(&mut registry, &self.env),
                 BuiltinSkillGroup::Rag => rag::register(&mut registry, &self.env),
                 BuiltinSkillGroup::Coding => coding::register(&mut registry, &self.env),
-                BuiltinSkillGroup::Browser => browser::register(&mut registry),
-                BuiltinSkillGroup::Voice => voice::register(&mut registry, &self.env),
                 BuiltinSkillGroup::Plugin => plugin::register(&mut registry, &self.env),
                 BuiltinSkillGroup::PromptSkills => {
                     register_prompt_skill_documents(&mut registry, &self.env)

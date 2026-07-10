@@ -376,7 +376,7 @@ diff --git a/lib.rs b/lib.rs
 -pub fn value() -> i32 { 1 }
 +pub fn value() -> i32 { 2 }
 ";
-    let file_system = SelfModifyTrackingEnv::default();
+    let file_system = TrackingExecutionEnv::default();
 
     let report = MockModelCodingRuntime::default()
         .run_scripted_turns_with_env(

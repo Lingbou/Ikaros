@@ -17,16 +17,6 @@ pub fn provider_egress_allowed_hosts(config: &IkarosConfig) -> Vec<String> {
             push_provider_host(&mut hosts, &model.effective_provider_config(provider));
         }
         push_provider_host(&mut hosts, &config.providers.embedding);
-        push_provider_host(&mut hosts, &config.providers.tts);
-        push_provider_host(&mut hosts, &config.providers.asr);
-        push_provider_host(&mut hosts, &config.providers.search);
-        hosts.extend([
-            "duckduckgo.com".into(),
-            "api.search.brave.com".into(),
-            "api.bing.microsoft.com".into(),
-            "serpapi.com".into(),
-            "api.tavily.com".into(),
-        ]);
         if config.model.default.provider.eq_ignore_ascii_case("ollama")
             && config.effective_model_provider().base_url.trim().is_empty()
         {

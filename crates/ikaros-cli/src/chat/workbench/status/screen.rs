@@ -6,7 +6,6 @@ use anyhow::Result;
 use ikaros_agent::chat::ChatRunOptions;
 use ikaros_core::{IkarosConfig, IkarosPaths};
 use ikaros_providers::model::ModelUsageLedger;
-use ikaros_state::gateway::LocalGatewayStore;
 use ikaros_terminal::{
     progress_footer_summary, screen_active_work_cells, screen_command_palette_cells,
     screen_progress_status_cell, workbench_screen_dimensions_from_values,
@@ -20,10 +19,8 @@ use super::super::{
     screen_selected_primary_action, slash_command_registry_summary, terminal_inline,
 };
 use super::{
-    api::screen_api_cell,
     approval::print_approval_overlay,
     context::screen_context_cells,
-    gateway::screen_gateway_status_cell,
     memory::screen_memory_cell,
     print_workbench_status,
     provider::{active_provider_status_report, screen_provider_cells, screen_provider_health_cell},
@@ -32,10 +29,7 @@ use super::{
         TimelineRequest, TimelineVerbosity, print_replay_status, print_screen_trace_snapshot,
         screen_coding_cells, screen_failure_cells, screen_timeline_cells,
     },
-    tools::{
-        screen_browser_cell, screen_image_cell, screen_mcp_cell, screen_rag_cell,
-        screen_vision_cell, screen_web_cell,
-    },
+    tools::{screen_mcp_cell, screen_rag_cell},
 };
 
 #[cfg(test)]
@@ -230,11 +224,6 @@ fn build_workbench_screen(
     main_cells.push(screen_memory_cell(config, paths, runtime)?);
     main_cells.push(screen_rag_cell(config, paths, options));
     main_cells.push(screen_mcp_cell(config));
-    main_cells.push(screen_api_cell(config));
-    main_cells.push(screen_browser_cell());
-    main_cells.push(screen_web_cell());
-    main_cells.push(screen_vision_cell());
-    main_cells.push(screen_image_cell());
     main_cells.push(screen_sandbox_cell(config));
     main_cells.push(screen_state_db_cell(runtime));
     main_cells.push(screen_observability_cell());
@@ -244,8 +233,6 @@ fn build_workbench_screen(
         detail: "command=/debug readiness mvp_status=first-slice-report output=readiness_json"
             .into(),
     });
-    let gateway_store = LocalGatewayStore::new(&paths.gateway_dir);
-    let gateway_status_cell = screen_gateway_status_cell(&gateway_store)?;
     Ok(WorkbenchScreen {
         title: "Ikaros Workbench".into(),
         status: vec![
@@ -277,7 +264,6 @@ fn build_workbench_screen(
             screen_attachment_status_cell(runtime),
             screen_bottom_pane_status_cell(&pending, &continuations, runtime),
             screen_queue_status_cell(&continuations),
-            gateway_status_cell,
             screen_progress_status_cell(
                 runtime.last_progress.as_ref(),
                 progress_budget_command.as_deref(),

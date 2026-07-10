@@ -358,7 +358,7 @@ pub(crate) fn command_context_class(command: &str) -> &'static str {
     match command_root(command) {
         "/session" | "/sessions" | "/context" | "/memory" => "inspect_context",
         "/timeline" | "/replay" | "/trace" | "/debug" | "/status" | "/model" | "/provider"
-        | "/rag" | "/tools" | "/mcp" | "/api" | "/gateway" | "/diff" => "inspect",
+        | "/rag" | "/tools" | "/mcp" | "/diff" => "inspect",
         _ => "command",
     }
 }

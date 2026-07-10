@@ -111,7 +111,7 @@ fn validate_agent_toolsets(
         let normalized = toolset.trim();
         let valid = matches!(
             normalized,
-            "core" | "workspace" | "memory" | "rag" | "coding" | "voice" | "plugin"
+            "core" | "workspace" | "memory" | "rag" | "coding" | "plugin"
         );
         if !valid {
             report.error(
@@ -120,7 +120,7 @@ fn validate_agent_toolsets(
             );
         }
         has_core |= normalized == "core";
-        has_deferred |= matches!(normalized, "rag" | "coding" | "voice" | "plugin");
+        has_deferred |= matches!(normalized, "rag" | "coding" | "plugin");
     }
     if has_deferred && !has_core {
         report.error(

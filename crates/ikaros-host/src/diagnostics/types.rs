@@ -12,8 +12,6 @@ pub struct RuntimeInitReport {
     pub persona_profile: PathBuf,
     pub memory_dir: PathBuf,
     pub rag_dir: PathBuf,
-    pub automation_dir: PathBuf,
-    pub gateway_dir: PathBuf,
     pub audit_dir: PathBuf,
     pub config_created: bool,
     pub persona_created: bool,
@@ -34,9 +32,6 @@ pub struct RuntimeDoctorReport {
     pub memory: StoreSummary,
     pub memory_providers: MemoryProviderRegistry,
     pub rag: RagSummary,
-    pub voice: VoiceSummary,
-    pub automation: AutomationSummary,
-    pub gateway: GatewaySummary,
     pub skills: Vec<String>,
     pub plugins: PluginSummary,
     pub audit_path: PathBuf,
@@ -112,25 +107,6 @@ pub struct RagSummary {
     pub embedding_uses_network: bool,
     pub embedding_egress: String,
     pub path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VoiceSummary {
-    pub tts_provider: String,
-    pub tts_model: String,
-    pub asr_provider: String,
-    pub asr_model: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AutomationSummary {
-    pub schedules_path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GatewaySummary {
-    pub inbox_path: PathBuf,
-    pub outbox_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

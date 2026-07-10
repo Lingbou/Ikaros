@@ -17,7 +17,6 @@ pub enum CodingMode {
     Edit,
     Review,
     Test,
-    SelfModify,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,8 +42,6 @@ pub struct CodingModeCapabilities {
     pub can_apply_patch: bool,
     pub can_run_tests: bool,
     pub can_use_network: bool,
-    pub can_self_modify: bool,
-    pub requires_self_modify_boundary: bool,
 }
 
 impl CodingModeCapabilities {
@@ -55,50 +52,29 @@ impl CodingModeCapabilities {
                 can_apply_patch: false,
                 can_run_tests: false,
                 can_use_network: false,
-                can_self_modify: false,
-                requires_self_modify_boundary: false,
             },
             CodingMode::Review => Self {
                 can_read_repo: true,
                 can_apply_patch: false,
                 can_run_tests: false,
                 can_use_network: false,
-                can_self_modify: false,
-                requires_self_modify_boundary: false,
             },
             CodingMode::Test => Self {
                 can_read_repo: true,
                 can_apply_patch: false,
                 can_run_tests: true,
                 can_use_network: false,
-                can_self_modify: false,
-                requires_self_modify_boundary: false,
             },
             CodingMode::Edit => Self {
                 can_read_repo: true,
                 can_apply_patch: true,
                 can_run_tests: true,
                 can_use_network: false,
-                can_self_modify: false,
-                requires_self_modify_boundary: false,
-            },
-            CodingMode::SelfModify => Self {
-                can_read_repo: true,
-                can_apply_patch: false,
-                can_run_tests: false,
-                can_use_network: false,
-                can_self_modify: true,
-                requires_self_modify_boundary: true,
             },
         }
     }
 
     pub fn validate_request(&self, apply_patch: bool, run_tests: bool) -> Result<()> {
-        if self.requires_self_modify_boundary {
-            return Err(IkarosError::Message(
-                "self_modify mode requires the dedicated self-modify approval path".into(),
-            ));
-        }
         if apply_patch && !self.can_apply_patch {
             return Err(IkarosError::Message(
                 "coding mode does not allow patch application".into(),

@@ -14,7 +14,6 @@ fn builtin_registry_contains_core_skill_groups() {
         "fs_read",
         "memory_append",
         "rag_ingest",
-        "voice_tts",
         "repo_scan",
         "code_edit_guarded",
         "task_summarize",
@@ -46,8 +45,6 @@ fn builtin_registry_filters_model_visible_tools_by_toolset() {
     for deferred in [
         "rag_search",
         "rag_ingest",
-        "voice_tts",
-        "voice_asr",
         "code_workflow",
         "code_edit_guarded",
         "plugin_command_run",
@@ -81,7 +78,6 @@ fn builtin_registry_filters_model_visible_tools_by_toolset() {
     assert!(rag_visible.contains(&"tool_search".to_string()));
     assert!(rag_visible.contains(&"tool_describe".to_string()));
     assert!(rag_visible.contains(&"tool_call".to_string()));
-    assert!(!rag_visible.contains(&"voice_tts".to_string()));
 }
 
 #[test]
@@ -163,7 +159,7 @@ async fn default_build_agent_discovers_deferred_toolsets_without_direct_exposure
     let selection = ToolsetSelection::from_names(agent.profile.toolsets.iter()).expect("toolsets");
     let visible = registry.model_visible_names_for(&selection);
 
-    for deferred in ["rag_search", "code_workflow", "voice_tts"] {
+    for deferred in ["rag_search", "code_workflow"] {
         assert!(
             !visible.contains(&deferred.to_string()),
             "default build profile must not directly expose deferred tool {deferred}: {visible:?}"

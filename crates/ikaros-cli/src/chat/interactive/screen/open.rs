@@ -8,17 +8,13 @@ mod outcome;
 mod selected;
 mod timeline;
 
-use crate::browser::run_browser_workbench_command;
-use crate::gateway::{run_gateway_adapter_workbench_command, run_gateway_daemon_workbench_command};
 use anyhow::Result;
 use ikaros_agent::chat::ChatRunOptions;
 
 use super::super::approval::handle_approval_command;
 use super::super::attachment::handle_attach_command;
 use super::super::continuations::{handle_cancel_command, handle_queue_command};
-use super::super::multimodal::{handle_image_command, handle_vision_command};
 use super::super::provider::{handle_budget_command, handle_provider_command};
-use super::super::web::handle_web_command;
 use super::super::{InteractiveChatRuntime, InteractiveCommandContext};
 use super::{
     handle_screen_selected_approval_action, handle_screen_selected_continuation_action,
@@ -28,14 +24,12 @@ use crate::chat::notice::{WorkbenchNotice, WorkbenchNoticeKind};
 use crate::chat::workbench::{
     TimelineVerbosity, WorkbenchScreenApprovalAction, WorkbenchScreenContinuationAction,
     WorkbenchScreenInputAction, command_requires_explicit_action, format_workbench_help,
-    print_api_status_for_human, print_context_status, print_context_status_for_human,
-    print_diff_status, print_diff_status_for_human, print_gateway_status,
-    print_gateway_status_for_human, print_mcp_status, print_mcp_status_for_human,
-    print_memory_status, print_memory_status_for_human, print_model_status,
-    print_model_status_for_human, print_provider_status_for_human, print_rag_status,
-    print_rag_status_for_human, print_slash_commands, print_slash_commands_for_human,
-    print_tools_status, print_tools_status_for_human, print_workbench_status,
-    print_workbench_status_for_human,
+    print_context_status, print_context_status_for_human, print_diff_status,
+    print_diff_status_for_human, print_mcp_status, print_mcp_status_for_human, print_memory_status,
+    print_memory_status_for_human, print_model_status, print_model_status_for_human,
+    print_provider_status_for_human, print_rag_status, print_rag_status_for_human,
+    print_slash_commands, print_slash_commands_for_human, print_tools_status,
+    print_tools_status_for_human, print_workbench_status, print_workbench_status_for_human,
 };
 use code::execute_screen_code_command;
 use command_parse::{command_tail, screen_budget_command_resumes_pending_inputs};
@@ -208,79 +202,6 @@ async fn execute_screen_open_command(
             }
             ScreenOpenCommandStatus::Executed
         }
-        (Some("/api"), None) | (Some("/api"), Some("status")) => {
-            if use_human_output {
-                print_api_status_for_human(ctx.config);
-            } else {
-                super::super::print_api_status(ctx.config);
-            }
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/browser"), None)
-        | (Some("/browser"), Some("status" | "list" | "supervisor-status" | "supervisor")) => {
-            let args = command.split_whitespace().skip(1).collect::<Vec<_>>();
-            run_browser_workbench_command(&runtime.session, ctx.paths, &args).await?;
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/web"), None) | (Some("/web"), Some("help" | "--help")) => {
-            handle_web_command(
-                command.split_whitespace().skip(1).collect::<Vec<_>>(),
-                ctx,
-                runtime,
-            )
-            .await?;
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/web"), Some("search" | "extract")) => {
-            if allow_explicit {
-                execute_confirmed_explicit_command(command, ctx, runtime).await?
-            } else {
-                ScreenOpenCommandStatus::ExplicitActionRequired
-            }
-        }
-        (Some("/vision"), None) | (Some("/vision"), Some("help" | "--help")) => {
-            handle_vision_command(
-                command.split_whitespace().skip(1).collect::<Vec<_>>(),
-                ctx,
-                runtime,
-            )
-            .await?;
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/vision"), Some("describe")) if parts.next().is_none() => {
-            handle_vision_command(
-                command.split_whitespace().skip(1).collect::<Vec<_>>(),
-                ctx,
-                runtime,
-            )
-            .await?;
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/image"), None) | (Some("/image"), Some("help" | "--help")) => {
-            handle_image_command(
-                command.split_whitespace().skip(1).collect::<Vec<_>>(),
-                ctx,
-                runtime,
-            )
-            .await?;
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/image"), Some("generate")) if parts.next().is_none() => {
-            handle_image_command(
-                command.split_whitespace().skip(1).collect::<Vec<_>>(),
-                ctx,
-                runtime,
-            )
-            .await?;
-            ScreenOpenCommandStatus::Executed
-        }
-        (Some("/browser"), _) | (Some("/web"), _) | (Some("/vision"), _) | (Some("/image"), _) => {
-            if allow_explicit {
-                execute_confirmed_explicit_command(command, ctx, runtime).await?
-            } else {
-                ScreenOpenCommandStatus::ExplicitActionRequired
-            }
-        }
         (Some("/provider"), _) => {
             let args = command.split_whitespace().skip(1).collect::<Vec<_>>();
             if args.contains(&"--live") && !allow_explicit {
@@ -292,45 +213,6 @@ async fn execute_screen_open_command(
                 handle_provider_command(args, ctx.paths, ctx.workspace, runtime).await?;
                 ScreenOpenCommandStatus::Executed
             }
-        }
-        (Some("/gateway"), Some("daemon")) => {
-            let args = command.split_whitespace().skip(2).collect::<Vec<_>>();
-            if matches!(args.as_slice(), [] | ["status"]) {
-                if use_human_output {
-                    print_gateway_status_for_human(ctx.paths)?;
-                } else {
-                    run_gateway_daemon_workbench_command(
-                        &args,
-                        ctx.paths,
-                        ctx.workspace,
-                        Some(&runtime.agent.name),
-                    )?;
-                }
-                ScreenOpenCommandStatus::Executed
-            } else {
-                ScreenOpenCommandStatus::ExplicitActionRequired
-            }
-        }
-        (Some("/gateway"), Some("adapter")) => {
-            let args = command.split_whitespace().skip(2).collect::<Vec<_>>();
-            if matches!(args.as_slice(), [] | ["list"] | ["status"]) {
-                if use_human_output {
-                    print_gateway_status_for_human(ctx.paths)?;
-                } else {
-                    run_gateway_adapter_workbench_command(&args, ctx.paths)?;
-                }
-                ScreenOpenCommandStatus::Executed
-            } else {
-                ScreenOpenCommandStatus::ExplicitActionRequired
-            }
-        }
-        (Some("/gateway"), _) => {
-            if use_human_output {
-                print_gateway_status_for_human(ctx.paths)?;
-            } else {
-                print_gateway_status(ctx.paths)?;
-            }
-            ScreenOpenCommandStatus::Executed
         }
         (Some("/screen"), Some("approve-selected" | "approve")) => {
             handle_screen_selected_approval_action(

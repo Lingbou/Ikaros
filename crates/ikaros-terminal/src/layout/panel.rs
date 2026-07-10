@@ -107,7 +107,7 @@ pub(crate) fn inline_cell_summary<'a>(
 
 pub(crate) fn evidence_attention_summary(screen: &WorkbenchScreen) -> String {
     let mut areas = [
-        "provider", "context", "memory", "rag", "coding", "approval", "queue", "gateway",
+        "provider", "context", "memory", "rag", "coding", "approval", "queue",
     ]
     .into_iter()
     .filter(|area| {

@@ -189,7 +189,6 @@ pub enum Toolset {
     Memory,
     Rag,
     Coding,
-    Voice,
     Plugin,
 }
 
@@ -210,7 +209,6 @@ impl Toolset {
             Self::Memory => "memory",
             Self::Rag => "rag",
             Self::Coding => "coding",
-            Self::Voice => "voice",
             Self::Plugin => "plugin",
         }
     }
@@ -222,7 +220,6 @@ impl Toolset {
             "memory" => Some(Self::Memory),
             "rag" => Some(Self::Rag),
             "coding" => Some(Self::Coding),
-            "voice" => Some(Self::Voice),
             "plugin" => Some(Self::Plugin),
             _ => None,
         }

@@ -3,8 +3,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fs,
-    io::{Read, Write},
-    net::TcpStream,
+    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Output, Stdio},
     thread,
@@ -77,14 +76,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
         )
         .expect("write offline mock config");
@@ -260,86 +251,6 @@ fn format_args(args: &[OsString]) -> String {
         .map(|arg| arg.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-pub fn spawn_ikaros<I, S>(home: &Path, workspace: &Path, args: I) -> Child
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Command::new(env!("CARGO_BIN_EXE_ikaros"))
-        .arg("--ikaros-home")
-        .arg(home)
-        .arg(workspace)
-        .env_remove("IKAROS_RUN_LIVE_MODEL_TESTS")
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn ikaros")
-}
-
-pub fn wait_for_child(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().expect("poll child") {
-            return status;
-        }
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            panic!("timed out waiting for ikaros child process");
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-pub fn read_child_stderr(child: &mut Child, label: &str) -> String {
-    let mut stderr = String::new();
-    if let Some(mut stderr_pipe) = child.stderr.take() {
-        stderr_pipe
-            .read_to_string(&mut stderr)
-            .unwrap_or_else(|error| panic!("read {label} stderr: {error}"));
-    }
-    assert!(
-        !stderr.contains("sk-"),
-        "{label} stderr must not contain secret-like keys:\n{stderr}",
-    );
-    stderr
-}
-
-pub fn http_get(host_port: &str, target: &str) -> String {
-    let mut stream = TcpStream::connect(host_port).expect("connect http server");
-    stream
-        .write_all(
-            format!("GET {target} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .expect("write http request");
-    let response = read_response_allowing_reset(&mut stream, "http");
-    assert!(
-        !response.contains("sk-"),
-        "HTTP response must not contain secret-like keys:\n{response}",
-    );
-    response
-}
-
-fn read_response_allowing_reset(stream: &mut TcpStream, label: &str) -> String {
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::ConnectionReset && !bytes.is_empty() =>
-            {
-                break;
-            }
-            Err(error) => panic!("read {label} response: {error}"),
-        }
-    }
-    String::from_utf8(bytes).unwrap_or_else(|error| panic!("{label} response utf8: {error}"))
 }
 
 pub fn install_echo_plugin(home: &Path) {

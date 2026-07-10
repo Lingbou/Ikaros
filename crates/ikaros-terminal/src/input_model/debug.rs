@@ -100,11 +100,6 @@ pub(crate) fn screen_navigation_json() -> Vec<serde_json::Value> {
             "evidence",
             "/screen --focus side --select-action queue",
         ),
-        (
-            "gateway",
-            "evidence",
-            "/screen --focus status --select-action gateway",
-        ),
         ("failed", "replay", "/timeline --failed"),
         ("approval_trace", "replay", "/trace --approval"),
     ]

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{
-    PersonaLoadSkill, SkillEnvironment, TaskSummarizeSkill, WebExtractSkill, WebSearchSkill,
-};
+use crate::{PersonaLoadSkill, SkillEnvironment, TaskSummarizeSkill};
 use ikaros_execution::toolkit::{SkillRegistry, Toolset};
 
 pub(super) fn register(registry: &mut SkillRegistry, env: &SkillEnvironment) {
@@ -11,9 +9,4 @@ pub(super) fn register(registry: &mut SkillRegistry, env: &SkillEnvironment) {
         Toolset::Core,
     );
     registry.register_with_toolset(TaskSummarizeSkill, Toolset::Core);
-    registry.register_with_toolset(WebExtractSkill, Toolset::Core);
-    registry.register_with_toolset(
-        WebSearchSkill::new(env.web_search_provider.clone()),
-        Toolset::Core,
-    );
 }

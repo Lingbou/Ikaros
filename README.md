@@ -1,6 +1,6 @@
 # Ikaros
 
-[简体中文](README_zh-CN.md) | [Documentation](docs/README.md)
+[Documentation](docs/README.md)
 
 Ikaros is an early-stage, local-first agent runtime written in Rust.
 
@@ -12,26 +12,23 @@ experimentation. It is not yet a stable product or API surface.
 
 `ikaros init` creates a minimal local `config.yaml` with inline model fields.
 Remote model calls fail early until `api_key`, `base_url`, and `model` are
-filled in locally. RAG embeddings stay on local `hash`, and voice stays on
-`mock`, unless setup or local config explicitly changes them.
+filled in locally. RAG embeddings stay on local `hash` unless setup or local
+config explicitly changes them.
 
 ## What It Does
 
 - Provides a CLI and terminal workbench for local agent workflows: chat,
-  session replay, context/memory/RAG inspection, scheduled tasks, message
-  ingestion, approvals, plugins, coding turn reports, code review helpers, and
-  guarded edits.
-- Exposes first-slice local API, MCP, browser/CDP, web search/extract,
-  vision, image generation, and multimodal attachment surfaces through the same
-  local runtime boundaries.
-- Keeps memory, chat timelines, RAG indexes, automation metadata, gateway
-  messages, approvals, and audit logs local by default.
+  session replay, context/memory/RAG inspection, task capture, approvals,
+  plugins, coding turn reports, code review helpers, and guarded edits.
+- Exposes MCP and chat attachment input through the same policy-governed local
+  runtime boundaries.
+- Keeps memory, chat timelines, RAG indexes, approvals,
+  and audit logs local by default.
 - Routes tool execution through a harness layer with policy decisions,
   approval requests, audit events, dry-run behavior, and guardrails.
 - Implements OpenAI-compatible, Anthropic-compatible, and Ollama model adapters,
-  plus local RAG embeddings, harness-governed remote RAG embedding egress, and
-  OpenAI-compatible TTS/ASR adapters. Mock providers remain available for
-  explicit offline tests.
+  plus local RAG embeddings and harness-governed remote RAG embedding egress.
+  Mock providers remain available for explicit offline tests.
 - Exposes agent profiles such as `build`, `plan`, and `general` to adjust
   persona context and policy behavior without bypassing hard safety rules.
 
@@ -41,26 +38,25 @@ filled in locally. RAG embeddings stay on local `hash`, and voice stays on
   errors, agent profile types, persona, emotion, tone, and relationship
   primitives.
 - `crates/ikaros-protocol`: stable wire/session protocol types shared by CLI,
-  TUI, gateway, API, replay, and external integration surfaces.
+  TUI, replay, MCP, and external integration surfaces.
 - `crates/ikaros-state`: durable local state for session timelines, memory,
-  RAG indexes, automation metadata, and gateway queues.
+  RAG indexes.
 - `crates/ikaros-execution`: governed local action owner: policy, approvals,
   audit, sandbox, filesystem/process/network execution, and reusable tool
   contracts.
-- `crates/ikaros-providers`: model, embedding, voice, vision/image, web,
-  registry, and provider governance adapters.
+- `crates/ikaros-providers`: model, embedding, registry, and provider
+  governance adapters.
 - `crates/ikaros-host`: host-side composition root for runtime locations,
   agent instances, execution sessions, skill registries, sandbox backends,
   provider/store wiring, diagnostics, and governed egress.
 - `crates/ikaros-agent`: application use cases such as chat, context assembly,
-  coding workflow orchestration, tasks, schedules, body status, gateway drain,
-  agent loop, and session runner logic. It receives dependencies assembled by
+  coding workflow orchestration, tasks, agent loop, and session runner logic.
+  It receives dependencies assembled by
   host/CLI/surfaces rather than loading config itself.
 - `crates/ikaros-skills`: built-in skills, organized internally by groups/packs
-  for filesystem, shell/git, memory, RAG, voice, coding, persona, plugins, and
+  for filesystem, shell/git, memory, RAG, coding, persona, plugins, and
   progressive-disclosure tool bridges.
-- `crates/ikaros-surfaces`: local API, MCP, gateway adapters, webhooks, body
-  dashboard, and service-manager entry points.
+- `crates/ikaros-surfaces`: MCP integration entry points.
 - `crates/ikaros-terminal`: owns terminal/TUI state, rendering, input, slash
   commands, status, and timeline screens.
 - `crates/ikaros-cli`: thin `clap`, dispatch, and terminal adapter for the
@@ -112,7 +108,7 @@ snapshots instead of the human terminal UI.
 
 Useful slash commands in the default terminal UI:
 
-- `/status`: show the active agent, model, provider health, budget, gateway, and queue state.
+- `/status`: show the active agent, model, provider health, budget, and queue state.
 - `/screen`: render the navigable status/timeline/main/side panels.
 - `/timeline`, `/replay`, `/trace`: inspect past turns and failures from `state.db`.
 - `/context`, `/memory`, `/rag`, `/tools`: inspect what the agent can see and
@@ -120,15 +116,12 @@ Useful slash commands in the default terminal UI:
 - `/sandbox [--probe]`: inspect current execution isolation, process, env, and
   network diagnostics.
 - `/attach`: add image, audio, or file content blocks to the next chat turn.
-- `/web`, `/browser`, `/vision`, `/image`: use governed web, CDP, vision, and
-  image-generation surfaces.
 - `/provider inspect`, `/provider health`, `/provider matrix`, `/provider debug`: inspect provider
   setup and diagnostics.
 - `/approval`: list or resolve pending approvals.
 - `/queue [run|clear|remove N]`: inspect or manage pending interactive input.
 - `/cancel`: cancel queued or running continuations for the active session.
 - `/code plan|apply|test|review|rollback`: run the governed coding workflow.
-- `/api status`: inspect the local OpenAI-compatible API surface.
 - `/mcp status`: inspect configured external MCP servers.
 - `/mcp call-http <url> <tool>`: call a HTTP MCP tool through the active session
   `NetworkEgress` boundary.
@@ -159,11 +152,6 @@ cargo run -p ikaros-cli -- debug trace <session-id>
 cargo run -p ikaros-cli -- debug state-db --checkpoint
 cargo run -p ikaros-cli -- approval list
 cargo run -p ikaros-cli -- mcp status
-cargo run -p ikaros-cli -- acp serve --agent build --workspace .
-cargo run -p ikaros-cli -- api serve --port 8003
-cargo run -p ikaros-cli -- web search "Ikaros runtime"
-cargo run -p ikaros-cli -- vision describe screenshots/workbench.png
-cargo run -p ikaros-cli -- image generate "small local-first agent logo"
 ```
 
 Use `IKAROS_HOME=/custom/path` or `--ikaros-home /custom/path` to isolate local
@@ -191,19 +179,17 @@ provider-profile detection enabled. Use a concrete preset such as `kimi`,
 `openai`, `anthropic`, or `ollama` when the provider is known.
 
 Use `ikaros init --full` when you want the expanded default YAML up front. The
-full file includes provider pools, agent profiles, memory, RAG, voice, gateway,
-and execution sections.
+full file includes provider pools, agent profiles, memory, RAG, and execution
+sections.
 
 `ikaros setup --interactive` prompts for the same first-run fields that can also
 be supplied as flags with `ikaros setup --api-key ... --base-url ... --model ...`.
 If the current file is still minimal, setup expands it to the full YAML before
 writing provider/resource fields. It stores plaintext provider keys only in the
-local config file, leaves embedding on local `hash`, keeps TTS/ASR on `mock`
-unless explicit provider triplets are supplied, validates the result, and does
-not print the key. When one OpenAI-compatible endpoint provides multiple
-resources, use `--reuse-model-provider-for-embedding`,
-`--reuse-model-provider-for-tts`, or `--reuse-model-provider-for-asr` with the
-corresponding resource model flag to avoid repeating the same key and base URL.
+local config file, leaves embedding on local `hash`, validates the result, and
+does not print the key. When one OpenAI-compatible endpoint also provides
+embeddings, use `--reuse-model-provider-for-embedding` with the corresponding
+embedding model flag to avoid repeating the same key and base URL.
 
 Ordinary chat injects accepted memory projections, recent history, and session
 working memory. Long-term memory search is explicit through the `memory_search`
@@ -229,17 +215,6 @@ starts a stdio MCP server through the harness process boundary, sends
 one-shot probe and is treated as an arbitrary local process, so default policy
 may require approval before it runs. Persistent client lifecycle management is
 intentionally still a later step.
-
-`ikaros api serve` starts a loopback-only OpenAI-compatible API slice for local
-clients. It exposes chat completions, Responses, embeddings, image generation,
-speech, transcription, model discovery, health, and Ikaros protocol metadata.
-Requests still use the active agent, session store, audit log, provider
-governance, and network egress boundaries.
-
-`ikaros web`, `ikaros browser`, `ikaros vision`, `ikaros image`, and chat
-attachments are local-first integration surfaces. Network work still goes
-through `NetworkEgress`; local files and generated outputs stay under the
-workspace or `IKAROS_HOME` policy boundaries.
 
 Switch local stores to SQLite by editing `~/.ikaros/config.yaml`:
 
@@ -274,14 +249,10 @@ Ikaros treats local tool execution as a policy-governed operation:
 - Workspace writes, shell writes, network calls, and secret-looking paths
   require policy evaluation and may return an approval request instead of
   executing.
-- Destructive commands, direct secret access, publishing actions, and ordinary
-  self-modification are denied by default.
+- Destructive commands, direct secret access, and publishing actions are denied
+  by default.
 - Approval requests and tool calls are recorded locally with redaction.
 - Remote deployment is for test environments only and is handled manually before MVP.
-
-Self-modify commands are narrow: proposals are stored locally, apply requires an
-approval id, target drift is checked, and post-check failure can roll back the
-change.
 
 ## Deployment
 
@@ -325,14 +296,7 @@ maintainer explicitly asks.
 - [Context engine](docs/en/context-engine.md)
 - [RAG model](docs/en/rag-model.md)
 - [Model providers](docs/en/model-providers.md)
-- [Voice providers](docs/en/voice-providers.md)
-- [Body model](docs/en/body-model.md)
-- [Automation model](docs/en/automation-model.md)
-- [Message gateway](docs/en/message-gateway.md)
-- [Service manager templates](docs/en/service-manager.md)
 - [Configuration](docs/en/configuration.md)
-- [API reference](docs/en/api-reference.md)
 - [Plugin system](docs/en/plugin-system.md)
-- [Self-modify design](docs/en/self-modify.md)
 - [Deployment](docs/en/deployment.md)
 - [Roadmap](ROADMAP.md)

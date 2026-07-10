@@ -206,30 +206,6 @@ fn provider_debug_matrix(
             fallback_models: Vec::new(),
             usage,
         }),
-        provider_debug_matrix_row(ProviderDebugMatrixInput {
-            registry,
-            health,
-            kind: "tts",
-            provider: &config.voice.tts.provider,
-            model: &config.voice.tts.model,
-            base_url: &config.providers.tts.base_url,
-            api_key: &config.providers.tts.api_key,
-            compat_profile: None,
-            fallback_models: Vec::new(),
-            usage,
-        }),
-        provider_debug_matrix_row(ProviderDebugMatrixInput {
-            registry,
-            health,
-            kind: "asr",
-            provider: &config.voice.asr.provider,
-            model: &config.voice.asr.model,
-            base_url: &config.providers.asr.base_url,
-            api_key: &config.providers.asr.api_key,
-            compat_profile: None,
-            fallback_models: Vec::new(),
-            usage,
-        }),
     ]
     .into_iter()
     .collect()

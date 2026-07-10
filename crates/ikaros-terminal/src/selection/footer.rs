@@ -129,27 +129,7 @@ pub(crate) fn selected_cell_actions(cell: &WorkbenchCell) -> Vec<String> {
     commands.extend(extract_assignment_commands(&combined, "mcp="));
     commands.extend(extract_assignment_commands(&combined, "stdio="));
     commands.extend(extract_assignment_commands(&combined, "http="));
-    commands.extend(extract_assignment_commands(&combined, "browser="));
-    commands.extend(extract_assignment_commands(&combined, "launch="));
-    commands.extend(extract_assignment_commands(&combined, "supervisor="));
-    commands.extend(extract_assignment_commands(&combined, "web="));
-    commands.extend(extract_assignment_commands(&combined, "vision="));
-    commands.extend(extract_assignment_commands(&combined, "image="));
-    commands.extend(extract_assignment_commands(&combined, "generate="));
     commands.extend(extract_assignment_commands(&combined, "list="));
-    commands.extend(extract_assignment_commands(&combined, "search="));
-    commands.extend(extract_assignment_commands(&combined, "extract="));
-    commands.extend(extract_assignment_commands(&combined, "navigate="));
-    commands.extend(extract_assignment_commands(&combined, "snapshot="));
-    commands.extend(extract_assignment_commands(&combined, "click="));
-    commands.extend(extract_assignment_commands(&combined, "type="));
-    commands.extend(extract_assignment_commands(&combined, "scroll="));
-    commands.extend(extract_assignment_commands(&combined, "screenshot="));
-    commands.extend(extract_assignment_commands(&combined, "cdp="));
-    commands.extend(extract_assignment_commands(&combined, "start="));
-    commands.extend(extract_assignment_commands(&combined, "stop="));
-    commands.extend(extract_assignment_commands(&combined, "restart="));
-    commands.extend(extract_assignment_commands(&combined, "adapters="));
     if commands.is_empty() {
         commands.push(default_cell_command(cell.kind).to_owned());
     }

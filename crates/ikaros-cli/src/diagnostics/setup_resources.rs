@@ -103,24 +103,6 @@ pub(super) fn apply_reused_model_provider_resources(
             &mut args.embedding_base_url,
         )?;
     }
-    if args.reuse_model_provider_for_tts {
-        reuse_model_provider_resource(
-            "tts",
-            model_api_key,
-            model_base_url,
-            &mut args.tts_api_key,
-            &mut args.tts_base_url,
-        )?;
-    }
-    if args.reuse_model_provider_for_asr {
-        reuse_model_provider_resource(
-            "asr",
-            model_api_key,
-            model_base_url,
-            &mut args.asr_api_key,
-            &mut args.asr_base_url,
-        )?;
-    }
     Ok(())
 }
 
@@ -178,38 +160,6 @@ pub(super) fn setup_embedding(args: &SetupArgs) -> Result<SetupResource<'_>> {
         }
         _ => bail!(
             "--embedding-api-key, --embedding-base-url, and --embedding-model must be provided together"
-        ),
-    }
-}
-
-pub(super) fn setup_voice<'a>(
-    label: &str,
-    api_key: Option<&'a str>,
-    base_url: Option<&'a str>,
-    model: Option<&'a str>,
-    mock_model: &'a str,
-) -> Result<SetupResource<'a>> {
-    match (api_key, base_url, model) {
-        (None, None, None) => Ok(SetupResource {
-            provider: "mock",
-            api_key: "",
-            base_url: "",
-            model: mock_model,
-        }),
-        (Some(api_key), Some(base_url), Some(model))
-            if !api_key.trim().is_empty()
-                && !base_url.trim().is_empty()
-                && !model.trim().is_empty() =>
-        {
-            Ok(SetupResource {
-                provider: "openai-compatible",
-                api_key: api_key.trim(),
-                base_url: base_url.trim(),
-                model: model.trim(),
-            })
-        }
-        _ => bail!(
-            "--{label}-api-key, --{label}-base-url, and --{label}-model must be provided together"
         ),
     }
 }

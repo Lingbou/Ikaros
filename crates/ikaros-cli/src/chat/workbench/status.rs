@@ -10,30 +10,21 @@ use ikaros_core::{IkarosConfig, IkarosPaths};
 #[cfg(test)]
 use ikaros_execution::harness::{ApprovalRecord, ApprovalStatus};
 use ikaros_host::session_state_db_candidates_with_config;
-#[cfg(test)]
-use ikaros_protocol::{GatewayMessageKind, GatewayRoute};
 use ikaros_providers::model::ModelUsageLedger;
-use ikaros_state::automation::LocalScheduleStore;
-#[cfg(test)]
-use ikaros_state::gateway::LocalGatewayStore;
 #[cfg(test)]
 use ikaros_state::session::SessionReplay;
 use ikaros_state::session::{AgentEventKind, SessionId, SessionStore, SqliteSessionStore};
 #[cfg(test)]
 use std::collections::VecDeque;
-#[cfg(test)]
-use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::agent_event_cell;
 #[cfg(test)]
 use super::{WorkbenchCell, WorkbenchScreen};
-use super::{agent_event_cell, path_display};
 
-mod api;
 mod approval;
 mod context;
 mod diff;
-mod gateway;
 mod memory;
 mod provider;
 mod queue;
@@ -43,9 +34,6 @@ mod timeline;
 mod tools;
 mod unified;
 
-pub(in crate::chat) use api::{
-    api_status_human_lines, print_api_status, print_api_status_for_human,
-};
 #[cfg(test)]
 use approval::approval_overlay_json_line;
 pub(in crate::chat) use approval::print_approval_status;
@@ -57,11 +45,6 @@ pub(in crate::chat) use context::{
     context_status_human_lines, print_context_status, print_context_status_for_human,
 };
 pub(in crate::chat) use diff::{print_diff_status, print_diff_status_for_human};
-#[cfg(test)]
-use gateway::screen_gateway_status_cell;
-pub(in crate::chat) use gateway::{
-    gateway_status_human_lines, print_gateway_status, print_gateway_status_for_human,
-};
 #[cfg(test)]
 use ikaros_terminal::screen_progress_status_cell;
 pub(in crate::chat) use memory::{
@@ -186,43 +169,6 @@ fn state_db_candidates(
         true,
         false,
     )?)
-}
-
-fn task_counts(paths: &IkarosPaths) -> Result<(PathBuf, usize, usize, usize, usize)> {
-    let store = LocalScheduleStore::new(&paths.automation_dir);
-    let jobs = store.list()?;
-    let due = store.due_now()?;
-    let enabled = jobs.iter().filter(|job| job.enabled).count();
-    let disabled = jobs.len().saturating_sub(enabled);
-    Ok((
-        store.path().to_path_buf(),
-        jobs.len(),
-        enabled,
-        disabled,
-        due.len(),
-    ))
-}
-
-pub(in crate::chat) fn print_tasks_status(paths: &IkarosPaths) -> Result<()> {
-    let (store_path, total, enabled, disabled, due) = task_counts(paths)?;
-    println!("tasks_store: {}", path_display(&store_path));
-    println!("tasks_total: {total}");
-    println!("tasks_enabled: {enabled}");
-    println!("tasks_disabled: {disabled}");
-    println!("tasks_due: {due}");
-    Ok(())
-}
-
-pub(in crate::chat) fn tasks_status_human_lines(paths: &IkarosPaths) -> Result<Vec<String>> {
-    let (store_path, total, enabled, disabled, due) = task_counts(paths)?;
-    Ok(vec![
-        "* Tasks".to_owned(),
-        format!("  store: {}", path_display(&store_path)),
-        format!("  total: {total}"),
-        format!("  enabled: {enabled}"),
-        format!("  disabled: {disabled}"),
-        format!("  due now: {due}"),
-    ])
 }
 
 fn print_filtered_event_cells(

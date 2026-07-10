@@ -377,18 +377,10 @@ impl AgentProfile {
 }
 
 pub fn default_agent_toolsets() -> Vec<String> {
-    [
-        "core",
-        "workspace",
-        "memory",
-        "rag",
-        "coding",
-        "voice",
-        "plugin",
-    ]
-    .into_iter()
-    .map(ToOwned::to_owned)
-    .collect()
+    ["core", "workspace", "memory", "rag", "coding", "plugin"]
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 impl Default for AgentProfile {

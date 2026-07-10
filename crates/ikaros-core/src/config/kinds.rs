@@ -87,11 +87,6 @@ string_enum!(EmbeddingProviderKind, Hash, {
     Mock => "mock",
 });
 
-string_enum!(VoiceProviderKind, Mock, {
-    OpenaiCompatible => "openai-compatible",
-    Mock => "mock",
-});
-
 string_enum!(SandboxBackend, Local, {
     Local => "local",
     DryRun => "dry-run",

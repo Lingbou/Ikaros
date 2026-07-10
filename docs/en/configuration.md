@@ -45,8 +45,8 @@ wire transport, and compatibility profile, so most users never need to write
 `provider`, `transport`, or `compat_profile` manually.
 
 `ikaros init --full` writes the complete default YAML, including optional
-sections for providers, agent profiles, memory, RAG, voice, gateway, and
-execution settings. It is still comment-free YAML.
+sections for providers, agent profiles, memory, RAG, MCP, and execution
+settings. It is still comment-free YAML.
 
 Model credentials can be written inline under `model.default` or in the shared
 pool under `providers.model`. Inline `model.default.api_key` and
@@ -54,22 +54,14 @@ pool under `providers.model`. Inline `model.default.api_key` and
 `providers.model`. Fallback model entries use their own `api_key` and `base_url`
 when present, otherwise they inherit the shared model provider settings.
 
-`providers.embedding`, `providers.tts`, `providers.asr`, and `providers.search`
-remain the shared provider settings for those resource types. Plaintext keys
-should only live in the local runtime home and must not be committed to the
-repository.
-
-`providers.search` supplies defaults for `web_search` when the selected provider
-needs a key or endpoint. The built-in `duckduckgo-html` provider can run with an
-empty `base_url`; Brave, Bing, SerpAPI, and Tavily-style providers can use
-`providers.search.api_key` and `providers.search.base_url`, or per-command
-`ikaros web search --provider ... --endpoint ... --api-key ...` overrides.
+`providers.embedding` remains the shared provider setting for remote embedding
+egress. Plaintext keys should only live in the local runtime home and must not
+be committed to the repository.
 
 `ikaros setup` writes the same fields without printing secret values. When one
-OpenAI-compatible endpoint handles several resource types, pass
-`--reuse-model-provider-for-embedding`, `--reuse-model-provider-for-tts`, or
-`--reuse-model-provider-for-asr` together with the resource model flag. The
-interactive setup asks the same reuse question after the model provider is
+OpenAI-compatible endpoint also handles embeddings, pass
+`--reuse-model-provider-for-embedding` together with the embedding model flag.
+The interactive setup asks the same reuse question after the model provider is
 configured.
 
 ## Validation
@@ -89,7 +81,7 @@ call is attempted. Validation output uses field
 paths such as `providers.model.api_key`; it reports whether a value is missing
 or invalid but never prints secret values.
 
-For automation, use:
+For scripts, use:
 
 ```bash
 ikaros config validate --json
@@ -127,18 +119,16 @@ network-governed implementations live in `ikaros-execution::sandbox`.
 
 `network.enabled` turns on the HTTP egress backend. Egress remains
 deny-by-default: `allow_provider_hosts` adds exact hosts parsed from the active
-model provider, configured agent-instance model provider overrides,
-embedding/TTS/ASR/search providers, built-in web-search provider defaults, and
-local Ollama defaults. `allowed_hosts` adds extra exact host names for future
-network-capable tools. Use host names only, not full URLs or `host:port`
+model provider, configured agent-instance model provider overrides, remote
+embedding providers, and local Ollama defaults. `allowed_hosts` adds extra
+exact host names for future network-capable tools. Use host names only, not full URLs or `host:port`
 strings.
 Network egress rejects non-HTTP schemes, private/link-local/multicast literal
 IP addresses, and automatic redirects. Effective provider base URLs include
-inline `model.default.base_url` values, shared `providers.*.base_url` values,
-per-agent instance model provider overrides, and local Ollama defaults.
-Built-in web-search defaults currently cover DuckDuckGo HTML, Brave, Bing,
-SerpAPI, and Tavily-style endpoints. Explicit loopback hosts remain available
-for local providers such as Ollama; ordinary domains that resolve to restricted
+inline `model.default.base_url` values, shared model/embedding provider
+base URLs, per-agent instance model provider overrides, and local Ollama
+defaults. Explicit loopback hosts remain available for local providers such as
+Ollama; ordinary domains that resolve to restricted
 addresses are rejected by the HTTP egress transport. Resolved socket addresses
 are pinned into the per-request HTTP client after validation to avoid a second
 independent DNS lookup for the same request. This is a runtime guardrail, not a
@@ -207,7 +197,7 @@ agent:
       network: ask
       memory_context: true
       rag_context: false
-      toolsets: [core, workspace, memory, rag, coding, voice, plugin]
+      toolsets: [core, workspace, memory, rag, coding, plugin]
     plan:
       mode: plan
       workspace_writes: deny
@@ -215,7 +205,7 @@ agent:
       network: ask
       memory_context: true
       rag_context: false
-      toolsets: [core, workspace, memory, rag, coding, voice, plugin]
+      toolsets: [core, workspace, memory, rag, coding, plugin]
 ```
 
 Keep `rag_context` false for ordinary chat. Enable it on a profile, or pass
@@ -225,7 +215,7 @@ projections and session working memory; use `--memory-search-limit` or the
 `memory_search` tool when a turn needs retrieved memory results.
 `toolsets` controls which skill groups are enabled for the profile. Only the
 direct surface, `core`, `workspace`, and `memory`, is injected into the model
-tool manifest. `rag`, `coding`, `voice`, and `plugin` are enabled in the
+tool manifest. `rag`, `coding`, and `plugin` are enabled in the
 default profiles but remain deferred; model turns discover and call them through
 `tool_search`,
 `tool_describe`, and `tool_call`. The bridge refuses deferred tools from
@@ -289,7 +279,7 @@ Fields:
   `IKAROS_HOME/agents/<agent_id>`.
 - `toolsets`: optional model-visible/deferred toolset allowlist override. If
   omitted, the selected profile's toolsets are used. Keep `core` enabled when
-  deferred toolsets such as `rag`, `coding`, `voice`, or `plugin` are enabled.
+  deferred toolsets such as `rag`, `coding`, or `plugin` are enabled.
 - `providers.model`: optional model endpoint and key override for this identity.
   If omitted, `providers.model` is used.
 - `model`: optional full `ModelConfig` override for this identity. If omitted,
@@ -303,7 +293,6 @@ Fields:
   depth; requests above this fail before starting the delegated task.
 - `auth_scope.local_only`: whether the identity is local-only by default.
 - `auth_scope.allow_network`: network default for this identity.
-- `route_bindings`: channel/account/peer/thread bindings used by gateway routing.
 
 Resolution rules:
 
@@ -316,8 +305,8 @@ not just the profile name.
 
 Chat, TUI, coding model loops, task agent-loop execution, `doctor`, and
 `provider inspect|health|matrix` resolve model settings through the active
-`AgentInstance`. Embedding, TTS, and ASR resources remain global unless their
-own runtime path explicitly adds an instance override.
+`AgentInstance`. Embedding resources remain global unless their own runtime path
+explicitly adds an instance override.
 
 ## Local Stores
 
@@ -359,8 +348,6 @@ The main local paths are:
 - `IKAROS_HOME/memory/`
 - `IKAROS_HOME/rag/`
 - `IKAROS_HOME/audit/`
-- `IKAROS_HOME/automation/`
-- `IKAROS_HOME/gateway/`
 - `IKAROS_HOME/skills/`
 
 ## Model Provider
@@ -581,59 +568,3 @@ skills route the embedding HTTP through session `NetworkEgress`.
 External memory providers are descriptor metadata only in the current runtime.
 Runtime config loading and `ikaros config validate` reject enabled external
 memory providers because remote append/search adapters are not implemented.
-
-## Voice
-
-The default config uses local mock voice providers, so ordinary model chat does
-not require TTS or ASR credentials:
-
-```yaml
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
-```
-
-Remote OpenAI-compatible TTS and ASR must be configured explicitly:
-
-```yaml
-providers:
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
-    api_key: ""
-    base_url: ""
-
-voice:
-  tts:
-    provider: openai-compatible
-    model: ""
-    voice: default
-  asr:
-    provider: openai-compatible
-    model: ""
-```
-
-The only cloud voice provider name is `openai-compatible`; the configured
-remote service must actually expose the requested TTS or ASR endpoint. TTS text
-is redacted before provider calls; output files are treated as workspace writes.
-
-## Self-Modify Checks
-
-Self-modify apply can use restricted check profiles:
-
-```yaml
-self_modify:
-  check_profiles:
-    runtime_patch:
-      commands:
-        - cargo check --workspace --all-features
-      reason: "Runtime patches must keep the workspace compiling."
-```
-
-These checks do not enable autonomous apply. A proposal still needs explicit approval.

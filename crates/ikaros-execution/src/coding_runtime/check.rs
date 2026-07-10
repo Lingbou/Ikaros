@@ -9,10 +9,7 @@ use crate::{
 pub(super) fn should_apply_candidate_patch(input: &CodingTurnInput) -> bool {
     input.apply_patch
         && input.candidate_diff.is_some()
-        && matches!(
-            input.context.mode,
-            CodingMode::Edit | CodingMode::SelfModify
-        )
+        && matches!(input.context.mode, CodingMode::Edit)
 }
 
 pub(super) fn patch_skip_summary(input: &CodingTurnInput) -> String {

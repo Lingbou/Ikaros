@@ -1,8 +1,8 @@
 # Harness Model
 
 The harness is Ikaros's governed tool-call boundary. Runtime code, chat loops,
-agent loops, scheduled jobs, message drains, coding helpers, and plugin runs all
-pass through it before mutating local state or running processes.
+agent loops, task runs, coding helpers, and plugin runs all pass through it
+before mutating local state or running processes.
 
 The harness should be treated like a small kernel around local effects: callers
 submit typed requests, the harness evaluates policy, records the decision, and
@@ -71,9 +71,8 @@ written into tracing events.
 Coding has two harness paths. `code_workflow` is the controlled turn workflow:
 by default it is a safe-read plan/review path, but its policy risk upgrades to
 shell-read when `run_tests` is requested in `test`/`edit`, and to local-write
-only when an explicit candidate patch is applied in `edit` mode. `self_modify`
-is rejected by ordinary `code_workflow` until it enters the dedicated
-self-modify approval path. `--model-loop` always contacts the configured model
+only when an explicit candidate patch is applied in `edit` mode. `--model-loop`
+always contacts the configured model
 provider after approval. The policy request still has one effective risk label:
 model-only loops are network risk, test loops are shell-read risk, and patch
 application is local-write risk. To avoid hiding combined risk, approval
@@ -111,8 +110,8 @@ metadata belongs to the runtime/harness boundary.
 Skill descriptors also carry `toolset`. Agent profiles choose the enabled
 toolsets. The direct model-visible surface is limited to enabled
 `core`, `workspace`, and `memory` tools, plus the bridge tools. `rag`, `coding`,
-`voice`, and `plugin` stay deferred even when enabled, so a model can discover
-and invoke them without every RAG/coding/voice/plugin schema being injected into
+and `plugin` stay deferred even when enabled, so a model can discover
+and invoke them without every RAG/coding/plugin schema being injected into
 every turn. The bridge respects the active agent profile's toolset selection: a
 deferred tool outside that selection is not searchable, describable, or callable
 through `tool_call`. Disclosure is scoped to the current `ExecutionSession`:
@@ -202,8 +201,7 @@ allowed, but the env layer now enforces the workspace boundary for existing
 paths. On Unix local file writes also open the final path with no-follow flags,
 so a symlink swap between the workspace scope check and the write is rejected
 instead of following the replaced path outside the workspace. Filesystem skills,
-shell commands, coding helpers, RAG maintenance, voice output, voice ASR audio
-reads, self-modify workspace reads/writes/checks, and command-backed plugins
+shell commands, coding helpers, RAG maintenance, and command-backed plugins
 should use session/env instead of calling host APIs directly.
 
 `ProcessRequest` has two modes:

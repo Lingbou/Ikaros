@@ -60,12 +60,10 @@ compact, and retry continuations, then delegates model turns to
 `AgentRuntime::run_turn_with_events()`. The
 returned `AgentHarnessTurn` keeps typed events first. The harness collects the
 same emitted event stream it forwards to the caller's sink and uses that stream
-to populate `AgentLoopReport.events` as the in-process turn snapshot. Built-in chat
-and task agent-loop entry points use this wrapper. Agent-loop handoff also uses
-this path and supplies a subagent session source when the caller did not provide
-one. Gateway task drains and scheduled task execution also use the session-aware
-task agent-loop path with gateway/schedule session ids, turn ids, and source
-metadata. Direct `run_agent_loop*` helpers remain the low-level API for tests
+to populate `AgentLoopReport.events` as the in-process turn snapshot. Built-in
+chat and task agent-loop entry points use this wrapper. Agent-loop handoff also
+uses this path and supplies a subagent session source when the caller did not
+provide one. Direct `run_agent_loop*` helpers remain the low-level API for tests
 and specialized runtimes.
 
 The harness phase is not just a display enum. `AgentHarnessPhase` now has
@@ -99,8 +97,8 @@ attempts, terminal summaries, worker-lease timeout evidence, errors, and
 redacted payloads. Without a continuation store, the harness keeps the old
 in-memory queues for tests and specialized one-shot callers.
 This is still a continuation queue, not a complete scheduler. Poll interval
-tuning, scheduler-grade worker coordination, richer tool-result scheduling
-policy, and automation-facing timeout reports are still runtime hardening work.
+tuning, worker coordination, richer tool-result scheduling policy, and
+script-facing timeout reports are still runtime hardening work.
 
 `AgentLoopOptions::with_hooks()` installs observer-only `AgentLoopHooks` for
 provider request/response and tool call boundaries. Hook payloads carry
@@ -298,7 +296,7 @@ rely on `kill_on_drop` in the local `ExecutionEnv` process runner.
 
 `AgentLoopReport.events` is an in-process snapshot of the events emitted during
 the current turn. The durable fact source is the `ikaros-state::session` event stream
-when a persisting sink is attached. Replay, gateway, schedule, and UI paths
+when a persisting sink is attached. Replay and UI paths
 should read the session store instead of reconstructing timelines from human
 output.
 

@@ -11,14 +11,12 @@ use ikaros_core::{IkarosConfig, IkarosPaths};
 use ikaros_host::{
     initialize_runtime_home, initialize_runtime_home_with_options, runtime_doctor_report,
 };
-use output::{
-    display_optional_model, print_doctor_report, print_init_report, resource_reuses_model_provider,
-};
+use output::{display_optional_model, print_doctor_report, print_init_report};
 use setup_prompt::prompt_setup_args;
 use setup_resources::{
     apply_reused_model_provider_resources, model_api_key_for_setup, model_base_url_for_setup,
     model_for_setup, model_transport_for_provider, normalize_provider, setup_compat_profile,
-    setup_embedding, setup_voice,
+    setup_embedding,
 };
 use setup_yaml::{
     config_has_setup_paths, format_setup_validation_failure, set_yaml_scalar, set_yaml_scalar_raw,
@@ -70,39 +68,6 @@ pub(crate) struct SetupArgs {
     /// Reuse the model provider API key and base URL for remote embeddings.
     #[arg(long)]
     reuse_model_provider_for_embedding: bool,
-    /// Remote TTS API key. When omitted, setup configures mock TTS.
-    #[arg(long)]
-    tts_api_key: Option<String>,
-    /// Remote TTS base URL. Required with --tts-api-key.
-    #[arg(long)]
-    tts_base_url: Option<String>,
-    /// Remote TTS model. Required with --tts-api-key.
-    #[arg(long)]
-    tts_model: Option<String>,
-    /// Default TTS voice.
-    #[arg(long)]
-    tts_voice: Option<String>,
-    /// Reuse the model provider API key and base URL for remote TTS.
-    #[arg(long)]
-    reuse_model_provider_for_tts: bool,
-    /// Remote ASR API key. When omitted, setup configures mock ASR.
-    #[arg(long)]
-    asr_api_key: Option<String>,
-    /// Remote ASR base URL. Required with --asr-api-key.
-    #[arg(long)]
-    asr_base_url: Option<String>,
-    /// Remote ASR model. Required with --asr-api-key.
-    #[arg(long)]
-    asr_model: Option<String>,
-    /// Reuse the model provider API key and base URL for remote ASR.
-    #[arg(long)]
-    reuse_model_provider_for_asr: bool,
-    /// Web search API key. Used by web_search providers such as brave, bing, serpapi, or tavily.
-    #[arg(long)]
-    search_api_key: Option<String>,
-    /// Web search endpoint. Leave empty to use the selected provider default.
-    #[arg(long)]
-    search_base_url: Option<String>,
 }
 
 pub(crate) fn init(args: InitArgs, paths: &IkarosPaths) -> Result<()> {
@@ -162,40 +127,6 @@ pub(crate) fn setup(mut args: SetupArgs, paths: &IkarosPaths) -> Result<()> {
     raw = set_yaml_scalar(raw, &["rag", "embedding_provider"], embedding.provider)?;
     raw = set_yaml_scalar(raw, &["rag", "embedding_model"], embedding.model)?;
 
-    let tts = setup_voice(
-        "tts",
-        args.tts_api_key.as_deref(),
-        args.tts_base_url.as_deref(),
-        args.tts_model.as_deref(),
-        "mock-tts",
-    )?;
-    raw = set_yaml_scalar(raw, &["providers", "tts", "api_key"], tts.api_key)?;
-    raw = set_yaml_scalar(raw, &["providers", "tts", "base_url"], tts.base_url)?;
-    raw = set_yaml_scalar(raw, &["voice", "tts", "provider"], tts.provider)?;
-    raw = set_yaml_scalar(raw, &["voice", "tts", "model"], tts.model)?;
-    if let Some(voice) = args.tts_voice.as_deref() {
-        raw = set_yaml_scalar(raw, &["voice", "tts", "voice"], voice)?;
-    }
-
-    let asr = setup_voice(
-        "asr",
-        args.asr_api_key.as_deref(),
-        args.asr_base_url.as_deref(),
-        args.asr_model.as_deref(),
-        "mock-asr",
-    )?;
-    raw = set_yaml_scalar(raw, &["providers", "asr", "api_key"], asr.api_key)?;
-    raw = set_yaml_scalar(raw, &["providers", "asr", "base_url"], asr.base_url)?;
-    raw = set_yaml_scalar(raw, &["voice", "asr", "provider"], asr.provider)?;
-    raw = set_yaml_scalar(raw, &["voice", "asr", "model"], asr.model)?;
-
-    if let Some(search_api_key) = args.search_api_key.as_deref() {
-        raw = set_yaml_scalar(raw, &["providers", "search", "api_key"], search_api_key)?;
-    }
-    if let Some(search_base_url) = args.search_base_url.as_deref() {
-        raw = set_yaml_scalar(raw, &["providers", "search", "base_url"], search_base_url)?;
-    }
-
     let report = IkarosConfig::validate_yaml(&raw)?;
     if !report.is_valid() {
         bail!(
@@ -219,34 +150,6 @@ pub(crate) fn setup(mut args: SetupArgs, paths: &IkarosPaths) -> Result<()> {
     println!(
         "embedding_model: {}",
         display_optional_model(embedding.model)
-    );
-    println!(
-        "embedding_reuses_model_provider: {}",
-        resource_reuses_model_provider(&embedding, &api_key, &base_url)
-    );
-    println!("tts_provider: {}", tts.provider);
-    println!("tts_model: {}", display_optional_model(tts.model));
-    println!(
-        "tts_reuses_model_provider: {}",
-        resource_reuses_model_provider(&tts, &api_key, &base_url)
-    );
-    println!("asr_provider: {}", asr.provider);
-    println!("asr_model: {}", display_optional_model(asr.model));
-    println!(
-        "asr_reuses_model_provider: {}",
-        resource_reuses_model_provider(&asr, &api_key, &base_url)
-    );
-    println!(
-        "search_api_key_configured: {}",
-        args.search_api_key
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-    );
-    println!(
-        "search_base_url_configured: {}",
-        args.search_base_url
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
     );
     println!("next: ikaros config validate");
     println!("next: ikaros doctor");

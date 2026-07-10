@@ -52,30 +52,6 @@ pub(crate) async fn approval_command(
             let record = session.decide_approval(&id, ApprovalStatus::Approved, note)?;
             let _ = record_approval_resolution(paths, workspace, agent_override, &record)?;
             println!("{}", serde_json::to_string_pretty(&record)?);
-            if record.request.call.name == "self_modify_apply" {
-                let proposal_id = record
-                    .request
-                    .call
-                    .input
-                    .get("proposal_id")
-                    .and_then(serde_json::Value::as_str);
-                if let Some(proposal_id) = proposal_id {
-                    println!(
-                        "next: ikaros self-modify apply-approved {} --approval-id {}",
-                        proposal_id, id
-                    );
-                } else {
-                    println!(
-                        "next: ikaros self-modify apply-approved <proposal-id> --approval-id {id}"
-                    );
-                }
-                println!("approval is approved but not executed");
-                println!("audit: {}", session.audit.path().display());
-                if let Some(log) = session.approvals.log() {
-                    println!("approvals: {}", log.path().display());
-                }
-                return Ok(());
-            }
             let (execution_session, execution_registry) =
                 if record.request.call.name == "code_workflow" {
                     let session_id = record

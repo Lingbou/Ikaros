@@ -121,24 +121,6 @@ fn show_config(paths: &IkarosPaths, json: bool) -> Result<()> {
                 "embedding_api_key_configured": !config.providers.embedding.api_key.trim().is_empty(),
                 "embedding_base_url_configured": !config.providers.embedding.base_url.trim().is_empty(),
             },
-            "voice": {
-                "tts": {
-                    "provider": config.voice.tts.provider,
-                    "model": config.voice.tts.model,
-                    "api_key_configured": !config.providers.tts.api_key.trim().is_empty(),
-                    "base_url_configured": !config.providers.tts.base_url.trim().is_empty(),
-                },
-                "asr": {
-                    "provider": config.voice.asr.provider,
-                    "model": config.voice.asr.model,
-                    "api_key_configured": !config.providers.asr.api_key.trim().is_empty(),
-                    "base_url_configured": !config.providers.asr.base_url.trim().is_empty(),
-                },
-            },
-            "web": {
-                "search_api_key_configured": !config.providers.search.api_key.trim().is_empty(),
-                "search_base_url_configured": !config.providers.search.base_url.trim().is_empty(),
-            },
             "execution": {
                 "network_enabled": config.execution.network.enabled,
                 "allow_provider_hosts": config.execution.network.allow_provider_hosts,
@@ -214,40 +196,6 @@ fn show_config(paths: &IkarosPaths, json: bool) -> Result<()> {
     println!(
         "rag_embedding_base_url_configured: {}",
         !config.providers.embedding.base_url.trim().is_empty()
-    );
-    println!("voice_tts_provider: {}", config.voice.tts.provider);
-    println!(
-        "voice_tts_model: {}",
-        display_optional(&config.voice.tts.model)
-    );
-    println!(
-        "voice_tts_api_key_configured: {}",
-        !config.providers.tts.api_key.trim().is_empty()
-    );
-    println!(
-        "voice_tts_base_url_configured: {}",
-        !config.providers.tts.base_url.trim().is_empty()
-    );
-    println!("voice_asr_provider: {}", config.voice.asr.provider);
-    println!(
-        "voice_asr_model: {}",
-        display_optional(&config.voice.asr.model)
-    );
-    println!(
-        "voice_asr_api_key_configured: {}",
-        !config.providers.asr.api_key.trim().is_empty()
-    );
-    println!(
-        "voice_asr_base_url_configured: {}",
-        !config.providers.asr.base_url.trim().is_empty()
-    );
-    println!(
-        "web_search_api_key_configured: {}",
-        !config.providers.search.api_key.trim().is_empty()
-    );
-    println!(
-        "web_search_base_url_configured: {}",
-        !config.providers.search.base_url.trim().is_empty()
     );
     println!(
         "execution_network_enabled: {}",

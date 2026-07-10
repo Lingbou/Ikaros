@@ -5,7 +5,6 @@ use ikaros_host::{
     WorkbenchModelBudgetStatus, WorkbenchModelCostStatus, WorkbenchProviderFallbackStatus,
     WorkbenchProviderHealthStatus, WorkbenchProviderStatusReport,
 };
-use tempfile::tempdir;
 
 #[test]
 fn model_budget_status_reports_daily_usage_and_remaining_tokens() {
@@ -232,58 +231,6 @@ fn sample_provider_status_report() -> WorkbenchProviderStatusReport {
             default_output_tokens: "65536".into(),
         }],
     }
-}
-
-#[test]
-fn screen_gateway_status_cell_reports_worker_lock_without_secret_leakage() {
-    let temp = tempdir().expect("tempdir");
-    let gateway_dir = temp.path().join("gateway");
-    fs::create_dir_all(&gateway_dir).expect("gateway dir");
-    fs::write(
-        gateway_dir.join("message-worker.lock"),
-        "pid=123\nowner=worker-token=abc123\n",
-    )
-    .expect("worker lock");
-    let store = LocalGatewayStore::new(&gateway_dir);
-    let message = store
-        .enqueue(GatewayRoute::new(
-            "cli",
-            GatewayMessageKind::Task,
-            "cancel from screen",
-            None,
-        ))
-        .expect("enqueue");
-    store
-        .cancel(&message.id, "screen cancel token=abc123")
-        .expect("cancel");
-    let delivery = store
-        .deliver(
-            "message-one",
-            "chat_response",
-            "screen delivery token=abc123",
-        )
-        .expect("delivery");
-    let claim = store
-        .claim_pending_deliveries_with_owner(1, "screen-adapter")
-        .expect("claim")
-        .pop()
-        .expect("delivery claim");
-    assert_eq!(claim.id, delivery.id);
-    store
-        .record_delivery_failure_for_claim(&claim, "delivery token=abc123", 2, 30)
-        .expect("delivery retry");
-
-    let cell = screen_gateway_status_cell(&store).expect("gateway status cell");
-    let rendered = cell.render();
-
-    assert!(rendered.contains("kind=continuation"));
-    assert!(rendered.contains("gateway"));
-    assert!(rendered.contains("cancelled=1"));
-    assert!(rendered.contains("delivery_pending=1"));
-    assert!(rendered.contains("delivery_dead_lettered=0"));
-    assert!(rendered.contains("lock=present"));
-    assert!(rendered.contains("owner=pid=123 owner=[REDACTED_SECRET]"));
-    assert!(!rendered.contains("abc123"));
 }
 
 #[test]

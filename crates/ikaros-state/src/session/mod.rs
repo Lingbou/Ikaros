@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Session, turn, and runtime event persistence.
 
-mod projection;
 mod recording;
 mod sink;
 mod sqlite;
@@ -11,10 +10,6 @@ mod types;
 pub use ikaros_protocol::session::{TurnState, TurnStateSnapshot};
 pub use ikaros_protocol::{
     IKAROS_PROTOCOL_NAME, IKAROS_PROTOCOL_VERSION, StateTraceEntry, TurnStatus, WireEnvelope,
-};
-pub use projection::{
-    gateway_message_kind, gateway_session_id, gateway_session_source, gateway_turn_id,
-    schedule_session_id, schedule_session_source, schedule_turn_id,
 };
 pub use recording::{
     RuntimeSessionEntryInput, RuntimeSessionTarget, active_leaf_entry_id,

@@ -11,10 +11,7 @@ use super::shared::{
 };
 use super::usage::provider_matrix_usage_summary;
 use crate::builder::host_agent_context;
-use crate::provider_probe::{
-    asr_provider_live_probe, embedding_provider_live_probe, model_provider_live_probe,
-    tts_provider_live_probe,
-};
+use crate::provider_probe::{embedding_provider_live_probe, model_provider_live_probe};
 use ikaros_core::{
     IkarosConfig, IkarosPaths, ModelConfig, ModelCostConfig, Result, redact_secrets,
 };
@@ -40,16 +37,6 @@ pub async fn provider_matrix_report(
     };
     let embedding_live_probe = if live {
         provider_matrix_embedding_live_probe(paths, workspace, config).await
-    } else {
-        ProviderMatrixLiveProbe::not_run()
-    };
-    let tts_live_probe = if live {
-        provider_matrix_tts_live_probe(workspace, config).await
-    } else {
-        ProviderMatrixLiveProbe::not_run()
-    };
-    let asr_live_probe = if live {
-        provider_matrix_asr_live_probe(workspace, config).await
     } else {
         ProviderMatrixLiveProbe::not_run()
     };
@@ -82,34 +69,6 @@ pub async fn provider_matrix_report(
             api_key: &config.providers.embedding.api_key,
             compat_profile: None,
             live_probe: &embedding_live_probe,
-            fallback_models: Vec::new(),
-            configured_cost: None,
-        }),
-        provider_matrix_row(ProviderMatrixRowInput {
-            registry: &registry,
-            health: &health,
-            usage: &usage,
-            kind: "tts",
-            provider: &config.voice.tts.provider,
-            model: &config.voice.tts.model,
-            base_url: &config.providers.tts.base_url,
-            api_key: &config.providers.tts.api_key,
-            compat_profile: None,
-            live_probe: &tts_live_probe,
-            fallback_models: Vec::new(),
-            configured_cost: None,
-        }),
-        provider_matrix_row(ProviderMatrixRowInput {
-            registry: &registry,
-            health: &health,
-            usage: &usage,
-            kind: "asr",
-            provider: &config.voice.asr.provider,
-            model: &config.voice.asr.model,
-            base_url: &config.providers.asr.base_url,
-            api_key: &config.providers.asr.api_key,
-            compat_profile: None,
-            live_probe: &asr_live_probe,
             fallback_models: Vec::new(),
             configured_cost: None,
         }),
@@ -177,26 +136,6 @@ async fn provider_matrix_embedding_live_probe(
     config: &IkarosConfig,
 ) -> ProviderMatrixLiveProbe {
     match embedding_provider_live_probe(paths, workspace, config).await {
-        Ok(detail) => ProviderMatrixLiveProbe::ok(detail),
-        Err(error) => ProviderMatrixLiveProbe::failed(error.to_string()),
-    }
-}
-
-async fn provider_matrix_tts_live_probe(
-    workspace: &Path,
-    config: &IkarosConfig,
-) -> ProviderMatrixLiveProbe {
-    match tts_provider_live_probe(workspace, config).await {
-        Ok(detail) => ProviderMatrixLiveProbe::ok(detail),
-        Err(error) => ProviderMatrixLiveProbe::failed(error.to_string()),
-    }
-}
-
-async fn provider_matrix_asr_live_probe(
-    workspace: &Path,
-    config: &IkarosConfig,
-) -> ProviderMatrixLiveProbe {
-    match asr_provider_live_probe(workspace, config).await {
         Ok(detail) => ProviderMatrixLiveProbe::ok(detail),
         Err(error) => ProviderMatrixLiveProbe::failed(error.to_string()),
     }

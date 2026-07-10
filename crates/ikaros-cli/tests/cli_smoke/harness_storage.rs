@@ -76,14 +76,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("sqlite config");
@@ -153,100 +145,6 @@ voice:
     assert!(history_search.contains("history_authority: session_store"));
     assert!(history_search.contains("records: 1"));
     assert!(history_search.contains("matches:"));
-}
-
-#[test]
-fn schedule_body_and_service_surfaces_stay_local_and_non_mutating_by_default() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-
-    let scheduled = env.run([
-        "schedule",
-        "add",
-        "--profile",
-        "plan",
-        "--retry-max-attempts",
-        "3",
-        "--retry-backoff-seconds",
-        "60",
-        "--grace-period-seconds",
-        "300",
-        "--timezone",
-        "UTC",
-        "summarize schedule smoke",
-    ]);
-    assert!(scheduled.contains("scheduled:"));
-    assert!(scheduled.contains("\"agent\": \"plan\""));
-    assert!(scheduled.contains("\"max_attempts\": 3"));
-    assert!(scheduled.contains("\"backoff_seconds\": 60"));
-    assert!(scheduled.contains("\"grace_period_seconds\": 300"));
-    assert!(scheduled.contains("\"timezone\": \"UTC\""));
-
-    let due = env.run(["schedule", "run-due", "--dry-run"]);
-    assert!(due.contains("summarize schedule smoke"));
-    assert!(due.contains("\"local_file\""));
-    assert!(due.contains("schedule_store:"));
-    let schedules = fs::read_to_string(env.home.join("automation/schedules.jsonl"))
-        .expect("schedule store should remain local");
-    assert!(schedules.contains("summarize schedule smoke"));
-
-    let run_due = env.run(["schedule", "run-due", "--limit", "1"]);
-    assert!(run_due.contains("\"task_state\":"));
-    assert!(run_due.contains("\"target\": \"local_file\""));
-    assert!(env.home.join("automation/deliveries").exists());
-
-    let gateway_scheduled = env.run([
-        "schedule",
-        "add",
-        "--delivery",
-        "gateway-outbox",
-        "summarize gateway schedule smoke",
-    ]);
-    assert!(gateway_scheduled.contains("\"gateway_outbox\""));
-    let gateway_run_due = env.run(["schedule", "run-due", "--limit", "1"]);
-    assert!(gateway_run_due.contains("\"target\": \"gateway_outbox\""));
-    let outbox =
-        fs::read_to_string(env.home.join("gateway/outbox.jsonl")).expect("gateway schedule outbox");
-    assert!(outbox.contains("\"kind\":\"schedule_report\""));
-    assert!(outbox.contains("Ikaros Scheduled Job Result"));
-
-    let body = env.run(["body", "status"]);
-    assert!(body.contains("body=cli"));
-    assert!(body.contains("persona=Ikaros"));
-
-    let dashboard = env.run([
-        "body",
-        "dashboard",
-        "--output",
-        "dashboard/smoke.html",
-        "--snapshot-output",
-        "dashboard/frame.json",
-        "--refresh-seconds",
-        "5",
-    ]);
-    assert!(dashboard.contains("dashboard:"));
-    assert!(dashboard.contains("snapshot:"));
-    let html = fs::read_to_string(env.home.join("dashboard/smoke.html")).expect("dashboard html");
-    let frame = fs::read_to_string(env.home.join("dashboard/frame.json")).expect("frame json");
-    assert!(html.contains("Ikaros"));
-    assert!(frame.contains("\"persona_name\": \"Ikaros\""));
-
-    let service = env.run([
-        "service",
-        "render",
-        "--kind",
-        "message-webhook",
-        "--manager",
-        "systemd",
-        "--output",
-        "services/message-webhook.service",
-    ]);
-    assert!(service.contains("service_template:"));
-    let service_template = fs::read_to_string(env.home.join("services/message-webhook.service"))
-        .expect("service template");
-    assert!(service_template.contains("message webhook"));
-    assert!(!service_template.contains("systemctl"));
 }
 
 #[test]

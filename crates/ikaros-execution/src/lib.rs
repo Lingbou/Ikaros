@@ -21,7 +21,6 @@ pub mod iteration;
 pub mod patch;
 pub mod repo;
 pub mod review;
-pub mod self_modify;
 pub mod testing;
 
 #[cfg(test)]

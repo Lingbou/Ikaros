@@ -35,8 +35,6 @@ pub(in crate::debug) fn debug_insights_report(
     let agent = &host.agent_instance;
     let state_report = SqliteSessionStore::new(&agent.state_dir).operational_report()?;
     let logs = collect_debug_logs(paths, DebugLogSource::All)?;
-    let gateway = LocalGatewayStore::new(&paths.gateway_dir);
-    let gateway_summary = debug_insights_gateway_summary(&gateway)?;
     let provider_matrix = provider_debug_matrix_report(config, agent, &paths.audit_dir)?;
     let provider_rows = provider_matrix.rows;
     let recent_start = logs.entries.len().saturating_sub(5);
@@ -48,7 +46,6 @@ pub(in crate::debug) fn debug_insights_report(
         doctor.config.valid,
         state_report.integrity_check.ok,
         &provider_rows,
-        &gateway_summary,
     );
     let status = if alerts.is_empty() { "ok" } else { "attention" };
     Ok(json!({
@@ -95,78 +92,14 @@ pub(in crate::debug) fn debug_insights_report(
             "health_log": provider_matrix.health_log.display().to_string(),
             "rows": provider_rows,
         },
-        "gateway": gateway_summary,
         "alerts": alerts,
     }))
 }
-pub(in crate::debug) fn debug_insights_gateway_summary(store: &LocalGatewayStore) -> Result<Value> {
-    let messages = store.list()?;
-    let deliveries = store.deliveries()?;
-    let pairings = store.pairings()?;
-    let pending = messages
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::Pending)
-        .count();
-    let processing = messages
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::Processing)
-        .count();
-    let failed = messages
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::Failed)
-        .count();
-    let cancelled = messages
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::Cancelled)
-        .count();
-    let dead_lettered = messages
-        .iter()
-        .filter(|message| message.status == GatewayMessageStatus::DeadLettered)
-        .count();
-    let delivery_pending = deliveries
-        .iter()
-        .filter(|delivery| delivery.status == GatewayDeliveryStatus::Pending)
-        .count();
-    let delivery_processing = deliveries
-        .iter()
-        .filter(|delivery| delivery.status == GatewayDeliveryStatus::Processing)
-        .count();
-    let delivery_dead_lettered = deliveries
-        .iter()
-        .filter(|delivery| delivery.status == GatewayDeliveryStatus::DeadLettered)
-        .count();
-    let pairing_pending = pairings
-        .iter()
-        .filter(|pairing| pairing.status == GatewayPairingStatus::Pending)
-        .count();
-    let pairing_paired = pairings
-        .iter()
-        .filter(|pairing| pairing.status == GatewayPairingStatus::Paired)
-        .count();
-    Ok(json!({
-        "inbox_path": store.inbox_path().display().to_string(),
-        "outbox_path": store.outbox_path().display().to_string(),
-        "pairings_path": store.pairings_path().display().to_string(),
-        "messages_total": messages.len(),
-        "pending": pending,
-        "processing": processing,
-        "failed": failed,
-        "cancelled": cancelled,
-        "dead_lettered": dead_lettered,
-        "deliveries_total": deliveries.len(),
-        "delivery_pending": delivery_pending,
-        "delivery_processing": delivery_processing,
-        "delivery_dead_lettered": delivery_dead_lettered,
-        "pairings_total": pairings.len(),
-        "pairing_pending": pairing_pending,
-        "pairing_paired": pairing_paired,
-    }))
-}
+
 pub(in crate::debug) fn debug_insights_alerts(
     config_valid: bool,
     state_integrity_ok: bool,
     provider_rows: &[Value],
-    gateway: &Value,
 ) -> Vec<Value> {
     let mut alerts = Vec::new();
     if !config_valid {
@@ -199,44 +132,6 @@ pub(in crate::debug) fn debug_insights_alerts(
                 "debug_hint": row.get("debug_hint").and_then(Value::as_str).unwrap_or("inspect-provider"),
             }));
         }
-    }
-    let pending = gateway.get("pending").and_then(Value::as_u64).unwrap_or(0);
-    let processing = gateway
-        .get("processing")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let dead_lettered = gateway
-        .get("dead_lettered")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let delivery_dead_lettered = gateway
-        .get("delivery_dead_lettered")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    if pending > 0 {
-        alerts.push(json!({
-            "kind": "gateway_pending",
-            "severity": "info",
-            "count": pending,
-            "summary": "gateway messages are waiting for a worker",
-        }));
-    }
-    if processing > 0 {
-        alerts.push(json!({
-            "kind": "gateway_processing",
-            "severity": "info",
-            "count": processing,
-            "summary": "gateway messages have active leases",
-        }));
-    }
-    if dead_lettered > 0 || delivery_dead_lettered > 0 {
-        alerts.push(json!({
-            "kind": "gateway_dead_lettered",
-            "severity": "warning",
-            "messages": dead_lettered,
-            "deliveries": delivery_dead_lettered,
-            "summary": "gateway has terminal failed work",
-        }));
     }
     alerts
 }

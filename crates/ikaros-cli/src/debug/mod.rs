@@ -11,9 +11,7 @@ use ikaros_host::{
     host_agent_context, host_agent_context_shape_checked, provider_debug_matrix_report,
     provider_debug_report, runtime_doctor_report, session_state_db_candidates,
 };
-use ikaros_protocol::{GatewayDeliveryStatus, GatewayMessageStatus, GatewayPairingStatus};
 use ikaros_providers::model::ModelUsageLedger;
-use ikaros_state::gateway::LocalGatewayStore;
 use ikaros_state::memory::{JsonlMemoryJournal, MemoryJournal, MemoryJournalEntry, MemoryRef};
 use ikaros_state::session::{
     AgentEvent, AgentEventKind, IKAROS_PROTOCOL_NAME, IKAROS_PROTOCOL_VERSION, SessionContinuation,

@@ -194,7 +194,7 @@ is configured, `provider inspect` also prints a `fallback_count` and one
 capability summary. `provider health` reads the local health ledger. `provider
 health --live` sends a short real request through the session `NetworkEgress`
 boundary and records success or failure in the same ledger.
-`provider matrix` renders the configured model, embedding, TTS, and ASR provider
+`provider matrix` renders the configured model and embedding provider
 rows with descriptor metadata, local readiness checks, redacted credential
 presence, latest local health status, cooldown metadata, capability flags,
 profile policy fields, context fields, input/output/cache-read/cache-write
@@ -202,9 +202,8 @@ cost fields, fallback role, fallback count/model list, and a short
 `debug_hint`. The chat workbench `/model` view reuses the same descriptor
 surface and prints configured fallback rows from the active runtime model.
 `provider matrix --live`
-probes model, embedding, TTS, and ASR rows: model and remote embedding probes
-use runtime `NetworkEgress`, local embedding probes use the local RAG store, and
-TTS/ASR probes use the configured voice providers.
+probes model and embedding rows: model and remote embedding probes use runtime
+`NetworkEgress`, while local embedding probes use the local RAG store.
 Cost fields are registry metadata overlaid with `model.default.cost` from
 `config.yaml`; leave values unknown or `null` when the provider invoice does not
 separate regular input, output, prompt-cache read, and prompt-cache write tokens.

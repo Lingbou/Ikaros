@@ -75,16 +75,12 @@ impl SlashCommandPermission {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SlashCommandSurface {
     Workbench,
-    Gateway,
-    Acp,
 }
 
 impl SlashCommandSurface {
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Workbench => "workbench",
-            Self::Gateway => "gateway",
-            Self::Acp => "acp",
         }
     }
 }
@@ -147,16 +143,16 @@ impl SlashCommandDescriptor {
     pub(super) fn argument_model(self) -> SlashCommandArgumentModel {
         match self.name {
             "/help" | "/agents" | "/status" | "/sessions" | "/new" | "/context" | "/memory"
-            | "/rag" | "/tools" | "/model" | "/tasks" | "/diff" | "/multi" | "/clear" | "/quit"
-            | "/exit" => SlashCommandArgumentModel::None,
+            | "/rag" | "/tools" | "/model" | "/diff" | "/multi" | "/clear" | "/quit" | "/exit" => {
+                SlashCommandArgumentModel::None
+            }
             "/commands" | "/history" | "/resume" | "/session" | "/timeline" | "/replay"
             | "/debug" | "/trace" | "/mentions" | "/review" | "/sandbox" => {
                 SlashCommandArgumentModel::Optional
             }
             "/agent" | "/rollback" => SlashCommandArgumentModel::Required,
             "/queue" | "/attach" | "/budget" | "/screen" | "/provider" | "/approval"
-            | "/approvals" | "/cancel" | "/code" | "/mcp" | "/api" | "/browser" | "/web"
-            | "/vision" | "/image" | "/gateway" => SlashCommandArgumentModel::Subcommand,
+            | "/approvals" | "/cancel" | "/code" | "/mcp" => SlashCommandArgumentModel::Subcommand,
             _ if self.usage.contains('<') => SlashCommandArgumentModel::Required,
             _ if self.usage.contains('[') => SlashCommandArgumentModel::Optional,
             _ => SlashCommandArgumentModel::None,
@@ -174,9 +170,7 @@ impl SlashCommandDescriptor {
             "/cancel" => SlashCommandEffect::Interrupt,
             "/mentions" | "/diff" => SlashCommandEffect::WorkspaceInspection,
             "/provider" => SlashCommandEffect::ProviderProbe,
-            "/mcp" | "/browser" | "/web" | "/vision" | "/image" => {
-                SlashCommandEffect::ProviderProbe
-            }
+            "/mcp" => SlashCommandEffect::ProviderProbe,
             "/code" | "/rollback" => SlashCommandEffect::WorkspaceMutation,
             "/quit" | "/exit" => SlashCommandEffect::Exit,
             _ => SlashCommandEffect::ReadOnly,
@@ -216,17 +210,6 @@ impl SlashCommandDescriptor {
                 "mcp_status_json",
                 "mcp_stdio_call_json",
                 "mcp_http_call_json",
-            ],
-            "/api" => &["human", "api_status_json"],
-            "/browser" => &["human", "browser_json"],
-            "/web" => &["human", "web_result", "web_json"],
-            "/vision" => &["human", "vision_model", "vision_content", "vision_usage"],
-            "/image" => &[
-                "human",
-                "image_model",
-                "image_count",
-                "image_item",
-                "image_json",
             ],
             "/approval" | "/approvals" => &["human", "approval_overlay_json"],
             "/diff" => &["human", "diff_status_json"],

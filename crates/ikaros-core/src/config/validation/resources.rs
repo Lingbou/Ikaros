@@ -3,10 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::{
-    super::{
-        McpConfig, MemoryConfig, MemoryPolicyConfig, RagConfig, RemoteProviderConfig,
-        VoiceProviderConfig,
-    },
+    super::{McpConfig, MemoryConfig, MemoryPolicyConfig, RagConfig, RemoteProviderConfig},
     ConfigValidationReport, is_remote_embedding_provider, normalize, validate_optional_url,
     validate_required, validate_required_url, validate_timeout, validate_url,
 };
@@ -116,45 +113,6 @@ pub(super) fn validate_rag_config(
             &provider_settings.api_key,
             report,
         );
-    }
-}
-
-pub(super) fn validate_voice_config(
-    path: &str,
-    config: &VoiceProviderConfig,
-    provider_settings: &RemoteProviderConfig,
-    is_tts: bool,
-    report: &mut ConfigValidationReport,
-) {
-    let provider = normalize(&config.provider);
-    validate_timeout(format!("{path}.timeout_ms"), config.timeout_ms, report);
-    if provider == "mock" {
-        return;
-    }
-    validate_required(format!("{path}.model"), &config.model, report);
-    let provider_path = if is_tts {
-        "providers.tts"
-    } else {
-        "providers.asr"
-    };
-    validate_required_url(
-        format!("{provider_path}.base_url"),
-        &provider_settings.base_url,
-        report,
-    );
-    validate_required(
-        format!("{provider_path}.api_key"),
-        &provider_settings.api_key,
-        report,
-    );
-    if is_tts {
-        if let Some(voice) = &config.voice {
-            if voice.trim().is_empty() {
-                report.error(format!("{path}.voice"), "must not be empty when set");
-            }
-        }
-    } else if config.voice.is_some() {
-        report.warning(format!("{path}.voice"), "ASR ignores the voice field");
     }
 }
 

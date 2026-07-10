@@ -26,8 +26,7 @@ pub use config::{
     McpConfig, McpServerConfig, MemoryConfig, MemoryPolicyConfig, ModelConfig, ModelCostConfig,
     ModelFallbackConfig, ModelParamsConfig, ModelProviderKind, ModelReasoningConfig, ModelTable,
     ModelTransportKind, PolicyConfig, RagConfig, RemoteProviderConfig, SandboxBackend,
-    SandboxReadScope, SelfModifyCheckProfileConfig, SelfModifyConfig, StoreBackend, VoiceConfig,
-    VoiceProviderConfig, VoiceProviderKind,
+    SandboxReadScope, StoreBackend,
 };
 pub use context::{ContextBuilder, RuntimeContext};
 pub use error::{IkarosError, Result};
@@ -76,10 +75,7 @@ mod tests {
         assert!(config.providers.embedding.base_url.is_empty());
         assert!(config.providers.embedding.api_key.is_empty());
         assert_eq!(config.rag.embedding_model, "text-embedding-3-small");
-        assert_eq!(config.voice.tts.provider.as_str(), "mock");
-        assert_eq!(config.voice.asr.provider.as_str(), "mock");
         assert!(config.mcp.servers.is_empty());
-        assert!(config.self_modify.check_profiles.is_empty());
     }
 
     #[test]
@@ -212,35 +208,6 @@ agent:
     }
 
     #[test]
-    fn config_parses_self_modify_check_profiles() {
-        let config: IkarosConfig = yaml_serde::from_str(
-            r#"
-self_modify:
-  check_profiles:
-    runtime_patch:
-      commands:
-        - cargo check --workspace --all-features
-      reason: "Runtime changes must compile."
-"#,
-        )
-        .expect("config");
-
-        let profile = config
-            .self_modify
-            .check_profiles
-            .get("runtime_patch")
-            .expect("profile");
-        assert_eq!(
-            profile.commands,
-            vec!["cargo check --workspace --all-features"]
-        );
-        assert_eq!(
-            profile.reason.as_deref(),
-            Some("Runtime changes must compile.")
-        );
-    }
-
-    #[test]
     fn paths_respect_custom_home() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = IkarosPaths::from_home(temp.path());
@@ -251,8 +218,6 @@ self_modify:
             temp.path().join("persona").join("profile.md")
         );
         assert_eq!(paths.rag_dir, temp.path().join("rag"));
-        assert_eq!(paths.automation_dir, temp.path().join("automation"));
-        assert_eq!(paths.gateway_dir, temp.path().join("gateway"));
     }
 
     #[test]

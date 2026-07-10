@@ -107,7 +107,6 @@ pub(super) fn screen_status_line_model_json(
     let queue = find_cell(screen, |cell| cell.title == "queue");
     let bottom = find_cell(screen, |cell| cell.title == "bottom pane");
     let progress = find_cell(screen, |cell| cell.title == "progress");
-    let gateway = find_cell(screen, |cell| cell.title == "gateway");
     let bottom_approval_count = bottom
         .and_then(|cell| extract_token_after(&cell.detail, "approvals="))
         .unwrap_or_else(|| "0".into());
@@ -209,15 +208,6 @@ pub(super) fn screen_status_line_model_json(
                     .unwrap_or_else(|| "unknown".into()),
                 "attention": false,
                 "command": "/session",
-            },
-            {
-                "id": "gateway",
-                "label": "gateway",
-                "value": gateway
-                    .and_then(|cell| extract_token_after(&cell.detail, "status="))
-                    .unwrap_or_else(|| "unknown".into()),
-                "attention": false,
-                "command": "/gateway",
             },
         ],
         "selected_action": selected_action,
@@ -479,12 +469,6 @@ pub(super) fn screen_surface_index_json(screen: &WorkbenchScreen) -> Vec<serde_j
             WorkbenchCellKind::Continuation,
             "/screen --focus side --select-action queue",
             "/debug continuations",
-        ),
-        (
-            "gateway",
-            WorkbenchCellKind::Session,
-            "/screen --focus status --select-action gateway",
-            "/gateway",
         ),
     ]
     .into_iter()

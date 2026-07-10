@@ -64,10 +64,7 @@ fn command_metadata_json_line_exports_registry_fields() {
         provider["permissions"],
         serde_json::json!(["provider", "network"])
     );
-    assert_eq!(
-        provider["surfaces"],
-        serde_json::json!(["workbench", "gateway", "acp"])
-    );
+    assert_eq!(provider["surfaces"], serde_json::json!(["workbench"]));
     assert!(
         provider["tags"]
             .as_array()
@@ -159,18 +156,6 @@ fn command_registry_includes_workbench_loop_aliases() {
 
 #[test]
 fn command_search_matches_permission_and_surface_metadata() {
-    let gateway_safe = slash_commands()
-        .iter()
-        .copied()
-        .filter(|command| slash_command_matches(*command, "gateway"))
-        .map(|command| command.name)
-        .collect::<Vec<_>>();
-
-    assert!(gateway_safe.contains(&"/help"));
-    assert!(gateway_safe.contains(&"/commands"));
-    assert!(gateway_safe.contains(&"/session"));
-    assert!(gateway_safe.contains(&"/provider"));
-
     let workspace_write = slash_commands()
         .iter()
         .copied()

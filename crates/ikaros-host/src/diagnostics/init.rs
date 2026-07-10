@@ -37,8 +37,6 @@ pub fn initialize_runtime_home_with_options(
         persona_profile: paths.persona_profile.clone(),
         memory_dir: paths.memory_dir.clone(),
         rag_dir: paths.rag_dir.clone(),
-        automation_dir: paths.automation_dir.clone(),
-        gateway_dir: paths.gateway_dir.clone(),
         audit_dir: paths.audit_dir.clone(),
         config_created,
         persona_created,

@@ -17,7 +17,7 @@ use ikaros_providers::model::{
     ModelProvider, ModelRequestOptions, governed_provider_from_config_with_http_client,
     model_request_options_from_config,
 };
-use ikaros_skills::{SkillEnvironment, builtin_registry, register_model_backed_skills};
+use ikaros_skills::{SkillEnvironment, builtin_registry};
 use ikaros_state::memory::LocalMemoryStore;
 use ikaros_state::rag::LocalRagStore;
 use std::{
@@ -44,13 +44,6 @@ pub struct ChatRuntimeServices {
 
 pub struct RuntimeHarnessModelServices {
     pub request_options: ModelRequestOptions,
-    pub provider: Box<dyn ModelProvider>,
-}
-
-pub struct ApiModelServices {
-    pub config: IkarosConfig,
-    pub agent_instance: AgentInstance,
-    pub model_config: ModelConfig,
     pub provider: Box<dyn ModelProvider>,
 }
 
@@ -238,42 +231,6 @@ pub fn chat_model_services_shape_checked(
     chat_model_services_for_session(paths, &config, &agent_instance, session)
 }
 
-pub fn api_model_services_shape_checked(
-    paths: &IkarosPaths,
-    workspace: &Path,
-    agent_override: Option<&str>,
-    model_override: Option<&str>,
-) -> ikaros_core::Result<ApiModelServices> {
-    let HostAgentContext {
-        config,
-        agent_instance,
-        ..
-    } = host_agent_context_shape_checked(paths, workspace, agent_override)?;
-    let mut model_config = agent_instance.model_config(&config.model.default).clone();
-    if let Some(model) = model_override
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-    {
-        model_config.model = model.to_owned();
-    }
-    let model_provider = agent_instance
-        .effective_model_provider_config(&config.model.default, &config.providers.model)
-        .clone();
-    let HostServices { session, .. } = services_for_instance(paths, &config, &agent_instance)?;
-    let provider = governed_provider_from_config_with_http_client(
-        &model_config,
-        &model_provider,
-        &paths.audit_dir,
-        Some(Arc::new(EgressModelHttpClient::new(session.env.clone()))),
-    )?;
-    Ok(ApiModelServices {
-        config,
-        agent_instance,
-        model_config,
-        provider,
-    })
-}
-
 pub fn session_state_db_candidates(
     paths: &IkarosPaths,
     workspace: &Path,
@@ -347,12 +304,7 @@ pub fn services_for_agent(
 ) -> ikaros_core::Result<HostServices> {
     let session = ExecutionSession::new_with_agent(workspace, &paths.audit_dir, agent)
         .with_execution_env(runtime_execution_env(config, workspace)?);
-    let mut registry = builtin_registry(skill_environment(paths, workspace, config)?);
-    register_model_backed_skills(
-        &mut registry,
-        config.model.default.clone(),
-        config.effective_model_provider(),
-    );
+    let registry = builtin_registry(skill_environment(paths, workspace, config)?);
     Ok(HostServices { session, registry })
 }
 
@@ -364,12 +316,7 @@ pub fn services_for_instance(
     let session =
         ExecutionSession::new_with_agent_instance(&agent.workspace, &paths.audit_dir, agent)
             .with_execution_env(runtime_execution_env(config, &agent.workspace)?);
-    let mut registry = builtin_registry(skill_environment(paths, &agent.workspace, config)?);
-    register_model_backed_skills(
-        &mut registry,
-        agent.model_config(&config.model.default).clone(),
-        agent.effective_model_provider_config(&config.model.default, &config.providers.model),
-    );
+    let registry = builtin_registry(skill_environment(paths, &agent.workspace, config)?);
     Ok(HostServices { session, registry })
 }
 
@@ -436,11 +383,6 @@ pub fn skill_environment(
         rag_provider: config.providers.embedding.clone(),
         persona_path: paths.persona_dir.clone(),
         skills_dir: paths.skills_dir.clone(),
-        voice_tts: config.voice.tts.clone(),
-        voice_tts_provider: config.providers.tts.clone(),
-        voice_asr: config.voice.asr.clone(),
-        voice_asr_provider: config.providers.asr.clone(),
-        web_search_provider: config.providers.search.clone(),
         coding_session: None,
     })
 }

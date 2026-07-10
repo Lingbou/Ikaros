@@ -76,11 +76,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -115,11 +110,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -162,11 +152,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -196,11 +181,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 
 memory:
   external_providers:
@@ -248,8 +228,6 @@ fn config_show_prints_redacted_runtime_summary() {
     assert!(output.contains("memory_backend: jsonl"));
     assert!(output.contains("rag_backend: jsonl"));
     assert!(output.contains("rag_embedding_provider: hash"));
-    assert!(output.contains("voice_tts_provider: mock"));
-    assert!(output.contains("voice_asr_provider: mock"));
     assert!(output.contains("execution_network_enabled: true"));
     assert!(output.contains("execution_sandbox_backend: local"));
     assert!(!output.contains("sk-local-secret"));
@@ -264,7 +242,6 @@ fn config_show_prints_redacted_runtime_summary() {
     assert_eq!(report["model"]["base_url_configured"], true);
     assert_eq!(report["model"]["daily_token_budget"], 12345);
     assert_eq!(report["rag"]["embedding_provider"], "hash");
-    assert_eq!(report["voice"]["tts"]["provider"], "mock");
     assert!(!json.contains("sk-local-secret"));
     assert!(!json.contains("https://api.example/v1"));
 }

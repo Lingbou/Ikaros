@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    acp::{AcpCommand, acp_command},
     agent::{AgentCommand, agent_command},
-    api::{ApiCommand, api_command},
     approval::{ApprovalCommand, approval_command},
-    body::{self, BodyCommand},
-    browser::{BrowserCommand, browser_command},
     chat::{ChatArgs, chat_command, default_chat_command},
     code::{CodeCommand, code_command},
     config::{ConfigCommand, config_command},
     debug::{DebugCommand, debug_command},
     diagnostics::{DoctorArgs, InitArgs, SetupArgs, doctor, init, setup},
     fs::{FsCommand, fs_command},
-    gateway::{MessageCommand, message_command},
     git::{GitCommand, git_command},
-    image::{ImageCommand, image_command},
     mcp::{McpCommand, mcp_command},
     memory::{MemoryCommand, memory_command},
     persona::{PersonaCommand, persona_command},
@@ -24,15 +18,9 @@ use crate::{
     rag::{RagCommand, rag_command},
     relationship::{RelationshipCommand, relationship_command},
     repo::{RepoCommand, repo_command},
-    schedule::{ScheduleCommand, schedule_command},
-    self_modify::{SelfModifyCommand, self_modify_command},
-    service::{ServiceCommand, service_command},
     skill::{SkillCommand, skill_command},
     task::{TaskCommand, task_command},
     testing::{TestCommand, test_command},
-    vision::{VisionCommand, vision_command},
-    voice::{VoiceCommand, voice_command},
-    web::{WebCommand, web_command},
 };
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -87,26 +75,6 @@ enum Commands {
         #[command(subcommand)]
         command: RagCommand,
     },
-    Voice {
-        #[command(subcommand)]
-        command: VoiceCommand,
-    },
-    Vision {
-        #[command(subcommand)]
-        command: VisionCommand,
-    },
-    Body {
-        #[command(subcommand)]
-        command: BodyCommand,
-    },
-    Browser {
-        #[command(subcommand)]
-        command: BrowserCommand,
-    },
-    Web {
-        #[command(subcommand)]
-        command: WebCommand,
-    },
     Task {
         #[command(subcommand)]
         command: TaskCommand,
@@ -136,37 +104,9 @@ enum Commands {
         #[command(subcommand)]
         command: GitCommand,
     },
-    Image {
-        #[command(subcommand)]
-        command: ImageCommand,
-    },
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
-    },
-    Schedule {
-        #[command(subcommand)]
-        command: ScheduleCommand,
-    },
-    Message {
-        #[command(subcommand)]
-        command: MessageCommand,
-    },
-    Api {
-        #[command(subcommand)]
-        command: ApiCommand,
-    },
-    Acp {
-        #[command(subcommand)]
-        command: AcpCommand,
-    },
-    Service {
-        #[command(subcommand)]
-        command: ServiceCommand,
-    },
-    SelfModify {
-        #[command(subcommand)]
-        command: SelfModifyCommand,
     },
     Repo {
         #[command(subcommand)]
@@ -221,19 +161,6 @@ pub(crate) async fn run() -> Result<()> {
         Some(Commands::Rag { command }) => {
             rag_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Some(Commands::Voice { command }) => {
-            voice_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Vision { command }) => {
-            vision_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Body { command }) => body::body_command(command, &paths, &workspace)?,
-        Some(Commands::Browser { command }) => {
-            browser_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Web { command }) => {
-            web_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
         Some(Commands::Task { command }) => {
             task_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
@@ -258,29 +185,8 @@ pub(crate) async fn run() -> Result<()> {
         Some(Commands::Git { command }) => {
             git_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
-        Some(Commands::Image { command }) => {
-            image_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
         Some(Commands::Skill { command }) => {
             skill_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Schedule { command }) => {
-            schedule_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Message { command }) => {
-            message_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Api { command }) => {
-            api_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Acp { command }) => {
-            acp_command(command, &paths, &workspace, cli.agent.as_deref()).await?
-        }
-        Some(Commands::Service { command }) => {
-            service_command(command, &paths, &workspace, cli.agent.as_deref())?
-        }
-        Some(Commands::SelfModify { command }) => {
-            self_modify_command(command, &paths, &workspace, cli.agent.as_deref()).await?
         }
         Some(Commands::Repo { command }) => {
             repo_command(command, &paths, &workspace, cli.agent.as_deref()).await?
@@ -348,11 +254,6 @@ fn cli_command_name(command: &Option<Commands>) -> &'static str {
         Some(Commands::Mcp { .. }) => "mcp",
         Some(Commands::Relationship { .. }) => "relationship",
         Some(Commands::Rag { .. }) => "rag",
-        Some(Commands::Voice { .. }) => "voice",
-        Some(Commands::Vision { .. }) => "vision",
-        Some(Commands::Body { .. }) => "body",
-        Some(Commands::Browser { .. }) => "browser",
-        Some(Commands::Web { .. }) => "web",
         Some(Commands::Task { .. }) => "task",
         Some(Commands::Chat(_)) => "chat",
         Some(Commands::Fs { .. }) => "fs",
@@ -361,17 +262,10 @@ fn cli_command_name(command: &Option<Commands>) -> &'static str {
         Some(Commands::Policy { .. }) => "policy",
         Some(Commands::Provider { .. }) => "provider",
         Some(Commands::Git { .. }) => "git",
-        Some(Commands::Image { .. }) => "image",
         Some(Commands::Skill { .. }) => "skill",
-        Some(Commands::Schedule { .. }) => "schedule",
-        Some(Commands::Message { .. }) => "message",
-        Some(Commands::Api { .. }) => "api",
-        Some(Commands::Service { .. }) => "service",
-        Some(Commands::SelfModify { .. }) => "self-modify",
         Some(Commands::Repo { .. }) => "repo",
         Some(Commands::Test { .. }) => "test",
         Some(Commands::Code { .. }) => "code",
-        Some(Commands::Acp { .. }) => "acp",
     }
 }
 

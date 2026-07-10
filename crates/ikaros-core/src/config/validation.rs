@@ -123,23 +123,8 @@ impl IkarosConfig {
         );
         resources::validate_memory_config(&self.memory, report);
         resources::validate_rag_config(&self.rag, &self.providers.embedding, report);
-        resources::validate_voice_config(
-            "voice.tts",
-            &self.voice.tts,
-            &self.providers.tts,
-            true,
-            report,
-        );
-        resources::validate_voice_config(
-            "voice.asr",
-            &self.voice.asr,
-            &self.providers.asr,
-            false,
-            report,
-        );
         resources::validate_mcp_config(&self.mcp, report);
         safety::validate_execution_config(&self.execution, report);
-        safety::validate_self_modify_config(&self.self_modify, report);
     }
 }
 
@@ -162,10 +147,8 @@ fn validate_yaml_shape(value: &yaml_serde::Value, report: &mut ConfigValidationR
             "policy",
             "memory",
             "rag",
-            "voice",
             "mcp",
             "execution",
-            "self_modify",
         ],
         report,
     );
@@ -204,17 +187,11 @@ fn validate_yaml_shape(value: &yaml_serde::Value, report: &mut ConfigValidationR
             report,
         );
     }
-    if let Some(voice) = mapping_get(root, "voice") {
-        validate_voice_shape(voice, report);
-    }
     if let Some(mcp) = mapping_get(root, "mcp") {
         validate_mcp_shape(mcp, report);
     }
     if let Some(execution) = mapping_get(root, "execution") {
         validate_execution_shape(execution, report);
-    }
-    if let Some(self_modify) = mapping_get(root, "self_modify") {
-        validate_self_modify_shape(self_modify, report);
     }
 }
 
@@ -231,15 +208,10 @@ fn validate_schema_version(schema_version: u32, report: &mut ConfigValidationRep
 }
 
 fn validate_providers_shape(value: &yaml_serde::Value, report: &mut ConfigValidationReport) {
-    let Some(map) = check_mapping_shape(
-        value,
-        "providers",
-        &["model", "embedding", "tts", "asr", "search"],
-        report,
-    ) else {
+    let Some(map) = check_mapping_shape(value, "providers", &["model", "embedding"], report) else {
         return;
     };
-    for key in ["model", "embedding", "tts", "asr", "search"] {
+    for key in ["model", "embedding"] {
         if let Some(provider) = mapping_get(map, key) {
             check_mapping_shape(
                 provider,
@@ -452,22 +424,6 @@ fn validate_memory_shape(value: &yaml_serde::Value, report: &mut ConfigValidatio
     }
 }
 
-fn validate_voice_shape(value: &yaml_serde::Value, report: &mut ConfigValidationReport) {
-    let Some(map) = check_mapping_shape(value, "voice", &["tts", "asr"], report) else {
-        return;
-    };
-    for key in ["tts", "asr"] {
-        if let Some(provider) = mapping_get(map, key) {
-            check_mapping_shape(
-                provider,
-                format!("voice.{key}"),
-                &["provider", "model", "timeout_ms", "max_retries", "voice"],
-                report,
-            );
-        }
-    }
-}
-
 fn validate_mcp_shape(value: &yaml_serde::Value, report: &mut ConfigValidationReport) {
     let Some(map) = check_mapping_shape(value, "mcp", &["servers"], report) else {
         return;
@@ -487,20 +443,6 @@ fn validate_mcp_shape(value: &yaml_serde::Value, report: &mut ConfigValidationRe
                 "timeout_ms",
                 "max_output_bytes",
             ],
-            report,
-        );
-    }
-}
-
-fn validate_self_modify_shape(value: &yaml_serde::Value, report: &mut ConfigValidationReport) {
-    let Some(map) = check_mapping_shape(value, "self_modify", &["check_profiles"], report) else {
-        return;
-    };
-    if let Some(check_profiles) = mapping_get(map, "check_profiles") {
-        validate_dynamic_mapping_shape(
-            check_profiles,
-            "self_modify.check_profiles",
-            &["commands", "reason"],
             report,
         );
     }

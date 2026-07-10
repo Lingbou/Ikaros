@@ -46,32 +46,6 @@ pub(super) fn prompt_setup_args(args: &mut SetupArgs) -> Result<()> {
         &mut args.embedding_base_url,
         &mut args.embedding_model,
     )?;
-    if prompt_remote_resource(
-        "TTS",
-        model_api_key.as_deref(),
-        model_base_url.as_deref(),
-        &mut args.tts_api_key,
-        &mut args.tts_base_url,
-        &mut args.tts_model,
-    )? {
-        args.tts_voice = prompt_with_default("TTS voice (blank for provider default)", None)?;
-    }
-    prompt_remote_resource(
-        "ASR",
-        model_api_key.as_deref(),
-        model_base_url.as_deref(),
-        &mut args.asr_api_key,
-        &mut args.asr_base_url,
-        &mut args.asr_model,
-    )?;
-    if args.search_api_key.is_none()
-        && args.search_base_url.is_none()
-        && prompt_yes_no("Configure web search provider credentials?", false)?
-    {
-        args.search_api_key = prompt_required("Search API key")?;
-        args.search_base_url =
-            prompt_with_default("Search base URL (blank for provider default)", None)?;
-    }
     Ok(())
 }
 

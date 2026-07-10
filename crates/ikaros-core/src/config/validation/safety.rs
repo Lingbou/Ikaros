@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::{
-    super::{ExecutionConfig, SelfModifyConfig},
-    ConfigValidationReport, normalize, validate_timeout,
-};
-
-pub(super) fn validate_self_modify_config(
-    config: &SelfModifyConfig,
-    report: &mut ConfigValidationReport,
-) {
-    for (name, profile) in &config.check_profiles {
-        let path = format!("self_modify.check_profiles.{name}");
-        if name.trim().is_empty() {
-            report.error(&path, "check profile name must not be empty");
-        }
-        if profile.commands.is_empty() {
-            report.error(
-                format!("{path}.commands"),
-                "must contain at least one command",
-            );
-        }
-        for (index, command) in profile.commands.iter().enumerate() {
-            if command.trim().is_empty() {
-                report.error(format!("{path}.commands[{index}]"), "must not be empty");
-            }
-        }
-    }
-}
+use super::{super::ExecutionConfig, ConfigValidationReport, normalize, validate_timeout};
 
 pub(super) fn validate_execution_config(
     config: &ExecutionConfig,

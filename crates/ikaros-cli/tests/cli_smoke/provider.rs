@@ -20,12 +20,6 @@ providers:
   embedding:
     api_key: ""
     base_url: ""
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
-    api_key: ""
-    base_url: ""
 
 model:
   default:
@@ -48,11 +42,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -140,11 +129,6 @@ agent:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -182,11 +166,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -244,11 +223,6 @@ model:
 rag:
   embedding_provider: hash
 
-voice:
-  tts:
-    provider: mock
-  asr:
-    provider: mock
 "#,
     )
     .expect("write config");
@@ -277,12 +251,6 @@ providers:
   embedding:
     api_key: sk-secret-embedding-key
     base_url: https://api.siliconflow.cn/v1
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
-    api_key: ""
-    base_url: ""
 
 model:
   default:
@@ -306,13 +274,6 @@ rag:
   embedding_provider: openai-compatible
   embedding_model: BAAI/bge-m3
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write config");
@@ -369,14 +330,10 @@ voice:
     assert!(
         output.contains("matrix_row: kind=embedding provider=openai-compatible model=BAAI/bge-m3")
     );
-    assert!(output.contains("matrix_row: kind=tts provider=mock model=mock-tts"));
-    assert!(output.contains("matrix_row: kind=asr provider=mock model=mock-asr"));
     assert!(output.contains("fallback_role=not-applicable"));
     assert!(output.contains("fallback_count=0"));
     assert!(output.contains("fallback_models=none"));
-    assert!(output.contains("debug_hint=offline-provider"));
     assert!(output.contains("provider_profile=moonshot-kimi"));
-    assert!(output.contains("provider_profile=mock"));
     assert!(!output.contains("sk-secret-model-key"));
     assert!(!output.contains("sk-secret-embedding-key"));
 }
@@ -396,12 +353,6 @@ providers:
   embedding:
     api_key: sk-secret-embedding-key
     base_url: https://api.siliconflow.cn/v1
-  tts:
-    api_key: ""
-    base_url: ""
-  asr:
-    api_key: ""
-    base_url: ""
 
 model:
   default:
@@ -419,13 +370,6 @@ rag:
   embedding_provider: openai-compatible
   embedding_model: BAAI/bge-m3
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write config");
@@ -465,15 +409,6 @@ voice:
                 && row["model"] == "BAAI/bge-m3"
                 && row["live_smoke"] == "ready")
     );
-    assert!(
-        report["matrix"]
-            .as_array()
-            .expect("matrix")
-            .iter()
-            .any(|row| row["kind"] == "tts"
-                && row["provider"] == "mock"
-                && row["live_smoke"] == "offline")
-    );
     assert!(!output.contains("sk-secret-model-key"));
     assert!(!output.contains("sk-secret-embedding-key"));
     assert!(!output.contains("api.moonshot.cn"));
@@ -493,8 +428,6 @@ fn provider_matrix_live_probes_mock_model_without_secret_values() {
     assert!(output.contains("live_probe=ok"));
     assert!(output.contains("matrix_row: kind=embedding"));
     assert!(output.contains("matrix_row: kind=embedding provider=hash"));
-    assert!(output.contains("matrix_row: kind=tts provider=mock"));
-    assert!(output.contains("matrix_row: kind=asr provider=mock"));
     assert!(output.contains("probe_detail="));
     assert!(output.contains("health_status="));
     assert!(!output.contains("not-supported"));

@@ -7,9 +7,6 @@ use serde::{Deserialize, Serialize};
 pub struct ExternalProvidersConfig {
     pub model: RemoteProviderConfig,
     pub embedding: RemoteProviderConfig,
-    pub tts: RemoteProviderConfig,
-    pub asr: RemoteProviderConfig,
-    pub search: RemoteProviderConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

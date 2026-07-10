@@ -274,7 +274,6 @@ pub(crate) fn command_intent(command: &str) -> &'static str {
         "/memory" => "memory",
         "/rag" => "rag",
         "/tools" | "/mcp" => "tools",
-        "/browser" | "/web" | "/vision" | "/image" | "/api" | "/gateway" => "surface",
         _ => "command",
     }
 }
@@ -289,7 +288,6 @@ pub(crate) fn command_scope(command: &str) -> &'static str {
         "/code" | "/diff" | "/review" | "/rollback" => "workspace",
         "/provider" | "/model" | "/budget" => "provider",
         "/context" | "/memory" | "/rag" | "/tools" | "/mcp" => "runtime",
-        "/browser" | "/web" | "/vision" | "/image" | "/api" | "/gateway" => "integration",
         _ => "workbench",
     }
 }
@@ -335,9 +333,7 @@ pub(crate) fn command_risk(command: &str) -> &'static str {
         "/cancel" => "interrupt",
         "/queue" | "/attach" | "/screen" => "local-ui",
         "/code" | "/rollback" => "workspace-mutation",
-        "/browser" | "/web" | "/vision" | "/image" | "/provider" | "/gateway" => {
-            "network-or-provider"
-        }
+        "/provider" => "network-or-provider",
         "/budget" | "/agent" => "runtime-mutation",
         "/session" => match command.split_whitespace().nth(1) {
             Some("resume" | "export") => "runtime-mutation",
@@ -361,22 +357,6 @@ pub fn command_requires_explicit_action(command: &str) -> bool {
         ["/queue", "remove" | "clear" | "retry" | "requeue", ..] => true,
         ["/attach", "remove" | "clear", ..] => true,
         ["/provider", ..] if parts.contains(&"--live") => true,
-        ["/browser", command, ..]
-            if !matches!(
-                *command,
-                "status" | "list" | "supervisor" | "supervisor-status"
-            ) =>
-        {
-            true
-        }
-        ["/web", "search" | "extract", ..] => true,
-        ["/vision", "describe", target, ..] if !target.starts_with('-') => true,
-        ["/image", "generate", prompt, ..] if !prompt.starts_with('-') => true,
-        ["/gateway", "daemon" | "adapter", command, ..]
-            if !matches!(*command, "status" | "list") =>
-        {
-            true
-        }
         ["/budget", ..] | ["/agent", ..] => true,
         ["/session", "resume" | "export", ..] => true,
         ["/resume" | "/new" | "/fork", ..] => true,

@@ -114,56 +114,6 @@ fn persona_and_relationship_paths_are_local_audited_and_searchable() {
 }
 
 #[test]
-fn mock_voice_tts_asr_and_output_approval_stay_local_and_redacted() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    fs::write(env.workspace.join("audio.wav"), b"fake audio bytes").expect("audio source");
-
-    let tts = env.run([
-        "voice",
-        "tts",
-        "--voice",
-        "smoke",
-        "--format",
-        "wav",
-        "--sample-rate-hz",
-        "16000",
-        "--language",
-        "en",
-        "hello voice token=abc123",
-    ]);
-    assert!(tts.contains("summary: mock-tts TTS synthesized"));
-    assert!(tts.contains("\"redacted_text_preview\": \"hello voice token=[REDACTED_SECRET]\""));
-    assert!(!tts.contains("abc123"));
-
-    let requested = env.run(["voice", "tts", "--output", "out.wav", "write voice file"]);
-    assert!(requested.contains("\"decision\": \"ask_user\""));
-    assert!(!env.workspace.join("out.wav").exists());
-
-    let approval_id = parse_approval_id(&requested);
-    let approved = env.run(["approval", "approve", &approval_id]);
-    assert!(approved.contains("summary: mock-tts TTS synthesized"));
-    assert!(approved.contains("\"path\":"));
-    assert!(env.workspace.join("out.wav").exists());
-
-    let asr = env.run([
-        "voice",
-        "asr",
-        "--format",
-        "wav",
-        "--sample-rate-hz",
-        "16000",
-        "--language",
-        "en",
-        "audio.wav",
-    ]);
-    assert!(asr.contains("summary: mock-asr ASR transcribed"));
-    assert!(asr.contains("\"text\": \"mock transcript\""));
-    assert!(!asr.contains("audio.wav"));
-}
-
-#[test]
 fn engineering_assistant_read_only_paths_run_on_temp_rust_crate() {
     let env = TestHome::new();
     env.init();
@@ -207,19 +157,6 @@ fn engineering_assistant_read_only_paths_run_on_temp_rust_crate() {
     ]);
     assert!(policy.contains("\"decision\": \"AskUser\""));
     assert!(policy.contains("\"workspace_root\""));
-
-    let self_modify_policy = env.run([
-        "policy",
-        "explain",
-        "self_modify_apply",
-        "--risk",
-        "self-modify",
-        "--path",
-        "src/lib.rs",
-        "--write",
-    ]);
-    assert!(self_modify_policy.contains("\"decision\": \"Deny\""));
-    assert!(self_modify_policy.contains("self-modification is disabled by default"));
 
     let repo = env.run(["repo", "scan"]);
     assert!(repo.contains("summary: repo scanned"));
@@ -273,89 +210,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     assert!(workflow.contains("\"kind\": \"final_report_prepared\""));
     assert!(workflow.contains("\"requires_guarded_edit\":"));
     assert!(!workflow.contains("abc123"));
-
-    let proposal = env.run([
-        "self-modify",
-        "propose",
-        "--kind",
-        "runtime-patch",
-        "--target",
-        "src/lib.rs",
-        "--diff",
-        diff,
-    ]);
-    assert!(proposal.contains("\"apply_available\": false"));
-    assert!(proposal.contains("\"manual_apply_available\": true"));
-    assert!(proposal.contains("\"ok_to_request_approval\": true"));
-    assert!(proposal.contains("\"snapshot_required\": true"));
-    assert!(env.home.join("self-modify/proposals.jsonl").exists());
-    let proposal_id = proposal
-        .lines()
-        .find_map(|line| {
-            line.trim()
-                .strip_prefix("\"id\": \"")
-                .map(|id| id.trim_end_matches([',', '"']).to_owned())
-        })
-        .expect("proposal id");
-
-    let proposals = env.run(["self-modify", "list"]);
-    let proposals_json = skill_output_json(&proposals);
-    let proposals = proposals_json.as_array().expect("self-modify proposals");
-    assert!(proposals.iter().any(|proposal| {
-        proposal["change_kind"] == "runtime_patch"
-            && proposal["target_path"]
-                .as_str()
-                .is_some_and(|path| json_path_ends_with(path, &["src", "lib.rs"]))
-    }));
-
-    let heartbeat = env.run(["self-modify", "heartbeat"]);
-    assert!(heartbeat.contains("\"status\": \"manual_apply_only\""));
-    assert!(heartbeat.contains("\"proposal_count\": 1"));
-
-    let apply_request = env.run(["self-modify", "request-apply", &proposal_id]);
-    assert!(apply_request.contains("\"name\": \"self_modify_apply\""));
-    assert!(apply_request.contains("approval: "));
-    let apply_approval_id = parse_approval_id(&apply_request);
-
-    let apply_approved = env.run(["approval", "approve", &apply_approval_id]);
-    assert!(apply_approved.contains("approval is approved but not executed"));
-    assert!(apply_approved.contains("self-modify apply-approved"));
-    assert!(
-        fs::read_to_string(env.workspace.join("src/lib.rs"))
-            .expect("source")
-            .contains("\"ok\"")
-    );
-
-    let applied = env.run([
-        "self-modify",
-        "apply-approved",
-        &proposal_id,
-        "--approval-id",
-        &apply_approval_id,
-    ]);
-    assert!(applied.contains("\"proposal_id\""));
-    assert!(applied.contains("\"source\": \"default\""));
-    assert!(applied.contains("\"patch_report\""));
-    assert!(applied.contains("\"post_checks_passed\": true"));
-    assert!(applied.contains("\"operation_id\""));
-    assert!(applied.contains("\"command\": \"cargo check --workspace --all-features\""));
-    assert!(
-        fs::read_to_string(env.workspace.join("src/lib.rs"))
-            .expect("updated")
-            .contains("\"safe-ok\"")
-    );
-
-    let rolled_back = env.run(["self-modify", "rollback", &proposal_id]);
-    assert!(rolled_back.contains("\"restored_snapshot\": true"));
-    assert!(rolled_back.contains("\"operation_id\""));
-    let operations = env.run(["self-modify", "operations"]);
-    assert!(operations.contains("\"kind\": \"apply\""));
-    assert!(operations.contains("\"kind\": \"rollback\""));
-    assert!(
-        fs::read_to_string(env.workspace.join("src/lib.rs"))
-            .expect("restored")
-            .contains("\"ok\"")
-    );
 }
 
 #[test]
@@ -941,7 +795,7 @@ fn chat_workbench_open_selected_does_not_clear_pending_input() {
 }
 
 #[test]
-fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
+fn chat_workbench_exposes_session_provider_approval_and_timeline_status() {
     let env = TestHome::new();
     env.init();
     env.use_offline_mock_config();
@@ -949,7 +803,7 @@ fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
 
     let output = env.run_with_stdin(
         ["chat", "--chat-session", "workbench-status-session"],
-        "status session seed\n/help\n/status\n/session status\n/provider\n/provider health\n/provider matrix --live\n/provider profiles\n/provider debug\n/gateway\n/tasks\n/approval\n/timeline\n/quit\n",
+        "status session seed\n/help\n/status\n/session status\n/provider\n/provider health\n/provider matrix --live\n/provider profiles\n/provider debug\n/approval\n/timeline\n/quit\n",
     );
 
     assert!(output.contains("/session status|resume|history"));
@@ -958,8 +812,6 @@ fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
             "/provider [inspect|health [--live]|matrix [--live] [--json]|profiles|debug]"
         )
     );
-    assert!(output.contains("/gateway"));
-    assert!(output.contains("/tasks"));
     assert!(output.contains("/approval"));
     assert!(output.contains("workbench_session: workbench-status-session"));
     let status_model = output
@@ -998,7 +850,6 @@ fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
     assert!(status_fallbacks.contains("fallback_count=0"));
     assert!(output.contains("status_workspace:"));
     assert!(output.contains("status_policy:"));
-    assert!(output.contains("status_gateway_pending: 0"));
     assert!(output.contains("status_approvals_pending: 0"));
     assert!(output.contains("status_continuations: 0"));
     assert!(output.contains("workbench_status_json:"));
@@ -1006,7 +857,6 @@ fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
     assert!(output.contains("\"session_id\":\"workbench-status-session\""));
     assert!(output.contains("\"provider\":\"mock\""));
     assert!(output.contains("\"budget_status\":\"unbounded\""));
-    assert!(output.contains("\"gateway_pending\":0"));
     assert!(output.contains("\"approvals_pending\":0"));
     assert!(output.contains("\"continuations\":0"));
     assert!(output.contains("session_state_db:"));
@@ -1022,13 +872,8 @@ fn chat_workbench_exposes_session_provider_gateway_tasks_and_approval_status() {
     assert!(output.contains("\"format\": \"ikaros-provider-debug-v1\""));
     assert!(output.contains("\"matrix\""));
     assert!(output.contains("\"fallback_chain\""));
-    assert!(output.contains("gateway_pending: 0"));
-    assert!(output.contains("gateway_dead_lettered: 0"));
-    assert!(output.contains("tasks_enabled: 0"));
     assert!(output.contains("approvals_pending: 0"));
     assert!(!output.contains("workbench_evidence: kind=provider"));
-    assert!(!output.contains("workbench_evidence: kind=gateway"));
-    assert!(!output.contains("workbench_evidence: kind=tasks"));
     assert!(output.contains("profile: mock"));
     assert!(output.contains("temperature_policy:"));
     assert!(output.contains("reasoning_policy:"));
@@ -1070,14 +915,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write openai-compatible config");
@@ -1133,14 +970,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write openai-compatible config");
@@ -1191,14 +1020,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write fallback config");
@@ -1249,14 +1070,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write agent instance config");
@@ -1308,7 +1121,6 @@ Check policy bypasses and replay evidence.
     assert!(default_output.contains("tools_disabled:"));
     assert!(default_output.contains("- deferred rag_search"));
     assert!(default_output.contains("- deferred code_workflow"));
-    assert!(default_output.contains("- deferred voice_tts"));
     assert!(default_output.contains("- deferred rust_review"));
     assert!(default_output.contains("kind=prompt_skill"));
     assert!(default_output.contains("callable=false"));
@@ -1331,14 +1143,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 
 agent:
   default: build
@@ -1448,7 +1252,7 @@ fn chat_workbench_lists_and_suggests_slash_commands() {
     assert!(output.contains("/resume"));
     assert!(output.contains("commands_json:"));
     assert!(output.contains("\"name\":\"/sessions\""));
-    assert!(output.contains("\"surfaces\":[\"workbench\",\"gateway\",\"acp\"]"));
+    assert!(output.contains("\"surfaces\":[\"workbench\"]"));
     assert!(output.contains("unknown command: /sesions"));
     assert!(output.contains("did_you_mean: /sessions"));
 }
@@ -1564,187 +1368,6 @@ fn default_entry_model_command_renders_human_status_without_protocol_lines() {
 }
 
 #[test]
-fn default_entry_debug_commands_render_human_guidance_without_json_fragments() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let output = env.run_with_stdin(
-        std::iter::empty::<&str>(),
-        "/debug readiness\n/debug\n/quit\n",
-    );
-
-    assert!(output.contains("* Debug"));
-    assert!(output.contains("readiness"));
-    assert!(output.contains("timeline"));
-    assert_default_entry_has_no_protocol_fragments(&output);
-}
-
-#[test]
-fn default_entry_common_slash_usage_renders_human_blocks() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let output = env.run_with_stdin(
-        std::iter::empty::<&str>(),
-        "/vision\n/image\n/code\n/quit\n",
-    );
-
-    assert!(output.contains("* Vision"));
-    assert!(output.contains("* Image"));
-    assert!(output.contains("* Code"));
-    assert!(!output.contains("vision_usage:"));
-    assert!(!output.contains("image_usage:"));
-    assert!(!output.contains("usage: /code"));
-    assert_default_entry_has_no_protocol_fragments(&output);
-}
-
-#[test]
-fn default_entry_common_inspect_commands_render_human_blocks() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let output = env.run_with_stdin(
-        std::iter::empty::<&str>(),
-        "/status\n/agents\n/context\n/memory\n/rag\n/tools\n/mcp\n/api\n/tasks\n/sandbox\n/mentions lib\n/diff\n/quit\n",
-    );
-
-    for title in [
-        "* Session",
-        "* Status",
-        "* Agents",
-        "* Context",
-        "* Memory",
-        "* RAG",
-        "* Tools",
-        "* MCP",
-        "* API",
-        "* Tasks",
-        "* Sandbox",
-        "* Mentions",
-        "* Diff",
-    ] {
-        assert!(
-            output.contains(title),
-            "missing human block {title}: {output}"
-        );
-    }
-    for protocol in [
-        "status_model:",
-        "workbench_status_json:",
-        "context_session:",
-        "context_status_json:",
-        "memory_status_json:",
-        "rag_status_json:",
-        "tools_status_json:",
-        "mcp_status_json:",
-        "api_status_json:",
-        "tasks_total:",
-        "tasks_enabled:",
-        "tasks_disabled:",
-        "tasks_due:",
-        "sandbox_json:",
-        "mentions_query:",
-        "mentions_found:",
-        "diff_status:",
-        "diff_status_json:",
-        "kind=model",
-        "entry=",
-        "workbench_evidence:",
-    ] {
-        assert!(
-            !output.contains(protocol),
-            "default human UI leaked protocol line {protocol}: {output}"
-        );
-    }
-    assert_default_entry_has_no_protocol_fragments(&output);
-}
-
-#[test]
-fn default_entry_screen_open_selected_renders_human_blocks_without_protocol_lines() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let output = env.run_with_stdin(
-        std::iter::empty::<&str>(),
-        "/screen --select-action /provider matrix open-selected\n/screen --select-action /tools open-selected\n/screen --palette-query /status open-selected\n/screen --select-action /diff open-selected\n/quit\n",
-    );
-
-    for title in ["* Provider", "* Tools", "* Status", "* Diff"] {
-        assert!(
-            output.contains(title),
-            "missing human selected action block {title}: {output}"
-        );
-    }
-    for protocol in [
-        "screen_open_selected:",
-        "screen_open_selected_status:",
-        "provider_matrix:",
-        "matrix_row:",
-        "tools_status_json:",
-        "workbench_status_json:",
-        "diff_status:",
-        "diff_status_json:",
-        "cell kind=",
-    ] {
-        assert!(
-            !output.contains(protocol),
-            "default screen open-selected leaked protocol line {protocol}: {output}"
-        );
-    }
-    assert_default_entry_has_no_protocol_fragments(&output);
-}
-
-#[test]
-fn default_entry_mutation_commands_render_human_blocks_without_protocol_lines() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let output = env.run_with_stdin(
-        std::iter::empty::<&str>(),
-        "/cancel all\n/fork quick branch\n/quit\n",
-    );
-
-    assert!(output.contains("* Cancel"));
-    assert!(output.contains("* Fork"));
-    assert!(!output.contains("workbench_cancel:"));
-    assert!(!output.contains("continuations_json:"));
-    assert!(!output.contains("session_fork:"));
-    assert!(!output.contains("session_forked:"));
-    assert_default_entry_has_no_protocol_fragments(&output);
-}
-
-#[test]
-fn default_entry_gateway_and_mcp_help_render_human_blocks() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let output = env.run_with_stdin(
-        std::iter::empty::<&str>(),
-        "/gateway\n/gateway help\n/mcp help\n/quit\n",
-    );
-
-    assert!(output.contains("* Gateway"));
-    assert!(output.contains("* MCP"));
-    assert!(!output.contains("gateway_inbox:"));
-    assert!(!output.contains("gateway_usage:"));
-    assert!(!output.contains("usage: /mcp"));
-    assert!(!output.contains("mcp_policy:"));
-    assert_default_entry_has_no_protocol_fragments(&output);
-}
-
-#[test]
 fn default_entry_help_and_unknown_command_render_human_blocks() {
     let env = TestHome::new();
     env.init();
@@ -1826,14 +1449,6 @@ rag:
   embedding_provider: hash
   embedding_model: text-embedding-3-small
 
-voice:
-  tts:
-    provider: mock
-    model: mock-tts
-    voice: default
-  asr:
-    provider: mock
-    model: mock-asr
 "#,
     )
     .expect("write budget-limited config");
@@ -2450,51 +2065,6 @@ fn chat_workbench_approval_overlay_renders_combined_risk_context() {
 }
 
 #[test]
-fn chat_workbench_can_approve_and_execute_pending_approval() {
-    let env = TestHome::new();
-    env.init();
-    env.use_offline_mock_config();
-    install_smoke_rust_crate(&env.workspace);
-
-    let requested = env.run([
-        "voice",
-        "tts",
-        "--output",
-        "workbench.wav",
-        "write from workbench",
-    ]);
-    assert!(requested.contains("\"decision\": \"ask_user\""));
-    assert!(!env.workspace.join("workbench.wav").exists());
-    let approval_id = parse_approval_id(&requested);
-
-    let input = "/approval\n/screen --focus side --select 1 approve-selected\n/approval\n/timeline\n/quit\n";
-    let output = env.run_with_stdin(["chat", "--chat-session", "approval-action-session"], input);
-
-    assert!(output.contains("approvals_pending: 1"));
-    assert!(output.contains(&format!(
-        "screen_approval_selected: action=approve id={approval_id}"
-    )));
-    assert!(output.contains("workbench_approval_decision: approved"));
-    assert!(output.contains("workbench_approval_replay: executed"));
-    assert!(output.contains("workbench_approval_continue_json:"));
-    assert!(output.contains("\"schema\":\"ikaros-workbench-approval-continue-v1\""));
-    assert!(output.contains("\"auto_continue_status\":\"completed\""));
-    assert!(output.contains("\"pending_count\":0"));
-    assert!(
-        output.contains("workbench_approval_next: screen=/screen timeline=/timeline trace=/trace")
-    );
-    assert!(output.contains(
-        "workbench_approval_continue: status=executed next=/screen timeline=/timeline trace=/trace pending=0"
-    ));
-    assert!(output.contains("workbench_approval_resume: none"));
-    assert!(!output.contains("workbench_evidence: kind=approval"));
-    assert!(output.contains("workbench approval approved"));
-    assert!(output.contains("summary: mock-tts TTS synthesized"));
-    assert!(output.contains("approvals_pending: 0"));
-    assert!(env.workspace.join("workbench.wav").exists());
-}
-
-#[test]
 fn chat_workbench_can_approve_and_execute_pending_file_write() {
     let env = TestHome::new();
     env.init();
@@ -2662,14 +2232,13 @@ fn chat_workbench_open_selected_does_not_execute_pending_approval() {
     install_smoke_rust_crate(&env.workspace);
 
     let requested = env.run([
-        "voice",
-        "tts",
-        "--output",
-        "workbench-open-selected.wav",
+        "fs",
+        "write",
+        "workbench-open-selected.txt",
         "do not execute from open selected",
     ]);
     assert!(requested.contains("\"decision\": \"ask_user\""));
-    assert!(!env.workspace.join("workbench-open-selected.wav").exists());
+    assert!(!env.workspace.join("workbench-open-selected.txt").exists());
 
     let input =
         "/approval\n/screen --select-action approval_approve open-selected\n/approval\n/quit\n";
@@ -2685,5 +2254,5 @@ fn chat_workbench_open_selected_does_not_execute_pending_approval() {
     assert!(output.contains("screen_open_selected_status: explicit_action_required"));
     assert!(output.contains("approvals_pending: 1"));
     assert!(!output.contains("workbench_approval_decision: approved"));
-    assert!(!env.workspace.join("workbench-open-selected.wav").exists());
+    assert!(!env.workspace.join("workbench-open-selected.txt").exists());
 }

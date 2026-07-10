@@ -42,7 +42,6 @@ pub(crate) fn screen_evidence_json(screen: &WorkbenchScreen) -> Vec<serde_json::
         ("coding", WorkbenchCellKind::Coding),
         ("approval", WorkbenchCellKind::Approval),
         ("queue", WorkbenchCellKind::Continuation),
-        ("gateway", WorkbenchCellKind::Session),
     ]
     .into_iter()
     .map(|(area, fallback_kind)| screen_evidence_area_json(screen, area, fallback_kind))
@@ -103,7 +102,6 @@ pub(crate) fn cell_matches_evidence_area(
                 || detail.contains("pending_inputs=")
                 || detail.contains("continuations=")
         }
-        "gateway" => title.contains("gateway") || detail.contains("gateway"),
         _ => cell.kind == fallback_kind,
     }
 }

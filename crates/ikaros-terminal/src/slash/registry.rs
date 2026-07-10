@@ -29,13 +29,6 @@ const CODING_WRITE: &[SlashCommandPermission] = &[
 const CODING_READ: &[SlashCommandPermission] =
     &[SlashCommandPermission::Read, SlashCommandPermission::Coding];
 const WORKBENCH_ONLY: &[SlashCommandSurface] = &[SlashCommandSurface::Workbench];
-const WORKBENCH_GATEWAY: &[SlashCommandSurface] =
-    &[SlashCommandSurface::Workbench, SlashCommandSurface::Gateway];
-const WORKBENCH_GATEWAY_ACP: &[SlashCommandSurface] = &[
-    SlashCommandSurface::Workbench,
-    SlashCommandSurface::Gateway,
-    SlashCommandSurface::Acp,
-];
 
 const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
     SlashCommandDescriptor {
@@ -44,7 +37,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show workbench commands",
         tags: &["commands", "help"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/commands",
@@ -54,7 +47,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
             "commands", "search", "fuzzy", "registry", "metadata", "palette",
         ],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/queue",
@@ -62,7 +55,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "inspect, run, enqueue, remove, clear, or requeue pending work",
         tags: &["input", "pending", "queue", "resume"],
         permissions: SESSION_CONTROL,
-        surfaces: WORKBENCH_GATEWAY,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/attach",
@@ -86,7 +79,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "list configured agent profiles and instances",
         tags: &["agent", "profile", "instance"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/agent",
@@ -100,9 +93,9 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         name: "/status",
         usage: "/status",
         summary: "show unified workbench status",
-        tags: &["session", "provider", "gateway", "approval"],
+        tags: &["session", "provider", "approval"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/budget",
@@ -147,7 +140,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "list recent chat sessions",
         tags: &["session", "history"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/session",
@@ -155,7 +148,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "inspect current session state, history, timeline, or explicit resume/export actions",
         tags: &["session", "resume", "timeline", "export"],
         permissions: SESSION_CONTROL,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/resume",
@@ -163,7 +156,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "resume a session id",
         tags: &["session", "resume"],
         permissions: SESSION_CONTROL,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/new",
@@ -171,7 +164,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "alias for /clear",
         tags: &["session", "alias"],
         permissions: SESSION_CONTROL,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/fork",
@@ -179,7 +172,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "branch the current session from its active leaf",
         tags: &["session", "branch", "tree"],
         permissions: SESSION_CONTROL,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/timeline",
@@ -189,7 +182,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
             "session", "replay", "debug", "kind", "filter", "failed", "approval",
         ],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/replay",
@@ -197,7 +190,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show a longer session replay view, optionally filtered by event kind or replay point",
         tags: &["session", "replay", "kind", "filter", "failed", "approval"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/debug",
@@ -245,7 +238,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
             "session", "debug", "trace", "replay", "kind", "filter", "failed", "approval",
         ],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/mentions",
@@ -253,7 +246,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "search file, folder, git, diff, and staged context mentions",
         tags: &["context", "file", "folder", "mention", "reference"],
         permissions: WORKSPACE_READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/context",
@@ -261,7 +254,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "inspect context budget and prompt assembly state",
         tags: &["context"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/memory",
@@ -269,7 +262,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "inspect memory policy, projection, and working-memory state",
         tags: &["memory"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/rag",
@@ -277,7 +270,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show RAG settings",
         tags: &["rag", "context"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/tools",
@@ -285,7 +278,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show direct and deferred model toolsets",
         tags: &["tool", "toolset", "skill"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/mcp",
@@ -293,54 +286,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show configured MCP servers or call stdio/HTTP MCP tools through harness boundaries",
         tags: &["mcp", "tool", "server", "status", "plugin", "stdio", "http"],
         permissions: MCP,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/api",
-        usage: "/api status",
-        summary: "show local OpenAI-compatible API routes and readiness",
-        tags: &["api", "openai", "responses", "embedding", "status"],
-        permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/browser",
-        usage: "/browser [launch [url] [--profile NAME]|supervisor-status [--profile NAME]|stop [--profile NAME]|status|list|new <url>|activate <target-id>|close <target-id>|navigate <target-id> <url>|snapshot <target-id>|click <target-id> <x> <y>|type <target-id> <text>|scroll <target-id> [x] [y]|screenshot <target-id>|cdp <target-id> <method> [params-json]] [--endpoint URL]",
-        summary: "launch or control a local Chrome DevTools endpoint with an isolated profile",
-        tags: &[
-            "browser",
-            "cdp",
-            "network",
-            "debug",
-            "supervisor",
-            "profile",
-        ],
-        permissions: MCP,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/web",
-        usage: "/web search <query> [--provider duckduckgo-html|brave|bing|serpapi|tavily] [--max-results N] | /web extract <url> [--max-bytes N] [--max-chars N]",
-        summary: "run governed web search or single-page extraction from workbench",
-        tags: &["web", "search", "extract", "network"],
-        permissions: MCP,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/vision",
-        usage: "/vision describe <image-path|url|data-url> [--prompt TEXT] [--detail low|high|auto]",
-        summary: "describe an image through the active multimodal model",
-        tags: &["vision", "image", "multimodal", "model"],
-        permissions: PROVIDER_READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/image",
-        usage: "/image generate <prompt> [--model MODEL] [--size 1024x1024] [--n N] [--response-format url|b64_json] [--output-dir PATH]",
-        summary: "generate images through the active OpenAI-compatible provider endpoint",
-        tags: &["image", "generation", "multimodal", "model"],
-        permissions: PROVIDER_READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/model",
@@ -348,7 +294,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "inspect active model descriptor",
         tags: &["provider", "model"],
         permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/provider",
@@ -356,23 +302,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "inspect provider metadata, health, matrix, or debug JSON",
         tags: &["provider", "model", "health", "matrix", "json", "debug"],
         permissions: PROVIDER_READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/gateway",
-        usage: "/gateway [status|daemon status|daemon start|daemon stop|daemon restart|adapter list|adapter enqueue|adapter render-delivery]",
-        summary: "show local gateway status, control the message daemon, or inspect platform adapters",
-        tags: &["gateway", "ingress", "daemon", "adapter", "pairing"],
-        permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
-    },
-    SlashCommandDescriptor {
-        name: "/tasks",
-        usage: "/tasks",
-        summary: "show scheduled task status",
-        tags: &["schedule", "task"],
-        permissions: READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/approval",
@@ -380,7 +310,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show or resolve pending approvals",
         tags: &["approval", "policy"],
         permissions: APPROVAL,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/approvals",
@@ -388,7 +318,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "alias for /approval",
         tags: &["approval", "policy", "alias"],
         permissions: APPROVAL,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/cancel",
@@ -404,7 +334,7 @@ const SLASH_COMMANDS: &[SlashCommandDescriptor] = &[
         summary: "show current git diff summary",
         tags: &["coding", "diff"],
         permissions: WORKSPACE_READ,
-        surfaces: WORKBENCH_GATEWAY_ACP,
+        surfaces: WORKBENCH_ONLY,
     },
     SlashCommandDescriptor {
         name: "/code",

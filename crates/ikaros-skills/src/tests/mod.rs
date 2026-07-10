@@ -4,13 +4,12 @@
 
 pub(super) use super::*;
 pub(super) use async_trait::async_trait;
-pub(super) use ikaros_core::PersonaLoader;
 pub(super) use ikaros_core::{AgentPermission, AgentProfile, ResolvedAgentProfile, Result};
 pub(super) use ikaros_execution::harness::{
     ApprovalStatus, ExecutionEnv, ExecutionSession, FileMetadata, FileSystem, LocalExecutionEnv,
-    NetworkEgress, NetworkEgressRequest, NetworkEgressResponse, NetworkedExecutionEnv,
-    ProcessOutput, ProcessRequest, ProcessRunner, Skill, SkillContext, SkillDescriptor,
-    SkillDescriptorKind, SkillOutput, ToolExecutionMode, Toolset, ToolsetSelection,
+    NetworkEgress, NetworkEgressRequest, NetworkEgressResponse, ProcessOutput, ProcessRequest,
+    ProcessRunner, Skill, SkillContext, SkillDescriptor, SkillDescriptorKind, SkillOutput,
+    ToolExecutionMode, Toolset, ToolsetSelection,
 };
 pub(super) use ikaros_providers::model::{
     ModelContextProfile, ModelProvider, ModelRequest, ModelResponse, TokenUsage,
@@ -101,12 +100,6 @@ pub(super) struct BlockingCodingModelProvider {
 pub(super) struct ScriptedNetworkEnv {
     reads: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
-    response: NetworkEgressResponse,
-}
-
-pub(super) struct RecordingNetwork {
-    calls: Arc<AtomicUsize>,
-    request: Arc<Mutex<Option<NetworkEgressRequest>>>,
     response: NetworkEgressResponse,
 }
 
@@ -381,18 +374,6 @@ impl NetworkEgress for ScriptedNetworkEnv {
         assert_eq!(request.method, "POST");
         assert!(request.url.ends_with("/embeddings"));
         assert!(request.headers.contains_key("authorization"));
-        let response = self.response.clone();
-        Box::pin(async move { Ok(response) })
-    }
-}
-
-impl NetworkEgress for RecordingNetwork {
-    fn send_network_request<'a>(
-        &'a self,
-        request: NetworkEgressRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<NetworkEgressResponse>> + Send + 'a>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        *self.request.lock().expect("request lock") = Some(request);
         let response = self.response.clone();
         Box::pin(async move { Ok(response) })
     }
@@ -703,11 +684,6 @@ pub(super) fn test_env(root: &Path, workspace: &Path) -> SkillEnvironment {
         rag_provider: ikaros_core::RemoteProviderConfig::default(),
         persona_path: root.join("persona"),
         skills_dir: root.join("skills"),
-        voice_tts: ikaros_providers::voice::VoiceProviderConfig::mock_tts(),
-        voice_tts_provider: ikaros_core::RemoteProviderConfig::default(),
-        voice_asr: ikaros_providers::voice::VoiceProviderConfig::mock_asr(),
-        voice_asr_provider: ikaros_core::RemoteProviderConfig::default(),
-        web_search_provider: ikaros_core::RemoteProviderConfig::default(),
         coding_session: None,
     }
 }
@@ -745,5 +721,3 @@ mod memory;
 mod plugin;
 mod rag;
 mod registry;
-mod voice;
-mod web;

@@ -25,17 +25,10 @@ pub(in crate::chat) fn slash_command_fullscreen_effect(
         "/approval" | "/approvals" => approval_fullscreen_effect(subcommand),
         "/attach" | "/attachments" => attach_fullscreen_effect(subcommand),
         "/budget" => budget_fullscreen_effect(subcommand),
-        "/web" => web_fullscreen_effect(subcommand),
-        "/vision" => vision_fullscreen_effect(&tokens),
-        "/image" => image_fullscreen_effect(&tokens),
         "/mcp" => mcp_fullscreen_effect(subcommand),
-        "/browser" => browser_fullscreen_effect(subcommand),
-        "/gateway" => gateway_fullscreen_effect(&tokens),
         "/sandbox" => sandbox_fullscreen_effect(&tokens),
         "/agents" | "/history" | "/sessions" | "/timeline" | "/replay" | "/debug" | "/trace"
-        | "/mentions" | "/tasks" | "/rag" | "/tools" | "/api" | "/diff" => {
-            SlashCommandFullscreenEffect::Inspect
-        }
+        | "/mentions" | "/rag" | "/tools" | "/diff" => SlashCommandFullscreenEffect::Inspect,
         _ => SlashCommandFullscreenEffect::TerminalStdout,
     }
 }
@@ -98,64 +91,10 @@ fn budget_fullscreen_effect(subcommand: Option<&str>) -> SlashCommandFullscreenE
     }
 }
 
-fn web_fullscreen_effect(subcommand: Option<&str>) -> SlashCommandFullscreenEffect {
-    match subcommand {
-        Some("search" | "extract") => SlashCommandFullscreenEffect::ActionOrProbe,
-        None | Some("help" | "--help") => SlashCommandFullscreenEffect::Inspect,
-        _ => SlashCommandFullscreenEffect::Inspect,
-    }
-}
-
-fn vision_fullscreen_effect(tokens: &[&str]) -> SlashCommandFullscreenEffect {
-    match tokens.get(1).copied() {
-        Some("describe") if tokens.len() > 2 => SlashCommandFullscreenEffect::ActionOrProbe,
-        None | Some("help" | "--help" | "describe") => SlashCommandFullscreenEffect::Inspect,
-        _ => SlashCommandFullscreenEffect::Inspect,
-    }
-}
-
-fn image_fullscreen_effect(tokens: &[&str]) -> SlashCommandFullscreenEffect {
-    match tokens.get(1).copied() {
-        Some("generate") if tokens.len() > 2 => SlashCommandFullscreenEffect::ActionOrProbe,
-        None | Some("help" | "--help" | "generate") => SlashCommandFullscreenEffect::Inspect,
-        _ => SlashCommandFullscreenEffect::Inspect,
-    }
-}
-
 fn mcp_fullscreen_effect(subcommand: Option<&str>) -> SlashCommandFullscreenEffect {
     match subcommand {
         Some("call-stdio" | "call-http") => SlashCommandFullscreenEffect::ActionOrProbe,
         None | Some("status" | "help" | "--help") => SlashCommandFullscreenEffect::Inspect,
-        _ => SlashCommandFullscreenEffect::Inspect,
-    }
-}
-
-fn browser_fullscreen_effect(subcommand: Option<&str>) -> SlashCommandFullscreenEffect {
-    match subcommand {
-        None | Some("status" | "list" | "supervisor" | "supervisor-status" | "help" | "--help") => {
-            SlashCommandFullscreenEffect::Inspect
-        }
-        Some(_) => SlashCommandFullscreenEffect::ActionOrProbe,
-    }
-}
-
-fn gateway_fullscreen_effect(tokens: &[&str]) -> SlashCommandFullscreenEffect {
-    match (tokens.get(1).copied(), tokens.get(2).copied()) {
-        (Some("daemon"), Some("start" | "stop" | "restart")) => {
-            SlashCommandFullscreenEffect::ActionOrProbe
-        }
-        (Some("adapter"), Some("enqueue" | "render-delivery" | "render_delivery")) => {
-            SlashCommandFullscreenEffect::ActionOrProbe
-        }
-        (None, _) | (Some("status" | "help" | "--help"), _) => {
-            SlashCommandFullscreenEffect::Inspect
-        }
-        (Some("daemon"), None | Some("status" | "help" | "--help")) => {
-            SlashCommandFullscreenEffect::Inspect
-        }
-        (Some("adapter"), None | Some("list" | "status" | "help" | "--help")) => {
-            SlashCommandFullscreenEffect::Inspect
-        }
         _ => SlashCommandFullscreenEffect::Inspect,
     }
 }

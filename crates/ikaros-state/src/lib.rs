@@ -4,10 +4,6 @@
 //!
 //! Callers import owned state capabilities through the named modules below.
 
-pub mod automation;
-
-pub mod gateway;
-
 pub mod memory;
 
 pub mod rag;

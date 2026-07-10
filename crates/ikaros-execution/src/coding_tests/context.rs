@@ -183,7 +183,6 @@ fn coding_mode_capabilities_define_allowed_tools_per_mode() {
     assert!(plan.can_read_repo);
     assert!(!plan.can_apply_patch);
     assert!(!plan.can_run_tests);
-    assert!(!plan.can_self_modify);
     assert!(plan.validate_request(false, false).is_ok());
     assert!(plan.validate_request(true, false).is_err());
 
@@ -203,9 +202,4 @@ fn coding_mode_capabilities_define_allowed_tools_per_mode() {
     assert!(edit.can_apply_patch);
     assert!(edit.can_run_tests);
     assert!(edit.validate_request(true, true).is_ok());
-
-    let self_modify = CodingModeCapabilities::for_mode(CodingMode::SelfModify);
-    assert!(self_modify.can_self_modify);
-    assert!(self_modify.requires_self_modify_boundary);
-    assert!(self_modify.validate_request(true, false).is_err());
 }
