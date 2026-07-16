@@ -3,14 +3,15 @@
 ## Verification
 
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --workspace --all-features`
-- [ ] `cargo deny check`
-- [ ] `cargo audit`
-- [ ] `cargo doc --workspace --all-features --no-deps`
-- [ ] Focused command(s), if applicable:
+- [ ] `cargo check --locked --all-targets`
+- [ ] `cargo clippy --locked --all-targets -- -D warnings`
+- [ ] `cargo test --locked --all-targets`
+- [ ] `cargo build --release --locked`
+- [ ] Focused manual smoke, if applicable:
 
-## Notes
+## Safety
 
+- [ ] Tool side effects remain approval-gated.
+- [ ] Interrupted tools are not automatically replayed.
 - [ ] No real secrets were added.
-- [ ] Docs were updated for behavior/config/security changes.
+- [ ] No removed legacy surface or compatibility layer was reintroduced.

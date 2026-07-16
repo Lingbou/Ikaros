@@ -9,6 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check minimum Rust version
+        run: cargo check --locked --all-targets
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -18,9 +27,11 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-features
+        run: cargo test --locked --all-targets
+      - name: Release build
+        run: cargo build --release --locked
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
       - name: Dependency policy
@@ -30,7 +41,7 @@ jobs:
       - name: Security audit
         run: cargo audit
       - name: Docs
-        run: cargo doc --workspace --all-features --no-deps
+        run: cargo doc --locked --no-deps
 
   windows:
     runs-on: windows-latest
@@ -40,6 +51,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo check --locked --all-targets
       - name: Test
-        run: cargo test --workspace --all-features --lib --bins
+        run: cargo test --locked --all-targets
+      - name: Release build
+        run: cargo build --release --locked

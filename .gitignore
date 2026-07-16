@@ -3,9 +3,6 @@
 # Project runtime / local state
 .temp/
 .ikaros/
-.ikaros.local/
-.ikaros.cache/
-docs/ops-log.local.md
 **/secrets/
 
 # Local environment files
@@ -27,6 +24,4 @@ docs/ops-log.local.md
 
 # Local agent/tooling state
 .claude/settings.local.json
-
-docs/superpowers
 CONTEXT.md
