@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use fs4::TryLockError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     env,
     fs::{self, File, OpenOptions},
@@ -30,7 +30,7 @@ impl AppPaths {
             },
         };
         Ok(Self {
-            config: home.join("config.toml"),
+            config: home.join("config.yaml"),
             database: home.join("sessions.sqlite3"),
             lock: home.join("runtime.lock"),
             home,
@@ -75,13 +75,13 @@ fn user_home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine the user home directory"))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub provider: ProviderConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub base_url: String,
@@ -99,24 +99,12 @@ impl AppConfig {
     pub fn load(paths: &AppPaths) -> Result<Self> {
         let text = fs::read_to_string(&paths.config).with_context(|| {
             format!(
-                "missing or unreadable config {}; run `ikaros init --model <MODEL>`",
+                "missing or unreadable config {}; create it with provider.base_url and provider.model",
                 paths.config.display()
             )
         })?;
-        toml::from_str(&text).with_context(|| format!("invalid config {}", paths.config.display()))
-    }
-
-    pub fn save(&self, paths: &AppPaths, force: bool) -> Result<()> {
-        paths.ensure_home()?;
-        if paths.config.exists() && !force {
-            bail!(
-                "config already exists at {}; pass --force to replace it",
-                paths.config.display()
-            );
-        }
-        let text = toml::to_string_pretty(self).context("failed to encode config")?;
-        fs::write(&paths.config, text)
-            .with_context(|| format!("failed to write {}", paths.config.display()))
+        serde_yaml_ng::from_str(&text)
+            .with_context(|| format!("invalid config {}", paths.config.display()))
     }
 
     pub fn resolve_provider(&self) -> Result<ResolvedProviderConfig> {
@@ -152,23 +140,37 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, AppPaths, ProviderConfig};
+    use super::{AppConfig, AppPaths};
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
-    fn config_round_trip() {
+    fn loads_yaml_config() {
         let temp = tempdir().expect("tempdir");
         let paths = AppPaths::discover(Some(temp.path().join("home"))).expect("paths");
-        let config = AppConfig {
-            provider: ProviderConfig {
-                base_url: "https://example.test/v1".to_owned(),
-                model: "test-model".to_owned(),
-            },
-        };
-        config.save(&paths, false).expect("save");
+        paths.ensure_home().expect("home");
+        fs::write(
+            &paths.config,
+            "provider:\n  base_url: https://example.test/v1\n  model: test-model\n",
+        )
+        .expect("config fixture");
         let loaded = AppConfig::load(&paths).expect("load");
         assert_eq!(loaded.provider.model, "test-model");
         assert_eq!(loaded.provider.base_url, "https://example.test/v1");
+    }
+
+    #[test]
+    fn rejects_toml_config() {
+        let temp = tempdir().expect("tempdir");
+        let paths = AppPaths::discover(Some(temp.path().join("home"))).expect("paths");
+        paths.ensure_home().expect("home");
+        fs::write(
+            &paths.config,
+            "[provider]\nbase_url = 'https://example.test/v1'\nmodel = 'test-model'\n",
+        )
+        .expect("config fixture");
+
+        assert!(AppConfig::load(&paths).is_err());
     }
 
     #[test]

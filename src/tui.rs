@@ -26,19 +26,14 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub async fn run<P>(
-    agent: &Agent<P>,
-    workspace: &Path,
-    model: &str,
-    requested_session: Option<&str>,
-) -> Result<()>
+pub async fn run<P>(agent: &Agent<P>, workspace: &Path, model: &str) -> Result<()>
 where
     P: ModelProvider,
 {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        anyhow::bail!("interactive mode requires a terminal; use `ikaros chat <MESSAGE>`");
+        anyhow::bail!("Ikaros requires an interactive terminal");
     }
-    let session = resolve_session(agent.store(), workspace, model, requested_session)?;
+    let session = resolve_session(agent.store(), workspace, model)?;
     let mut app = UiApp::new(session, agent.store())?;
     let initial = agent.resume(&app.session.id).await?;
     app.apply_yield(initial, agent.store())?;
@@ -65,7 +60,7 @@ where
         if app.modal.is_some() {
             handle_modal_key(&mut terminal, &mut app, agent, key).await?;
         } else {
-            handle_normal_key(&mut terminal, &mut app, agent, workspace, model, key).await?;
+            handle_normal_key(&mut terminal, &mut app, agent, key).await?;
         }
     }
     terminal.show_cursor()?;
@@ -76,8 +71,6 @@ async fn handle_normal_key<B, P>(
     terminal: &mut Terminal<B>,
     app: &mut UiApp,
     agent: &Agent<P>,
-    workspace: &Path,
-    model: &str,
     key: KeyEvent,
 ) -> Result<()>
 where
@@ -99,14 +92,6 @@ where
             let input = std::mem::take(&mut app.input);
             let input = input.trim();
             if input.is_empty() {
-                return Ok(());
-            }
-            if input.starts_with('/') {
-                if let Err(error) = handle_slash_command(app, agent, workspace, model, input).await
-                {
-                    app.notice = Some(format!("error: {error:#}"));
-                    app.status = "error".to_owned();
-                }
                 return Ok(());
             }
             app.transcript.push(Message::user(input));
@@ -217,82 +202,10 @@ where
     Ok(())
 }
 
-async fn handle_slash_command<P>(
-    app: &mut UiApp,
-    agent: &Agent<P>,
-    workspace: &Path,
-    model: &str,
-    input: &str,
-) -> Result<()>
-where
-    P: ModelProvider,
-{
-    let store = agent.store();
-    let mut parts = input.split_whitespace();
-    match parts.next().unwrap_or_default() {
-        "/quit" | "/exit" => app.should_quit = true,
-        "/help" => {
-            app.notice = Some("/new  /sessions  /resume <ID>  /session  /help  /quit".to_owned());
-        }
-        "/new" => {
-            app.session = store.create_session(workspace, model)?;
-            app.reload(store)?;
-            app.notice = Some(format!("created session {}", app.session.id));
-            app.status = "ready".to_owned();
-        }
-        "/sessions" => {
-            let sessions = store.list_sessions(workspace, 20)?;
-            app.notice = Some(if sessions.is_empty() {
-                "no sessions".to_owned()
-            } else {
-                sessions
-                    .iter()
-                    .map(|summary| {
-                        format!(
-                            "{}  messages={}  model={}",
-                            summary.session.id, summary.message_count, summary.session.model
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            });
-        }
-        "/resume" => {
-            let id = parts
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("usage: /resume <SESSION_ID>"))?;
-            app.session = store.session(id, workspace)?;
-            app.reload(store)?;
-            app.notice = Some(format!("resumed session {}", app.session.id));
-            app.status = "resuming".to_owned();
-            let outcome = agent.resume(&app.session.id).await?;
-            app.apply_yield(outcome, store)?;
-        }
-        "/session" => {
-            app.notice = Some(format!(
-                "session={} model={} database={}",
-                app.session.id,
-                app.session.model,
-                store.path().display()
-            ));
-        }
-        command => app.notice = Some(format!("unknown command: {command}; use /help")),
-    }
-    Ok(())
-}
-
-fn resolve_session(
-    store: &SessionStore,
-    workspace: &Path,
-    model: &str,
-    requested: Option<&str>,
-) -> Result<Session> {
-    match requested {
-        Some(id) => store.session(id, workspace),
-        None => store
-            .latest_session(workspace)?
-            .map_or_else(|| store.create_session(workspace, model), Ok),
-    }
+fn resolve_session(store: &SessionStore, workspace: &Path, model: &str) -> Result<Session> {
+    store
+        .latest_session(workspace)?
+        .map_or_else(|| store.create_session(workspace, model), Ok)
 }
 
 #[derive(Debug, Clone)]
@@ -399,7 +312,7 @@ fn render(frame: &mut Frame<'_>, app: &UiApp) {
             " status ",
             Style::default().fg(Color::Black).bg(Color::Cyan),
         ),
-        Span::raw(format!(" {}  ·  /help", sanitize_terminal(&app.status))),
+        Span::raw(format!(" {}", sanitize_terminal(&app.status))),
     ]);
     frame.render_widget(Paragraph::new(status), layout[2]);
 

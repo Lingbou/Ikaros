@@ -35,19 +35,18 @@ cargo build
 
 ## Configure
 
-Create `~/.ikaros/config.toml`:
+Create `~/.ikaros/config.yaml`:
+
+```yaml
+provider:
+  base_url: https://api.openai.com/v1
+  model: gpt-4.1-mini
+```
+
+Set the API key in the environment before launching Ikaros:
 
 ```powershell
 $env:IKAROS_API_KEY = "your-key"
-cargo run -- init --model gpt-4.1-mini
-```
-
-Custom OpenAI-compatible endpoint:
-
-```powershell
-cargo run -- init `
-  --base-url https://provider.example/v1 `
-  --model provider-model-id
 ```
 
 Ikaros deliberately has no command-line or config-file API-key field. Keys are
@@ -58,7 +57,8 @@ configuration, or the session database. Resolution order is:
 2. `OPENAI_API_KEY`
 
 `IKAROS_BASE_URL`, `IKAROS_MODEL`, and `IKAROS_HOME` can override the matching
-local settings.
+local settings. Edit `provider.base_url` and `provider.model` in the YAML file
+to use a custom OpenAI-compatible endpoint.
 
 ## Run
 
@@ -74,28 +74,9 @@ Use another workspace:
 cargo run -- --workspace C:\Workspace\project
 ```
 
-Send one message without opening the full-screen UI:
-
-```bash
-cargo run -- chat "inspect this repository"
-```
-
-Useful commands:
-
-```bash
-cargo run -- doctor
-cargo run -- sessions
-cargo run -- --session <ID>
-```
-
-Terminal UI commands:
-
-- `/new`
-- `/sessions`
-- `/resume <ID>`
-- `/session`
-- `/help`
-- `/quit`
+Ikaros has no CLI subcommands or in-chat slash commands. It automatically
+creates a session for a workspace and resumes the most recently used session
+on the next launch.
 
 ## Tool security boundary
 
@@ -136,7 +117,7 @@ tool recovery single-owner without a second distributed runtime.
 New state is stored in:
 
 ```text
-~/.ikaros/config.toml
+~/.ikaros/config.yaml
 ~/.ikaros/sessions.sqlite3
 ~/.ikaros/runtime.lock
 ```

@@ -81,12 +81,6 @@ pub struct Session {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionSummary {
-    pub session: Session,
-    pub message_count: u64,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolInvocation {
     pub id: String,

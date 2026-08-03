@@ -20,8 +20,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml_ng = "0.10"
 tokio = { version = "1.38", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
-toml = "0.9"
 unicode-width = "0.2"
 uuid = { version = "1.10", features = ["v4"] }
 

@@ -1,4 +1,4 @@
-use crate::domain::{Message, Session, SessionSummary, ToolCall, ToolInvocation};
+use crate::domain::{Message, Session, ToolCall, ToolInvocation};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
@@ -26,10 +26,6 @@ impl SessionStore {
         Ok(store)
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub fn create_session(&self, workspace: &Path, model: &str) -> Result<Session> {
         let workspace = workspace_string(workspace)?;
         let now = now_timestamp()?;
@@ -54,24 +50,6 @@ impl SessionStore {
         Ok(session)
     }
 
-    pub fn session(&self, id: &str, workspace: &Path) -> Result<Session> {
-        let workspace = workspace_string(workspace)?;
-        let session = self
-            .connect()?
-            .query_row(
-                "SELECT id, workspace, model, created_at, updated_at
-                 FROM sessions WHERE id = ?1",
-                [id],
-                session_from_row,
-            )
-            .optional()?;
-        let session = session.ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
-        if session.workspace != workspace {
-            bail!("session {id} belongs to a different workspace");
-        }
-        Ok(session)
-    }
-
     pub fn latest_session(&self, workspace: &Path) -> Result<Option<Session>> {
         let workspace = workspace_string(workspace)?;
         self.connect()?
@@ -83,35 +61,6 @@ impl SessionStore {
                 session_from_row,
             )
             .optional()
-            .map_err(Into::into)
-    }
-
-    pub fn list_sessions(&self, workspace: &Path, limit: usize) -> Result<Vec<SessionSummary>> {
-        let workspace = workspace_string(workspace)?;
-        let connection = self.connect()?;
-        let mut statement = connection.prepare(
-            "SELECT s.id, s.workspace, s.model, s.created_at, s.updated_at,
-                    COUNT(m.id) AS message_count
-             FROM sessions s
-             LEFT JOIN messages m ON m.session_id = s.id
-             WHERE s.workspace = ?1
-             GROUP BY s.id
-             ORDER BY s.updated_at DESC, s.created_at DESC, s.rowid DESC
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![workspace, limit as i64], |row| {
-            Ok(SessionSummary {
-                session: Session {
-                    id: row.get(0)?,
-                    workspace: row.get(1)?,
-                    model: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                },
-                message_count: row.get::<_, i64>(5)? as u64,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
 
