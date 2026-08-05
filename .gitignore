@@ -3,7 +3,8 @@
 # Project runtime / local state
 .temp/
 .ikaros/
-**/secrets/
+/.secrets/
+/secrets/
 
 # Local environment files
 .env
@@ -13,7 +14,7 @@
 !.env.template
 
 # Rust / Cargo build artifacts
-/target/
+**/target/
 **/*.rs.bk
 
 # Logs and scratch files
