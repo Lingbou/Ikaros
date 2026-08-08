@@ -1,0 +1,369 @@
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  CircleUserRound,
+  Palette,
+  Search,
+  Settings
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+
+import {
+  cloneUiPreferences,
+  DEFAULT_UI_PREFERENCES,
+  mergeUiPreferences,
+  type ColorSchemePreference,
+  type ThemePreferencesPatch,
+  type UiLanguagePreference,
+  type UiPreferences,
+  type UiPreferencesPatch
+} from "../../shared/platform";
+import { effectiveColorScheme } from "../../shared/theme";
+import {
+  applyDocumentPreferences,
+  prefersDarkColorScheme,
+  themeTransitionCoordinator,
+  type ThemeTransitionOrigin
+} from "../applyUiPreferences";
+import { useTranslation } from "../i18n";
+import { useAppStore } from "../store";
+import { AppearanceSettings } from "./AppearanceSettings";
+import { ProfileSettings } from "./ProfileSettings";
+import { cx } from "./ui";
+
+const LANGUAGE_OPTIONS: readonly UiLanguagePreference[] = ["en", "zh-CN"];
+type SettingsSection = "general" | "profile" | "appearance";
+
+function GeneralSettings({
+  preferences,
+  onLanguageChange
+}: {
+  preferences: Readonly<UiPreferences>;
+  onLanguageChange(value: UiLanguagePreference): void;
+}) {
+  const { t } = useTranslation();
+  const languageLabel = (value: UiLanguagePreference) =>
+    value === "en" ? t("settings.english") : t("settings.simplifiedChinese");
+
+  return (
+    <div>
+      <h1
+        data-settings-heading
+        tabIndex={-1}
+        className="text-[20px] font-semibold leading-[28px] tracking-[-0.025em] text-[var(--text)] outline-none"
+      >
+        {t("settings.general")}
+      </h1>
+
+      <section aria-labelledby="general-settings-heading" className="mt-10">
+        <h2
+          id="general-settings-heading"
+          className="mb-3 text-[13px] font-semibold leading-5 text-[var(--text)]"
+        >
+          {t("settings.general")}
+        </h2>
+        <div className="overflow-hidden rounded-2xl border border-[var(--border-soft)] bg-[var(--panel)] px-4">
+          <div className="flex min-h-[68px] items-center gap-5 py-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold leading-5 text-[var(--text)]">
+                {t("settings.language")}
+              </div>
+              <div className="mt-0.5 text-[11px] leading-4 text-[var(--muted)]">
+                {t("settings.languageDescription")}
+              </div>
+            </div>
+
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("settings.languageMenu")}
+                  className="flex h-8 min-w-[126px] shrink-0 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--panel-raised)] px-3 text-[12px] font-medium leading-[18px] text-[var(--text)] outline-none transition-colors hover:bg-[var(--panel-hover)] data-[state=open]:bg-[var(--panel-selected)]"
+                >
+                  <span>{languageLabel(preferences.language)}</span>
+                  <ChevronDown size={14} className="text-[var(--muted)]" aria-hidden="true" />
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  side="bottom"
+                  align="end"
+                  sideOffset={6}
+                  className="glass-menu z-[120] min-w-[170px] rounded-xl p-1.5"
+                >
+                  <DropdownMenu.RadioGroup
+                    value={preferences.language}
+                    onValueChange={(value) => onLanguageChange(value as UiLanguagePreference)}
+                  >
+                    {LANGUAGE_OPTIONS.map((option) => (
+                      <DropdownMenu.RadioItem
+                        key={option}
+                        value={option}
+                        className="flex h-9 cursor-default select-none items-center gap-2 rounded-lg px-2.5 text-[12px] leading-[18px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                      >
+                        <span className="flex size-4 items-center justify-center">
+                          <DropdownMenu.ItemIndicator>
+                            <Check size={14} aria-hidden="true" className="text-[var(--accent)]" />
+                          </DropdownMenu.ItemIndicator>
+                        </span>
+                        <span>{languageLabel(option)}</span>
+                      </DropdownMenu.RadioItem>
+                    ))}
+                  </DropdownMenu.RadioGroup>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function SettingsPage() {
+  const { t } = useTranslation();
+  const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
+  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
+  const [query, setQuery] = useState("");
+  const [preferences, setPreferences] = useState<UiPreferences>(() =>
+    cloneUiPreferences(DEFAULT_UI_PREFERENCES)
+  );
+  const [systemPrefersDark, setSystemPrefersDark] = useState(prefersDarkColorScheme);
+  const [savingCount, setSavingCount] = useState(0);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const preferencesRef = useRef(preferences);
+  const persistedPreferencesRef = useRef(cloneUiPreferences(DEFAULT_UI_PREFERENCES));
+  const saveRevisionRef = useRef(0);
+
+  const applyLocalPreferences = (
+    nextPreferences: UiPreferences,
+    transitionOrigin?: ThemeTransitionOrigin
+  ) => {
+    if (transitionOrigin) {
+      themeTransitionCoordinator.apply(
+        () => {
+          preferencesRef.current = nextPreferences;
+          flushSync(() => setPreferences(nextPreferences));
+          applyDocumentPreferences(nextPreferences, systemPrefersDark);
+        },
+        {
+          nextScheme: effectiveColorScheme(nextPreferences.colorScheme, systemPrefersDark),
+          reduceMotion: nextPreferences.reduceMotion,
+          origin: transitionOrigin
+        }
+      );
+      return;
+    }
+
+    preferencesRef.current = nextPreferences;
+    setPreferences(nextPreferences);
+    applyDocumentPreferences(nextPreferences, systemPrefersDark);
+  };
+
+  useEffect(() => {
+    const api = window.ikarosDesktop;
+    if (!api) return;
+
+    let disposed = false;
+    void api.preferences
+      .get()
+      .then((storedPreferences) => {
+        if (disposed) return;
+        const nextPreferences = cloneUiPreferences(storedPreferences);
+        persistedPreferencesRef.current = cloneUiPreferences(nextPreferences);
+        applyLocalPreferences(nextPreferences);
+      })
+      .catch(() => {
+        if (!disposed) setSaveFailed(true);
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const queryList = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      setSystemPrefersDark(queryList.matches);
+    };
+    queryList.addEventListener("change", onChange);
+    return () => queryList.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("[data-settings-heading]")?.focus();
+    });
+  }, [activeSection]);
+
+  const persistPatch = (patch: UiPreferencesPatch, transitionOrigin?: ThemeTransitionOrigin) => {
+    const nextPreferences = mergeUiPreferences(preferencesRef.current, patch);
+    applyLocalPreferences(nextPreferences, transitionOrigin);
+    setSaveFailed(false);
+
+    const api = window.ikarosDesktop;
+    if (!api) {
+      setSaveFailed(true);
+      applyLocalPreferences(cloneUiPreferences(persistedPreferencesRef.current), transitionOrigin);
+      return;
+    }
+
+    const revision = ++saveRevisionRef.current;
+    setSavingCount((count) => count + 1);
+    void api.preferences
+      .update(patch)
+      .then((storedPreferences) => {
+        const confirmed = cloneUiPreferences(storedPreferences);
+        persistedPreferencesRef.current = confirmed;
+        if (revision === saveRevisionRef.current) {
+          applyLocalPreferences(cloneUiPreferences(confirmed));
+        }
+      })
+      .catch(() => {
+        if (revision === saveRevisionRef.current) {
+          setSaveFailed(true);
+          applyLocalPreferences(
+            cloneUiPreferences(persistedPreferencesRef.current),
+            transitionOrigin
+          );
+        }
+      })
+      .finally(() => setSavingCount((count) => Math.max(0, count - 1)));
+  };
+
+  const previewTheme = (scheme: "light" | "dark", patch: ThemePreferencesPatch) => {
+    const preferencePatch: UiPreferencesPatch =
+      scheme === "dark" ? { darkTheme: patch } : { lightTheme: patch };
+    applyLocalPreferences(mergeUiPreferences(preferencesRef.current, preferencePatch));
+  };
+
+  const persistTheme = (scheme: "light" | "dark") => {
+    const current = preferencesRef.current;
+    persistPatch(
+      scheme === "dark"
+        ? { darkTheme: { ...current.darkTheme } }
+        : { lightTheme: { ...current.lightTheme } }
+    );
+  };
+
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>("[data-profile-menu-trigger]")?.focus();
+    });
+  };
+
+  const navigation = useMemo(
+    () => [
+      { id: "general" as const, label: t("settings.general"), Icon: Settings },
+      { id: "profile" as const, label: t("settings.profile"), Icon: CircleUserRound },
+      { id: "appearance" as const, label: t("settings.appearance"), Icon: Palette }
+    ],
+    [t]
+  );
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleNavigation = normalizedQuery
+    ? navigation.filter((item) => item.label.toLocaleLowerCase().includes(normalizedQuery))
+    : navigation;
+
+  return (
+    <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[var(--canvas)]">
+      <aside
+        aria-label={t("settings.navigation")}
+        className="settings-sidebar flex w-[clamp(248px,14.3vw,274px)] shrink-0 flex-col border-r border-[var(--separator)] bg-[var(--sidebar)] px-2 py-1"
+      >
+        <button
+          type="button"
+          onClick={closeSettings}
+          className="flex h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[12px] leading-[18px] text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        >
+          <ArrowLeft size={15} aria-hidden="true" />
+          <span>{t("settings.backToApp")}</span>
+        </button>
+
+        <label className="relative mt-0.5 block">
+          <span className="sr-only">{t("settings.searchPlaceholder")}</span>
+          <Search
+            size={13}
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)]"
+          />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder={t("settings.searchPlaceholder")}
+            className="h-[29px] w-full rounded-[10px] border border-[var(--border-soft)] bg-[var(--panel)] pl-8 pr-2.5 text-[12px] leading-[18px] text-[var(--text)] placeholder:text-[var(--muted)]"
+          />
+        </label>
+
+        <div className="mt-3 px-2 pb-2 text-[12px] font-semibold leading-[18px] text-[var(--muted)]">
+          {t("settings.personal")}
+        </div>
+        <nav className="space-y-0.5">
+          {visibleNavigation.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              aria-current={activeSection === id ? "page" : undefined}
+              onClick={() => setActiveSection(id)}
+              className={cx(
+                "flex h-[31px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[12px] font-medium leading-[18px] transition-colors",
+                activeSection === id
+                  ? "bg-[var(--panel-selected)] text-[var(--text)] shadow-[inset_0_0_0_1px_var(--border-soft)]"
+                  : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              )}
+            >
+              <Icon size={14} aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="app-scrollbar min-w-0 flex-1 overflow-y-auto">
+        <div aria-hidden="true" className="h-11 border-b border-[var(--separator)]" />
+        <div
+          className={cx(
+            "w-full px-5 pb-20",
+            activeSection === "profile"
+              ? "pt-4"
+              : "mx-auto max-w-[808px] pt-[clamp(48px,6vh,64px)]"
+          )}
+        >
+          {activeSection === "general" ? (
+            <GeneralSettings
+              preferences={preferences}
+              onLanguageChange={(language) => persistPatch({ language })}
+            />
+          ) : activeSection === "profile" ? (
+            <ProfileSettings />
+          ) : (
+            <AppearanceSettings
+              preferences={preferences}
+              systemPrefersDark={systemPrefersDark}
+              saving={savingCount > 0}
+              onColorSchemeChange={(
+                colorScheme: ColorSchemePreference,
+                origin: ThemeTransitionOrigin
+              ) =>
+                persistPatch({ colorScheme }, origin)
+              }
+              onPreviewTheme={previewTheme}
+              onPersistTheme={persistTheme}
+              onReduceMotionChange={(reduceMotion) => persistPatch({ reduceMotion })}
+            />
+          )}
+          <p aria-live="polite" className="mt-2 min-h-4 px-1 text-[11px] leading-4 text-[#e08b8b]">
+            {saveFailed ? t("settings.error") : ""}
+          </p>
+        </div>
+      </main>
+    </div>
+  );
+}

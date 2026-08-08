@@ -1,0 +1,51 @@
+{
+  "name": "@ikaros/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows-first desktop client for Ikaros",
+  "license": "GPL-3.0-only",
+  "author": "Ikaros contributors",
+  "main": "./out/main/index.js",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "postinstall": "install-electron",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run --passWithNoTests",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "package:dir": "pnpm run build && electron-builder --config electron-builder.config.ts --dir",
+    "package:win": "pnpm run build && electron-builder --config electron-builder.config.ts --win nsis --x64"
+  },
+  "devDependencies": {
+    "@radix-ui/react-dialog": "1.1.23",
+    "@radix-ui/react-dropdown-menu": "2.1.24",
+    "@radix-ui/react-scroll-area": "1.2.18",
+    "@radix-ui/react-tooltip": "1.2.16",
+    "@tailwindcss/vite": "4.3.3",
+    "@tanstack/react-virtual": "3.14.9",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "jsdom": "30.0.1",
+    "lucide-react": "1.28.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "7.3.6",
+    "vitest": "4.1.10",
+    "zustand": "5.0.14"
+  }
+}

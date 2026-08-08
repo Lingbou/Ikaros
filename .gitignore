@@ -23,6 +23,16 @@
 *.tmp
 *.temp
 
+# Ikaros desktop build and test artifacts
+/ikaros/desktop/node_modules/
+/ikaros/desktop/out/
+/ikaros/desktop/dist/
+/ikaros/desktop/coverage/
+/ikaros/desktop/test-results/
+/ikaros/desktop/playwright-report/
+/ikaros/desktop/*.tsbuildinfo
+/ikaros/desktop/**/*.tsbuildinfo
+
 # Local agent/tooling state
 .claude/settings.local.json
 CONTEXT.md
