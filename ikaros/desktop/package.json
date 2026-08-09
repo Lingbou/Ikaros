@@ -2,9 +2,15 @@
   "name": "@ikaros/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Windows-first desktop client for Ikaros",
+  "description": "Cross-platform desktop client for Ikaros",
   "license": "GPL-3.0-only",
   "author": "Ikaros contributors",
+  "homepage": "https://github.com/Lingbou/Ikaros",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lingbou/Ikaros.git"
+  },
+  "desktopName": "io.github.lingbou.ikaros.desktop",
   "main": "./out/main/index.js",
   "packageManager": "pnpm@11.9.0",
   "engines": {
@@ -19,6 +25,7 @@
     "test": "vitest run --passWithNoTests",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build",
     "package:dir": "pnpm run build && electron-builder --config electron-builder.config.ts --dir",
+    "package:linux": "pnpm run build && electron-builder --config electron-builder.config.ts --linux",
     "package:win": "pnpm run build && electron-builder --config electron-builder.config.ts --win nsis --x64"
   },
   "devDependencies": {

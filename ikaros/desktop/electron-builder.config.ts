@@ -10,7 +10,39 @@ const configuration: Configuration = {
   directories: {
     output: "dist"
   },
-  files: ["out/**/*", "package.json"],
+  files: ["out/**/*", "build/icon.png", "package.json"],
+  linux: {
+    target: [
+      {
+        target: "AppImage",
+        arch: ["x64"]
+      },
+      {
+        target: "deb",
+        arch: ["x64"]
+      },
+      {
+        target: "rpm",
+        arch: ["x64"]
+      }
+    ],
+    artifactName: "Ikaros-${version}-linux-${arch}.${ext}",
+    executableName: "ikaros",
+    icon: "build/icon.png",
+    category: "Utility",
+    synopsis: "General-purpose AI agent desktop client",
+    description: "Ikaros desktop client for planning, research, creation, and agent workflows.",
+    maintainer: "Lingbou <Lingbou@users.noreply.github.com>",
+    vendor: "Ikaros contributors",
+    syncDesktopName: true
+  },
+  deb: {
+    packageName: "ikaros",
+    packageCategory: "utils"
+  },
+  rpm: {
+    packageName: "ikaros"
+  },
   win: {
     icon: "build/icon.ico",
     target: [
