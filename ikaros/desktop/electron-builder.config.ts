@@ -10,7 +10,7 @@ const configuration: Configuration = {
   directories: {
     output: "dist"
   },
-  files: ["out/**/*", "package.json"],
+  files: ["out/**/*", "build/icon.png", "package.json"],
   linux: {
     target: [
       {

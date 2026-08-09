@@ -5,6 +5,7 @@ import configuration from "../../electron-builder.config";
 
 describe("Linux distribution packaging", () => {
   it("builds installable artifacts with a stable desktop identity", () => {
+    expect(configuration.files).toContain("build/icon.png");
     expect(configuration.linux).toMatchObject({
       artifactName: "Ikaros-${version}-linux-${arch}.${ext}",
       category: "Utility",

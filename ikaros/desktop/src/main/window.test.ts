@@ -38,7 +38,7 @@ describe("Linux desktop window", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   });
 
-  it("uses custom chrome without a native title-bar icon", () => {
+  it("uses custom chrome and keeps a runtime icon for desktop-shell identity", () => {
     createMainWindow(
       "file:///renderer/index.html",
       { assertTrustedIpc: vi.fn(), isTrustedUrl: vi.fn(() => true) },
@@ -49,9 +49,9 @@ describe("Linux desktop window", () => {
     expect(options).toEqual(
       expect.objectContaining({
         frame: false,
+        icon: "/opt/ikaros/resources/app.asar/build/icon.png",
         titleBarStyle: "hidden",
       }),
     );
-    expect(options).not.toHaveProperty("icon");
   });
 });

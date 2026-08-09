@@ -56,12 +56,16 @@ function platformTitleBarOptions(preferences: Readonly<UiPreferences>): Pick<
   return { frame: false, titleBarStyle: "hidden" };
 }
 
-function windowsDevelopmentIcon(): Pick<BrowserWindowConstructorOptions, "icon"> {
-  if (process.platform !== "win32" || app.isPackaged) {
-    return {};
+function platformWindowIcon(): Pick<BrowserWindowConstructorOptions, "icon"> {
+  if (process.platform === "linux") {
+    return { icon: join(app.getAppPath(), "build/icon.png") };
   }
 
-  return { icon: join(__dirname, "../../build/icon.ico") };
+  if (process.platform === "win32" && !app.isPackaged) {
+    return { icon: join(__dirname, "../../build/icon.ico") };
+  }
+
+  return {};
 }
 
 export function createMainWindow(
@@ -78,7 +82,7 @@ export function createMainWindow(
     show: false,
     autoHideMenuBar: true,
     backgroundColor: theme.background,
-    ...windowsDevelopmentIcon(),
+    ...platformWindowIcon(),
     ...platformTitleBarOptions(preferences),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
