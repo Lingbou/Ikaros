@@ -34,7 +34,7 @@ export function updateWindowChrome(
 
 function platformTitleBarOptions(preferences: Readonly<UiPreferences>): Pick<
   BrowserWindowConstructorOptions,
-  "titleBarOverlay" | "titleBarStyle"
+  "frame" | "titleBarOverlay" | "titleBarStyle"
 > {
   if (process.platform === "win32") {
     const theme = activeThemePreferences(preferences, nativeTheme.shouldUseDarkColors);
@@ -53,19 +53,15 @@ function platformTitleBarOptions(preferences: Readonly<UiPreferences>): Pick<
     return { titleBarStyle: "hiddenInset" };
   }
 
-  return { titleBarStyle: "default" };
+  return { frame: false, titleBarStyle: "hidden" };
 }
 
-function platformWindowIcon(): Pick<BrowserWindowConstructorOptions, "icon"> {
-  if (process.platform === "linux") {
-    return { icon: join(app.getAppPath(), "build/icon.png") };
+function windowsDevelopmentIcon(): Pick<BrowserWindowConstructorOptions, "icon"> {
+  if (process.platform !== "win32" || app.isPackaged) {
+    return {};
   }
 
-  if (process.platform === "win32" && !app.isPackaged) {
-    return { icon: join(__dirname, "../../build/icon.ico") };
-  }
-
-  return {};
+  return { icon: join(__dirname, "../../build/icon.ico") };
 }
 
 export function createMainWindow(
@@ -82,7 +78,7 @@ export function createMainWindow(
     show: false,
     autoHideMenuBar: true,
     backgroundColor: theme.background,
-    ...platformWindowIcon(),
+    ...windowsDevelopmentIcon(),
     ...platformTitleBarOptions(preferences),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),

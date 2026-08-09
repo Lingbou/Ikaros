@@ -20,6 +20,13 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.preferences.update, patch) as Promise<UiPreferences>,
     onChanged: (listener: (preferences: UiPreferences) => void) =>
       subscribe(DESKTOP_IPC_CHANNELS.preferences.changed, listener)
+  }),
+  windowControls: Object.freeze({
+    usesCustomTitleBar: process.platform === "linux",
+    close: () => ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.window.close) as Promise<void>,
+    minimize: () => ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.window.minimize) as Promise<void>,
+    toggleMaximize: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.window.toggleMaximize) as Promise<void>
   })
 });
 

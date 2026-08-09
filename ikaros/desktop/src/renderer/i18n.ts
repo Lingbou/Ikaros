@@ -22,6 +22,9 @@ const english = {
   "titlebar.view": "View",
   "titlebar.help": "Help",
   "titlebar.menuUnavailable": "{menu} menu (not available yet)",
+  "titlebar.minimize": "Minimize",
+  "titlebar.maximize": "Maximize",
+  "titlebar.close": "Close",
 
   "branch.main": "Main",
   "branch.number": "Branch {number}",
@@ -228,6 +231,9 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "titlebar.view": "视图",
   "titlebar.help": "帮助",
   "titlebar.menuUnavailable": "{menu}菜单（暂未开放）",
+  "titlebar.minimize": "最小化",
+  "titlebar.maximize": "最大化",
+  "titlebar.close": "关闭",
 
   "branch.main": "主分支",
   "branch.number": "分支 {number}",

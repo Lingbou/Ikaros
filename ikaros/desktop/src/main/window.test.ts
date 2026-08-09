@@ -12,7 +12,7 @@ const electron = vi.hoisted(() => {
       getAppPath: vi.fn(() => "/opt/ikaros/resources/app.asar"),
       isPackaged: true,
     },
-    browserWindow: vi.fn(function BrowserWindow() {
+    browserWindow: vi.fn(function BrowserWindow(_options: Record<string, unknown>) {
       return window;
     }),
     nativeTheme: { shouldUseDarkColors: true },
@@ -38,17 +38,20 @@ describe("Linux desktop window", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   });
 
-  it("uses the packaged Ikaros icon", () => {
+  it("uses custom chrome without a native title-bar icon", () => {
     createMainWindow(
       "file:///renderer/index.html",
       { assertTrustedIpc: vi.fn(), isTrustedUrl: vi.fn(() => true) },
       DEFAULT_UI_PREFERENCES,
     );
 
-    expect(electron.browserWindow).toHaveBeenCalledWith(
+    const options = electron.browserWindow.mock.calls[0]?.[0];
+    expect(options).toEqual(
       expect.objectContaining({
-        icon: "/opt/ikaros/resources/app.asar/build/icon.png",
+        frame: false,
+        titleBarStyle: "hidden",
       }),
     );
+    expect(options).not.toHaveProperty("icon");
   });
 });

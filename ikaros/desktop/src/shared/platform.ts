@@ -37,6 +37,12 @@ export interface IkarosDesktopApi {
     update(patch: UiPreferencesPatch): Promise<UiPreferences>;
     onChanged(listener: (preferences: UiPreferences) => void): () => void;
   };
+  readonly windowControls: {
+    readonly usesCustomTitleBar: boolean;
+    close(): Promise<void>;
+    minimize(): Promise<void>;
+    toggleMaximize(): Promise<void>;
+  };
 }
 
 export const DEFAULT_DARK_THEME: Readonly<ThemePreferences> = Object.freeze({
@@ -93,5 +99,10 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     changed: "ikaros:preferences:changed",
     get: "ikaros:preferences:get",
     update: "ikaros:preferences:update"
+  },
+  window: {
+    close: "ikaros:window:close",
+    minimize: "ikaros:window:minimize",
+    toggleMaximize: "ikaros:window:toggle-maximize"
   }
 } as const);

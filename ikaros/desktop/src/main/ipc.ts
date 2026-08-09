@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 
 import { DESKTOP_IPC_CHANNELS, type UiPreferences } from "../shared/platform";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
@@ -6,6 +6,18 @@ import type { RendererTrustPolicy } from "./security";
 import { updateWindowChrome } from "./window";
 
 type RemoveIpcHandlers = () => void;
+
+function trustedRequestingWindow(
+  event: IpcMainInvokeEvent,
+  trustPolicy: RendererTrustPolicy
+): BrowserWindow {
+  trustPolicy.assertTrustedIpc(event);
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) {
+    throw new Error("The requesting renderer is not attached to a desktop window.");
+  }
+  return window;
+}
 
 function broadcastPreferences(preferences: UiPreferences): void {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -19,7 +31,10 @@ function broadcastPreferences(preferences: UiPreferences): void {
 export function registerDesktopIpc(trustPolicy: RendererTrustPolicy): RemoveIpcHandlers {
   const handledChannels = [
     DESKTOP_IPC_CHANNELS.preferences.get,
-    DESKTOP_IPC_CHANNELS.preferences.update
+    DESKTOP_IPC_CHANNELS.preferences.update,
+    DESKTOP_IPC_CHANNELS.window.close,
+    DESKTOP_IPC_CHANNELS.window.minimize,
+    DESKTOP_IPC_CHANNELS.window.toggleMaximize
   ];
 
   ipcMain.handle(DESKTOP_IPC_CHANNELS.preferences.get, async (event) => {
@@ -32,6 +47,25 @@ export function registerDesktopIpc(trustPolicy: RendererTrustPolicy): RemoveIpcH
     const preferences = await updateUiPreferences(patch);
     broadcastPreferences(preferences);
     return preferences;
+  });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.window.minimize, (event) => {
+    const window = trustedRequestingWindow(event, trustPolicy);
+    window.minimize();
+  });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.window.toggleMaximize, (event) => {
+    const window = trustedRequestingWindow(event, trustPolicy);
+    if (window.isMaximized()) {
+      window.unmaximize();
+    } else {
+      window.maximize();
+    }
+  });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.window.close, (event) => {
+    const window = trustedRequestingWindow(event, trustPolicy);
+    window.close();
   });
 
   return () => {

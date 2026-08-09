@@ -35,6 +35,12 @@ function desktopApiWithPreferences(
         get: async () => cloneUiPreferences(current),
         update,
         onChanged: () => () => undefined
+      },
+      windowControls: {
+        usesCustomTitleBar: false,
+        close: async () => undefined,
+        minimize: async () => undefined,
+        toggleMaximize: async () => undefined
       }
     }
   };
