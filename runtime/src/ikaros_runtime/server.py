@@ -8,12 +8,15 @@ import secrets
 import sys
 from dataclasses import dataclass
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.http11 import Request, Response
 
 from . import __version__
+from .kernel import InvalidParamsError, RuntimeKernel
+from .storage import SqliteRuntimeStore
 
 PROTOCOL_VERSION = 1
 _LOGGER = logging.getLogger("ikaros_runtime")
@@ -26,6 +29,7 @@ class ServerSettings:
     port: int
     token: str
     parent_pid: int
+    runtime_home: Path
 
     def validate(self) -> None:
         if self.host not in _LOOPBACK_HOSTS:
@@ -68,11 +72,15 @@ def _initialize_result() -> dict[str, object]:
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "server": {"name": "ikaros-runtime", "version": __version__},
-        "capabilities": {},
+        "capabilities": {"threads": True, "eventReplay": True},
     }
 
 
-async def _handle_connection(connection: ServerConnection, stop_event: asyncio.Event) -> None:
+async def _handle_connection(
+    connection: ServerConnection,
+    stop_event: asyncio.Event,
+    kernel: RuntimeKernel,
+) -> None:
     initialized = False
     async for raw_message in connection:
         if not isinstance(raw_message, str):
@@ -103,10 +111,28 @@ async def _handle_connection(connection: ServerConnection, stop_event: asyncio.E
                 response = {"jsonrpc": "2.0", "id": request_id, "result": _initialize_result()}
         elif not initialized:
             response = _jsonrpc_error(request_id, -32000, "initialize must be called first")
-        elif method == "runtime.shutdown":
-            response = {"jsonrpc": "2.0", "id": request_id, "result": {"accepted": True}}
+        elif not isinstance(params, dict):
+            response = _jsonrpc_error(request_id, -32602, "params must be an object")
         else:
-            response = _jsonrpc_error(request_id, -32601, "method not found")
+            try:
+                if method == "runtime.shutdown":
+                    result = {"accepted": True}
+                elif method == "thread.create":
+                    result = kernel.create_thread(params)
+                elif method == "thread.list":
+                    result = kernel.list_threads(params)
+                elif method == "event.replay":
+                    result = kernel.replay_events(params)
+                else:
+                    response = _jsonrpc_error(request_id, -32601, "method not found")
+                    result = None
+                if result is not None:
+                    response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+            except InvalidParamsError as error:
+                response = _jsonrpc_error(request_id, -32602, str(error))
+            except Exception:
+                _LOGGER.exception("Unhandled Runtime method failure for %s", method)
+                response = _jsonrpc_error(request_id, -32603, "internal error")
 
         await connection.send(json.dumps(response, separators=(",", ":")))
         if method == "runtime.shutdown" and "result" in response:
@@ -119,6 +145,8 @@ async def run_server(settings: ServerSettings) -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     stop_event = asyncio.Event()
     expected_authorization = f"Bearer {settings.token}"
+    store = SqliteRuntimeStore(settings.runtime_home / "state.db")
+    kernel = RuntimeKernel(store)
 
     def authenticate(connection: ServerConnection, request: Request) -> Response | None:
         authorization = request.headers.get("Authorization", "")
@@ -126,25 +154,28 @@ async def run_server(settings: ServerSettings) -> None:
             return None
         return connection.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
 
-    async with serve(
-        lambda connection: _handle_connection(connection, stop_event),
-        settings.host,
-        settings.port,
-        process_request=authenticate,
-    ) as server:
-        socket = next(iter(server.sockets))
-        selected_port = int(socket.getsockname()[1])
-        readiness = {
-            "type": "ikaros_runtime.ready",
-            "protocolVersion": PROTOCOL_VERSION,
-            "host": settings.host,
-            "port": selected_port,
-            "pid": os.getpid(),
-        }
-        print(json.dumps(readiness, separators=(",", ":")), flush=True)
-        parent_watcher = asyncio.create_task(_watch_parent(settings.parent_pid, stop_event))
-        try:
-            await stop_event.wait()
-        finally:
-            parent_watcher.cancel()
-            await asyncio.gather(parent_watcher, return_exceptions=True)
+    try:
+        async with serve(
+            lambda connection: _handle_connection(connection, stop_event, kernel),
+            settings.host,
+            settings.port,
+            process_request=authenticate,
+        ) as server:
+            socket = next(iter(server.sockets))
+            selected_port = int(socket.getsockname()[1])
+            readiness = {
+                "type": "ikaros_runtime.ready",
+                "protocolVersion": PROTOCOL_VERSION,
+                "host": settings.host,
+                "port": selected_port,
+                "pid": os.getpid(),
+            }
+            print(json.dumps(readiness, separators=(",", ":")), flush=True)
+            parent_watcher = asyncio.create_task(_watch_parent(settings.parent_pid, stop_event))
+            try:
+                await stop_event.wait()
+            finally:
+                parent_watcher.cancel()
+                await asyncio.gather(parent_watcher, return_exceptions=True)
+    finally:
+        store.close()

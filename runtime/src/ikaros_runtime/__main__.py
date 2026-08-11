@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from collections.abc import Sequence
+from pathlib import Path
 
 from .server import ServerSettings, run_server
 
@@ -28,6 +30,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         port=args.port,
         token=args.token,
         parent_pid=args.parent_pid,
+        runtime_home=Path(os.environ.get("IKAROS_HOME", Path.home() / ".ikaros")),
     )
     asyncio.run(run_server(settings))
 

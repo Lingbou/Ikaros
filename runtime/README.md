@@ -23,3 +23,8 @@ uv run --project runtime pytest runtime/tests
 The Runtime server is normally started by Ikaros Desktop. Its standard output
 is reserved for one machine-readable readiness record; diagnostics go to
 standard error.
+
+Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
+`IKAROS_HOME`; normal Desktop launches do not override it. The Runtime creates
+`state.db` on startup, while `config.yaml` remains absent until the user saves a
+real provider/model configuration.

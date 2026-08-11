@@ -23,6 +23,12 @@ interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
+interface PendingRequest {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 export interface RuntimeConnectionInfo {
   protocolVersion: number;
   host: string;
@@ -33,6 +39,7 @@ export interface RuntimeConnectionInfo {
 
 export interface RuntimeHostOptions {
   runtimeRoot: string;
+  runtimeHome?: string;
   pythonExecutable?: string;
   parentPid?: number;
   startTimeoutMs?: number;
@@ -138,50 +145,99 @@ function openAuthenticatedSocket(ready: RuntimeReadyRecord, token: string): Prom
   });
 }
 
-function requestOnce(
-  socket: WebSocket,
-  id: number,
-  method: string,
-  params: Record<string, unknown>
-): Promise<JsonRpcResponse> {
-  return new Promise((resolvePromise, reject) => {
-    const cleanup = (): void => {
-      socket.off("message", onMessage);
-      socket.off("error", onError);
-      socket.off("close", onClose);
-    };
-    const onMessage = (raw: RawData): void => {
-      try {
-        const response = JSON.parse(raw.toString()) as JsonRpcResponse;
-        if (response.jsonrpc !== "2.0" || response.id !== id) {
-          throw new Error("Runtime returned a mismatched JSON-RPC response.");
-        }
-        cleanup();
-        resolvePromise(response);
-      } catch (error) {
-        cleanup();
-        reject(error);
-      }
-    };
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-    const onClose = (): void => {
-      cleanup();
-      reject(new Error("Runtime WebSocket closed before the request completed."));
-    };
+class JsonRpcConnection {
+  private readonly pending = new Map<number, PendingRequest>();
+  private nextRequestId = 1;
 
-    socket.once("message", onMessage);
-    socket.once("error", onError);
-    socket.once("close", onClose);
-    socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }), (error) => {
-      if (error) {
-        cleanup();
-        reject(error);
-      }
+  constructor(private readonly socket: WebSocket) {
+    socket.on("message", this.handleMessage);
+    socket.on("error", this.handleError);
+    socket.on("close", this.handleClose);
+  }
+
+  get isOpen(): boolean {
+    return this.socket.readyState === WebSocket.OPEN;
+  }
+
+  request<TResult>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number
+  ): Promise<TResult> {
+    if (!this.isOpen) {
+      return Promise.reject(new Error("Runtime WebSocket is not open."));
+    }
+    const id = this.nextRequestId++;
+    return new Promise<TResult>((resolvePromise, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Runtime request ${method} timed out.`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value) => resolvePromise(value as TResult),
+        reject,
+        timeout
+      });
+      this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }), (error) => {
+        if (!error) {
+          return;
+        }
+        const pending = this.pending.get(id);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          this.pending.delete(id);
+          pending.reject(error);
+        }
+      });
     });
-  });
+  }
+
+  close(): void {
+    this.rejectAll(new Error("Runtime connection closed."));
+    this.socket.close();
+  }
+
+  private readonly handleMessage = (raw: RawData): void => {
+    let response: JsonRpcResponse;
+    try {
+      response = JSON.parse(raw.toString()) as JsonRpcResponse;
+    } catch {
+      this.rejectAll(new Error("Runtime returned invalid JSON."));
+      return;
+    }
+    if (response.jsonrpc !== "2.0" || typeof response.id !== "number") {
+      return;
+    }
+    const pending = this.pending.get(response.id);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timeout);
+    this.pending.delete(response.id);
+    if (response.error) {
+      pending.reject(
+        new Error(`Runtime RPC failed (${response.error.code}): ${response.error.message}`)
+      );
+    } else {
+      pending.resolve(response.result);
+    }
+  };
+
+  private readonly handleError = (error: Error): void => {
+    this.rejectAll(error);
+  };
+
+  private readonly handleClose = (): void => {
+    this.rejectAll(new Error("Runtime WebSocket closed."));
+  };
+
+  private rejectAll(error: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.pending.clear();
+  }
 }
 
 function runtimePython(runtimeRoot: string): string {
@@ -203,7 +259,7 @@ export class RuntimeHost {
   > &
     Omit<RuntimeHostOptions, "parentPid" | "startTimeoutMs" | "stopTimeoutMs">;
   private child: ChildProcessWithoutNullStreams | undefined;
-  private socket: WebSocket | undefined;
+  private connection: JsonRpcConnection | undefined;
   private connectionInfo: RuntimeConnectionInfo | undefined;
   private starting: Promise<RuntimeConnectionInfo> | undefined;
 
@@ -236,6 +292,17 @@ export class RuntimeHost {
     return this.starting;
   }
 
+  async request<TResult>(
+    method: string,
+    params: Record<string, unknown> = {}
+  ): Promise<TResult> {
+    await this.start();
+    if (!this.connection) {
+      throw new Error("Runtime connection is unavailable.");
+    }
+    return this.connection.request<TResult>(method, params, this.options.startTimeoutMs);
+  }
+
   private async startOnce(): Promise<RuntimeConnectionInfo> {
     const pythonExecutable =
       this.options.pythonExecutable ??
@@ -248,6 +315,14 @@ export class RuntimeHost {
     }
 
     const token = randomBytes(32).toString("base64url");
+    const childEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      PYTHONUNBUFFERED: "1",
+      PYTHONUTF8: "1"
+    };
+    if (this.options.runtimeHome) {
+      childEnvironment.IKAROS_HOME = this.options.runtimeHome;
+    }
     const child = spawn(
       pythonExecutable,
       [
@@ -265,7 +340,7 @@ export class RuntimeHost {
       ],
       {
         cwd: this.options.runtimeRoot,
-        env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1" },
+        env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true
       }
@@ -291,22 +366,19 @@ export class RuntimeHost {
         this.options.startTimeoutMs,
         "Timed out connecting to Ikaros Runtime."
       );
-      this.socket = socket;
-      const initialized = await withTimeout(
-        requestOnce(socket, 1, "initialize", {
-          protocolVersion: PROTOCOL_VERSION,
-          client: { name: "ikaros-desktop", version: "0.1.0" }
-        }),
-        this.options.startTimeoutMs,
-        "Timed out initializing Ikaros Runtime."
-      );
-      if (initialized.error) {
-        throw new Error(`Runtime initialization failed: ${initialized.error.message}`);
-      }
-      const result = initialized.result as {
+      const connection = new JsonRpcConnection(socket);
+      this.connection = connection;
+      const result = await connection.request<{
         protocolVersion?: number;
         server?: { name?: string; version?: string };
-      };
+      }>(
+        "initialize",
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          client: { name: "ikaros-desktop", version: "0.1.0" }
+        },
+        this.options.startTimeoutMs
+      );
       if (
         result.protocolVersion !== PROTOCOL_VERSION ||
         typeof result.server?.name !== "string" ||
@@ -325,32 +397,29 @@ export class RuntimeHost {
     } catch (error) {
       child.kill();
       this.child = undefined;
-      this.socket = undefined;
+      this.connection?.close();
+      this.connection = undefined;
       throw error;
     }
   }
 
   async stop(): Promise<void> {
     const child = this.child;
-    const socket = this.socket;
+    const connection = this.connection;
     this.connectionInfo = undefined;
-    this.socket = undefined;
+    this.connection = undefined;
     this.child = undefined;
     if (!child) {
       return;
     }
 
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (connection?.isOpen) {
       try {
-        await withTimeout(
-          requestOnce(socket, 2, "runtime.shutdown", {}),
-          this.options.stopTimeoutMs,
-          "Timed out requesting Runtime shutdown."
-        );
+        await connection.request("runtime.shutdown", {}, this.options.stopTimeoutMs);
       } catch {
         child.kill();
       } finally {
-        socket.close();
+        connection.close();
       }
     } else {
       child.kill();
