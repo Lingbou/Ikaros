@@ -82,7 +82,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const canStop = !runtimeMode && (runStatus === "queued" || runStatus === "running");
+  const canStop = runStatus === "queued" || runStatus === "running";
   const submitBlocked = isRunActive(runStatus) && !canStop;
   const slashMatch = draft.match(/^\/([^\s]*)$/);
   const slashQuery = slashMatch?.[1].toLowerCase() ?? "";

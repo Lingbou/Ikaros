@@ -88,15 +88,24 @@ describe("Runtime event projection", () => {
       event(13, "item.completed", "turn-3", "run-3", "assistant-3", {
         item: messageItem("assistant-3", "turn-3", "run-3", "assistant", "partial", "failed")
       }),
-      event(14, "run.settled", "turn-3", "run-3", null, { status: "failed" })
+      event(14, "run.settled", "turn-3", "run-3", null, { status: "failed" }),
+      event(15, "item.started", "turn-4", "run-4", "assistant-4", {
+        item: messageItem("assistant-4", "turn-4", "run-4", "assistant", "", "streaming")
+      }),
+      event(16, "item.delta", "turn-4", "run-4", "assistant-4", { delta: "partial" }),
+      event(17, "item.completed", "turn-4", "run-4", "assistant-4", {
+        item: messageItem("assistant-4", "turn-4", "run-4", "assistant", "partial", "cancelled")
+      }),
+      event(18, "run.settled", "turn-4", "run-4", null, { status: "cancelled" })
     ];
 
     const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
     const turns = thread.branches[0]?.turns;
 
-    expect(turns).toHaveLength(3);
+    expect(turns).toHaveLength(4);
     expect(turns?.[0]).toMatchObject({
       id: "turn-1",
+      runId: "run-1",
       status: "completed",
       events: [
         { id: "user-1", role: "user", content: "hello", status: "complete" },
@@ -110,13 +119,21 @@ describe("Runtime event projection", () => {
     });
     expect(turns?.[1]).toMatchObject({
       id: "turn-2",
+      runId: "run-2",
       status: "completed",
       events: [{ id: "user-2", role: "user", content: "again" }]
     });
     expect(turns?.[2]).toMatchObject({
       id: "turn-3",
+      runId: "run-3",
       status: "failed",
       events: [{ id: "assistant-3", content: "partial", status: "failed" }]
+    });
+    expect(turns?.[3]).toMatchObject({
+      id: "turn-4",
+      runId: "run-4",
+      status: "interrupted",
+      events: [{ id: "assistant-4", content: "partial", status: "interrupted" }]
     });
   });
 });

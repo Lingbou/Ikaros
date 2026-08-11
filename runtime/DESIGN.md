@@ -220,6 +220,73 @@ distinctions are already locked: commands are acknowledged quickly, execution
 continues asynchronously, and each Run reaches exactly one settled terminal
 state such as completed, failed, or cancelled.
 
+### ACK, cancellation, recovery, and replay semantics
+
+`turn.start` commits the user Item and a `queued` Run before constructing its
+response. The Scheduler synchronously reserves that persisted Run and places
+the reservation in its execution queue at that point, but cannot execute it
+yet. A worker that reaches an unacknowledged reservation waits there, so a
+later Turn whose ACK completes first cannot overtake the earlier persisted
+Turn or build context before its assistant Item exists. The server first
+attempts to send the JSON-RPC response, then publishes the committed initial
+events and activates the reservation. The post-ACK work runs from `finally`,
+so a socket failure while sending the ACK does not strand an accepted Turn. A
+reservation is visible to cancellation and clean shutdown; either operation
+terminalizes and wakes the queue slot. This closes both the cross-client cancel
+window and reverse-ACK execution reordering without introducing a deadlock.
+
+Desktop assigns separate stable `clientRequestId` values to `thread.create`
+and `turn.start`. SQLite stores them behind unique indexes, so retrying either
+command after a transport failure returns the original Thread or Turn/Run
+instead of creating a duplicate. The matching ID is also written into the
+canonical `thread.created` or first user `item.completed` event. A client first
+replays every page after its pre-command `seq`: a matching canonical event
+proves acceptance, while an explicit JSON-RPC error for that command proves
+rejection. A successful replay with no match does not prove rejection because
+a command accepted on another connection may still be in flight and not yet
+visible to the replay. After a timeout, socket close, or send failure, the same
+idempotent command therefore keeps retrying with capped backoff even when replay
+is reachable; the submission remains queued and its draft is not restored while
+acceptance is ambiguous. Live and replay delivery may race, but the request ID
+and client-side continuation gate ensure that a newly created Thread starts one
+logical Turn. Only a confirmed rejection restores the draft and permits a new
+submission.
+
+`run.cancel` follows the same ACK-first boundary. Runtime validation and the
+current Run status determine the response, while cooperative cancellation and
+terminal event publication happen after the response attempt. In particular,
+`accepted: true` means that the cancellation request was accepted for a Run
+that was non-terminal at that observation point. It is not a promise that the
+canonical terminal status will be `cancelled`: the provider may naturally
+complete and commit first while the ACK is in flight. Completion is allowed to
+win that race. Clients must use the single durable `run.settled` event as the
+outcome and treat repeated cancellation of an already terminal Run as
+`accepted: false`.
+
+Terminalization updates the assistant Item, Turn, and Run and appends
+`run.settled` in one SQLite transaction. A partial assistant Item therefore
+cannot appear complete when its Run is cancelled or fails, and a partial
+terminal state cannot survive a failed transaction. A partial unique index on
+the journal enforces at most one `run.settled` per Run; terminalization is also
+idempotent so completion, cancellation, shutdown, and recovery can safely race.
+
+On clean shutdown the Scheduler stops accepting work, cooperatively cancels the
+active Run, terminalizes queued and reserved Runs as `cancelled`, and waits for
+the worker before SQLite closes. On startup, a Run left `running` by an
+unclean process exit becomes `failed` with reason code `runtime_interrupted`,
+preserving any partial assistant text. Runs left `queued` are scheduled in
+their original journal sequence. Terminal Runs are never recovered or rerun.
+
+Every journal event has one global monotonically increasing `seq`. The Runtime
+buffers concurrently published events until it can notify subscribers in a
+contiguous sequence. Live delivery remains an optimization: after connection,
+reconnection, or any observed gap, a client calls `event.replay` from its last
+contiguous cursor and follows `nextAfterSeq` until `hasMore` is false. Duplicate
+sequences are ignored, and a client must not advance its projection cursor
+across a gap. Consequently a dropped notification or failed replay attempt
+cannot authorize the client to skip canonical history; replay is retried from
+the same cursor.
+
 Streaming deltas may be buffered or persisted in batches. Completed Items,
 terminal Run state, branch/fork decisions, retry links, and other semantic
 records are appended canonically. Projections are rebuildable from the SQLite
@@ -236,6 +303,9 @@ first slice.
 ```text
 client submits user input
   -> runtime appends Turn and Run
+  -> Scheduler reserves the persisted Run
+  -> server attempts the command ACK
+  -> Scheduler activates the Run
   -> ContextBuilder builds provider-neutral context
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call

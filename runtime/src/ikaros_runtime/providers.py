@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
+
+from .cancellation import CancellationToken
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,14 +20,24 @@ class ProviderRequest:
 
 
 class ProviderAdapter(Protocol):
-    def stream(self, request: ProviderRequest) -> AsyncIterator[str]: ...
+    def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[str]: ...
 
 
 class ScriptedProvider:
     id = "scripted"
     model_id = "scripted-v1"
 
-    async def stream(self, request: ProviderRequest) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[str]:
         if request.model_id != self.model_id:
             raise ValueError("unknown scripted model")
         users = [message.content for message in request.messages if message.role == "user"]
@@ -47,5 +58,5 @@ class ScriptedProvider:
             )
 
         for start in range(0, len(response), 12):
-            await asyncio.sleep(0.005)
+            await cancellation.sleep(0.005)
             yield response[start : start + 12]

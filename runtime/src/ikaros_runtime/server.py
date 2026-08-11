@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from . import __version__
@@ -149,6 +150,7 @@ def _initialize_result() -> dict[str, object]:
             "eventReplay": True,
             "streaming": True,
             "scriptedProvider": True,
+            "runCancellation": True,
         },
     }
 
@@ -246,6 +248,9 @@ async def _handle_connection(
                     elif method == "turn.start":
                         outcome = kernel.start_turn(params)
                         result = outcome.result
+                    elif method == "run.cancel":
+                        outcome = kernel.cancel_run(params)
+                        result = outcome.result
                     elif method == "event.replay":
                         result = kernel.replay_events(params)
                     else:
@@ -281,6 +286,8 @@ async def _handle_connection(
                 )
             if shutdown_accepted:
                 return
+    except ConnectionClosed:
+        return
     finally:
         if unsubscribe is not None:
             unsubscribe()
@@ -297,9 +304,10 @@ async def run_server(settings: ServerSettings) -> None:
     stop_event = asyncio.Event()
     expected_authorization = f"Bearer {settings.token}"
     store = SqliteRuntimeStore(settings.runtime_home / "state.db")
+    recovery = store.recover_incomplete_runs()
     event_bus = EventBus(next_seq=store.latest_sequence() + 1)
     kernel = RuntimeKernel(store, event_bus.publish)
-    kernel.start()
+    kernel.start(recovery.queued_run_ids)
 
     def authenticate(connection: ServerConnection, request: Request) -> Response | None:
         authorization = request.headers.get("Authorization", "")

@@ -67,7 +67,7 @@ export interface MessageEvent extends EventBase {
   type: "message";
   role: "user" | "assistant";
   content: string;
-  status?: "streaming" | "complete" | "failed";
+  status?: "streaming" | "complete" | "failed" | "interrupted";
 }
 
 export interface ToolCallEvent extends EventBase {
@@ -166,6 +166,7 @@ export type AgentEvent =
 export interface Turn {
   id: string;
   branchId: string;
+  runId?: string;
   status: TurnStatus;
   events: AgentEvent[];
 }

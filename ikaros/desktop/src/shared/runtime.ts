@@ -29,6 +29,7 @@ export interface RuntimeTurnStartParams {
   content: string;
   providerId: string;
   modelId: string;
+  clientRequestId?: string;
 }
 
 export interface RuntimeTurnStartResult {
@@ -38,6 +39,12 @@ export interface RuntimeTurnStartResult {
   runId: string;
 }
 
+export interface RuntimeCancelRunResult {
+  accepted: boolean;
+  runId: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+}
+
 export interface RuntimeReplayResult {
   events: RuntimeJournalEvent[];
   latestSeq: number;
@@ -45,10 +52,41 @@ export interface RuntimeReplayResult {
   hasMore: boolean;
 }
 
+export interface RuntimeRpcFailure {
+  kind: "json_rpc";
+  code: number;
+  message: string;
+}
+
+export type RuntimeInvocationResult<TResult> =
+  | { ok: true; value: TResult }
+  | { ok: false; error: RuntimeRpcFailure };
+
 export interface IkarosRuntimeApi {
   listThreads(): Promise<{ threads: RuntimeThreadSummary[] }>;
-  createThread(title: string | null): Promise<RuntimeThreadCreateResult>;
+  createThread(
+    title: string | null,
+    clientRequestId?: string
+  ): Promise<RuntimeThreadCreateResult>;
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
+  cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
   replayEvents(afterSeq: number, limit?: number): Promise<RuntimeReplayResult>;
+  onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
+}
+
+export interface IkarosRuntimeBridgeApi {
+  listThreads(): Promise<RuntimeInvocationResult<{ threads: RuntimeThreadSummary[] }>>;
+  createThread(
+    title: string | null,
+    clientRequestId?: string
+  ): Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>;
+  startTurn(
+    params: RuntimeTurnStartParams
+  ): Promise<RuntimeInvocationResult<RuntimeTurnStartResult>>;
+  cancelRun(runId: string): Promise<RuntimeInvocationResult<RuntimeCancelRunResult>>;
+  replayEvents(
+    afterSeq: number,
+    limit?: number
+  ): Promise<RuntimeInvocationResult<RuntimeReplayResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
 }

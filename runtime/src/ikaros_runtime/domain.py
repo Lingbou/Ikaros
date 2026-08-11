@@ -72,3 +72,9 @@ class PreparedTurn:
     thread_id: str
     branch_id: str
     initial_events: tuple[JournalEvent, ...]
+    newly_created: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryPlan:
+    queued_run_ids: tuple[str, ...]

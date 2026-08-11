@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,11 +14,23 @@ class InvalidParamsError(ValueError):
     """The client supplied invalid JSON-RPC method parameters."""
 
 
+def _client_request_id(params: dict[str, Any]) -> str | None:
+    value = params.get("clientRequestId")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 200:
+        raise InvalidParamsError(
+            "clientRequestId must be a non-empty string of at most 200 characters"
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class CommandOutcome:
     result: dict[str, Any]
     events_after_ack: tuple[JournalEvent, ...] = ()
     run_after_ack: str | None = None
+    cancel_after_ack: str | None = None
 
 
 class RuntimeKernel:
@@ -28,8 +41,8 @@ class RuntimeKernel:
         self._scheduler = AgentScheduler(loop)
         self._publish = publish
 
-    def start(self) -> None:
-        self._scheduler.start()
+    def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
+        self._scheduler.start(recovered_run_ids)
 
     async def close(self) -> None:
         await self._scheduler.close()
@@ -38,10 +51,12 @@ class RuntimeKernel:
         for event in outcome.events_after_ack:
             await self._publish(event)
         if outcome.run_after_ack is not None:
-            await self._scheduler.enqueue(outcome.run_after_ack)
+            await self._scheduler.activate(outcome.run_after_ack)
+        if outcome.cancel_after_ack is not None:
+            await self._scheduler.cancel(outcome.cancel_after_ack)
 
     def create_thread(self, params: dict[str, Any]) -> CommandOutcome:
-        unknown = set(params) - {"title"}
+        unknown = set(params) - {"title", "clientRequestId"}
         if unknown:
             raise InvalidParamsError(f"unknown thread.create parameters: {sorted(unknown)}")
         title = params.get("title")
@@ -53,17 +68,29 @@ class RuntimeKernel:
                 title = None
             elif len(title) > 200:
                 raise InvalidParamsError("title must not exceed 200 characters")
-        thread, event = self._store.create_thread(title)
+        client_request_id = _client_request_id(params)
+        if client_request_id is None:
+            thread, event = self._store.create_thread(title)
+            created = True
+        else:
+            try:
+                thread, event, created = self._store.create_thread_once(
+                    title,
+                    client_request_id,
+                )
+            except LookupError as error:
+                raise InvalidParamsError(str(error)) from error
         return CommandOutcome(
             result={"thread": thread.to_wire(), "event": event.to_wire()},
-            events_after_ack=(event,),
+            events_after_ack=(event,) if created else (),
         )
 
     def start_turn(self, params: dict[str, Any]) -> CommandOutcome:
         required = {"threadId", "branchId", "content", "providerId", "modelId"}
-        if set(params) != required:
+        allowed = required | {"clientRequestId"}
+        if not required <= set(params) or not set(params) <= allowed:
             missing = sorted(required - set(params))
-            unknown = sorted(set(params) - required)
+            unknown = sorted(set(params) - allowed)
             raise InvalidParamsError(
                 f"turn.start fields mismatch; missing={missing}, unknown={unknown}"
             )
@@ -77,6 +104,7 @@ class RuntimeKernel:
             raise InvalidParamsError("provider is not available")
         if values["modelId"] != ScriptedProvider.model_id:
             raise InvalidParamsError("model is not available")
+        client_request_id = _client_request_id(params)
         try:
             prepared = self._store.prepare_turn(
                 thread_id=values["threadId"],
@@ -84,9 +112,12 @@ class RuntimeKernel:
                 content=content,
                 provider_id=values["providerId"],
                 model_id=values["modelId"],
+                client_request_id=client_request_id,
             )
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
+        if prepared.newly_created:
+            self._scheduler.reserve(prepared.run_id)
         return CommandOutcome(
             result={
                 "turnId": prepared.turn_id,
@@ -94,14 +125,33 @@ class RuntimeKernel:
                 "threadId": prepared.thread_id,
                 "branchId": prepared.branch_id,
             },
-            events_after_ack=prepared.initial_events,
-            run_after_ack=prepared.run_id,
+            events_after_ack=prepared.initial_events if prepared.newly_created else (),
+            run_after_ack=prepared.run_id if prepared.newly_created else None,
         )
 
     def list_threads(self, params: dict[str, Any]) -> dict[str, Any]:
         if params:
             raise InvalidParamsError("thread.list does not accept parameters")
         return {"threads": [thread.to_wire() for thread in self._store.list_threads()]}
+
+    def cancel_run(self, params: dict[str, Any]) -> CommandOutcome:
+        if set(params) != {"runId"}:
+            raise InvalidParamsError("run.cancel requires exactly one runId")
+        run_id = params["runId"]
+        if not isinstance(run_id, str) or not run_id:
+            raise InvalidParamsError("runId must be a non-empty string")
+        try:
+            status = self._store.run_status(run_id)
+        except LookupError as error:
+            raise InvalidParamsError(str(error)) from error
+        if status in {"completed", "failed", "cancelled"}:
+            return CommandOutcome(
+                result={"accepted": False, "runId": run_id, "status": status}
+            )
+        return CommandOutcome(
+            result={"accepted": True, "runId": run_id, "status": status},
+            cancel_after_ack=run_id,
+        )
 
     def replay_events(self, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - {"afterSeq", "limit"}

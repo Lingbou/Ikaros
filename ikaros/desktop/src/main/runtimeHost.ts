@@ -6,7 +6,27 @@ import { createInterface } from "node:readline";
 
 import WebSocket, { type RawData } from "ws";
 
+import type { RuntimeJournalEvent, RuntimeReplayResult } from "../shared/runtime";
+
 const PROTOCOL_VERSION = 1;
+const SOCKET_RECONNECT_DELAYS_MS = [50, 100, 200, 400, 800] as const;
+const RUNTIME_RESTART_DELAYS_MS = [100, 200, 400] as const;
+
+function wait(delayMs: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function reportRuntimeHostFailure(message: string): void {
+  try {
+    process.stderr.write(`[ikaros-runtime] ${message}\n`);
+  } catch {
+    // Diagnostics must never break Runtime recovery or event delivery.
+  }
+}
 
 interface RuntimeReadyRecord {
   type: "ikaros_runtime.ready";
@@ -16,17 +36,102 @@ interface RuntimeReadyRecord {
   pid: number;
 }
 
-interface JsonRpcResponse {
+interface JsonRpcResultResponse {
   jsonrpc: "2.0";
   id: number;
-  result?: unknown;
-  error?: { code: number; message: string };
+  result: unknown;
+}
+
+interface JsonRpcErrorResponse {
+  jsonrpc: "2.0";
+  id: number;
+  error: { code: number; message: string };
+}
+
+type JsonRpcResponse = JsonRpcResultResponse | JsonRpcErrorResponse;
+
+export class RuntimeRpcError extends Error {
+  readonly kind = "json_rpc" as const;
+
+  constructor(
+    readonly code: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "RuntimeRpcError";
+  }
 }
 
 export interface RuntimeNotification {
   jsonrpc: "2.0";
   method: string;
   params: unknown;
+}
+
+function hasOwn(value: object, property: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, property);
+}
+
+function isRuntimeNotification(value: unknown): value is RuntimeNotification {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Partial<RuntimeNotification>).jsonrpc === "2.0" &&
+    typeof (value as Partial<RuntimeNotification>).method === "string" &&
+    !hasOwn(value, "id") &&
+    hasOwn(value, "params")
+  );
+}
+
+function responseId(value: unknown): number | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const id = (value as { id?: unknown }).id;
+  return typeof id === "number" && Number.isInteger(id) ? id : undefined;
+}
+
+export function parseRuntimeJsonRpcResponse(value: unknown): JsonRpcResponse {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Runtime returned an invalid JSON-RPC response.");
+  }
+  const candidate = value as {
+    jsonrpc?: unknown;
+    id?: unknown;
+    result?: unknown;
+    error?: unknown;
+  };
+  const hasResult = hasOwn(candidate, "result");
+  const hasError = hasOwn(candidate, "error");
+  if (
+    candidate.jsonrpc !== "2.0" ||
+    typeof candidate.id !== "number" ||
+    !Number.isInteger(candidate.id) ||
+    hasResult === hasError
+  ) {
+    throw new Error("Runtime returned an invalid JSON-RPC response.");
+  }
+  if (hasResult) {
+    return { jsonrpc: "2.0", id: candidate.id, result: candidate.result };
+  }
+  const error = candidate.error;
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    typeof (error as { code?: unknown }).code !== "number" ||
+    !Number.isInteger((error as { code: number }).code) ||
+    typeof (error as { message?: unknown }).message !== "string"
+  ) {
+    throw new Error("Runtime returned an invalid JSON-RPC response.");
+  }
+  return {
+    jsonrpc: "2.0",
+    id: candidate.id,
+    error: {
+      code: (error as { code: number }).code,
+      message: (error as { message: string }).message
+    }
+  };
 }
 
 interface PendingRequest {
@@ -66,6 +171,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       }
     );
   });
+}
+
+function remainingTimeoutMs(deadline: number, message: string): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error(message);
+  }
+  return remaining;
 }
 
 function parseReadyRecord(line: string): RuntimeReadyRecord {
@@ -122,27 +235,45 @@ function waitForReadiness(child: ChildProcessWithoutNullStreams): Promise<Runtim
   });
 }
 
-function openAuthenticatedSocket(ready: RuntimeReadyRecord, token: string): Promise<WebSocket> {
+function openAuthenticatedSocket(
+  ready: RuntimeReadyRecord,
+  token: string,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<WebSocket> {
   return new Promise((resolvePromise, reject) => {
     const socket = new WebSocket(`ws://${ready.host}:${ready.port}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
+    const timeout = setTimeout(() => {
+      fail(new Error(timeoutMessage));
+    }, timeoutMs);
     const cleanup = (): void => {
+      clearTimeout(timeout);
       socket.off("open", onOpen);
       socket.off("error", onError);
       socket.off("unexpected-response", onUnexpectedResponse);
+    };
+    const abortSocket = (): void => {
+      const absorbAbortError = (): void => undefined;
+      socket.once("error", absorbAbortError);
+      socket.once("close", () => socket.off("error", absorbAbortError));
+      socket.terminate();
+    };
+    const fail = (error: Error): void => {
+      cleanup();
+      abortSocket();
+      reject(error);
     };
     const onOpen = (): void => {
       cleanup();
       resolvePromise(socket);
     };
     const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
+      fail(error);
     };
     const onUnexpectedResponse = (): void => {
-      cleanup();
-      reject(new Error("Runtime rejected the authenticated WebSocket connection."));
+      fail(new Error("Runtime rejected the authenticated WebSocket connection."));
     };
 
     socket.once("open", onOpen);
@@ -154,10 +285,12 @@ function openAuthenticatedSocket(ready: RuntimeReadyRecord, token: string): Prom
 class JsonRpcConnection {
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
+  private disconnected = false;
 
   constructor(
     private readonly socket: WebSocket,
-    private readonly onNotification: (notification: RuntimeNotification) => void
+    private readonly onNotification: (notification: RuntimeNotification) => void,
+    private readonly onDisconnected: (error: Error) => void
   ) {
     socket.on("message", this.handleMessage);
     socket.on("error", this.handleError);
@@ -202,52 +335,75 @@ class JsonRpcConnection {
   }
 
   close(): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.disconnected = true;
     this.rejectAll(new Error("Runtime connection closed."));
+    this.removeSocketListeners();
     this.socket.close();
   }
 
   private readonly handleMessage = (raw: RawData): void => {
-    let response: JsonRpcResponse;
+    let message: unknown;
     try {
-      const message = JSON.parse(raw.toString()) as JsonRpcResponse | RuntimeNotification;
-      if (
-        message.jsonrpc === "2.0" &&
-        "method" in message &&
-        typeof message.method === "string"
-      ) {
+      message = JSON.parse(raw.toString()) as unknown;
+      if (isRuntimeNotification(message)) {
         this.onNotification(message);
         return;
       }
-      response = message as JsonRpcResponse;
     } catch {
-      this.rejectAll(new Error("Runtime returned invalid JSON."));
+      this.disconnect(new Error("Runtime returned invalid JSON."));
       return;
     }
-    if (response.jsonrpc !== "2.0" || typeof response.id !== "number") {
+    const id = responseId(message);
+    if (id === undefined) {
       return;
     }
-    const pending = this.pending.get(response.id);
+    const pending = this.pending.get(id);
     if (!pending) {
       return;
     }
+    let response: JsonRpcResponse;
+    try {
+      response = parseRuntimeJsonRpcResponse(message);
+    } catch (error) {
+      this.disconnect(error instanceof Error ? error : new Error(String(error)));
+      this.socket.terminate();
+      return;
+    }
     clearTimeout(pending.timeout);
-    this.pending.delete(response.id);
-    if (response.error) {
-      pending.reject(
-        new Error(`Runtime RPC failed (${response.error.code}): ${response.error.message}`)
-      );
+    this.pending.delete(id);
+    if ("error" in response) {
+      pending.reject(new RuntimeRpcError(response.error.code, response.error.message));
     } else {
       pending.resolve(response.result);
     }
   };
 
   private readonly handleError = (error: Error): void => {
-    this.rejectAll(error);
+    this.disconnect(error);
   };
 
   private readonly handleClose = (): void => {
-    this.rejectAll(new Error("Runtime WebSocket closed."));
+    this.disconnect(new Error("Runtime WebSocket closed."));
   };
+
+  private disconnect(error: Error): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.disconnected = true;
+    this.rejectAll(error);
+    this.removeSocketListeners();
+    this.onDisconnected(error);
+  }
+
+  private removeSocketListeners(): void {
+    this.socket.off("message", this.handleMessage);
+    this.socket.off("error", this.handleError);
+    this.socket.off("close", this.handleClose);
+  }
 
   private rejectAll(error: Error): void {
     for (const pending of this.pending.values()) {
@@ -271,6 +427,22 @@ export function developmentRuntimeRoot(desktopAppPath: string): string {
   return resolve(desktopAppPath, "..", "..", "runtime");
 }
 
+function terminateRuntimeProcess(
+  child: ChildProcessWithoutNullStreams,
+  runtimePid: number | undefined
+): void {
+  if (runtimePid && runtimePid !== child.pid) {
+    try {
+      process.kill(runtimePid);
+    } catch {
+      // The Runtime may already have exited between the readiness check and cleanup.
+    }
+  }
+  if (child.exitCode === null) {
+    child.kill();
+  }
+}
+
 export class RuntimeHost {
   private readonly options: Required<
     Pick<RuntimeHostOptions, "parentPid" | "startTimeoutMs" | "stopTimeoutMs">
@@ -279,7 +451,23 @@ export class RuntimeHost {
   private child: ChildProcessWithoutNullStreams | undefined;
   private connection: JsonRpcConnection | undefined;
   private connectionInfo: RuntimeConnectionInfo | undefined;
+  private readyRecord: RuntimeReadyRecord | undefined;
+  private launchToken: string | undefined;
   private starting: Promise<RuntimeConnectionInfo> | undefined;
+  private generation = 0;
+  private supervisionEpoch = 0;
+  private stopping = false;
+  private hasConnected = false;
+  private automaticRecoveryEnabled = false;
+  private reconnecting: Promise<void> | undefined;
+  private restarting: Promise<void> | undefined;
+  private stoppingPromise: Promise<void> | undefined;
+  private restartFailureCount = 0;
+  private restartCircuitOpen = false;
+  private synchronizingEvents = false;
+  private lastEventSeq = 0;
+  private readonly bufferedEventNotifications = new Map<number, RuntimeJournalEvent>();
+  private readonly pendingEventNotifications = new Map<number, RuntimeJournalEvent>();
   private readonly notificationListeners = new Set<(notification: RuntimeNotification) => void>();
 
   constructor(options: RuntimeHostOptions) {
@@ -292,7 +480,7 @@ export class RuntimeHost {
   }
 
   get isRunning(): boolean {
-    return this.connectionInfo !== undefined && this.child?.exitCode === null;
+    return this.child?.exitCode === null;
   }
 
   get pid(): number | undefined {
@@ -305,13 +493,28 @@ export class RuntimeHost {
   }
 
   start(): Promise<RuntimeConnectionInfo> {
-    if (this.connectionInfo) {
+    if (this.stopping) {
+      return Promise.reject(new Error("Ikaros Runtime is stopping."));
+    }
+    if (this.restartCircuitOpen) {
+      this.restartCircuitOpen = false;
+      this.restartFailureCount = 0;
+      this.supervisionEpoch += 1;
+    }
+    return this.beginStartAttempt();
+  }
+
+  private beginStartAttempt(): Promise<RuntimeConnectionInfo> {
+    if (this.connection?.isOpen && this.connectionInfo) {
       return Promise.resolve(this.connectionInfo);
     }
     if (!this.starting) {
-      this.starting = this.startOnce().finally(() => {
-        this.starting = undefined;
+      const starting = this.ensureConnectedOnce().finally(() => {
+        if (this.starting === starting) {
+          this.starting = undefined;
+        }
       });
+      this.starting = starting;
     }
     return this.starting;
   }
@@ -321,13 +524,29 @@ export class RuntimeHost {
     params: Record<string, unknown> = {}
   ): Promise<TResult> {
     await this.start();
-    if (!this.connection) {
+    const connection = this.connection;
+    if (!connection?.isOpen) {
       throw new Error("Runtime connection is unavailable.");
     }
-    return this.connection.request<TResult>(method, params, this.options.startTimeoutMs);
+    return connection.request<TResult>(method, params, this.options.startTimeoutMs);
   }
 
-  private async startOnce(): Promise<RuntimeConnectionInfo> {
+  private async ensureConnectedOnce(): Promise<RuntimeConnectionInfo> {
+    if (
+      this.child?.exitCode === null &&
+      this.readyRecord &&
+      this.launchToken
+    ) {
+      return this.connectToRuntime(
+        this.readyRecord,
+        this.launchToken,
+        this.generation
+      );
+    }
+    return this.launchRuntime();
+  }
+
+  private async launchRuntime(): Promise<RuntimeConnectionInfo> {
     const pythonExecutable =
       this.options.pythonExecutable ??
       process.env.IKAROS_RUNTIME_PYTHON ??
@@ -339,6 +558,8 @@ export class RuntimeHost {
     }
 
     const token = randomBytes(32).toString("base64url");
+    const generation = this.generation + 1;
+    this.generation = generation;
     const childEnvironment: NodeJS.ProcessEnv = {
       ...process.env,
       PYTHONUNBUFFERED: "1",
@@ -369,6 +590,7 @@ export class RuntimeHost {
       }
     );
     this.child = child;
+    child.once("exit", () => this.handleChildExit(child, generation));
     child.stderr.on("data", (chunk: Buffer) => {
       process.stderr.write(`[ikaros-runtime] ${chunk.toString()}`);
     });
@@ -384,17 +606,70 @@ export class RuntimeHost {
           `Runtime readiness protocol ${ready.protocolVersion} is incompatible with Desktop protocol ${PROTOCOL_VERSION}.`
         );
       }
-      const socket = await withTimeout(
-        openAuthenticatedSocket(ready, token),
+      if (this.stopping || generation !== this.generation || this.child !== child) {
+        throw new Error("Runtime launch was superseded.");
+      }
+      this.readyRecord = ready;
+      this.launchToken = token;
+      return await this.connectToRuntime(ready, token, generation);
+    } catch (error) {
+      if (this.child === child) {
+        const runtimePid = this.readyRecord?.pid;
+        this.child = undefined;
+        this.readyRecord = undefined;
+        this.launchToken = undefined;
+        this.connectionInfo = undefined;
+        this.connection?.close();
+        this.connection = undefined;
+        terminateRuntimeProcess(child, runtimePid);
+      }
+      throw error;
+    }
+  }
+
+  private async connectToRuntime(
+    ready: RuntimeReadyRecord,
+    token: string,
+    generation: number
+  ): Promise<RuntimeConnectionInfo> {
+    this.synchronizingEvents = true;
+    this.bufferedEventNotifications.clear();
+    let socket: WebSocket;
+    try {
+      socket = await openAuthenticatedSocket(
+        ready,
+        token,
         this.options.startTimeoutMs,
         "Timed out connecting to Ikaros Runtime."
       );
-      const connection = new JsonRpcConnection(socket, (notification) => {
-        for (const listener of this.notificationListeners) {
-          listener(notification);
+    } catch (error) {
+      this.synchronizingEvents = false;
+      this.bufferedEventNotifications.clear();
+      throw error;
+    }
+    if (
+      this.stopping ||
+      generation !== this.generation ||
+      this.child?.exitCode !== null
+    ) {
+      this.synchronizingEvents = false;
+      this.bufferedEventNotifications.clear();
+      socket.close();
+      throw new Error("Runtime connection was superseded.");
+    }
+    let established = false;
+    let connection: JsonRpcConnection;
+    connection = new JsonRpcConnection(
+      socket,
+      (notification) => this.handleRuntimeNotification(notification),
+      (error) => {
+        if (established) {
+          this.handleConnectionLoss(connection, generation, error);
         }
-      });
-      this.connection = connection;
+      }
+    );
+    this.connection = connection;
+    try {
       const result = await connection.request<{
         protocolVersion?: number;
         server?: { name?: string; version?: string };
@@ -413,54 +688,482 @@ export class RuntimeHost {
       ) {
         throw new Error("Runtime initialization result did not match the expected schema.");
       }
-      this.connectionInfo = {
+      await this.synchronizeEventStream(connection, !this.hasConnected);
+      if (
+        this.stopping ||
+        generation !== this.generation ||
+        this.child?.exitCode !== null
+      ) {
+        throw new Error("Runtime connection was superseded.");
+      }
+      const connectionInfo: RuntimeConnectionInfo = {
         protocolVersion: result.protocolVersion,
         host: ready.host,
         port: ready.port,
         pid: ready.pid,
         server: { name: result.server.name, version: result.server.version }
       };
-      return this.connectionInfo;
+      this.connectionInfo = connectionInfo;
+      this.hasConnected = true;
+      this.automaticRecoveryEnabled = true;
+      this.restartFailureCount = 0;
+      this.restartCircuitOpen = false;
+      established = true;
+      return connectionInfo;
     } catch (error) {
-      child.kill();
-      this.child = undefined;
-      this.connection?.close();
-      this.connection = undefined;
+      if (this.connection === connection) {
+        this.connection = undefined;
+        this.connectionInfo = undefined;
+      }
+      this.synchronizingEvents = false;
+      this.bufferedEventNotifications.clear();
+      connection.close();
       throw error;
     }
   }
 
-  async stop(): Promise<void> {
+  private async synchronizeEventStream(
+    connection: JsonRpcConnection,
+    initialConnection: boolean
+  ): Promise<void> {
+    if (initialConnection) {
+      const snapshot = await connection.request<RuntimeReplayResult>(
+        "event.replay",
+        { afterSeq: 0, limit: 1 },
+        this.options.startTimeoutMs
+      );
+      this.lastEventSeq = snapshot.latestSeq;
+      for (const seq of this.pendingEventNotifications.keys()) {
+        if (seq <= this.lastEventSeq) {
+          this.pendingEventNotifications.delete(seq);
+        }
+      }
+    } else {
+      let cursor = this.lastEventSeq;
+      while (true) {
+        const replay = await connection.request<RuntimeReplayResult>(
+          "event.replay",
+          { afterSeq: cursor, limit: 1000 },
+          this.options.startTimeoutMs
+        );
+        for (const event of replay.events) {
+          if (event.seq > this.lastEventSeq) {
+            this.pendingEventNotifications.set(event.seq, event);
+          }
+        }
+        cursor = replay.nextAfterSeq;
+        if (!replay.hasMore) {
+          break;
+        }
+      }
+    }
+
+    for (const event of this.bufferedEventNotifications.values()) {
+      if (event.seq > this.lastEventSeq) {
+        this.pendingEventNotifications.set(event.seq, event);
+      }
+    }
+    this.bufferedEventNotifications.clear();
+    this.synchronizingEvents = false;
+    this.flushPendingEvents();
+  }
+
+  private handleRuntimeNotification(notification: RuntimeNotification): void {
+    if (notification.method !== "event") {
+      this.emitNotification(notification);
+      return;
+    }
+    const event = notification.params as Partial<RuntimeJournalEvent>;
+    if (!Number.isInteger(event.seq) || typeof event.type !== "string") {
+      return;
+    }
+    const journalEvent = event as RuntimeJournalEvent;
+    if (this.synchronizingEvents) {
+      this.bufferedEventNotifications.set(journalEvent.seq, journalEvent);
+      return;
+    }
+    if (journalEvent.seq <= this.lastEventSeq) {
+      return;
+    }
+    this.pendingEventNotifications.set(journalEvent.seq, journalEvent);
+    this.flushPendingEvents();
+  }
+
+  private flushPendingEvents(): void {
+    while (true) {
+      const event = this.pendingEventNotifications.get(this.lastEventSeq + 1);
+      if (!event) {
+        return;
+      }
+      this.pendingEventNotifications.delete(event.seq);
+      this.lastEventSeq = event.seq;
+      this.emitNotification({ jsonrpc: "2.0", method: "event", params: event });
+    }
+  }
+
+  private emitNotification(notification: RuntimeNotification): void {
+    for (const listener of [...this.notificationListeners]) {
+      try {
+        listener(notification);
+      } catch (error) {
+        reportRuntimeHostFailure(
+          `notification listener failed: ${errorMessage(error)}`
+        );
+      }
+    }
+  }
+
+  private handleConnectionLoss(
+    connection: JsonRpcConnection,
+    generation: number,
+    error: Error
+  ): void {
+    const child = this.child;
+    if (
+      this.stopping ||
+      generation !== this.generation ||
+      this.connection !== connection ||
+      !child ||
+      child.exitCode !== null
+    ) {
+      return;
+    }
+    this.connection = undefined;
+    this.connectionInfo = undefined;
+    this.scheduleSocketReconnect(child, generation, error);
+  }
+
+  private scheduleSocketReconnect(
+    child: ChildProcessWithoutNullStreams,
+    generation: number,
+    cause: Error
+  ): void {
+    if (this.reconnecting || !this.canReconnectSocket(child, generation)) {
+      return;
+    }
+    const supervisionEpoch = this.supervisionEpoch;
+    let reconnecting: Promise<void>;
+    reconnecting = this.reconnectSocketWithBackoff(
+      child,
+      generation,
+      supervisionEpoch,
+      cause
+    ).finally(() => {
+      if (this.reconnecting === reconnecting) {
+        this.reconnecting = undefined;
+      }
+    });
+    this.reconnecting = reconnecting;
+  }
+
+  private canReconnectSocket(
+    child: ChildProcessWithoutNullStreams,
+    generation: number,
+    supervisionEpoch = this.supervisionEpoch
+  ): boolean {
+    return (
+      this.automaticRecoveryEnabled &&
+      !this.stopping &&
+      supervisionEpoch === this.supervisionEpoch &&
+      generation === this.generation &&
+      this.child === child &&
+      child.exitCode === null &&
+      !this.connection?.isOpen &&
+      this.readyRecord !== undefined &&
+      this.launchToken !== undefined
+    );
+  }
+
+  private async reconnectSocketWithBackoff(
+    child: ChildProcessWithoutNullStreams,
+    generation: number,
+    supervisionEpoch: number,
+    cause: Error
+  ): Promise<void> {
+    let lastError: unknown = cause;
+    for (const delayMs of SOCKET_RECONNECT_DELAYS_MS) {
+      await wait(delayMs);
+      if (!this.canReconnectSocket(child, generation, supervisionEpoch)) {
+        return;
+      }
+      try {
+        await this.beginStartAttempt();
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!this.canReconnectSocket(child, generation, supervisionEpoch)) {
+          return;
+        }
+      }
+    }
+    if (this.canReconnectSocket(child, generation, supervisionEpoch)) {
+      reportRuntimeHostFailure(
+        `WebSocket reconnect attempts exhausted: ${errorMessage(lastError)}`
+      );
+    }
+  }
+
+  private handleChildExit(
+    child: ChildProcessWithoutNullStreams,
+    generation: number
+  ): void {
+    if (this.child !== child || generation !== this.generation) {
+      return;
+    }
+    this.child = undefined;
+    this.readyRecord = undefined;
+    this.launchToken = undefined;
+    this.connectionInfo = undefined;
+    const connection = this.connection;
+    this.connection = undefined;
+    this.synchronizingEvents = false;
+    this.bufferedEventNotifications.clear();
+    this.generation += 1;
+    connection?.close();
+    if (!this.stopping && this.hasConnected && this.automaticRecoveryEnabled) {
+      this.scheduleRuntimeRestart();
+    }
+  }
+
+  private scheduleRuntimeRestart(): void {
+    if (
+      this.restarting ||
+      this.restartCircuitOpen ||
+      !this.automaticRecoveryEnabled ||
+      this.stopping ||
+      this.connection?.isOpen
+    ) {
+      return;
+    }
+    const supervisionEpoch = this.supervisionEpoch;
+    let restarting: Promise<void>;
+    restarting = this.restartRuntimeWithBackoff(supervisionEpoch).finally(() => {
+      if (this.restarting === restarting) {
+        this.restarting = undefined;
+      }
+      if (
+        this.automaticRecoveryEnabled &&
+        !this.stopping &&
+        !this.restartCircuitOpen &&
+        !this.connection?.isOpen &&
+        !this.child
+      ) {
+        this.scheduleRuntimeRestart();
+      }
+    });
+    this.restarting = restarting;
+  }
+
+  private canRestartRuntime(supervisionEpoch: number): boolean {
+    return (
+      this.automaticRecoveryEnabled &&
+      !this.stopping &&
+      supervisionEpoch === this.supervisionEpoch &&
+      !this.restartCircuitOpen &&
+      !this.connection?.isOpen
+    );
+  }
+
+  private async restartRuntimeWithBackoff(supervisionEpoch: number): Promise<void> {
+    while (this.restartFailureCount < RUNTIME_RESTART_DELAYS_MS.length) {
+      if (!this.canRestartRuntime(supervisionEpoch)) {
+        return;
+      }
+      await wait(RUNTIME_RESTART_DELAYS_MS[this.restartFailureCount] ?? 400);
+      if (!this.canRestartRuntime(supervisionEpoch)) {
+        return;
+      }
+      try {
+        await this.beginStartAttempt();
+        return;
+      } catch (error) {
+        if (!this.canRestartRuntime(supervisionEpoch)) {
+          return;
+        }
+        this.restartFailureCount += 1;
+        reportRuntimeHostFailure(
+          `restart attempt ${this.restartFailureCount} failed: ${errorMessage(error)}`
+        );
+      }
+    }
+    if (this.canRestartRuntime(supervisionEpoch)) {
+      this.restartCircuitOpen = true;
+      reportRuntimeHostFailure(
+        "automatic restart circuit opened after repeated readiness failures."
+      );
+    }
+  }
+
+  private async openShutdownConnection(
+    ready: RuntimeReadyRecord,
+    token: string,
+    deadline: number
+  ): Promise<JsonRpcConnection> {
+    const socket = await openAuthenticatedSocket(
+      ready,
+      token,
+      remainingTimeoutMs(deadline, "Timed out reconnecting for Runtime shutdown."),
+      "Timed out reconnecting for Runtime shutdown."
+    );
+    const connection = new JsonRpcConnection(socket, () => undefined, () => undefined);
+    try {
+      const result = await connection.request<{
+        protocolVersion?: number;
+        server?: { name?: string; version?: string };
+      }>(
+        "initialize",
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          client: { name: "ikaros-desktop-shutdown", version: "0.1.0" }
+        },
+        remainingTimeoutMs(deadline, "Timed out initializing Runtime shutdown connection.")
+      );
+      if (
+        result.protocolVersion !== PROTOCOL_VERSION ||
+        typeof result.server?.name !== "string" ||
+        typeof result.server.version !== "string"
+      ) {
+        throw new Error("Runtime shutdown initialization did not match the expected schema.");
+      }
+      return connection;
+    } catch (error) {
+      connection.close();
+      throw error;
+    }
+  }
+
+  private async requestRuntimeShutdown(
+    connection: JsonRpcConnection,
+    deadline: number
+  ): Promise<void> {
+    const result = await connection.request<{ accepted?: boolean }>(
+      "runtime.shutdown",
+      {},
+      remainingTimeoutMs(deadline, "Timed out requesting Runtime shutdown.")
+    );
+    if (result.accepted !== true) {
+      throw new Error("Runtime did not accept the shutdown request.");
+    }
+  }
+
+  private async settleStoppedTasks(
+    tasks: Array<Promise<unknown> | undefined>,
+    deadline: number
+  ): Promise<void> {
+    const pending = tasks.filter((task): task is Promise<unknown> => task !== undefined);
+    if (pending.length === 0) {
+      return;
+    }
+    let timeoutMs: number;
+    try {
+      timeoutMs = remainingTimeoutMs(deadline, "Timed out settling Runtime supervision tasks.");
+    } catch {
+      return;
+    }
+    await withTimeout(
+      Promise.allSettled(pending).then(() => undefined),
+      timeoutMs,
+      "Timed out settling Runtime supervision tasks."
+    ).catch(() => undefined);
+  }
+
+  stop(): Promise<void> {
+    if (this.stoppingPromise) {
+      return this.stoppingPromise;
+    }
+    this.stopping = true;
+    let stoppingPromise: Promise<void>;
+    stoppingPromise = this.stopOnce().finally(() => {
+      if (this.stoppingPromise === stoppingPromise) {
+        this.stoppingPromise = undefined;
+      }
+      this.stopping = false;
+    });
+    this.stoppingPromise = stoppingPromise;
+    return stoppingPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
+    const deadline = Date.now() + this.options.stopTimeoutMs;
+    this.automaticRecoveryEnabled = false;
+    this.supervisionEpoch += 1;
+    this.generation += 1;
+    this.restartFailureCount = 0;
+    this.restartCircuitOpen = false;
+    const pendingTasks = [this.starting, this.reconnecting, this.restarting];
+    this.starting = undefined;
+    this.reconnecting = undefined;
+    this.restarting = undefined;
     const child = this.child;
     const connection = this.connection;
+    const ready = this.readyRecord;
+    const token = this.launchToken;
+    const runtimePid = ready?.pid;
     this.connectionInfo = undefined;
     this.connection = undefined;
     this.child = undefined;
-    if (!child) {
-      return;
-    }
-
-    if (connection?.isOpen) {
-      try {
-        await connection.request("runtime.shutdown", {}, this.options.stopTimeoutMs);
-      } catch {
-        child.kill();
-      } finally {
-        connection.close();
+    this.readyRecord = undefined;
+    this.launchToken = undefined;
+    this.synchronizingEvents = false;
+    this.bufferedEventNotifications.clear();
+    this.pendingEventNotifications.clear();
+    let shutdownConnection: JsonRpcConnection | undefined;
+    try {
+      if (!child) {
+        connection?.close();
+        await this.settleStoppedTasks(pendingTasks, deadline);
+        return;
       }
-    } else {
-      child.kill();
-    }
 
-    if (child.exitCode === null) {
       try {
-        await withTimeout(
-          new Promise<void>((resolvePromise) => child.once("exit", () => resolvePromise())),
-          this.options.stopTimeoutMs,
-          "Timed out waiting for Runtime process exit."
-        );
+        if (connection?.isOpen) {
+          shutdownConnection = connection;
+          try {
+            await this.requestRuntimeShutdown(shutdownConnection, deadline);
+          } catch (error) {
+            shutdownConnection.close();
+            shutdownConnection = undefined;
+            if (!ready || !token || child.exitCode !== null) {
+              throw error;
+            }
+            shutdownConnection = await this.openShutdownConnection(ready, token, deadline);
+            await this.requestRuntimeShutdown(shutdownConnection, deadline);
+          }
+        } else {
+          if (!ready || !token || child.exitCode !== null) {
+            throw new Error("Runtime shutdown connection details are unavailable.");
+          }
+          shutdownConnection = await this.openShutdownConnection(ready, token, deadline);
+          await this.requestRuntimeShutdown(shutdownConnection, deadline);
+        }
       } catch {
-        child.kill();
+        terminateRuntimeProcess(child, runtimePid);
+      } finally {
+        connection?.close();
+        if (shutdownConnection !== connection) {
+          shutdownConnection?.close();
+        }
+      }
+
+      if (child.exitCode === null) {
+        try {
+          const timeoutMs = remainingTimeoutMs(
+            deadline,
+            "Timed out waiting for Runtime process exit."
+          );
+          await withTimeout(
+            new Promise<void>((resolvePromise) => child.once("exit", () => resolvePromise())),
+            timeoutMs,
+            "Timed out waiting for Runtime process exit."
+          );
+        } catch {
+          terminateRuntimeProcess(child, runtimePid);
+        }
+      }
+      await this.settleStoppedTasks(pendingTasks, deadline);
+    } finally {
+      if (child?.exitCode === null && Date.now() >= deadline) {
+        terminateRuntimeProcess(child, runtimePid);
       }
     }
   }

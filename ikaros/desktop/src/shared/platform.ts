@@ -1,4 +1,4 @@
-import type { IkarosRuntimeApi } from "./runtime";
+import type { IkarosRuntimeBridgeApi } from "./runtime";
 
 export type ColorSchemePreference = "system" | "light" | "dark";
 export type UiLanguagePreference = "en" | "zh-CN";
@@ -34,7 +34,7 @@ export type UiPreferencesPatch = Partial<
 };
 
 export interface IkarosDesktopApi {
-  readonly runtime: IkarosRuntimeApi;
+  readonly runtime: IkarosRuntimeBridgeApi;
   readonly preferences: {
     get(): Promise<UiPreferences>;
     update(patch: UiPreferencesPatch): Promise<UiPreferences>;
@@ -103,6 +103,7 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     threadCreate: "ikaros:runtime:thread-create",
     threadList: "ikaros:runtime:thread-list",
     turnStart: "ikaros:runtime:turn-start",
+    runCancel: "ikaros:runtime:run-cancel",
     eventReplay: "ikaros:runtime:event-replay"
   },
   preferences: {

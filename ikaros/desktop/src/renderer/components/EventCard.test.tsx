@@ -222,6 +222,27 @@ describe("Assistant message presentation", () => {
     rerender(<EventCard event={updated} />);
     expect(markdownRender).toHaveBeenCalledTimes(2);
   });
+
+  it("marks a partial cancelled response as interrupted", () => {
+    const event: MessageEvent = {
+      id: "assistant-interrupted",
+      turnId: "turn-interrupted",
+      createdAt: "2026-08-11T06:00:00.000Z",
+      type: "message",
+      role: "assistant",
+      content: "Partial response",
+      status: "interrupted",
+    };
+
+    render(
+      <Tooltip.Provider>
+        <EventCard event={event} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByText(event.content)).toBeInTheDocument();
+    expect(screen.getByText("Interrupted")).toBeInTheDocument();
+  });
 });
 
 describe("Message typography", () => {

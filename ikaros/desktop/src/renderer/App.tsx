@@ -12,6 +12,54 @@ import { useTranslation } from "./i18n";
 import { usePlatformPreferences } from "./platformPreferences";
 import { useAppStore } from "./store";
 
+const RUNTIME_INITIALIZATION_RETRY_DELAYS_MS = [100, 250, 500] as const;
+
+function waitForInitializationRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+
+    const finish = () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = globalThis.setTimeout(finish, delayMs);
+    const abort = () => {
+      globalThis.clearTimeout(timer);
+      finish();
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+export async function initializeRuntimeWithRetry(
+  initializeRuntime: () => Promise<void>,
+  isReady: () => boolean,
+  signal: AbortSignal,
+): Promise<void> {
+  for (
+    let attempt = 0;
+    attempt <= RUNTIME_INITIALIZATION_RETRY_DELAYS_MS.length;
+    attempt += 1
+  ) {
+    if (signal.aborted || isReady()) {
+      return;
+    }
+    await initializeRuntime();
+    if (signal.aborted || isReady()) {
+      return;
+    }
+
+    const delayMs = RUNTIME_INITIALIZATION_RETRY_DELAYS_MS[attempt];
+    if (delayMs === undefined) {
+      return;
+    }
+    await waitForInitializationRetry(delayMs, signal);
+  }
+}
+
 export function App() {
   usePlatformPreferences();
   const { t } = useTranslation();
@@ -22,7 +70,13 @@ export function App() {
   const setSearchOpen = useAppStore((state) => state.setSearchOpen);
 
   useEffect(() => {
-    void initializeRuntime();
+    const controller = new AbortController();
+    void initializeRuntimeWithRetry(
+      initializeRuntime,
+      () => useAppStore.getState().runtimeReady,
+      controller.signal,
+    );
+    return () => controller.abort();
   }, [initializeRuntime]);
 
   useEffect(() => {

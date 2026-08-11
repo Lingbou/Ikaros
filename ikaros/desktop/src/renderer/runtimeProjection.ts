@@ -75,6 +75,7 @@ function upsertMessage(
     return {
       id: event.turnId as string,
       branchId: event.branchId as string,
+      runId: event.runId ?? turn?.runId,
       status: turn?.status ?? "running",
       events: existing
         ? (turn?.events ?? []).map((candidate) =>
@@ -139,6 +140,8 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           status:
             event.type === "item.started"
               ? "streaming"
+              : item.status === "cancelled"
+                ? "interrupted"
               : item.status === "failed"
                 ? "failed"
                 : "complete",
@@ -150,6 +153,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
     next = updateTurn(thread, event.branchId, event.turnId, (turn) => ({
       id: event.turnId as string,
       branchId: event.branchId as string,
+      runId: event.runId ?? turn?.runId,
       status: turn?.status ?? "running",
       events: (turn?.events ?? []).map((candidate) =>
         candidate.id === event.itemId && candidate.type === "message"
@@ -163,6 +167,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
       next = updateTurn(thread, event.branchId, event.turnId, (turn) => ({
         id: event.turnId as string,
         branchId: event.branchId as string,
+        runId: event.runId ?? turn?.runId,
         status,
         events: turn?.events ?? []
       }));

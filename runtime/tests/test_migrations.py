@@ -19,7 +19,29 @@ def _create_v1_database(database_path: Path) -> None:
         connection.close()
 
 
-def test_v1_database_is_upgraded_to_v2(tmp_path: Path) -> None:
+def _create_v2_database(database_path: Path) -> None:
+    _create_v1_database(database_path)
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.executescript(
+            f"{storage_module._MIGRATION_2}\nPRAGMA user_version = 2;"
+        )
+    finally:
+        connection.close()
+
+
+def _create_v3_database(database_path: Path) -> None:
+    _create_v2_database(database_path)
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.executescript(
+            f"{storage_module._MIGRATION_3}\nPRAGMA user_version = 3;"
+        )
+    finally:
+        connection.close()
+
+
+def test_v1_database_is_upgraded_to_v4(tmp_path: Path) -> None:
     database_path = tmp_path / "state.db"
     _create_v1_database(database_path)
 
@@ -36,10 +58,25 @@ def test_v1_database_is_upgraded_to_v2(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        event_indexes = {
+            row["name"]
+            for row in store._connection.execute("PRAGMA index_list(events)").fetchall()
+        }
+        thread_columns = {
+            row["name"]
+            for row in store._connection.execute("PRAGMA table_info(threads)").fetchall()
+        }
+        run_columns = {
+            row["name"]
+            for row in store._connection.execute("PRAGMA table_info(runs)").fetchall()
+        }
 
-        assert version == 2
+        assert version == 4
         assert {"turn_id", "run_id", "item_id"} <= event_columns
         assert {"turns", "runs", "items"} <= tables
+        assert "events_one_settled_per_run" in event_indexes
+        assert "client_request_id" in thread_columns
+        assert "client_request_id" in run_columns
     finally:
         store.close()
 
@@ -77,5 +114,68 @@ def test_failed_migration_rolls_back_all_schema_changes(
         assert version == 1
         assert "turn_id" not in event_columns
         assert probe is None
+    finally:
+        connection.close()
+
+
+def test_failed_v3_migration_rolls_back_index_and_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "state.db"
+    _create_v2_database(database_path)
+    monkeypatch.setattr(
+        storage_module,
+        "_MIGRATION_3",
+        """
+        CREATE UNIQUE INDEX migration_probe ON events(run_id);
+        THIS IS NOT VALID SQL;
+        """,
+    )
+
+    with pytest.raises(sqlite3.OperationalError):
+        SqliteRuntimeStore(database_path)
+
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        indexes = {
+            row["name"] for row in connection.execute("PRAGMA index_list(events)").fetchall()
+        }
+        assert version == 2
+        assert "migration_probe" not in indexes
+    finally:
+        connection.close()
+
+
+def test_failed_v4_migration_rolls_back_columns_and_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "state.db"
+    _create_v3_database(database_path)
+    monkeypatch.setattr(
+        storage_module,
+        "_MIGRATION_4",
+        """
+        ALTER TABLE threads ADD COLUMN client_request_id TEXT;
+        THIS IS NOT VALID SQL;
+        """,
+    )
+
+    with pytest.raises(sqlite3.OperationalError):
+        SqliteRuntimeStore(database_path)
+
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        thread_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(threads)").fetchall()
+        }
+        assert version == 3
+        assert "client_request_id" not in thread_columns
     finally:
         connection.close()

@@ -19,13 +19,18 @@ import {
   MockAgentClient,
 } from "./mockAgentClient";
 import { LOCAL_PROFILE } from "./localProfile";
-import { createRuntimeClient } from "./runtimeClient";
+import { createRuntimeClient, isRuntimeRpcError } from "./runtimeClient";
 import {
   applyRuntimeEvent as projectRuntimeEvent,
+  projectRuntimeThread,
   projectRuntimeThreads,
-  replayRuntimeEvents,
 } from "./runtimeProjection";
-import type { RuntimeJournalEvent } from "../shared/runtime";
+import type {
+  RuntimeJournalEvent,
+  RuntimeThreadCreateResult,
+  RuntimeThreadSummary,
+  RuntimeTurnStartResult,
+} from "../shared/runtime";
 
 type EditingMessage = { eventId: string; content: string } | null;
 type RunContext = {
@@ -34,6 +39,20 @@ type RunContext = {
   turnId: string;
   runId?: string;
   epoch: number;
+};
+type PendingRuntimeSubmission = {
+  epoch: number;
+  branchId: string | null;
+  prompt: string;
+  afterSeq: number;
+  foregroundGeneration: number;
+  createRequestId?: string;
+  turnRequestId: string;
+  turnStartClaimed: boolean;
+  createdEvent?: RuntimeJournalEvent;
+  acknowledged?: boolean;
+  runId?: string;
+  turnId?: string;
 };
 
 interface AppState {
@@ -53,9 +72,12 @@ interface AppState {
   editingMessage: EditingMessage;
   expandedProjects: Record<string, boolean>;
   runEpoch: number;
+  runtimeForegroundGeneration: number;
   localThreadCounter: number;
   branchCounter: number;
   activeRun: RunContext | null;
+  pendingRuntimeSubmissions: Record<string, PendingRuntimeSubmission>;
+  pendingRuntimeNewThread: PendingRuntimeSubmission | null;
 
   initializeRuntime: () => Promise<void>;
   applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
@@ -88,7 +110,18 @@ const runtimeClient = createRuntimeClient();
 let runtimeInitialization: Promise<void> | undefined;
 let removeRuntimeSubscription: (() => void) | undefined;
 let bufferedRuntimeEvents: RuntimeJournalEvent[] = [];
+const pendingRuntimeEvents = new Map<number, RuntimeJournalEvent>();
+const cancellingRuntimeRuns = new Set<string>();
+const runtimeTurnContinuations = new Map<string, Promise<void>>();
+const canonicalRuntimeTurnStarts = new Map<string, RuntimeTurnStartResult>();
+let runtimeGapRecovery: Promise<void> | undefined;
+const RUNTIME_GAP_RETRY_DELAYS_MS = [25, 75, 200] as const;
+const RUNTIME_COMMAND_RETRY_DELAYS_MS = [50, 150, 400, 800] as const;
 const MOCK_AT = "2026-08-05T06:00:00.000Z";
+
+function newRuntimeRequestId(kind: "thread" | "turn"): string {
+  return `${kind}_${globalThis.crypto.randomUUID()}`;
+}
 
 function turnStatus(status: RunStatus | undefined): Turn["status"] | undefined {
   if (!status || status === "idle") return undefined;
@@ -151,6 +184,37 @@ function storedRunStatus(thread: Thread | undefined): RunStatus {
   return lastTurn(thread)?.status ?? "idle";
 }
 
+function storedRunStatusForRun(thread: Thread | undefined, runId: string): RunStatus | undefined {
+  for (const branch of thread?.branches ?? []) {
+    const turn = branch.turns.find((candidate) => candidate.runId === runId);
+    if (turn) {
+      return turn.status;
+    }
+  }
+  return undefined;
+}
+
+function hasPendingRuntimeSubmission(state: AppState, threadId: string | null): boolean {
+  return threadId === null
+    ? state.pendingRuntimeNewThread !== null
+    : state.pendingRuntimeSubmissions[threadId] !== undefined;
+}
+
+function runtimeRunStatusForSelection(
+  state: AppState,
+  selectedThreadId: string | null,
+  threads = state.threads,
+): RunStatus {
+  if (selectedThreadId === null) {
+    return state.pendingRuntimeNewThread ? "queued" : "idle";
+  }
+  const stored = storedRunStatus(findThread(threads, selectedThreadId));
+  if (state.pendingRuntimeSubmissions[selectedThreadId] && !isRunActive(stored)) {
+    return "queued";
+  }
+  return stored;
+}
+
 function finishRun(
   set: StoreSet,
   get: StoreGet,
@@ -170,6 +234,19 @@ function finishRun(
 
 function isRunCancelable(status: RunStatus) {
   return status === "queued" || status === "running";
+}
+
+function ownsRuntimeSendForeground(
+  state: AppState,
+  epoch: number,
+  selectedThreadId: string | null,
+  foregroundGeneration: number,
+): boolean {
+  return (
+    state.runEpoch === epoch &&
+    state.selectedThreadId === selectedThreadId &&
+    state.runtimeForegroundGeneration === foregroundGeneration
+  );
 }
 
 function terminalizeEvent(event: AgentEvent): AgentEvent {
@@ -236,9 +313,37 @@ function disableRecoveryForTurn(thread: Thread, branchId: string, turnId: string
 }
 
 function currentRunContext(state: AppState): RunContext | null {
-  if (state.activeRun) return state.activeRun;
   const thread = findThread(state.threads, state.selectedThreadId);
   const branch = activeBranch(thread);
+  if (state.runtimeMode) {
+    const turn = [...(branch?.turns ?? [])]
+      .reverse()
+      .find((candidate) => isRunActive(candidate.status) && candidate.runId);
+    if (thread && branch && turn?.runId) {
+      return {
+        threadId: thread.id,
+        branchId: branch.id,
+        turnId: turn.id,
+        runId: turn.runId,
+        epoch: state.runEpoch,
+      };
+    }
+    const pending = thread ? state.pendingRuntimeSubmissions[thread.id] : undefined;
+    if (thread && branch && pending?.runId && pending.turnId) {
+      return {
+        threadId: thread.id,
+        branchId: pending.branchId ?? branch.id,
+        turnId: pending.turnId,
+        runId: pending.runId,
+        epoch: pending.epoch,
+      };
+    }
+    if (state.activeRun?.threadId === state.selectedThreadId) {
+      return state.activeRun;
+    }
+    return null;
+  }
+  if (state.activeRun) return state.activeRun;
   const turn = branch?.turns.at(-1);
   if (!thread || !branch || !turn) return null;
   return {
@@ -316,20 +421,279 @@ async function playScenarioInStore(
   finishRun(set, get, context, terminal);
 }
 
-function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
-  if (event.seq <= state.runtimeSeq) {
-    return {};
+function runtimeThreadCreateResultFromEvent(
+  event: RuntimeJournalEvent,
+  clientRequestId: string,
+): RuntimeThreadCreateResult | undefined {
+  if (
+    event.type !== "thread.created" ||
+    event.payload.clientRequestId !== clientRequestId
+  ) {
+    return undefined;
   }
+  const value = event.payload.thread;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("title" in value) ||
+    (value.title !== null && typeof value.title !== "string") ||
+    !("defaultBranchId" in value) ||
+    typeof value.defaultBranchId !== "string" ||
+    !("createdAt" in value) ||
+    typeof value.createdAt !== "string" ||
+    !("updatedAt" in value) ||
+    typeof value.updatedAt !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    thread: value as RuntimeThreadSummary,
+    event,
+  };
+}
+
+function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
   const threads = projectRuntimeEvent(state.threads, event);
-  const selected = findThread(threads, state.selectedThreadId);
   const settledActiveRun =
     event.type === "run.settled" && event.runId === state.activeRun?.runId;
+  let pendingRuntimeSubmissions = state.pendingRuntimeSubmissions;
+  let pendingRuntimeNewThread = state.pendingRuntimeNewThread;
+  let selectedThreadId = state.selectedThreadId;
+  const pendingCreateRequestId = pendingRuntimeNewThread?.createRequestId;
+  if (
+    pendingRuntimeNewThread &&
+    pendingCreateRequestId &&
+    event.seq > pendingRuntimeNewThread.afterSeq &&
+    event.threadId &&
+    event.branchId &&
+    runtimeThreadCreateResultFromEvent(event, pendingCreateRequestId)
+  ) {
+    if (
+      ownsRuntimeSendForeground(
+        state,
+        pendingRuntimeNewThread.epoch,
+        null,
+        pendingRuntimeNewThread.foregroundGeneration,
+      )
+    ) {
+      selectedThreadId = event.threadId;
+    }
+    pendingRuntimeSubmissions = {
+      ...pendingRuntimeSubmissions,
+      [event.threadId]: {
+        ...pendingRuntimeNewThread,
+        branchId: event.branchId,
+        createdEvent: event,
+      },
+    };
+    pendingRuntimeNewThread = null;
+  }
+  if (event.threadId && event.type === "item.completed" && event.runId && event.turnId) {
+    const pending = pendingRuntimeSubmissions[event.threadId];
+    const item = event.payload.item;
+    const eventRequestId = event.payload.clientRequestId;
+    const matchesSubmittedUserItem =
+      typeof item === "object" &&
+      item !== null &&
+      "role" in item &&
+      item.role === "user" &&
+      "content" in item &&
+      item.content === pending?.prompt &&
+      event.seq > (pending?.afterSeq ?? event.seq) &&
+      event.branchId === pending?.branchId &&
+      eventRequestId === pending?.turnRequestId;
+    if (pending && pending.runId === undefined && matchesSubmittedUserItem) {
+      canonicalRuntimeTurnStarts.set(pending.turnRequestId, {
+        threadId: event.threadId,
+        branchId: event.branchId as string,
+        turnId: event.turnId,
+        runId: event.runId,
+      });
+      pendingRuntimeSubmissions = {
+        ...pendingRuntimeSubmissions,
+        [event.threadId]: {
+          ...pending,
+          acknowledged: true,
+          runId: event.runId,
+          turnId: event.turnId,
+        },
+      };
+    }
+  }
+  if (event.threadId && (event.type === "run.state_changed" || event.type === "run.settled")) {
+    const pending = pendingRuntimeSubmissions[event.threadId];
+    if (pending?.acknowledged && pending.runId === event.runId) {
+      pendingRuntimeSubmissions = { ...pendingRuntimeSubmissions };
+      delete pendingRuntimeSubmissions[event.threadId];
+    }
+  }
+  const projectedState = {
+    ...state,
+    threads,
+    pendingRuntimeSubmissions,
+    pendingRuntimeNewThread,
+    selectedThreadId,
+  };
   return {
     threads,
     runtimeSeq: event.seq,
-    runStatus: selected ? storedRunStatus(selected) : "idle",
+    runStatus: runtimeRunStatusForSelection(
+      projectedState,
+      projectedState.selectedThreadId,
+      threads,
+    ),
     activeRun: settledActiveRun ? null : state.activeRun,
+    pendingRuntimeSubmissions,
+    pendingRuntimeNewThread,
+    selectedThreadId,
   };
+}
+
+function drainRuntimeEventQueue(set: StoreSet, get: StoreGet): void {
+  let state = get();
+  let changed = false;
+  while (true) {
+    const event = pendingRuntimeEvents.get(state.runtimeSeq + 1);
+    if (!event) {
+      break;
+    }
+    pendingRuntimeEvents.delete(event.seq);
+    if (event.type === "run.settled" && event.runId) {
+      cancellingRuntimeRuns.delete(event.runId);
+    }
+    state = { ...state, ...runtimeStateForEvent(state, event) };
+    changed = true;
+  }
+  if (changed) {
+    set({
+      threads: state.threads,
+      runtimeSeq: state.runtimeSeq,
+      runStatus: state.runStatus,
+      activeRun: state.activeRun,
+      pendingRuntimeSubmissions: state.pendingRuntimeSubmissions,
+      pendingRuntimeNewThread: state.pendingRuntimeNewThread,
+      selectedThreadId: state.selectedThreadId,
+    });
+    for (const [threadId, pending] of Object.entries(
+      state.pendingRuntimeSubmissions,
+    )) {
+      if (pending.branchId && !pending.turnStartClaimed) {
+        void continueRuntimeSubmission(set, get, threadId, pending.epoch);
+      }
+    }
+  }
+}
+
+function hasRuntimeEventGap(state: AppState): boolean {
+  return pendingRuntimeEvents.size > 0 && !pendingRuntimeEvents.has(state.runtimeSeq + 1);
+}
+
+function waitForRuntimeRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, delayMs);
+  });
+}
+
+async function replayRuntimeEventsIntoQueue(
+  set: StoreSet,
+  get: StoreGet,
+  afterSeq: number,
+): Promise<void> {
+  if (!runtimeClient) {
+    return;
+  }
+
+  let cursor = afterSeq;
+  while (true) {
+    const replay = await runtimeClient.replayEvents(cursor);
+    for (const event of replay.events) {
+      if (event.seq > get().runtimeSeq) {
+        pendingRuntimeEvents.set(event.seq, event);
+      }
+    }
+    drainRuntimeEventQueue(set, get);
+    if (!replay.hasMore) {
+      return;
+    }
+
+    const nextCursor = Math.max(replay.nextAfterSeq, get().runtimeSeq);
+    if (nextCursor <= cursor) {
+      throw new Error("Runtime event replay cursor did not advance.");
+    }
+    cursor = nextCursor;
+  }
+}
+
+function recoverRuntimeEventGap(set: StoreSet, get: StoreGet): void {
+  if (!runtimeClient || runtimeGapRecovery || !hasRuntimeEventGap(get())) {
+    return;
+  }
+  const recovery = (async () => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= RUNTIME_GAP_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (!hasRuntimeEventGap(get())) {
+        return;
+      }
+      if (attempt > 0) {
+        const retryDelayMs = RUNTIME_GAP_RETRY_DELAYS_MS[attempt - 1];
+        if (retryDelayMs === undefined) {
+          break;
+        }
+        await waitForRuntimeRetry(retryDelayMs);
+        if (!hasRuntimeEventGap(get())) {
+          return;
+        }
+      }
+      try {
+        await replayRuntimeEventsIntoQueue(set, get, get().runtimeSeq);
+        lastError = undefined;
+      } catch (error: unknown) {
+        lastError = error;
+      }
+    }
+    if (!hasRuntimeEventGap(get())) {
+      return;
+    }
+    if (lastError) {
+      throw lastError;
+    }
+    if (hasRuntimeEventGap(get())) {
+      const firstPending = Math.min(...pendingRuntimeEvents.keys());
+      set({
+        runtimeError: `Runtime event sequence gap: expected ${get().runtimeSeq + 1}, received ${firstPending}.`,
+      });
+    }
+  })()
+    .catch((error: unknown) => {
+      set({
+        runtimeError:
+          error instanceof Error ? error.message : "Runtime event replay failed",
+      });
+    })
+    .finally(() => {
+      if (runtimeGapRecovery === recovery) {
+        runtimeGapRecovery = undefined;
+      }
+    });
+  runtimeGapRecovery = recovery;
+}
+
+function enqueueRuntimeEvent(
+  set: StoreSet,
+  get: StoreGet,
+  event: RuntimeJournalEvent,
+): void {
+  if (event.type === "run.settled" && event.runId) {
+    cancellingRuntimeRuns.delete(event.runId);
+  }
+  if (event.seq <= get().runtimeSeq || pendingRuntimeEvents.has(event.seq)) {
+    return;
+  }
+  pendingRuntimeEvents.set(event.seq, event);
+  drainRuntimeEventQueue(set, get);
+  recoverRuntimeEventGap(set, get);
 }
 
 async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<void> {
@@ -340,7 +704,7 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
     return runtimeInitialization;
   }
 
-  runtimeInitialization = (async () => {
+  const initialization = (async () => {
     bufferedRuntimeEvents = [];
     removeRuntimeSubscription ??= runtimeClient.onEvent((event) => {
       if (get().runtimeReady) {
@@ -351,41 +715,388 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
     });
 
     const listed = await runtimeClient.listThreads();
-    let threads = projectRuntimeThreads(listed.threads);
+    const replayedEvents = new Map<number, RuntimeJournalEvent>();
     let cursor = 0;
     while (true) {
       const replay = await runtimeClient.replayEvents(cursor);
-      threads = replayRuntimeEvents(threads, replay.events);
+      for (const event of replay.events) {
+        replayedEvents.set(event.seq, event);
+      }
       cursor = replay.nextAfterSeq;
       if (!replay.hasMore) {
         break;
       }
     }
-    const liveEvents = bufferedRuntimeEvents
-      .filter((event) => event.seq > cursor)
-      .sort((left, right) => left.seq - right.seq);
-    threads = replayRuntimeEvents(threads, liveEvents);
-    cursor = liveEvents.at(-1)?.seq ?? cursor;
+    for (const event of bufferedRuntimeEvents) {
+      replayedEvents.set(event.seq, event);
+    }
     bufferedRuntimeEvents = [];
 
+    pendingRuntimeEvents.clear();
+    set({
+      threads: projectRuntimeThreads(listed.threads),
+      runtimeSeq: 0,
+      runStatus: "idle",
+      activeRun: null,
+    });
+    for (const event of replayedEvents.values()) {
+      pendingRuntimeEvents.set(event.seq, event);
+    }
+    drainRuntimeEventQueue(set, get);
+
+    const threads = get().threads;
     const selectedThreadId = threads.some((thread) => thread.id === get().selectedThreadId)
       ? get().selectedThreadId
       : null;
-    const selected = findThread(threads, selectedThreadId);
     set({
       threads,
       selectedThreadId,
       runtimeReady: true,
       runtimeError: null,
-      runtimeSeq: cursor,
-      runStatus: storedRunStatus(selected),
+      runStatus: runtimeRunStatusForSelection(get(), selectedThreadId, threads),
     });
-  })().catch((error: unknown) => {
+    recoverRuntimeEventGap(set, get);
+  })();
+  runtimeInitialization = initialization;
+  try {
+    await initialization;
+  } catch (error: unknown) {
     set({
       runtimeError: error instanceof Error ? error.message : "Runtime initialization failed",
     });
+  } finally {
+    if (runtimeInitialization === initialization) {
+      runtimeInitialization = undefined;
+    }
+  }
+}
+
+function recoveredThreadCreateResult(
+  state: AppState,
+  submission: PendingRuntimeSubmission,
+): RuntimeThreadCreateResult | undefined {
+  if (!submission.createRequestId) {
+    return undefined;
+  }
+  const candidates = [
+    state.pendingRuntimeNewThread,
+    ...Object.values(state.pendingRuntimeSubmissions),
+  ];
+  const matched = candidates.find(
+    (candidate) =>
+      candidate?.epoch === submission.epoch &&
+      candidate.createRequestId === submission.createRequestId &&
+      candidate.createdEvent,
+  );
+  return matched?.createdEvent
+    ? runtimeThreadCreateResultFromEvent(
+        matched.createdEvent,
+        submission.createRequestId,
+      )
+    : undefined;
+}
+
+function recoveredTurnStartResult(
+  state: AppState,
+  threadId: string,
+  submission: PendingRuntimeSubmission,
+): RuntimeTurnStartResult | undefined {
+  const canonical = canonicalRuntimeTurnStarts.get(submission.turnRequestId);
+  if (canonical) {
+    return canonical;
+  }
+  const pending = state.pendingRuntimeSubmissions[threadId];
+  if (
+    pending?.epoch !== submission.epoch ||
+    pending.turnRequestId !== submission.turnRequestId ||
+    !pending.branchId ||
+    !pending.turnId ||
+    !pending.runId
+  ) {
+    return undefined;
+  }
+  return {
+    threadId,
+    branchId: pending.branchId,
+    turnId: pending.turnId,
+    runId: pending.runId,
+  };
+}
+
+async function invokeIdempotentRuntimeCommand<TResult>(
+  set: StoreSet,
+  get: StoreGet,
+  afterSeq: number,
+  invoke: () => Promise<TResult>,
+  recover: () => TResult | undefined,
+): Promise<TResult> {
+  let attempt = 0;
+  while (true) {
+    const alreadyRecovered = recover();
+    if (alreadyRecovered) {
+      return alreadyRecovered;
+    }
+    try {
+      return await invoke();
+    } catch (error: unknown) {
+      const recoveredAfterInvoke = recover();
+      if (recoveredAfterInvoke) {
+        return recoveredAfterInvoke;
+      }
+      if (isRuntimeRpcError(error)) {
+        throw error;
+      }
+    }
+
+    const recoveredBeforeReplay = recover();
+    if (recoveredBeforeReplay) {
+      return recoveredBeforeReplay;
+    }
+    try {
+      await replayRuntimeEventsIntoQueue(set, get, afterSeq);
+    } catch {
+      // A transport failure leaves acceptance ambiguous; the stable request ID makes retry safe.
+    }
+    const recoveredAfterReplay = recover();
+    if (recoveredAfterReplay) {
+      return recoveredAfterReplay;
+    }
+    const retryDelay =
+      RUNTIME_COMMAND_RETRY_DELAYS_MS[
+        Math.min(attempt, RUNTIME_COMMAND_RETRY_DELAYS_MS.length - 1)
+      ] ?? 800;
+    attempt += 1;
+    await waitForRuntimeRetry(retryDelay);
+  }
+}
+
+function adoptRuntimeCreatedThread(
+  set: StoreSet,
+  get: StoreGet,
+  created: RuntimeThreadCreateResult,
+  submission: PendingRuntimeSubmission,
+): void {
+  set((state) => {
+    const pendingNew = state.pendingRuntimeNewThread;
+    if (
+      pendingNew?.epoch !== submission.epoch ||
+      pendingNew.createRequestId !== submission.createRequestId
+    ) {
+      return state;
+    }
+    const threadId = created.thread.id;
+    const threads = state.threads.some((thread) => thread.id === threadId)
+      ? state.threads
+      : [projectRuntimeThread(created.thread), ...state.threads];
+    const ownsForeground = ownsRuntimeSendForeground(
+      state,
+      submission.epoch,
+      null,
+      submission.foregroundGeneration,
+    );
+    return {
+      threads,
+      pendingRuntimeSubmissions: {
+        ...state.pendingRuntimeSubmissions,
+        [threadId]: {
+          ...pendingNew,
+          branchId: created.thread.defaultBranchId,
+          createdEvent: created.event,
+        },
+      },
+      pendingRuntimeNewThread: null,
+      ...(ownsForeground
+        ? { selectedThreadId: threadId, runStatus: "queued" as const }
+        : {}),
+    };
   });
-  return runtimeInitialization;
+  get().applyRuntimeEvent(created.event);
+}
+
+function handleRuntimeSubmissionFailure(
+  set: StoreSet,
+  get: StoreGet,
+  submission: PendingRuntimeSubmission,
+  sendingThreadId: string | null,
+  error: unknown,
+): void {
+  const runtimeError = error instanceof Error ? error.message : "Runtime request failed";
+  set((state) => {
+    let pendingRuntimeSubmissions = state.pendingRuntimeSubmissions;
+    let matchedThreadId = sendingThreadId;
+    for (const [threadId, pending] of Object.entries(pendingRuntimeSubmissions)) {
+      if (
+        pending.epoch === submission.epoch &&
+        pending.turnRequestId === submission.turnRequestId
+      ) {
+        pendingRuntimeSubmissions = { ...pendingRuntimeSubmissions };
+        delete pendingRuntimeSubmissions[threadId];
+        matchedThreadId = threadId;
+        break;
+      }
+    }
+    let pendingRuntimeNewThread = state.pendingRuntimeNewThread;
+    if (
+      pendingRuntimeNewThread?.epoch === submission.epoch &&
+      pendingRuntimeNewThread.turnRequestId === submission.turnRequestId
+    ) {
+      pendingRuntimeNewThread = null;
+    }
+    const ownsForeground = ownsRuntimeSendForeground(
+      state,
+      submission.epoch,
+      matchedThreadId,
+      submission.foregroundGeneration,
+    );
+    const projectedState = {
+      ...state,
+      pendingRuntimeSubmissions,
+      pendingRuntimeNewThread,
+    };
+    return {
+      ...(ownsForeground
+        ? { draft: submission.prompt, runStatus: "failed" as const, activeRun: null }
+        : {
+            runStatus: runtimeRunStatusForSelection(
+              projectedState,
+              state.selectedThreadId,
+            ),
+          }),
+      pendingRuntimeSubmissions,
+      pendingRuntimeNewThread,
+      runtimeError,
+    };
+  });
+}
+
+async function startRuntimeTurnForSubmission(
+  set: StoreSet,
+  get: StoreGet,
+  threadId: string,
+  submission: PendingRuntimeSubmission,
+): Promise<void> {
+  if (!runtimeClient || !submission.branchId) {
+    return;
+  }
+  try {
+    const started = await invokeIdempotentRuntimeCommand(
+      set,
+      get,
+      submission.afterSeq,
+      () =>
+        runtimeClient.startTurn({
+          threadId,
+          branchId: submission.branchId as string,
+          content: submission.prompt,
+          providerId: "scripted",
+          modelId: "scripted-v1",
+          clientRequestId: submission.turnRequestId,
+        }),
+      () => recoveredTurnStartResult(get(), threadId, submission),
+    );
+    const startedRun: RunContext = {
+      threadId: started.threadId,
+      branchId: started.branchId,
+      turnId: started.turnId,
+      runId: started.runId,
+      epoch: submission.epoch,
+    };
+    canonicalRuntimeTurnStarts.delete(submission.turnRequestId);
+    set((state) => {
+      const projectedStatus = storedRunStatusForRun(
+        findThread(state.threads, started.threadId),
+        started.runId,
+      );
+      const pending = state.pendingRuntimeSubmissions[started.threadId];
+      let pendingRuntimeSubmissions = state.pendingRuntimeSubmissions;
+      if (
+        pending?.epoch === submission.epoch &&
+        pending.turnRequestId === submission.turnRequestId
+      ) {
+        pendingRuntimeSubmissions = { ...pendingRuntimeSubmissions };
+        if (projectedStatus === undefined) {
+          pendingRuntimeSubmissions[started.threadId] = {
+            ...pending,
+            acknowledged: true,
+            runId: started.runId,
+            turnId: started.turnId,
+          };
+        } else {
+          delete pendingRuntimeSubmissions[started.threadId];
+        }
+      }
+      const ownsForeground = ownsRuntimeSendForeground(
+        state,
+        submission.epoch,
+        threadId,
+        submission.foregroundGeneration,
+      );
+      const projectedState = { ...state, pendingRuntimeSubmissions };
+      return {
+        pendingRuntimeSubmissions,
+        runStatus: ownsForeground
+          ? projectedStatus ?? "queued"
+          : runtimeRunStatusForSelection(projectedState, state.selectedThreadId),
+        activeRun: ownsForeground
+          ? projectedStatus === undefined || isRunActive(projectedStatus)
+            ? startedRun
+            : null
+          : state.activeRun,
+      };
+    });
+  } catch (error: unknown) {
+    handleRuntimeSubmissionFailure(set, get, submission, threadId, error);
+  }
+}
+
+function continueRuntimeSubmission(
+  set: StoreSet,
+  get: StoreGet,
+  threadId: string,
+  epoch: number,
+): Promise<void> {
+  const initial = get().pendingRuntimeSubmissions[threadId];
+  if (!initial || initial.epoch !== epoch || !initial.branchId) {
+    return Promise.resolve();
+  }
+  const existing = runtimeTurnContinuations.get(initial.turnRequestId);
+  if (existing) {
+    return existing;
+  }
+
+  let claimed: PendingRuntimeSubmission | undefined;
+  set((state) => {
+    const pending = state.pendingRuntimeSubmissions[threadId];
+    if (
+      !pending ||
+      pending.epoch !== epoch ||
+      pending.turnStartClaimed ||
+      !pending.branchId
+    ) {
+      return state;
+    }
+    claimed = { ...pending, turnStartClaimed: true };
+    return {
+      pendingRuntimeSubmissions: {
+        ...state.pendingRuntimeSubmissions,
+        [threadId]: claimed,
+      },
+    };
+  });
+  if (!claimed) {
+    return runtimeTurnContinuations.get(initial.turnRequestId) ?? Promise.resolve();
+  }
+
+  let continuation: Promise<void>;
+  continuation = startRuntimeTurnForSubmission(set, get, threadId, claimed).finally(
+    () => {
+      if (runtimeTurnContinuations.get(claimed?.turnRequestId ?? "") === continuation) {
+        runtimeTurnContinuations.delete(claimed?.turnRequestId ?? "");
+      }
+    },
+  );
+  runtimeTurnContinuations.set(claimed.turnRequestId, continuation);
+  return continuation;
 }
 
 async function sendRuntimeDraft(
@@ -402,56 +1113,57 @@ async function sendRuntimeDraft(
     return;
   }
 
+  const selectionAtSend = initial.selectedThreadId;
+  if (hasPendingRuntimeSubmission(initial, selectionAtSend)) {
+    return;
+  }
+
   const epoch = initial.runEpoch + 1;
-  set({
+  const thread = findThread(initial.threads, selectionAtSend);
+  const submission: PendingRuntimeSubmission = {
+    epoch,
+    branchId: thread?.activeBranchId ?? null,
+    prompt,
+    afterSeq: initial.runtimeSeq,
+    foregroundGeneration: initial.runtimeForegroundGeneration,
+    createRequestId: thread ? undefined : newRuntimeRequestId("thread"),
+    turnRequestId: newRuntimeRequestId("turn"),
+    turnStartClaimed: false,
+  };
+  set((state) => ({
     draft: "",
     runStatus: "queued",
     runtimeError: null,
     runEpoch: epoch,
-  });
+    pendingRuntimeSubmissions:
+      selectionAtSend === null
+        ? state.pendingRuntimeSubmissions
+        : {
+            ...state.pendingRuntimeSubmissions,
+            [selectionAtSend]: submission,
+          },
+    pendingRuntimeNewThread:
+      selectionAtSend === null ? submission : state.pendingRuntimeNewThread,
+  }));
 
+  if (thread) {
+    await continueRuntimeSubmission(set, get, thread.id, epoch);
+    return;
+  }
+
+  const title = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
   try {
-    let thread = findThread(get().threads, get().selectedThreadId);
-    if (!thread) {
-      const title = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
-      const created = await runtimeClient.createThread(title);
-      get().applyRuntimeEvent(created.event);
-      thread = findThread(get().threads, created.thread.id);
-      if (!thread) {
-        throw new Error("Runtime thread projection was not created.");
-      }
-      set({ selectedThreadId: thread.id });
-    }
-
-    const started = await runtimeClient.startTurn({
-      threadId: thread.id,
-      branchId: thread.activeBranchId,
-      content: prompt,
-      providerId: "scripted",
-      modelId: "scripted-v1",
-    });
-    const currentThread = findThread(get().threads, started.threadId);
-    const projectedStatus = storedRunStatus(currentThread);
-    const startedRun = {
-      threadId: started.threadId,
-      branchId: started.branchId,
-      turnId: started.turnId,
-      runId: started.runId,
-      epoch,
-    };
-    set({
-      selectedThreadId: started.threadId,
-      runStatus: projectedStatus === "idle" ? "queued" : projectedStatus,
-      activeRun:
-        projectedStatus === "idle" || isRunActive(projectedStatus) ? startedRun : null,
-    });
-  } catch (error) {
-    set({
-      draft: prompt,
-      runStatus: "failed",
-      activeRun: null,
-      runtimeError: error instanceof Error ? error.message : "Runtime request failed",
-    });
+    const created = await invokeIdempotentRuntimeCommand(
+      set,
+      get,
+      submission.afterSeq,
+      () => runtimeClient.createThread(title, submission.createRequestId),
+      () => recoveredThreadCreateResult(get(), submission),
+    );
+    adoptRuntimeCreatedThread(set, get, created, submission);
+    await continueRuntimeSubmission(set, get, created.thread.id, epoch);
+  } catch (error: unknown) {
+    handleRuntimeSubmissionFailure(set, get, submission, null, error);
   }
 }
 
@@ -475,12 +1187,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
     "project-personal": true,
   },
   runEpoch: 0,
+  runtimeForegroundGeneration: 0,
   localThreadCounter: 0,
   branchCounter: 0,
   activeRun: null,
+  pendingRuntimeSubmissions: {},
+  pendingRuntimeNewThread: null,
 
   initializeRuntime: () => initializeRuntimeInStore(set, get),
-  applyRuntimeEvent: (event) => set((state) => runtimeStateForEvent(state, event)),
+  applyRuntimeEvent: (event) => enqueueRuntimeEvent(set, get, event),
 
   setDraft: (draft) => set({ draft }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
@@ -550,13 +1265,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   newChat: () => {
     if (runtimeClient) {
-      set({
+      set((state) => ({
         selectedThreadId: null,
-        runStatus: "idle",
+        runStatus: state.pendingRuntimeNewThread ? "queued" : "idle",
         draft: "",
         editingMessage: null,
         settingsOpen: false,
-      });
+        runtimeForegroundGeneration: state.runtimeForegroundGeneration + 1,
+      }));
       return;
     }
     client.cancel();
@@ -578,13 +1294,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (!thread) return;
 
     if (runtimeClient) {
-      set({
+      set((current) => ({
         selectedThreadId: threadId,
-        runStatus: storedRunStatus(thread),
+        runStatus: runtimeRunStatusForSelection(current, threadId),
         editingMessage: null,
         searchOpen: false,
         settingsOpen: false,
-      });
+        runtimeForegroundGeneration: current.runtimeForegroundGeneration + 1,
+      }));
       return;
     }
 
@@ -622,6 +1339,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const prompt = state.draft.trim();
     if (!prompt || isRunActive(state.runStatus)) return;
     if (runtimeClient) {
+      if (hasPendingRuntimeSubmission(state, state.selectedThreadId)) {
+        return;
+      }
       await sendRuntimeDraft(set, get, prompt);
       return;
     }
@@ -713,6 +1433,32 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   stopRun: () => {
     if (runtimeClient) {
+      const state = get();
+      const context = currentRunContext(state);
+      if (
+        !context?.runId ||
+        !isRunCancelable(state.runStatus) ||
+        cancellingRuntimeRuns.has(context.runId)
+      ) {
+        return;
+      }
+      cancellingRuntimeRuns.add(context.runId);
+      void runtimeClient
+        .cancelRun(context.runId)
+        .then(async (result) => {
+          if (result.accepted) {
+            return;
+          }
+          await replayRuntimeEventsIntoQueue(set, get, get().runtimeSeq);
+          cancellingRuntimeRuns.delete(context.runId as string);
+          recoverRuntimeEventGap(set, get);
+        })
+        .catch((error: unknown) => {
+          cancellingRuntimeRuns.delete(context.runId as string);
+          set({
+            runtimeError: error instanceof Error ? error.message : "Runtime cancellation failed",
+          });
+        });
       return;
     }
     const state = get();

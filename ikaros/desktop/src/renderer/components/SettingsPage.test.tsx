@@ -32,18 +32,24 @@ function desktopApiWithPreferences(
     update,
     api: {
       runtime: {
-        listThreads: async () => ({ threads: [] }),
+        listThreads: async () => ({ ok: true, value: { threads: [] } }),
         createThread: async () => {
           throw new Error("not used in settings tests");
         },
         startTurn: async () => {
           throw new Error("not used in settings tests");
         },
+        cancelRun: async () => {
+          throw new Error("not used in settings tests");
+        },
         replayEvents: async () => ({
-          events: [],
-          latestSeq: 0,
-          nextAfterSeq: 0,
-          hasMore: false
+          ok: true,
+          value: {
+            events: [],
+            latestSeq: 0,
+            nextAfterSeq: 0,
+            hasMore: false
+          }
         }),
         onEvent: () => () => undefined
       },

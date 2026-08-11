@@ -4,11 +4,18 @@ import json
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from .domain import JournalEvent, PreparedTurn, RunDescriptor, ThreadSummary, utc_now
+from .domain import (
+    JournalEvent,
+    PreparedTurn,
+    RecoveryPlan,
+    RunDescriptor,
+    ThreadSummary,
+    utc_now,
+)
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 4
 _INITIAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +90,22 @@ CREATE TABLE items (
 );
 """
 
+_MIGRATION_3 = """
+CREATE UNIQUE INDEX events_one_settled_per_run
+ON events(run_id) WHERE event_type = 'run.settled';
+"""
+
+_MIGRATION_4 = """
+ALTER TABLE threads ADD COLUMN client_request_id TEXT;
+ALTER TABLE runs ADD COLUMN client_request_id TEXT;
+
+CREATE UNIQUE INDEX threads_client_request_id_idx
+ON threads(client_request_id) WHERE client_request_id IS NOT NULL;
+
+CREATE UNIQUE INDEX runs_client_request_id_idx
+ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
+"""
+
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -112,6 +135,12 @@ class SqliteRuntimeStore:
             version = 1
         if version == 1:
             self._apply_migration(_MIGRATION_2, target_version=2)
+            version = 2
+        if version == 2:
+            self._apply_migration(_MIGRATION_3, target_version=3)
+            version = 3
+        if version == 3:
+            self._apply_migration(_MIGRATION_4, target_version=4)
 
     def _apply_migration(self, script: str, *, target_version: int) -> None:
         transaction = (
@@ -131,6 +160,60 @@ class SqliteRuntimeStore:
         self._connection.close()
 
     def create_thread(self, title: str | None) -> tuple[ThreadSummary, JournalEvent]:
+        thread, event, _created = self._create_thread(title, client_request_id=None)
+        return thread, event
+
+    def create_thread_once(
+        self,
+        title: str | None,
+        client_request_id: str,
+    ) -> tuple[ThreadSummary, JournalEvent, bool]:
+        return self._create_thread(title, client_request_id=client_request_id)
+
+    def _create_thread(
+        self,
+        title: str | None,
+        *,
+        client_request_id: str | None,
+    ) -> tuple[ThreadSummary, JournalEvent, bool]:
+        if client_request_id is not None:
+            existing = self._connection.execute(
+                """
+                SELECT id, title, default_branch_id, created_at, updated_at
+                FROM threads WHERE client_request_id = ?
+                """,
+                (client_request_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["title"] != title:
+                    raise LookupError(
+                        "clientRequestId was already used with different thread.create parameters"
+                    )
+                event_row = self._connection.execute(
+                    """
+                    SELECT seq, event_type, thread_id, branch_id, turn_id, run_id, item_id,
+                           created_at, payload_json
+                    FROM events
+                    WHERE event_type = 'thread.created' AND thread_id = ?
+                    ORDER BY seq
+                    LIMIT 1
+                    """,
+                    (existing["id"],),
+                ).fetchone()
+                if event_row is None:
+                    raise RuntimeError("idempotent thread is missing its creation event")
+                return (
+                    ThreadSummary(
+                        id=str(existing["id"]),
+                        title=existing["title"],
+                        default_branch_id=str(existing["default_branch_id"]),
+                        created_at=str(existing["created_at"]),
+                        updated_at=str(existing["updated_at"]),
+                    ),
+                    self._event_from_row(event_row),
+                    False,
+                )
+
         thread_id = f"thread_{uuid.uuid4().hex}"
         branch_id = f"branch_{uuid.uuid4().hex}"
         timestamp = utc_now()
@@ -150,13 +233,16 @@ class SqliteRuntimeStore:
                 "isDefault": True,
             },
         }
+        if client_request_id is not None:
+            payload["clientRequestId"] = client_request_id
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO threads(id, title, default_branch_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO threads(
+                    id, title, default_branch_id, created_at, updated_at, client_request_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (thread_id, title, branch_id, timestamp, timestamp),
+                (thread_id, title, branch_id, timestamp, timestamp, client_request_id),
             )
             self._connection.execute(
                 """
@@ -172,7 +258,7 @@ class SqliteRuntimeStore:
                 payload=payload,
                 timestamp=timestamp,
             )
-        return thread, event
+        return thread, event, True
 
     def list_threads(self) -> list[ThreadSummary]:
         rows = self._connection.execute(
@@ -201,7 +287,48 @@ class SqliteRuntimeStore:
         content: str,
         provider_id: str,
         model_id: str,
+        client_request_id: str | None = None,
     ) -> PreparedTurn:
+        if client_request_id is not None:
+            existing = self._connection.execute(
+                """
+                SELECT r.id AS run_id, r.turn_id, r.provider_id, r.model_id,
+                       t.thread_id, t.branch_id, i.content
+                FROM runs r
+                JOIN turns t ON t.id = r.turn_id
+                JOIN items i ON i.run_id = r.id AND i.ordinal = 1
+                WHERE r.client_request_id = ?
+                """,
+                (client_request_id,),
+            ).fetchone()
+            if existing is not None:
+                expected = (
+                    thread_id,
+                    branch_id,
+                    provider_id,
+                    model_id,
+                    content,
+                )
+                actual = (
+                    str(existing["thread_id"]),
+                    str(existing["branch_id"]),
+                    str(existing["provider_id"]),
+                    str(existing["model_id"]),
+                    str(existing["content"]),
+                )
+                if actual != expected:
+                    raise LookupError(
+                        "clientRequestId was already used with different turn.start parameters"
+                    )
+                return PreparedTurn(
+                    turn_id=str(existing["turn_id"]),
+                    run_id=str(existing["run_id"]),
+                    thread_id=str(existing["thread_id"]),
+                    branch_id=str(existing["branch_id"]),
+                    initial_events=(),
+                    newly_created=False,
+                )
+
         owner = self._connection.execute(
             "SELECT 1 FROM branches WHERE id = ? AND thread_id = ?",
             (branch_id, thread_id),
@@ -237,6 +364,8 @@ class SqliteRuntimeStore:
             "createdAt": timestamp,
             "settledAt": None,
         }
+        if client_request_id is not None:
+            run_payload["clientRequestId"] = client_request_id
         item_payload = self._item_payload(
             item_id=user_item_id,
             turn_id=turn_id,
@@ -259,10 +388,19 @@ class SqliteRuntimeStore:
             )
             self._connection.execute(
                 """
-                INSERT INTO runs(id, turn_id, provider_id, model_id, status, created_at)
-                VALUES (?, ?, ?, ?, 'queued', ?)
+                INSERT INTO runs(
+                    id, turn_id, provider_id, model_id, status, created_at,
+                    client_request_id
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
                 """,
-                (run_id, turn_id, provider_id, model_id, timestamp),
+                (
+                    run_id,
+                    turn_id,
+                    provider_id,
+                    model_id,
+                    timestamp,
+                    client_request_id,
+                ),
             )
             self._connection.execute(
                 """
@@ -285,7 +423,16 @@ class SqliteRuntimeStore:
                 run_id=run_id,
                 item_id=user_item_id,
                 timestamp=timestamp,
-                payload={"turn": turn_payload, "run": run_payload, "item": item_payload},
+                payload={
+                    "turn": turn_payload,
+                    "run": run_payload,
+                    "item": item_payload,
+                    **(
+                        {"clientRequestId": client_request_id}
+                        if client_request_id is not None
+                        else {}
+                    ),
+                },
             )
             queued_event = self._append_event(
                 event_type="run.state_changed",
@@ -302,6 +449,7 @@ class SqliteRuntimeStore:
             thread_id=thread_id,
             branch_id=branch_id,
             initial_events=(user_event, queued_event),
+            newly_created=True,
         )
 
     def get_run(self, run_id: str) -> RunDescriptor:
@@ -323,6 +471,15 @@ class SqliteRuntimeStore:
             provider_id=row["provider_id"],
             model_id=row["model_id"],
         )
+
+    def run_status(self, run_id: str) -> str:
+        row = self._connection.execute(
+            "SELECT status FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("run was not found")
+        return str(row["status"])
 
     def context_messages(
         self,
@@ -442,47 +599,13 @@ class SqliteRuntimeStore:
                 payload={"delta": delta},
             )
 
-    def complete_assistant_item(self, item_id: str, *, failed: bool = False) -> JournalEvent:
-        location = self._item_location(item_id)
-        timestamp = utc_now()
-        terminal_status = "failed" if failed else "completed"
-        with self._connection:
-            updated = self._connection.execute(
-                "UPDATE items SET status = ?, updated_at = ? WHERE id = ? AND status = 'streaming'",
-                (terminal_status, timestamp, item_id),
-            )
-            if updated.rowcount != 1:
-                raise RuntimeError("assistant item is not streaming")
-            row = self._connection.execute(
-                """
-                SELECT ordinal, role, content, created_at, updated_at
-                FROM items WHERE id = ?
-                """,
-                (item_id,),
-            ).fetchone()
-            item = self._item_payload(
-                item_id=item_id,
-                turn_id=location["turn_id"],
-                run_id=location["run_id"],
-                ordinal=int(row["ordinal"]),
-                role=row["role"],
-                status=terminal_status,
-                content=row["content"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
-            return self._append_event(
-                event_type="item.completed",
-                thread_id=location["thread_id"],
-                branch_id=location["branch_id"],
-                turn_id=location["turn_id"],
-                run_id=location["run_id"],
-                item_id=item_id,
-                timestamp=timestamp,
-                payload={"item": item},
-            )
-
-    def settle_run(self, run_id: str, status: str) -> JournalEvent | None:
+    def terminalize_run(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        reason_code: str | None = None,
+    ) -> tuple[JournalEvent, ...]:
         if status not in _TERMINAL_RUN_STATUSES:
             raise ValueError("run status is not terminal")
         run = self.get_run(run_id)
@@ -493,7 +616,47 @@ class SqliteRuntimeStore:
                 (run_id,),
             ).fetchone()
             if row["status"] in _TERMINAL_RUN_STATUSES:
-                return None
+                return ()
+            streaming_items = self._connection.execute(
+                """
+                SELECT id, ordinal, role, content, created_at
+                FROM items
+                WHERE run_id = ? AND kind = 'message' AND role = 'assistant'
+                  AND status = 'streaming'
+                ORDER BY ordinal
+                """,
+                (run_id,),
+            ).fetchall()
+            events: list[JournalEvent] = []
+            for item_row in streaming_items:
+                item_id = str(item_row["id"])
+                self._connection.execute(
+                    "UPDATE items SET status = ?, updated_at = ? WHERE id = ?",
+                    (status, timestamp, item_id),
+                )
+                item = self._item_payload(
+                    item_id=item_id,
+                    turn_id=run.turn_id,
+                    run_id=run.id,
+                    ordinal=int(item_row["ordinal"]),
+                    role=str(item_row["role"]),
+                    status=status,
+                    content=str(item_row["content"]),
+                    created_at=str(item_row["created_at"]),
+                    updated_at=timestamp,
+                )
+                events.append(
+                    self._append_event(
+                        event_type="item.completed",
+                        thread_id=run.thread_id,
+                        branch_id=run.branch_id,
+                        turn_id=run.turn_id,
+                        run_id=run.id,
+                        item_id=item_id,
+                        timestamp=timestamp,
+                        payload={"item": item},
+                    )
+                )
             self._connection.execute(
                 "UPDATE runs SET status = ?, settled_at = ? WHERE id = ?",
                 (status, timestamp, run_id),
@@ -502,15 +665,47 @@ class SqliteRuntimeStore:
                 "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
                 (status, timestamp, run.turn_id),
             )
-            return self._append_event(
-                event_type="run.settled",
-                thread_id=run.thread_id,
-                branch_id=run.branch_id,
-                turn_id=run.turn_id,
-                run_id=run.id,
-                timestamp=timestamp,
-                payload={"status": status, "settledAt": timestamp},
+            settled_payload: dict[str, Any] = {
+                "status": status,
+                "settledAt": timestamp,
+            }
+            if reason_code is not None:
+                settled_payload["reasonCode"] = reason_code
+            events.append(
+                self._append_event(
+                    event_type="run.settled",
+                    thread_id=run.thread_id,
+                    branch_id=run.branch_id,
+                    turn_id=run.turn_id,
+                    run_id=run.id,
+                    timestamp=timestamp,
+                    payload=settled_payload,
+                )
             )
+        return tuple(events)
+
+    def recover_incomplete_runs(self) -> RecoveryPlan:
+        running_rows = self._connection.execute(
+            "SELECT id FROM runs WHERE status = 'running' ORDER BY created_at, id"
+        ).fetchall()
+        for row in running_rows:
+            self.terminalize_run(
+                str(row["id"]),
+                "failed",
+                reason_code="runtime_interrupted",
+            )
+
+        queued_rows = self._connection.execute(
+            """
+            SELECT r.id, MIN(e.seq) AS first_event_seq
+            FROM runs r
+            JOIN events e ON e.run_id = r.id
+            WHERE r.status = 'queued'
+            GROUP BY r.id
+            ORDER BY first_event_seq, r.id
+            """
+        ).fetchall()
+        return RecoveryPlan(tuple(str(row["id"]) for row in queued_rows))
 
     def replay_events(self, after_seq: int, limit: int) -> tuple[list[JournalEvent], int]:
         rows = self._connection.execute(
@@ -564,8 +759,9 @@ class SqliteRuntimeStore:
             branch = payload["branch"]
             self._connection.execute(
                 """
-                INSERT INTO threads(id, title, default_branch_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO threads(
+                    id, title, default_branch_id, created_at, updated_at, client_request_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     thread["id"],
@@ -573,6 +769,7 @@ class SqliteRuntimeStore:
                     thread["defaultBranchId"],
                     thread["createdAt"],
                     thread["updatedAt"],
+                    payload.get("clientRequestId"),
                 ),
             )
             self._connection.execute(
@@ -605,8 +802,10 @@ class SqliteRuntimeStore:
             )
             self._connection.execute(
                 """
-                INSERT INTO runs(id, turn_id, provider_id, model_id, status, created_at, settled_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO runs(
+                    id, turn_id, provider_id, model_id, status, created_at, settled_at,
+                    client_request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run["id"],
@@ -616,6 +815,7 @@ class SqliteRuntimeStore:
                     run["status"],
                     run["createdAt"],
                     run["settledAt"],
+                    run.get("clientRequestId"),
                 ),
             )
             self._insert_projected_item(item)
@@ -687,7 +887,7 @@ class SqliteRuntimeStore:
         ).fetchone()
         if row is None:
             raise LookupError("item was not found")
-        return row
+        return cast(sqlite3.Row, row)
 
     def _append_event(
         self,

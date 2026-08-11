@@ -7,7 +7,9 @@ import {
   type UiPreferencesPatch
 } from "../shared/platform";
 import type {
+  RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeCancelRunResult,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
@@ -24,25 +26,31 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 const desktopApi: IkarosDesktopApi = Object.freeze({
   runtime: Object.freeze({
     listThreads: () =>
-      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList) as Promise<{
-        threads: RuntimeThreadSummary[];
-      }>,
-    createThread: (title: string | null) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList) as Promise<
+        RuntimeInvocationResult<{ threads: RuntimeThreadSummary[] }>
+      >,
+    createThread: (title: string | null, clientRequestId?: string) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.threadCreate,
-        title
-      ) as Promise<RuntimeThreadCreateResult>,
+        title,
+        clientRequestId
+      ) as Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>,
     startTurn: (params: RuntimeTurnStartParams) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.turnStart,
         params
-      ) as Promise<RuntimeTurnStartResult>,
+      ) as Promise<RuntimeInvocationResult<RuntimeTurnStartResult>>,
+    cancelRun: (runId: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.runCancel,
+        runId
+      ) as Promise<RuntimeInvocationResult<RuntimeCancelRunResult>>,
     replayEvents: (afterSeq: number, limit?: number) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.eventReplay,
         afterSeq,
         limit
-      ) as Promise<RuntimeReplayResult>,
+      ) as Promise<RuntimeInvocationResult<RuntimeReplayResult>>,
     onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
       subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener)
   }),

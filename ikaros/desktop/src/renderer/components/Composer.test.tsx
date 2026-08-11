@@ -129,6 +129,7 @@ describe("Composer input and clearance", () => {
     useAppStore.setState({
       draft: "Write the next message",
       runStatus: "running",
+      runtimeMode: true,
       sendDraft,
       stopRun,
     });

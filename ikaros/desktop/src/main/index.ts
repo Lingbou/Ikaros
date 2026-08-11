@@ -1,6 +1,10 @@
 import { app, BrowserWindow, Menu, nativeTheme } from "electron";
 
 import { registerDesktopIpc } from "./ipc";
+import {
+  deferQuitForRuntimeShutdown,
+  type RuntimeShutdownState
+} from "./lifecycle";
 import { applyNativeTheme, getUiPreferences } from "./preferences";
 import { developmentRuntimeRoot, RuntimeHost } from "./runtimeHost";
 import { createRendererTrustPolicy } from "./security";
@@ -9,7 +13,7 @@ import { createMainWindow, rendererEntryUrl, updateWindowChrome } from "./window
 let mainWindow: BrowserWindow | null = null;
 let removeIpcHandlers: (() => void) | undefined;
 let runtimeHost: RuntimeHost | undefined;
-let quittingAfterRuntimeShutdown = false;
+let runtimeShutdownState: RuntimeShutdownState = "idle";
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -85,11 +89,15 @@ if (!singleInstanceLock) {
 app.on("before-quit", (event) => {
   removeIpcHandlers?.();
   removeIpcHandlers = undefined;
-  if (runtimeHost?.isRunning && !quittingAfterRuntimeShutdown) {
-    event.preventDefault();
-    quittingAfterRuntimeShutdown = true;
-    void runtimeHost.stop().finally(() => app.quit());
-  }
+  runtimeShutdownState = deferQuitForRuntimeShutdown(
+    event,
+    runtimeHost,
+    runtimeShutdownState,
+    () => {
+      runtimeShutdownState = "ready";
+      app.quit();
+    }
+  );
 });
 
 app.on("window-all-closed", () => {
