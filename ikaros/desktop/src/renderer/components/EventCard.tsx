@@ -353,6 +353,7 @@ function UserMessageCard({ event }: { event: Extract<AgentEvent, { type: "messag
   const { t } = useTranslation();
   const beginEditMessage = useAppStore((state) => state.beginEditMessage);
   const runStatus = useAppStore((state) => state.runStatus);
+  const runtimeMode = useAppStore((state) => state.runtimeMode);
 
   return (
     <div className="group flex justify-end gap-1.5">
@@ -360,7 +361,7 @@ function UserMessageCard({ event }: { event: Extract<AgentEvent, { type: "messag
         <IconButton label={t("events.copyMessage")} onClick={() => copyText(event.content)}>
           <Clipboard size={12} />
         </IconButton>
-        {!isRunActive(runStatus) ? (
+        {!runtimeMode && !isRunActive(runStatus) ? (
           <IconButton label={t("events.editAndBranch")} onClick={() => beginEditMessage(event.id, event.content)}>
             <Pencil size={12} />
           </IconButton>
@@ -379,6 +380,12 @@ function AssistantMessageCard({ event }: { event: Extract<AgentEvent, { type: "m
   return (
     <div className="group min-w-0">
       <Markdown content={event.content} streaming={event.status === "streaming"} />
+      {event.status === "failed" ? (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] leading-4 text-[#ff7f7f]">
+          <CircleX size={11} />
+          {t("events.failed")}
+        </div>
+      ) : null}
       {event.status !== "streaming" ? (
         <div className="mt-1.5 flex h-6 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <IconButton label={t("events.copyResponse")} className="size-6" onClick={() => copyText(event.content)}>

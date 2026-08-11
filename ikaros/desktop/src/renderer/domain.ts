@@ -67,7 +67,7 @@ export interface MessageEvent extends EventBase {
   type: "message";
   role: "user" | "assistant";
   content: string;
-  status?: "streaming" | "complete";
+  status?: "streaming" | "complete" | "failed";
 }
 
 export interface ToolCallEvent extends EventBase {

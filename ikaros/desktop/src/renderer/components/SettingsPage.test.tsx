@@ -31,6 +31,22 @@ function desktopApiWithPreferences(
   return {
     update,
     api: {
+      runtime: {
+        listThreads: async () => ({ threads: [] }),
+        createThread: async () => {
+          throw new Error("not used in settings tests");
+        },
+        startTurn: async () => {
+          throw new Error("not used in settings tests");
+        },
+        replayEvents: async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false
+        }),
+        onEvent: () => () => undefined
+      },
       preferences: {
         get: async () => cloneUiPreferences(current),
         update,

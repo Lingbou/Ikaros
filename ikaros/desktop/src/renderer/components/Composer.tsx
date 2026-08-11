@@ -70,10 +70,11 @@ export function Composer({
   const { t } = useTranslation();
   const draft = useAppStore((state) => state.draft);
   const runStatus = useAppStore((state) => state.runStatus);
+  const runtimeMode = useAppStore((state) => state.runtimeMode);
   const setDraft = useAppStore((state) => state.setDraft);
   const sendDraft = useAppStore((state) => state.sendDraft);
   const stopRun = useAppStore((state) => state.stopRun);
-  const [accessMode, setAccessMode] = useState<AccessMode>("ask");
+  const [accessMode, setAccessMode] = useState<AccessMode>("full");
   const [model, setModel] = useState<ModelId>("Ikaros");
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
@@ -81,7 +82,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const canStop = runStatus === "queued" || runStatus === "running";
+  const canStop = !runtimeMode && (runStatus === "queued" || runStatus === "running");
   const submitBlocked = isRunActive(runStatus) && !canStop;
   const slashMatch = draft.match(/^\/([^\s]*)$/);
   const slashQuery = slashMatch?.[1].toLowerCase() ?? "";
@@ -267,6 +268,7 @@ export function Composer({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
+                  disabled={runtimeMode}
                   onPointerDown={() => setSlashDismissed(true)}
                   className={
                     accessMode === "full"
@@ -333,11 +335,16 @@ export function Composer({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
+                  disabled={runtimeMode}
                   onPointerDown={() => setSlashDismissed(true)}
                   className="hidden h-8 min-w-0 items-center gap-1 rounded-lg px-2 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
                 >
                   <span className="max-w-28 truncate">
-                    {model === "local" ? t("composer.localModel") : model}
+                    {runtimeMode
+                      ? "Scripted"
+                      : model === "local"
+                        ? t("composer.localModel")
+                        : model}
                   </span>
                   <ChevronDown size={11} />
                 </button>

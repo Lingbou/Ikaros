@@ -1,26 +1,65 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
 import os
 import secrets
 import sys
+from collections.abc import Callable
+from ctypes import wintypes
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.http11 import Request, Response
 
 from . import __version__
-from .kernel import InvalidParamsError, RuntimeKernel
+from .domain import JournalEvent
+from .kernel import CommandOutcome, InvalidParamsError, RuntimeKernel
 from .storage import SqliteRuntimeStore
 
 PROTOCOL_VERSION = 1
 _LOGGER = logging.getLogger("ikaros_runtime")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
+_EVENT_QUEUE_LIMIT = 1024
+_SEND_TIMEOUT_SECONDS = 5.0
+
+EventSink = Callable[[JournalEvent], None]
+
+
+class EventBus:
+    def __init__(self, *, next_seq: int) -> None:
+        if next_seq < 1:
+            raise ValueError("next event sequence must be positive")
+        self._sinks: set[EventSink] = set()
+        self._pending: dict[int, JournalEvent] = {}
+        self._next_seq = next_seq
+        self._lock = asyncio.Lock()
+
+    def subscribe(self, sink: EventSink) -> Callable[[], None]:
+        self._sinks.add(sink)
+
+        def unsubscribe() -> None:
+            self._sinks.discard(sink)
+
+        return unsubscribe
+
+    async def publish(self, event: JournalEvent) -> None:
+        async with self._lock:
+            if event.seq < self._next_seq or event.seq in self._pending:
+                return
+            self._pending[event.seq] = event
+            while ready := self._pending.pop(self._next_seq, None):
+                self._next_seq += 1
+                for sink in tuple(self._sinks):
+                    try:
+                        sink(ready)
+                    except Exception:
+                        self._sinks.discard(sink)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +82,8 @@ class ServerSettings:
 
 
 def _parent_is_alive(parent_pid: int) -> bool:
+    if sys.platform == "win32":
+        return _windows_process_is_alive(parent_pid)
     try:
         os.kill(parent_pid, 0)
     except ProcessLookupError:
@@ -50,6 +91,36 @@ def _parent_is_alive(parent_pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _windows_process_is_alive(process_id: int) -> bool:
+    process_query_limited_information = 0x1000
+    still_active = 259
+    error_access_denied = 5
+
+    win_dll = cast(Callable[..., Any], ctypes.__dict__["WinDLL"])
+    get_last_error = cast(Callable[[], int], ctypes.__dict__["get_last_error"])
+    kernel32 = win_dll("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    get_exit_code_process = kernel32.GetExitCodeProcess
+    get_exit_code_process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    get_exit_code_process.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    process_handle = open_process(process_query_limited_information, False, process_id)
+    if not process_handle:
+        return get_last_error() == error_access_denied
+    try:
+        exit_code = wintypes.DWORD()
+        if not get_exit_code_process(process_handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == still_active
+    finally:
+        close_handle(process_handle)
 
 
 async def _watch_parent(parent_pid: int, stop_event: asyncio.Event) -> None:
@@ -72,7 +143,13 @@ def _initialize_result() -> dict[str, object]:
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "server": {"name": "ikaros-runtime", "version": __version__},
-        "capabilities": {"threads": True, "eventReplay": True},
+        "capabilities": {
+            "threads": True,
+            "turns": True,
+            "eventReplay": True,
+            "streaming": True,
+            "scriptedProvider": True,
+        },
     }
 
 
@@ -80,64 +157,138 @@ async def _handle_connection(
     connection: ServerConnection,
     stop_event: asyncio.Event,
     kernel: RuntimeKernel,
+    event_bus: EventBus,
 ) -> None:
     initialized = False
-    async for raw_message in connection:
-        if not isinstance(raw_message, str):
-            await connection.send(json.dumps(_jsonrpc_error(None, -32600, "text messages only")))
-            continue
+    send_lock = asyncio.Lock()
+    unsubscribe: Callable[[], None] | None = None
+    event_queue: asyncio.Queue[JournalEvent] = asyncio.Queue(maxsize=_EVENT_QUEUE_LIMIT)
+    event_sender: asyncio.Task[None] | None = None
+    overflow_close: asyncio.Task[None] | None = None
 
+    async def send_json(value: dict[str, object]) -> None:
+        async with send_lock:
+            await connection.send(json.dumps(value, separators=(",", ":")))
+
+    async def send_event(event: JournalEvent) -> None:
+        await send_json({"jsonrpc": "2.0", "method": "event", "params": event.to_wire()})
+
+    def enqueue_event(event: JournalEvent) -> None:
+        nonlocal overflow_close
         try:
-            request: Any = json.loads(raw_message)
-        except json.JSONDecodeError:
-            await connection.send(json.dumps(_jsonrpc_error(None, -32700, "parse error")))
-            continue
+            event_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            if overflow_close is None:
+                overflow_close = asyncio.create_task(
+                    connection.close(code=1013, reason="event consumer too slow")
+                )
+            raise
 
-        if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
-            await connection.send(json.dumps(_jsonrpc_error(None, -32600, "invalid request")))
-            continue
+    async def send_events() -> None:
+        try:
+            while True:
+                event = await event_queue.get()
+                try:
+                    async with asyncio.timeout(_SEND_TIMEOUT_SECONDS):
+                        await send_event(event)
+                finally:
+                    event_queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await connection.close(code=1011, reason="event stream failed")
 
-        request_id = request.get("id")
-        method = request.get("method")
-        params = request.get("params", {})
+    try:
+        async for raw_message in connection:
+            if not isinstance(raw_message, str):
+                await send_json(_jsonrpc_error(None, -32600, "text messages only"))
+                continue
 
-        if method == "initialize":
-            if not isinstance(params, dict) or params.get("protocolVersion") != PROTOCOL_VERSION:
-                response = _jsonrpc_error(request_id, -32001, "unsupported protocol version")
-            elif initialized:
-                response = _jsonrpc_error(request_id, -32002, "connection already initialized")
-            else:
-                initialized = True
-                response = {"jsonrpc": "2.0", "id": request_id, "result": _initialize_result()}
-        elif not initialized:
-            response = _jsonrpc_error(request_id, -32000, "initialize must be called first")
-        elif not isinstance(params, dict):
-            response = _jsonrpc_error(request_id, -32602, "params must be an object")
-        else:
             try:
-                if method == "runtime.shutdown":
-                    result = {"accepted": True}
-                elif method == "thread.create":
-                    result = kernel.create_thread(params)
-                elif method == "thread.list":
-                    result = kernel.list_threads(params)
-                elif method == "event.replay":
-                    result = kernel.replay_events(params)
-                else:
-                    response = _jsonrpc_error(request_id, -32601, "method not found")
-                    result = None
-                if result is not None:
-                    response = {"jsonrpc": "2.0", "id": request_id, "result": result}
-            except InvalidParamsError as error:
-                response = _jsonrpc_error(request_id, -32602, str(error))
-            except Exception:
-                _LOGGER.exception("Unhandled Runtime method failure for %s", method)
-                response = _jsonrpc_error(request_id, -32603, "internal error")
+                request: Any = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await send_json(_jsonrpc_error(None, -32700, "parse error"))
+                continue
 
-        await connection.send(json.dumps(response, separators=(",", ":")))
-        if method == "runtime.shutdown" and "result" in response:
-            stop_event.set()
-            return
+            if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
+                await send_json(_jsonrpc_error(None, -32600, "invalid request"))
+                continue
+
+            request_id = request.get("id")
+            method = request.get("method")
+            params = request.get("params", {})
+            outcome: CommandOutcome | None = None
+
+            if method == "initialize":
+                if (
+                    not isinstance(params, dict)
+                    or params.get("protocolVersion") != PROTOCOL_VERSION
+                ):
+                    response = _jsonrpc_error(request_id, -32001, "unsupported protocol version")
+                elif initialized:
+                    response = _jsonrpc_error(request_id, -32002, "connection already initialized")
+                else:
+                    initialized = True
+                    response = {"jsonrpc": "2.0", "id": request_id, "result": _initialize_result()}
+            elif not initialized:
+                response = _jsonrpc_error(request_id, -32000, "initialize must be called first")
+            elif not isinstance(params, dict):
+                response = _jsonrpc_error(request_id, -32602, "params must be an object")
+            else:
+                try:
+                    if method == "runtime.shutdown":
+                        result = {"accepted": True}
+                    elif method == "thread.create":
+                        outcome = kernel.create_thread(params)
+                        result = outcome.result
+                    elif method == "thread.list":
+                        result = kernel.list_threads(params)
+                    elif method == "turn.start":
+                        outcome = kernel.start_turn(params)
+                        result = outcome.result
+                    elif method == "event.replay":
+                        result = kernel.replay_events(params)
+                    else:
+                        response = _jsonrpc_error(request_id, -32601, "method not found")
+                        result = None
+                    if result is not None:
+                        response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+                except InvalidParamsError as error:
+                    response = _jsonrpc_error(request_id, -32602, str(error))
+                except Exception:
+                    _LOGGER.exception("Unhandled Runtime method failure for %s", method)
+                    response = _jsonrpc_error(request_id, -32603, "internal error")
+
+            initialized_now = (
+                method == "initialize" and "result" in response and unsubscribe is None
+            )
+            if initialized_now:
+                unsubscribe = event_bus.subscribe(enqueue_event)
+            accepted_outcome = outcome if outcome is not None and "result" in response else None
+            shutdown_accepted = method == "runtime.shutdown" and "result" in response
+            try:
+                async with asyncio.timeout(_SEND_TIMEOUT_SECONDS):
+                    await send_json(response)
+            finally:
+                if accepted_outcome is not None:
+                    await kernel.finish_command(accepted_outcome)
+                if shutdown_accepted:
+                    stop_event.set()
+            if initialized_now:
+                event_sender = asyncio.create_task(
+                    send_events(),
+                    name="ikaros-runtime-event-sender",
+                )
+            if shutdown_accepted:
+                return
+    finally:
+        if unsubscribe is not None:
+            unsubscribe()
+        if event_sender is not None:
+            event_sender.cancel()
+            await asyncio.gather(event_sender, return_exceptions=True)
+        if overflow_close is not None:
+            await asyncio.gather(overflow_close, return_exceptions=True)
 
 
 async def run_server(settings: ServerSettings) -> None:
@@ -146,7 +297,9 @@ async def run_server(settings: ServerSettings) -> None:
     stop_event = asyncio.Event()
     expected_authorization = f"Bearer {settings.token}"
     store = SqliteRuntimeStore(settings.runtime_home / "state.db")
-    kernel = RuntimeKernel(store)
+    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
+    kernel = RuntimeKernel(store, event_bus.publish)
+    kernel.start()
 
     def authenticate(connection: ServerConnection, request: Request) -> Response | None:
         authorization = request.headers.get("Authorization", "")
@@ -156,7 +309,7 @@ async def run_server(settings: ServerSettings) -> None:
 
     try:
         async with serve(
-            lambda connection: _handle_connection(connection, stop_event, kernel),
+            lambda connection: _handle_connection(connection, stop_event, kernel, event_bus),
             settings.host,
             settings.port,
             process_request=authenticate,
@@ -178,4 +331,5 @@ async def run_server(settings: ServerSettings) -> None:
                 parent_watcher.cancel()
                 await asyncio.gather(parent_watcher, return_exceptions=True)
     finally:
+        await kernel.close()
         store.close()

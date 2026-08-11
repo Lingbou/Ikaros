@@ -22,6 +22,10 @@ const electron = vi.hoisted(() => {
       getAllWindows: vi.fn(() => []),
     },
     targetWindow,
+    runtimeHost: {
+      request: vi.fn(),
+      onNotification: vi.fn(() => vi.fn()),
+    },
   };
 });
 
@@ -51,7 +55,7 @@ describe("desktop window controls", () => {
       assertTrustedIpc: vi.fn(),
       isTrustedUrl: vi.fn(() => true),
     };
-    registerDesktopIpc(trustPolicy);
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
     const event = { sender: {} };
 
     const handler = electron.handlers.get("ikaros:window:minimize");
@@ -68,7 +72,7 @@ describe("desktop window controls", () => {
       assertTrustedIpc: vi.fn(),
       isTrustedUrl: vi.fn(() => true),
     };
-    registerDesktopIpc(trustPolicy);
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
     const event = { sender: {} };
     electron.targetWindow.isMaximized.mockReturnValueOnce(false).mockReturnValueOnce(true);
 
@@ -86,7 +90,7 @@ describe("desktop window controls", () => {
       assertTrustedIpc: vi.fn(),
       isTrustedUrl: vi.fn(() => true),
     };
-    registerDesktopIpc(trustPolicy);
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
     const event = { sender: {} };
 
     const handler = electron.handlers.get("ikaros:window:close");

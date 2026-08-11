@@ -17,8 +17,13 @@ export function App() {
   const { t } = useTranslation();
   const [composerClearance, setComposerClearance] = useState(150);
   const newChat = useAppStore((state) => state.newChat);
+  const initializeRuntime = useAppStore((state) => state.initializeRuntime);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const setSearchOpen = useAppStore((state) => state.setSearchOpen);
+
+  useEffect(() => {
+    void initializeRuntime();
+  }, [initializeRuntime]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

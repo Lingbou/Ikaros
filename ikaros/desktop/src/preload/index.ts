@@ -6,6 +6,14 @@ import {
   type UiPreferences,
   type UiPreferencesPatch
 } from "../shared/platform";
+import type {
+  RuntimeJournalEvent,
+  RuntimeReplayResult,
+  RuntimeThreadCreateResult,
+  RuntimeThreadSummary,
+  RuntimeTurnStartParams,
+  RuntimeTurnStartResult
+} from "../shared/runtime";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const wrapped = (_event: IpcRendererEvent, value: T): void => listener(value);
@@ -14,6 +22,30 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 }
 
 const desktopApi: IkarosDesktopApi = Object.freeze({
+  runtime: Object.freeze({
+    listThreads: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList) as Promise<{
+        threads: RuntimeThreadSummary[];
+      }>,
+    createThread: (title: string | null) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.threadCreate,
+        title
+      ) as Promise<RuntimeThreadCreateResult>,
+    startTurn: (params: RuntimeTurnStartParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.turnStart,
+        params
+      ) as Promise<RuntimeTurnStartResult>,
+    replayEvents: (afterSeq: number, limit?: number) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.eventReplay,
+        afterSeq,
+        limit
+      ) as Promise<RuntimeReplayResult>,
+    onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
+      subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener)
+  }),
   preferences: Object.freeze({
     get: () => ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.preferences.get) as Promise<UiPreferences>,
     update: (patch: UiPreferencesPatch) =>

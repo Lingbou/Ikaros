@@ -23,6 +23,12 @@ interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
+export interface RuntimeNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params: unknown;
+}
+
 interface PendingRequest {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -149,7 +155,10 @@ class JsonRpcConnection {
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
 
-  constructor(private readonly socket: WebSocket) {
+  constructor(
+    private readonly socket: WebSocket,
+    private readonly onNotification: (notification: RuntimeNotification) => void
+  ) {
     socket.on("message", this.handleMessage);
     socket.on("error", this.handleError);
     socket.on("close", this.handleClose);
@@ -200,7 +209,16 @@ class JsonRpcConnection {
   private readonly handleMessage = (raw: RawData): void => {
     let response: JsonRpcResponse;
     try {
-      response = JSON.parse(raw.toString()) as JsonRpcResponse;
+      const message = JSON.parse(raw.toString()) as JsonRpcResponse | RuntimeNotification;
+      if (
+        message.jsonrpc === "2.0" &&
+        "method" in message &&
+        typeof message.method === "string"
+      ) {
+        this.onNotification(message);
+        return;
+      }
+      response = message as JsonRpcResponse;
     } catch {
       this.rejectAll(new Error("Runtime returned invalid JSON."));
       return;
@@ -262,6 +280,7 @@ export class RuntimeHost {
   private connection: JsonRpcConnection | undefined;
   private connectionInfo: RuntimeConnectionInfo | undefined;
   private starting: Promise<RuntimeConnectionInfo> | undefined;
+  private readonly notificationListeners = new Set<(notification: RuntimeNotification) => void>();
 
   constructor(options: RuntimeHostOptions) {
     this.options = {
@@ -278,6 +297,11 @@ export class RuntimeHost {
 
   get pid(): number | undefined {
     return this.child?.pid;
+  }
+
+  onNotification(listener: (notification: RuntimeNotification) => void): () => void {
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
   }
 
   start(): Promise<RuntimeConnectionInfo> {
@@ -333,8 +357,7 @@ export class RuntimeHost {
         "127.0.0.1",
         "--port",
         "0",
-        "--token",
-        token,
+        `--token=${token}`,
         "--parent-pid",
         String(this.options.parentPid)
       ],
@@ -366,7 +389,11 @@ export class RuntimeHost {
         this.options.startTimeoutMs,
         "Timed out connecting to Ikaros Runtime."
       );
-      const connection = new JsonRpcConnection(socket);
+      const connection = new JsonRpcConnection(socket, (notification) => {
+        for (const listener of this.notificationListeners) {
+          listener(notification);
+        }
+      });
       this.connection = connection;
       const result = await connection.request<{
         protocolVersion?: number;

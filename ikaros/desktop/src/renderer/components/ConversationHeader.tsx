@@ -80,7 +80,7 @@ export function ConversationHeader() {
   return (
     <div className="flex h-10 shrink-0 select-none items-center gap-3 border-b border-[var(--border-soft)] px-4 sm:px-5">
       <h1 className="min-w-0 flex-1 truncate text-[13px] leading-5 tracking-[-0.005em] text-[var(--text)]">
-        {thread.title}
+        {thread.title || t("sidebar.newChat")}
       </h1>
 
       {thread.branches.length > 1 && branch ? (

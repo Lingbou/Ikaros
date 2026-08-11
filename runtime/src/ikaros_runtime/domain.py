@@ -35,6 +35,9 @@ class JournalEvent:
     type: str
     thread_id: str | None
     branch_id: str | None
+    turn_id: str | None
+    run_id: str | None
+    item_id: str | None
     timestamp: str
     payload: JsonObject
 
@@ -44,6 +47,28 @@ class JournalEvent:
             "type": self.type,
             "threadId": self.thread_id,
             "branchId": self.branch_id,
+            "turnId": self.turn_id,
+            "runId": self.run_id,
+            "itemId": self.item_id,
             "timestamp": self.timestamp,
             "payload": self.payload,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RunDescriptor:
+    id: str
+    turn_id: str
+    thread_id: str
+    branch_id: str
+    provider_id: str
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedTurn:
+    turn_id: str
+    run_id: str
+    thread_id: str
+    branch_id: str
+    initial_events: tuple[JournalEvent, ...]

@@ -19,16 +19,28 @@ import {
   MockAgentClient,
 } from "./mockAgentClient";
 import { LOCAL_PROFILE } from "./localProfile";
+import { createRuntimeClient } from "./runtimeClient";
+import {
+  applyRuntimeEvent as projectRuntimeEvent,
+  projectRuntimeThreads,
+  replayRuntimeEvents,
+} from "./runtimeProjection";
+import type { RuntimeJournalEvent } from "../shared/runtime";
 
 type EditingMessage = { eventId: string; content: string } | null;
 type RunContext = {
   threadId: string;
   branchId: string;
   turnId: string;
+  runId?: string;
   epoch: number;
 };
 
 interface AppState {
+  runtimeMode: boolean;
+  runtimeReady: boolean;
+  runtimeError: string | null;
+  runtimeSeq: number;
   projects: Project[];
   threads: Thread[];
   selectedThreadId: string | null;
@@ -45,6 +57,8 @@ interface AppState {
   branchCounter: number;
   activeRun: RunContext | null;
 
+  initializeRuntime: () => Promise<void>;
+  applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
   setDraft: (draft: string) => void;
   setSidebarOpen: (open: boolean) => void;
   setSearchOpen: (open: boolean) => void;
@@ -70,6 +84,10 @@ interface AppState {
 }
 
 const client = new MockAgentClient();
+const runtimeClient = createRuntimeClient();
+let runtimeInitialization: Promise<void> | undefined;
+let removeRuntimeSubscription: (() => void) | undefined;
+let bufferedRuntimeEvents: RuntimeJournalEvent[] = [];
 const MOCK_AT = "2026-08-05T06:00:00.000Z";
 
 function turnStatus(status: RunStatus | undefined): Turn["status"] | undefined {
@@ -298,9 +316,152 @@ async function playScenarioInStore(
   finishRun(set, get, context, terminal);
 }
 
+function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
+  if (event.seq <= state.runtimeSeq) {
+    return {};
+  }
+  const threads = projectRuntimeEvent(state.threads, event);
+  const selected = findThread(threads, state.selectedThreadId);
+  const settledActiveRun =
+    event.type === "run.settled" && event.runId === state.activeRun?.runId;
+  return {
+    threads,
+    runtimeSeq: event.seq,
+    runStatus: selected ? storedRunStatus(selected) : "idle",
+    activeRun: settledActiveRun ? null : state.activeRun,
+  };
+}
+
+async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<void> {
+  if (!runtimeClient || get().runtimeReady) {
+    return;
+  }
+  if (runtimeInitialization) {
+    return runtimeInitialization;
+  }
+
+  runtimeInitialization = (async () => {
+    bufferedRuntimeEvents = [];
+    removeRuntimeSubscription ??= runtimeClient.onEvent((event) => {
+      if (get().runtimeReady) {
+        get().applyRuntimeEvent(event);
+      } else {
+        bufferedRuntimeEvents.push(event);
+      }
+    });
+
+    const listed = await runtimeClient.listThreads();
+    let threads = projectRuntimeThreads(listed.threads);
+    let cursor = 0;
+    while (true) {
+      const replay = await runtimeClient.replayEvents(cursor);
+      threads = replayRuntimeEvents(threads, replay.events);
+      cursor = replay.nextAfterSeq;
+      if (!replay.hasMore) {
+        break;
+      }
+    }
+    const liveEvents = bufferedRuntimeEvents
+      .filter((event) => event.seq > cursor)
+      .sort((left, right) => left.seq - right.seq);
+    threads = replayRuntimeEvents(threads, liveEvents);
+    cursor = liveEvents.at(-1)?.seq ?? cursor;
+    bufferedRuntimeEvents = [];
+
+    const selectedThreadId = threads.some((thread) => thread.id === get().selectedThreadId)
+      ? get().selectedThreadId
+      : null;
+    const selected = findThread(threads, selectedThreadId);
+    set({
+      threads,
+      selectedThreadId,
+      runtimeReady: true,
+      runtimeError: null,
+      runtimeSeq: cursor,
+      runStatus: storedRunStatus(selected),
+    });
+  })().catch((error: unknown) => {
+    set({
+      runtimeError: error instanceof Error ? error.message : "Runtime initialization failed",
+    });
+  });
+  return runtimeInitialization;
+}
+
+async function sendRuntimeDraft(
+  set: StoreSet,
+  get: StoreGet,
+  prompt: string,
+): Promise<void> {
+  if (!runtimeClient) {
+    return;
+  }
+  await get().initializeRuntime();
+  const initial = get();
+  if (!initial.runtimeReady) {
+    return;
+  }
+
+  const epoch = initial.runEpoch + 1;
+  set({
+    draft: "",
+    runStatus: "queued",
+    runtimeError: null,
+    runEpoch: epoch,
+  });
+
+  try {
+    let thread = findThread(get().threads, get().selectedThreadId);
+    if (!thread) {
+      const title = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
+      const created = await runtimeClient.createThread(title);
+      get().applyRuntimeEvent(created.event);
+      thread = findThread(get().threads, created.thread.id);
+      if (!thread) {
+        throw new Error("Runtime thread projection was not created.");
+      }
+      set({ selectedThreadId: thread.id });
+    }
+
+    const started = await runtimeClient.startTurn({
+      threadId: thread.id,
+      branchId: thread.activeBranchId,
+      content: prompt,
+      providerId: "scripted",
+      modelId: "scripted-v1",
+    });
+    const currentThread = findThread(get().threads, started.threadId);
+    const projectedStatus = storedRunStatus(currentThread);
+    const startedRun = {
+      threadId: started.threadId,
+      branchId: started.branchId,
+      turnId: started.turnId,
+      runId: started.runId,
+      epoch,
+    };
+    set({
+      selectedThreadId: started.threadId,
+      runStatus: projectedStatus === "idle" ? "queued" : projectedStatus,
+      activeRun:
+        projectedStatus === "idle" || isRunActive(projectedStatus) ? startedRun : null,
+    });
+  } catch (error) {
+    set({
+      draft: prompt,
+      runStatus: "failed",
+      activeRun: null,
+      runtimeError: error instanceof Error ? error.message : "Runtime request failed",
+    });
+  }
+}
+
 export const useAppStore = create<AppState>()((set, get) => ({
-  projects: createInitialProjects(),
-  threads: createInitialThreads(),
+  runtimeMode: runtimeClient !== null,
+  runtimeReady: runtimeClient === null,
+  runtimeError: null,
+  runtimeSeq: 0,
+  projects: runtimeClient ? [] : createInitialProjects(),
+  threads: runtimeClient ? [] : createInitialThreads(),
   selectedThreadId: null,
   runStatus: "idle",
   draft: "",
@@ -317,6 +478,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   localThreadCounter: 0,
   branchCounter: 0,
   activeRun: null,
+
+  initializeRuntime: () => initializeRuntimeInStore(set, get),
+  applyRuntimeEvent: (event) => set((state) => runtimeStateForEvent(state, event)),
 
   setDraft: (draft) => set({ draft }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
@@ -346,6 +510,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const threadId = state.selectedThreadId;
     const editing = state.editingMessage;
     if (isRunActive(state.runStatus) || !threadId || !editing || !content.trim()) return;
+    if (runtimeClient) {
+      set({ editingMessage: null });
+      return;
+    }
     const branchCounter = state.branchCounter + 1;
     const branchId = `${threadId}-branch-${branchCounter}`;
     set({
@@ -381,6 +549,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   newChat: () => {
+    if (runtimeClient) {
+      set({
+        selectedThreadId: null,
+        runStatus: "idle",
+        draft: "",
+        editingMessage: null,
+        settingsOpen: false,
+      });
+      return;
+    }
     client.cancel();
     set((state) => ({
       threads: terminalizeCurrentRun(state),
@@ -398,6 +576,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const state = get();
     const thread = findThread(state.threads, threadId);
     if (!thread) return;
+
+    if (runtimeClient) {
+      set({
+        selectedThreadId: threadId,
+        runStatus: storedRunStatus(thread),
+        editingMessage: null,
+        searchOpen: false,
+        settingsOpen: false,
+      });
+      return;
+    }
 
     if (state.selectedThreadId === threadId) {
       set({ searchOpen: false, settingsOpen: false });
@@ -432,6 +621,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const state = get();
     const prompt = state.draft.trim();
     if (!prompt || isRunActive(state.runStatus)) return;
+    if (runtimeClient) {
+      await sendRuntimeDraft(set, get, prompt);
+      return;
+    }
     client.cancel();
     const epoch = state.runEpoch + 1;
     let threadId = state.selectedThreadId;
@@ -519,6 +712,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   stopRun: () => {
+    if (runtimeClient) {
+      return;
+    }
     const state = get();
     const context = currentRunContext(state);
     if (!context || !isRunCancelable(state.runStatus)) return;
@@ -550,6 +746,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   resolvePermission: async (decision) => {
+    if (runtimeClient) {
+      return;
+    }
     const state = get();
     const thread = findThread(state.threads, state.selectedThreadId);
     const branch = activeBranch(thread);
@@ -585,6 +784,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   recoverRun: async (strategy) => {
+    if (runtimeClient) {
+      return;
+    }
     const state = get();
     const thread = findThread(state.threads, state.selectedThreadId);
     const branch = activeBranch(thread);

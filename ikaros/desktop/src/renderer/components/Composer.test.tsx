@@ -41,7 +41,7 @@ describe("Composer input and clearance", () => {
     expect(screen.queryByRole("button", { name: "Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Research" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Ask for approval" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Full access" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Ikaros" })).toBeVisible();
   });
 

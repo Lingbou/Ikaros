@@ -161,7 +161,9 @@ export function Sidebar() {
                                 : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
                             )}
                           >
-                            <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                            <span className="min-w-0 flex-1 truncate">
+                              {thread.title || t("sidebar.newChat")}
+                            </span>
                           </button>
                         ))
                       ) : (
@@ -194,7 +196,9 @@ export function Sidebar() {
                       : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
                   )}
                 >
-                  <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {thread.title || t("sidebar.newChat")}
+                  </span>
                 </button>
               ))}
             </div>

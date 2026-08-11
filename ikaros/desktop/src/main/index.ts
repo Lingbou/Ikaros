@@ -39,7 +39,7 @@ async function initializeDesktop(): Promise<void> {
 
   const rendererUrl = rendererEntryUrl();
   const trustPolicy = createRendererTrustPolicy(rendererUrl);
-  removeIpcHandlers = registerDesktopIpc(trustPolicy);
+  removeIpcHandlers = registerDesktopIpc(trustPolicy, runtimeHost);
 
   const openWindow = async (): Promise<BrowserWindow> => {
     const currentPreferences = await getUiPreferences();
