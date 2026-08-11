@@ -12,6 +12,12 @@ function bridgeWithListThreads(
     startTurn: vi.fn(),
     cancelRun: vi.fn(),
     replayEvents: vi.fn(),
+    listProviders: vi.fn(),
+    configureProvider: vi.fn(),
+    disconnectProvider: vi.fn(),
+    removeProvider: vi.fn(),
+    listModels: vi.fn(),
+    setModelEnabled: vi.fn(),
     onEvent: vi.fn(() => () => undefined)
   };
 }
@@ -53,6 +59,36 @@ describe("RuntimeClient", () => {
       bridgeWithListThreads(vi.fn(async () => Promise.reject(transportError)))
     );
     await expect(transportClient.listThreads()).rejects.toBe(transportError);
+  });
+
+  it("forwards write-only provider configuration and unwraps the redacted result", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({ ok: true as const, value: { threads: [] } }))
+    );
+    const provider = {
+      id: "deepseek",
+      displayName: "DeepSeek",
+      origin: "builtin" as const,
+      configured: true,
+      credentialConfigured: true,
+      health: "unknown" as const
+    };
+    bridge.configureProvider = vi.fn(async () => ({
+      ok: true as const,
+      value: { provider }
+    }));
+    const client = new RuntimeClient(bridge);
+    const params = {
+      kind: "deepseek" as const,
+      apiKey: "write-only-secret",
+      models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+    };
+
+    await expect(client.configureProvider(params)).resolves.toEqual({ provider });
+    expect(bridge.configureProvider).toHaveBeenCalledWith(params);
+    expect(JSON.stringify(await client.configureProvider(params))).not.toContain(
+      "write-only-secret"
+    );
   });
 
   it.each([

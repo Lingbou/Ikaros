@@ -10,36 +10,27 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
+import type {
+  RuntimeModelInput,
+  RuntimeModelSummary,
+  RuntimeProviderConfigureParams,
+  RuntimeProviderSummary
+} from "../../shared/runtime";
 import { useTranslation } from "../i18n";
 import { cx } from "./ui";
 
-export interface ProviderModel {
-  id: string;
-  displayName: string;
-  enabled: boolean;
-}
-
-export interface CustomProvider {
-  id: string;
-  displayName: string;
-  models: ProviderModel[];
-}
-
 export interface ProvidersSettingsProps {
-  deepSeekConnected: boolean;
-  customProviders: readonly CustomProvider[];
-  onConnectDeepSeek(): void;
-  onDisconnectDeepSeek(): void;
-  onAddCustomProvider(provider: CustomProvider): void;
-  onDisconnectCustomProvider(providerId: string): void;
+  providers: readonly RuntimeProviderSummary[];
+  models: readonly RuntimeModelSummary[];
+  onConfigureProvider(params: RuntimeProviderConfigureParams): Promise<void>;
+  onDisconnectDeepSeek(): Promise<void>;
+  onRemoveCustomProvider(providerId: string): Promise<void>;
 }
 
 export interface ModelsSettingsProps {
-  deepSeekConnected: boolean;
-  deepSeekModels: readonly ProviderModel[];
-  customProviders: readonly CustomProvider[];
-  onToggleDeepSeekModel(modelId: string): void;
-  onToggleCustomModel(providerId: string, modelId: string): void;
+  providers: readonly RuntimeProviderSummary[];
+  models: readonly RuntimeModelSummary[];
+  onSetModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<void>;
 }
 
 interface DraftModel {
@@ -64,6 +55,8 @@ interface CustomProviderDraft {
 }
 
 type ProviderDialog = "deepseek" | "custom";
+const CUSTOM_PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const RESERVED_PROVIDER_IDS = new Set(["deepseek", "scripted"]);
 
 let draftRowKey = 0;
 
@@ -78,6 +71,44 @@ function createModelDraft(): DraftModel {
 
 function createHeaderDraft(): DraftHeader {
   return { key: nextDraftRowKey(), name: "", value: "" };
+}
+
+function createModelDrafts(models: readonly RuntimeModelSummary[]): DraftModel[] {
+  if (models.length === 0) return [createModelDraft()];
+  return models.map((model) => ({
+    key: nextDraftRowKey(),
+    id: model.id,
+    displayName: model.displayName
+  }));
+}
+
+function normalizedModels(drafts: readonly DraftModel[]): RuntimeModelInput[] | null {
+  const models: RuntimeModelInput[] = [];
+  const seen = new Set<string>();
+  for (const draft of drafts) {
+    const id = draft.id.trim();
+    const displayName = draft.displayName.trim();
+    if (!id && !displayName) continue;
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    models.push({ id, displayName: displayName || id });
+  }
+  return models.length > 0 ? models : null;
+}
+
+function normalizedHeaders(drafts: readonly DraftHeader[]): Record<string, string> | null {
+  const headers: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const draft of drafts) {
+    const name = draft.name.trim();
+    const value = draft.value;
+    if (!name && !value) continue;
+    const normalizedName = name.toLocaleLowerCase();
+    if (!name || !value || seen.has(normalizedName)) return null;
+    seen.add(normalizedName);
+    headers[name] = value;
+  }
+  return headers;
 }
 
 function createCustomProviderDraft(): CustomProviderDraft {
@@ -227,19 +258,101 @@ function SubmitButton({ children, disabled = false }: { children: ReactNode; dis
   );
 }
 
-function DeepSeekConnectForm({ onConnect }: { onConnect(): void }) {
+function ModelDraftEditor({
+  models,
+  onChange
+}: {
+  models: readonly DraftModel[];
+  onChange(models: DraftModel[]): void;
+}) {
+  const { t } = useTranslation();
+  const update = (key: number, patch: Partial<Omit<DraftModel, "key">>) => {
+    onChange(models.map((model) => (model.key === key ? { ...model, ...patch } : model)));
+  };
+  return (
+    <fieldset className="pt-1">
+      <legend className="mb-2.5 text-[12px] font-semibold leading-[18px] text-[var(--text)]">
+        {t("settings.providers.models")}
+      </legend>
+      <div className="space-y-2">
+        {models.map((model) => (
+          <div key={model.key} className="flex items-center gap-2">
+            <input
+              value={model.id}
+              onChange={(event) => update(model.key, { id: event.currentTarget.value })}
+              aria-label={t("settings.providers.modelId")}
+              placeholder={t("settings.providers.modelIdPlaceholder")}
+              className={cx(inputClassName, "min-w-0 flex-1")}
+            />
+            <input
+              value={model.displayName}
+              onChange={(event) =>
+                update(model.key, { displayName: event.currentTarget.value })
+              }
+              aria-label={t("settings.providers.modelDisplayName")}
+              placeholder={t("settings.providers.modelDisplayNamePlaceholder")}
+              className={cx(inputClassName, "min-w-0 flex-1")}
+            />
+            <button
+              type="button"
+              aria-label={t("settings.providers.removeModel")}
+              onClick={() => onChange(models.filter((item) => item.key !== model.key))}
+              className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange([...models, createModelDraft()])}
+        className="mt-2 inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[12px] font-semibold leading-[18px] text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+      >
+        <Plus size={13} aria-hidden="true" />
+        {t("settings.providers.addModel")}
+      </button>
+    </fieldset>
+  );
+}
+
+function DeepSeekConnectForm({
+  existingModels,
+  onConnected,
+  onConnect
+}: {
+  existingModels: readonly RuntimeModelSummary[];
+  onConnected(): void;
+  onConnect(params: RuntimeProviderConfigureParams): Promise<void>;
+}) {
   const { t } = useTranslation();
   const [apiKey, setApiKey] = useState("");
+  const [models, setModels] = useState(() => createModelDrafts(existingModels));
+  const [submitting, setSubmitting] = useState(false);
+  const [failed, setFailed] = useState(false);
   const apiKeyInput = useRef<HTMLInputElement>(null);
+  const configuredModels = normalizedModels(models);
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!apiKey.trim()) return;
+    const normalizedKey = apiKey.trim();
+    if (!normalizedKey || !configuredModels || submitting) return;
 
-    // Credentials are deliberately discarded before control returns to the parent.
-    if (apiKeyInput.current) apiKeyInput.current.value = "";
-    flushSync(() => setApiKey(""));
-    onConnect();
+    setSubmitting(true);
+    setFailed(false);
+    try {
+      await onConnect({ kind: "deepseek", apiKey: normalizedKey, models: configuredModels });
+      if (apiKeyInput.current) apiKeyInput.current.value = "";
+      flushSync(() => {
+        setApiKey("");
+        setModels([createModelDraft()]);
+      });
+      onConnected();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -261,8 +374,14 @@ function DeepSeekConnectForm({ onConnect }: { onConnect(): void }) {
       <p className="mt-2 text-[11px] leading-4 text-[var(--muted)]">
         {t("settings.providers.credentialNotice")}
       </p>
+      <div className="mt-5">
+        <ModelDraftEditor models={models} onChange={setModels} />
+      </div>
+      <p aria-live="polite" className="mt-3 min-h-4 text-[11px] leading-4 text-[#e08b8b]">
+        {failed ? t("settings.providers.saveFailed") : ""}
+      </p>
       <div className="mt-5 flex justify-end">
-        <SubmitButton disabled={!apiKey.trim()}>
+        <SubmitButton disabled={!apiKey.trim() || !configuredModels || submitting}>
           {t("settings.providers.continue")}
         </SubmitButton>
       </div>
@@ -271,52 +390,54 @@ function DeepSeekConnectForm({ onConnect }: { onConnect(): void }) {
 }
 
 function CustomProviderForm({
+  onConfigured,
   onSubmit
 }: {
-  onSubmit(provider: CustomProvider): void;
+  onConfigured(): void;
+  onSubmit(params: RuntimeProviderConfigureParams): Promise<void>;
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState(createCustomProviderDraft);
+  const [submitting, setSubmitting] = useState(false);
+  const [failed, setFailed] = useState(false);
   const providerId = draft.providerId.trim();
   const displayName = draft.displayName.trim();
   const baseUrl = draft.baseUrl.trim();
+  const models = normalizedModels(draft.models);
+  const headers = normalizedHeaders(draft.headers);
   const canSubmit =
-    /^[a-z0-9_-]+$/.test(providerId) && Boolean(displayName) && Boolean(baseUrl);
+    CUSTOM_PROVIDER_ID.test(providerId) &&
+    !RESERVED_PROVIDER_IDS.has(providerId) &&
+    Boolean(displayName) &&
+    Boolean(baseUrl) &&
+    models !== null &&
+    headers !== null;
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || !models || !headers || submitting) return;
 
-    const seenModelIds = new Set<string>();
-    const models = draft.models.flatMap((model) => {
-      const id = model.id.trim();
-      if (!id || seenModelIds.has(id)) return [];
-      seenModelIds.add(id);
-      return [
-        {
-          id,
-          displayName: model.displayName.trim() || id,
-          enabled: true
-        }
-      ];
-    });
-
-    const provider: CustomProvider = {
-      id: providerId,
+    const apiKey = draft.apiKey.trim();
+    const params: RuntimeProviderConfigureParams = {
+      kind: "custom",
+      providerId,
       displayName,
-      models
+      baseUrl,
+      models,
+      ...(apiKey ? { apiKey } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {})
     };
-
-    // Discard every connection field before returning the safe display summary.
-    flushSync(() => setDraft(createCustomProviderDraft()));
-    onSubmit(provider);
-  };
-
-  const updateModel = (key: number, patch: Partial<Omit<DraftModel, "key">>) => {
-    setDraft((current) => ({
-      ...current,
-      models: current.models.map((model) => (model.key === key ? { ...model, ...patch } : model))
-    }));
+    setSubmitting(true);
+    setFailed(false);
+    try {
+      await onSubmit(params);
+      flushSync(() => setDraft(createCustomProviderDraft()));
+      onConfigured();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const updateHeader = (key: number, patch: Partial<Omit<DraftHeader, "key">>) => {
@@ -337,7 +458,7 @@ function CustomProviderForm({
         <input
           autoFocus
           required
-          pattern="[a-z0-9_-]+"
+          pattern="[a-z0-9][a-z0-9._-]{0,63}"
           aria-label={t("settings.providers.providerId")}
           value={draft.providerId}
           onChange={(event) => {
@@ -396,59 +517,10 @@ function CustomProviderForm({
         />
       </Field>
 
-      <fieldset className="pt-1">
-        <legend className="mb-2.5 text-[12px] font-semibold leading-[18px] text-[var(--text)]">
-          {t("settings.providers.models")}
-        </legend>
-        <div className="space-y-2">
-          {draft.models.map((model) => (
-            <div key={model.key} className="flex items-center gap-2">
-              <input
-                value={model.id}
-                onChange={(event) => updateModel(model.key, { id: event.currentTarget.value })}
-                aria-label={t("settings.providers.modelId")}
-                placeholder={t("settings.providers.modelIdPlaceholder")}
-                className={cx(inputClassName, "min-w-0 flex-1")}
-              />
-              <input
-                value={model.displayName}
-                onChange={(event) =>
-                  updateModel(model.key, { displayName: event.currentTarget.value })
-                }
-                aria-label={t("settings.providers.modelDisplayName")}
-                placeholder={t("settings.providers.modelDisplayNamePlaceholder")}
-                className={cx(inputClassName, "min-w-0 flex-1")}
-              />
-              <button
-                type="button"
-                aria-label={t("settings.providers.removeModel")}
-                onClick={() =>
-                  setDraft((current) => ({
-                    ...current,
-                    models: current.models.filter((item) => item.key !== model.key)
-                  }))
-                }
-                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
-              >
-                <Trash2 size={14} aria-hidden="true" />
-              </button>
-            </div>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={() =>
-            setDraft((current) => ({
-              ...current,
-              models: [...current.models, createModelDraft()]
-            }))
-          }
-          className="mt-2 inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[12px] font-semibold leading-[18px] text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
-        >
-          <Plus size={13} aria-hidden="true" />
-          {t("settings.providers.addModel")}
-        </button>
-      </fieldset>
+      <ModelDraftEditor
+        models={draft.models}
+        onChange={(models) => setDraft((current) => ({ ...current, models }))}
+      />
 
       <fieldset className="pt-1">
         <legend className="mb-2.5 text-[12px] font-semibold leading-[18px] text-[var(--text)]">
@@ -506,33 +578,50 @@ function CustomProviderForm({
         </button>
       </fieldset>
 
+      <p aria-live="polite" className="min-h-4 text-[11px] leading-4 text-[#e08b8b]">
+        {failed ? t("settings.providers.saveFailed") : ""}
+      </p>
       <div className="flex justify-end pb-1 pt-1">
-        <SubmitButton disabled={!canSubmit}>{t("settings.providers.submit")}</SubmitButton>
+        <SubmitButton disabled={!canSubmit || submitting}>
+          {t("settings.providers.submit")}
+        </SubmitButton>
       </div>
     </form>
   );
 }
 
 export function ProvidersSettings({
-  deepSeekConnected,
-  customProviders,
-  onConnectDeepSeek,
+  providers,
+  models,
+  onConfigureProvider,
   onDisconnectDeepSeek,
-  onAddCustomProvider,
-  onDisconnectCustomProvider
+  onRemoveCustomProvider
 }: ProvidersSettingsProps) {
   const { t } = useTranslation();
   const [activeDialog, setActiveDialog] = useState<ProviderDialog | null>(null);
+  const [actionFailed, setActionFailed] = useState(false);
   const deepSeekTriggerRef = useRef<HTMLButtonElement>(null);
   const customTriggerRef = useRef<HTMLButtonElement>(null);
   const activeTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const openProviderDialog = (dialog: ProviderDialog) => {
+    setActionFailed(false);
     activeTriggerRef.current =
       dialog === "deepseek" ? deepSeekTriggerRef.current : customTriggerRef.current;
     setActiveDialog(dialog);
   };
 
+  const runProviderAction = (action: () => Promise<void>) => {
+    setActionFailed(false);
+    void action().catch(() => setActionFailed(true));
+  };
+
+  const deepSeek = providers.find((provider) => provider.id === "deepseek");
+  const customProviders = providers.filter(
+    (provider) => provider.origin === "custom" && provider.configured
+  );
+  const deepSeekConnected = deepSeek?.configured ?? false;
+  const deepSeekModels = models.filter((model) => model.providerId === "deepseek");
   const hasConnectedProviders = deepSeekConnected || customProviders.length > 0;
 
   return (
@@ -563,7 +652,7 @@ export function ProvidersSettings({
                       label={t("settings.providers.disconnectProvider", {
                         provider: t("settings.providers.deepSeekName")
                       })}
-                      onClick={onDisconnectDeepSeek}
+                      onClick={() => runProviderAction(onDisconnectDeepSeek)}
                     >
                       {t("settings.providers.disconnect")}
                     </ActionButton>
@@ -578,12 +667,14 @@ export function ProvidersSettings({
                   action={
                     <ActionButton
                       quiet
-                      label={t("settings.providers.disconnectProvider", {
+                      label={t("settings.providers.removeProvider", {
                         provider: provider.displayName
                       })}
-                      onClick={() => onDisconnectCustomProvider(provider.id)}
+                      onClick={() =>
+                        runProviderAction(() => onRemoveCustomProvider(provider.id))
+                      }
                     >
-                      {t("settings.providers.disconnect")}
+                      {t("settings.providers.remove")}
                     </ActionButton>
                   }
                 />
@@ -641,6 +732,9 @@ export function ProvidersSettings({
             />
           </div>
         </section>
+        <p aria-live="polite" className="mt-3 min-h-4 text-[11px] leading-4 text-[#e08b8b]">
+          {actionFailed ? t("settings.providers.saveFailed") : ""}
+        </p>
       </div>
 
       <Dialog.Portal>
@@ -681,17 +775,14 @@ export function ProvidersSettings({
           <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto px-5 py-5">
             {activeDialog === "deepseek" ? (
               <DeepSeekConnectForm
-                onConnect={() => {
-                  onConnectDeepSeek();
-                  setActiveDialog(null);
-                }}
+                existingModels={deepSeekModels}
+                onConnected={() => setActiveDialog(null)}
+                onConnect={onConfigureProvider}
               />
             ) : activeDialog === "custom" ? (
               <CustomProviderForm
-                onSubmit={(provider) => {
-                  onAddCustomProvider(provider);
-                  setActiveDialog(null);
-                }}
+                onConfigured={() => setActiveDialog(null)}
+                onSubmit={onConfigureProvider}
               />
             ) : null}
           </div>
@@ -739,8 +830,8 @@ interface ModelGroup {
   id: string;
   name: string;
   custom: boolean;
-  models: readonly ProviderModel[];
-  onToggle(modelId: string): void;
+  models: readonly RuntimeModelSummary[];
+  onToggle(modelId: string, enabled: boolean): void;
 }
 
 function ModelsGroup({
@@ -800,7 +891,7 @@ function ModelsGroup({
               <ModelSwitch
                 label={t("settings.models.toggleModel", { model: model.displayName })}
                 checked={model.enabled}
-                onChange={() => group.onToggle(model.id)}
+                onChange={() => group.onToggle(model.id, !model.enabled)}
               />
             </div>
           ))}
@@ -811,47 +902,37 @@ function ModelsGroup({
 }
 
 export function ModelsSettings({
-  deepSeekConnected,
-  deepSeekModels,
-  customProviders,
-  onToggleDeepSeekModel,
-  onToggleCustomModel
+  providers,
+  models,
+  onSetModelEnabled
 }: ModelsSettingsProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [mutationFailed, setMutationFailed] = useState(false);
   const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({
     deepseek: true
   });
 
   const groups = useMemo<ModelGroup[]>(() => {
-    const connectedGroups: ModelGroup[] = [];
-    if (deepSeekConnected) {
-      connectedGroups.push({
-        id: "deepseek",
-        name: t("settings.providers.deepSeekName"),
-        custom: false,
-        models: deepSeekModels,
-        onToggle: onToggleDeepSeekModel
-      });
-    }
-    customProviders.forEach((provider) => {
-      connectedGroups.push({
-        id: `custom-${provider.id}`,
-        name: provider.displayName,
-        custom: true,
-        models: provider.models,
-        onToggle: (modelId) => onToggleCustomModel(provider.id, modelId)
-      });
+    return providers.flatMap((provider) => {
+      const providerModels = models.filter((model) => model.providerId === provider.id);
+      if (providerModels.length === 0) return [];
+      return [
+        {
+          id: provider.id,
+          name: provider.displayName,
+          custom: provider.origin === "custom",
+          models: providerModels,
+          onToggle: (modelId: string, enabled: boolean) => {
+            setMutationFailed(false);
+            void onSetModelEnabled(provider.id, modelId, enabled).catch(() =>
+              setMutationFailed(true)
+            );
+          }
+        }
+      ];
     });
-    return connectedGroups;
-  }, [
-    customProviders,
-    deepSeekConnected,
-    deepSeekModels,
-    onToggleCustomModel,
-    onToggleDeepSeekModel,
-    t
-  ]);
+  }, [models, onSetModelEnabled, providers]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleGroups = useMemo(
@@ -922,6 +1003,9 @@ export function ModelsSettings({
           {t("settings.models.noMatches")}
         </div>
       ) : null}
+      <p aria-live="polite" className="mt-3 min-h-4 text-[11px] leading-4 text-[#e08b8b]">
+        {mutationFailed ? t("settings.providers.saveFailed") : ""}
+      </p>
     </div>
   );
 }

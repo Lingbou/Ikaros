@@ -4,6 +4,13 @@ import type {
   RuntimeCancelRunResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeModelSetEnabledParams,
+  RuntimeModelSetEnabledResult,
+  RuntimeModelSummary,
+  RuntimeProviderConfigureParams,
+  RuntimeProviderConfigureResult,
+  RuntimeProviderRemoveResult,
+  RuntimeProviderSummary,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
@@ -107,6 +114,34 @@ export class RuntimeClient implements IkarosRuntimeApi {
 
   replayEvents(afterSeq: number, limit = 500): Promise<RuntimeReplayResult> {
     return unwrapRuntimeInvocation(this.api.replayEvents(afterSeq, limit));
+  }
+
+  listProviders(): Promise<{ providers: RuntimeProviderSummary[] }> {
+    return unwrapRuntimeInvocation(this.api.listProviders());
+  }
+
+  configureProvider(
+    params: RuntimeProviderConfigureParams
+  ): Promise<RuntimeProviderConfigureResult> {
+    return unwrapRuntimeInvocation(this.api.configureProvider(params));
+  }
+
+  disconnectProvider(providerId: "deepseek"): Promise<RuntimeProviderConfigureResult> {
+    return unwrapRuntimeInvocation(this.api.disconnectProvider(providerId));
+  }
+
+  removeProvider(providerId: string): Promise<RuntimeProviderRemoveResult> {
+    return unwrapRuntimeInvocation(this.api.removeProvider(providerId));
+  }
+
+  listModels(): Promise<{ models: RuntimeModelSummary[] }> {
+    return unwrapRuntimeInvocation(this.api.listModels());
+  }
+
+  setModelEnabled(
+    params: RuntimeModelSetEnabledParams
+  ): Promise<RuntimeModelSetEnabledResult> {
+    return unwrapRuntimeInvocation(this.api.setModelEnabled(params));
   }
 
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void {

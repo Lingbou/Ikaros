@@ -27,6 +27,10 @@ import {
 } from "./runtimeProjection";
 import type {
   RuntimeJournalEvent,
+  RuntimeModelSetEnabledParams,
+  RuntimeModelSummary,
+  RuntimeProviderConfigureParams,
+  RuntimeProviderSummary,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
   RuntimeTurnStartResult,
@@ -44,6 +48,8 @@ type PendingRuntimeSubmission = {
   epoch: number;
   branchId: string | null;
   prompt: string;
+  providerId: string;
+  modelId: string;
   afterSeq: number;
   foregroundGeneration: number;
   createRequestId?: string;
@@ -54,12 +60,18 @@ type PendingRuntimeSubmission = {
   runId?: string;
   turnId?: string;
 };
+type RuntimeModelSelection = { providerId: string; modelId: string };
+type ProviderCatalogStatus = "idle" | "loading" | "ready" | "error";
 
 interface AppState {
   runtimeMode: boolean;
   runtimeReady: boolean;
   runtimeError: string | null;
   runtimeSeq: number;
+  providerCatalogStatus: ProviderCatalogStatus;
+  providers: RuntimeProviderSummary[];
+  models: RuntimeModelSummary[];
+  selectedModel: RuntimeModelSelection | null;
   projects: Project[];
   threads: Thread[];
   selectedThreadId: string | null;
@@ -81,6 +93,12 @@ interface AppState {
 
   initializeRuntime: () => Promise<void>;
   applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
+  loadProviderCatalog: () => Promise<void>;
+  configureProvider: (params: RuntimeProviderConfigureParams) => Promise<void>;
+  disconnectProvider: (providerId: "deepseek") => Promise<void>;
+  removeProvider: (providerId: string) => Promise<void>;
+  setModelEnabled: (params: RuntimeModelSetEnabledParams) => Promise<void>;
+  selectModel: (selection: RuntimeModelSelection | null) => void;
   setDraft: (draft: string) => void;
   setSidebarOpen: (open: boolean) => void;
   setSearchOpen: (open: boolean) => void;
@@ -108,6 +126,7 @@ interface AppState {
 const client = new MockAgentClient();
 const runtimeClient = createRuntimeClient();
 let runtimeInitialization: Promise<void> | undefined;
+let providerCatalogRevision = 0;
 let removeRuntimeSubscription: (() => void) | undefined;
 let bufferedRuntimeEvents: RuntimeJournalEvent[] = [];
 const pendingRuntimeEvents = new Map<number, RuntimeJournalEvent>();
@@ -118,6 +137,44 @@ let runtimeGapRecovery: Promise<void> | undefined;
 const RUNTIME_GAP_RETRY_DELAYS_MS = [25, 75, 200] as const;
 const RUNTIME_COMMAND_RETRY_DELAYS_MS = [50, 150, 400, 800] as const;
 const MOCK_AT = "2026-08-05T06:00:00.000Z";
+
+function runnableModels(
+  providers: readonly RuntimeProviderSummary[],
+  models: readonly RuntimeModelSummary[],
+): RuntimeModelSummary[] {
+  const configuredProviders = new Set(
+    providers.filter((provider) => provider.configured).map((provider) => provider.id),
+  );
+  return models.filter(
+    (model) => model.enabled && configuredProviders.has(model.providerId),
+  );
+}
+
+function selectionIsRunnable(
+  selection: RuntimeModelSelection | null,
+  providers: readonly RuntimeProviderSummary[],
+  models: readonly RuntimeModelSummary[],
+): selection is RuntimeModelSelection {
+  if (!selection) return false;
+  return runnableModels(providers, models).some(
+    (model) =>
+      model.providerId === selection.providerId && model.id === selection.modelId,
+  );
+}
+
+function reconcileModelSelection(
+  selection: RuntimeModelSelection | null,
+  providers: readonly RuntimeProviderSummary[],
+  models: readonly RuntimeModelSummary[],
+): RuntimeModelSelection | null {
+  if (selectionIsRunnable(selection, providers, models)) {
+    return selection;
+  }
+  const runnable = runnableModels(providers, models);
+  return runnable.length === 1 && runnable[0]
+    ? { providerId: runnable[0].providerId, modelId: runnable[0].id }
+    : null;
+}
 
 function newRuntimeRequestId(kind: "thread" | "turn"): string {
   return `${kind}_${globalThis.crypto.randomUUID()}`;
@@ -365,6 +422,66 @@ function terminalizeCurrentRun(state: AppState) {
 
 type StoreSet = StoreApi<AppState>["setState"];
 type StoreGet = StoreApi<AppState>["getState"];
+
+async function refreshRuntimeProviderCatalog(set: StoreSet): Promise<void> {
+  if (!runtimeClient) {
+    return;
+  }
+  const revision = ++providerCatalogRevision;
+  set({ providerCatalogStatus: "loading" });
+  try {
+    const [providerResult, modelResult] = await Promise.all([
+      runtimeClient.listProviders(),
+      runtimeClient.listModels(),
+    ]);
+    if (revision !== providerCatalogRevision) return;
+    set((state) => ({
+      providers: providerResult.providers,
+      models: modelResult.models,
+      selectedModel: reconcileModelSelection(
+        state.selectedModel,
+        providerResult.providers,
+        modelResult.models,
+      ),
+      providerCatalogStatus: "ready",
+      runtimeError: null,
+    }));
+  } catch (error: unknown) {
+    if (revision !== providerCatalogRevision) return;
+    set({
+      providerCatalogStatus: "error",
+      runtimeError:
+        error instanceof Error ? error.message : "Runtime provider catalog failed",
+    });
+    throw error;
+  }
+}
+
+async function mutateRuntimeProviderCatalog(
+  set: StoreSet,
+  mutation: () => Promise<unknown>,
+): Promise<void> {
+  if (!runtimeClient) {
+    const error = new Error("Runtime provider configuration is unavailable.");
+    set({ runtimeError: error.message, providerCatalogStatus: "error" });
+    throw error;
+  }
+  try {
+    await mutation();
+  } catch (error: unknown) {
+    set({
+      runtimeError:
+        error instanceof Error ? error.message : "Runtime provider configuration failed",
+    });
+    throw error;
+  }
+  try {
+    await refreshRuntimeProviderCatalog(set);
+  } catch {
+    // The mutation is already durable. Keep its success separate from a
+    // follow-up catalog refresh failure so retrying cannot duplicate it.
+  }
+}
 
 async function playScenarioInStore(
   set: StoreSet,
@@ -705,6 +822,7 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
   }
 
   const initialization = (async () => {
+    const catalogRevision = ++providerCatalogRevision;
     bufferedRuntimeEvents = [];
     removeRuntimeSubscription ??= runtimeClient.onEvent((event) => {
       if (get().runtimeReady) {
@@ -714,7 +832,11 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
       }
     });
 
-    const listed = await runtimeClient.listThreads();
+    const [listed, providerResult, modelResult] = await Promise.all([
+      runtimeClient.listThreads(),
+      runtimeClient.listProviders(),
+      runtimeClient.listModels(),
+    ]);
     const replayedEvents = new Map<number, RuntimeJournalEvent>();
     let cursor = 0;
     while (true) {
@@ -748,12 +870,27 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
     const selectedThreadId = threads.some((thread) => thread.id === get().selectedThreadId)
       ? get().selectedThreadId
       : null;
-    set({
-      threads,
-      selectedThreadId,
-      runtimeReady: true,
-      runtimeError: null,
-      runStatus: runtimeRunStatusForSelection(get(), selectedThreadId, threads),
+    set((state) => {
+      const catalogIsCurrent = catalogRevision === providerCatalogRevision;
+      return {
+        threads,
+        selectedThreadId,
+        runtimeReady: true,
+        runtimeError: catalogIsCurrent ? null : state.runtimeError,
+        ...(catalogIsCurrent
+          ? {
+              providers: providerResult.providers,
+              models: modelResult.models,
+              selectedModel: reconcileModelSelection(
+                state.selectedModel,
+                providerResult.providers,
+                modelResult.models,
+              ),
+              providerCatalogStatus: "ready" as const,
+            }
+          : {}),
+        runStatus: runtimeRunStatusForSelection(get(), selectedThreadId, threads),
+      };
     });
     recoverRuntimeEventGap(set, get);
   })();
@@ -988,8 +1125,8 @@ async function startRuntimeTurnForSubmission(
           threadId,
           branchId: submission.branchId as string,
           content: submission.prompt,
-          providerId: "scripted",
-          modelId: "scripted-v1",
+          providerId: submission.providerId,
+          modelId: submission.modelId,
           clientRequestId: submission.turnRequestId,
         }),
       () => recoveredTurnStartResult(get(), threadId, submission),
@@ -1103,6 +1240,8 @@ async function sendRuntimeDraft(
   set: StoreSet,
   get: StoreGet,
   prompt: string,
+  selectedThreadIdAtSend: string | null,
+  selectedModelAtSend: RuntimeModelSelection | null,
 ): Promise<void> {
   if (!runtimeClient) {
     return;
@@ -1113,7 +1252,12 @@ async function sendRuntimeDraft(
     return;
   }
 
-  const selectionAtSend = initial.selectedThreadId;
+  if (!selectionIsRunnable(selectedModelAtSend, initial.providers, initial.models)) {
+    set({ runtimeError: "No configured model is selected." });
+    return;
+  }
+
+  const selectionAtSend = selectedThreadIdAtSend;
   if (hasPendingRuntimeSubmission(initial, selectionAtSend)) {
     return;
   }
@@ -1124,6 +1268,8 @@ async function sendRuntimeDraft(
     epoch,
     branchId: thread?.activeBranchId ?? null,
     prompt,
+    providerId: selectedModelAtSend.providerId,
+    modelId: selectedModelAtSend.modelId,
     afterSeq: initial.runtimeSeq,
     foregroundGeneration: initial.runtimeForegroundGeneration,
     createRequestId: thread ? undefined : newRuntimeRequestId("thread"),
@@ -1172,6 +1318,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   runtimeReady: runtimeClient === null,
   runtimeError: null,
   runtimeSeq: 0,
+  providerCatalogStatus: runtimeClient === null ? "ready" : "idle",
+  providers: [],
+  models: [],
+  selectedModel: null,
   projects: runtimeClient ? [] : createInitialProjects(),
   threads: runtimeClient ? [] : createInitialThreads(),
   selectedThreadId: null,
@@ -1196,6 +1346,29 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   initializeRuntime: () => initializeRuntimeInStore(set, get),
   applyRuntimeEvent: (event) => enqueueRuntimeEvent(set, get, event),
+  loadProviderCatalog: () => refreshRuntimeProviderCatalog(set),
+  configureProvider: (params) =>
+    mutateRuntimeProviderCatalog(set, () =>
+      runtimeClient?.configureProvider(params) ?? Promise.resolve(),
+    ),
+  disconnectProvider: (providerId) =>
+    mutateRuntimeProviderCatalog(set, () =>
+      runtimeClient?.disconnectProvider(providerId) ?? Promise.resolve(),
+    ),
+  removeProvider: (providerId) =>
+    mutateRuntimeProviderCatalog(set, () =>
+      runtimeClient?.removeProvider(providerId) ?? Promise.resolve(),
+    ),
+  setModelEnabled: (params) =>
+    mutateRuntimeProviderCatalog(set, () =>
+      runtimeClient?.setModelEnabled(params) ?? Promise.resolve(),
+    ),
+  selectModel: (selection) =>
+    set((state) => ({
+      selectedModel: selectionIsRunnable(selection, state.providers, state.models)
+        ? selection
+        : null,
+    })),
 
   setDraft: (draft) => set({ draft }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
@@ -1342,7 +1515,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
       if (hasPendingRuntimeSubmission(state, state.selectedThreadId)) {
         return;
       }
-      await sendRuntimeDraft(set, get, prompt);
+      await sendRuntimeDraft(
+        set,
+        get,
+        prompt,
+        state.selectedThreadId,
+        state.selectedModel,
+      );
       return;
     }
     client.cancel();

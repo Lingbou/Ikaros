@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,6 +14,13 @@ from .domain import (
     RunDescriptor,
     ThreadSummary,
     utc_now,
+)
+from .json_codec import dumps as json_dumps
+from .json_codec import loads as json_loads
+from .security import (
+    contains_protected_value,
+    json_contains_protected_value,
+    json_values_contain_protected_value,
 )
 
 _SCHEMA_VERSION = 5
@@ -165,6 +172,86 @@ class SqliteRuntimeStore:
     def close(self) -> None:
         self._connection.close()
 
+    def has_active_runs(self) -> bool:
+        row = self._connection.execute(
+            """
+            SELECT 1
+            FROM runs
+            WHERE status IN ('queued', 'running')
+            LIMIT 1
+            """
+        ).fetchone()
+        return row is not None
+
+    def journal_contains_protected_values(self, protected_values: Sequence[str]) -> bool:
+        values = tuple(dict.fromkeys(value for value in protected_values if value))
+        if not values:
+            return False
+        thread_rows = self._connection.execute(
+            """
+            SELECT title, client_request_id
+            FROM threads
+            """
+        ).fetchall()
+        if any(
+            json_contains_protected_value(
+                (row["title"], row["client_request_id"]),
+                values,
+            )
+            for row in thread_rows
+        ):
+            return True
+
+        run_rows = self._connection.execute(
+            """
+            SELECT provider_id, model_id, client_request_id
+            FROM runs
+            """
+        ).fetchall()
+        for row in run_rows:
+            references = [row["client_request_id"]]
+            if row["provider_id"] != "scripted":
+                references.extend((row["provider_id"], row["model_id"]))
+            if json_contains_protected_value(references, values):
+                return True
+
+        item_rows = self._connection.execute(
+            """
+            SELECT kind, content, data_json
+            FROM items
+            """
+        ).fetchall()
+        for row in item_rows:
+            kind = str(row["kind"])
+            content = str(row["content"])
+            data = json_loads(row["data_json"])
+            if kind == "message":
+                if contains_protected_value(content, values):
+                    return True
+                if json_values_contain_protected_value(data, values):
+                    return True
+            elif kind == "tool_call":
+                tool_call_dynamic = (
+                    data.get("callId"),
+                    data.get("toolName"),
+                    data.get("arguments"),
+                    data.get("reasoningContent"),
+                )
+                if json_contains_protected_value(tool_call_dynamic, values):
+                    return True
+            elif kind == "tool_result":
+                tool_result_dynamic = (data.get("callId"), data.get("toolName"))
+                if json_contains_protected_value(tool_result_dynamic, values):
+                    return True
+                if json_values_contain_protected_value(data.get("result"), values):
+                    return True
+            elif contains_protected_value(content, values) or json_contains_protected_value(
+                data,
+                values,
+            ):
+                return True
+        return False
+
     def create_thread(self, title: str | None) -> tuple[ThreadSummary, JournalEvent]:
         thread, event, _created = self._create_thread(title, client_request_id=None)
         return thread, event
@@ -285,6 +372,56 @@ class SqliteRuntimeStore:
             for row in rows
         ]
 
+    def find_turn_by_client_request_id(
+        self,
+        *,
+        thread_id: str,
+        branch_id: str,
+        content: str,
+        provider_id: str,
+        model_id: str,
+        client_request_id: str,
+    ) -> PreparedTurn | None:
+        existing = self._connection.execute(
+            """
+            SELECT r.id AS run_id, r.turn_id, r.provider_id, r.model_id,
+                   t.thread_id, t.branch_id, i.content
+            FROM runs r
+            JOIN turns t ON t.id = r.turn_id
+            JOIN items i ON i.run_id = r.id AND i.ordinal = 1
+            WHERE r.client_request_id = ?
+            """,
+            (client_request_id,),
+        ).fetchone()
+        if existing is None:
+            return None
+        expected = (
+            thread_id,
+            branch_id,
+            provider_id,
+            model_id,
+            content,
+        )
+        actual = (
+            str(existing["thread_id"]),
+            str(existing["branch_id"]),
+            str(existing["provider_id"]),
+            str(existing["model_id"]),
+            str(existing["content"]),
+        )
+        if actual != expected:
+            raise LookupError(
+                "clientRequestId was already used with different turn.start parameters"
+            )
+        return PreparedTurn(
+            turn_id=str(existing["turn_id"]),
+            run_id=str(existing["run_id"]),
+            thread_id=str(existing["thread_id"]),
+            branch_id=str(existing["branch_id"]),
+            initial_events=(),
+            newly_created=False,
+        )
+
     def prepare_turn(
         self,
         *,
@@ -296,44 +433,16 @@ class SqliteRuntimeStore:
         client_request_id: str | None = None,
     ) -> PreparedTurn:
         if client_request_id is not None:
-            existing = self._connection.execute(
-                """
-                SELECT r.id AS run_id, r.turn_id, r.provider_id, r.model_id,
-                       t.thread_id, t.branch_id, i.content
-                FROM runs r
-                JOIN turns t ON t.id = r.turn_id
-                JOIN items i ON i.run_id = r.id AND i.ordinal = 1
-                WHERE r.client_request_id = ?
-                """,
-                (client_request_id,),
-            ).fetchone()
+            existing = self.find_turn_by_client_request_id(
+                thread_id=thread_id,
+                branch_id=branch_id,
+                content=content,
+                provider_id=provider_id,
+                model_id=model_id,
+                client_request_id=client_request_id,
+            )
             if existing is not None:
-                expected = (
-                    thread_id,
-                    branch_id,
-                    provider_id,
-                    model_id,
-                    content,
-                )
-                actual = (
-                    str(existing["thread_id"]),
-                    str(existing["branch_id"]),
-                    str(existing["provider_id"]),
-                    str(existing["model_id"]),
-                    str(existing["content"]),
-                )
-                if actual != expected:
-                    raise LookupError(
-                        "clientRequestId was already used with different turn.start parameters"
-                    )
-                return PreparedTurn(
-                    turn_id=str(existing["turn_id"]),
-                    run_id=str(existing["run_id"]),
-                    thread_id=str(existing["thread_id"]),
-                    branch_id=str(existing["branch_id"]),
-                    initial_events=(),
-                    newly_created=False,
-                )
+                return existing
 
         owner = self._connection.execute(
             "SELECT 1 FROM branches WHERE id = ? AND thread_id = ?",
@@ -556,7 +665,7 @@ class SqliteRuntimeStore:
                 kind=str(row["kind"]),
                 role=str(row["role"]) if row["role"] is not None else None,
                 content=str(row["content"]),
-                data=json.loads(row["data_json"]),
+                data=json_loads(row["data_json"]),
             )
             for row in rows
         ]
@@ -662,6 +771,7 @@ class SqliteRuntimeStore:
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        reasoning_content: str | None = None,
     ) -> tuple[str, JournalEvent]:
         run = self.get_run(run_id)
         item_id = f"item_{uuid.uuid4().hex}"
@@ -673,6 +783,8 @@ class SqliteRuntimeStore:
             "toolName": tool_name,
             "arguments": arguments,
         }
+        if reasoning_content is not None:
+            data["reasoningContent"] = reasoning_content
         item = self._item_payload(
             item_id=item_id,
             turn_id=run.turn_id,
@@ -701,7 +813,11 @@ class SqliteRuntimeStore:
                     ordinal,
                     timestamp,
                     timestamp,
-                    json.dumps(data, separators=(",", ":"), ensure_ascii=False),
+                    json_dumps(
+                        data,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             event = self._append_event(
@@ -730,7 +846,7 @@ class SqliteRuntimeStore:
         if row["kind"] != "tool_call" or row["status"] != "running":
             raise RuntimeError("tool call item is not running")
         timestamp = utc_now()
-        call_data = json.loads(row["data_json"])
+        call_data = json_loads(row["data_json"])
         call_data["outcome"] = status
         duration_ms = result.get("durationMs")
         if isinstance(duration_ms, int) and not isinstance(duration_ms, bool):
@@ -772,7 +888,11 @@ class SqliteRuntimeStore:
                 (
                     status,
                     timestamp,
-                    json.dumps(call_data, separators=(",", ":"), ensure_ascii=False),
+                    json_dumps(
+                        call_data,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
                     tool_call_item_id,
                 ),
             )
@@ -794,7 +914,11 @@ class SqliteRuntimeStore:
                     result_content,
                     timestamp,
                     timestamp,
-                    json.dumps(result_data, separators=(",", ":"), ensure_ascii=False),
+                    json_dumps(
+                        result_data,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             call_event = self._append_event(
@@ -853,7 +977,7 @@ class SqliteRuntimeStore:
             events: list[JournalEvent] = []
             for item_row in active_items:
                 item_id = str(item_row["id"])
-                item_data = json.loads(item_row["data_json"])
+                item_data = json_loads(item_row["data_json"])
                 if item_row["kind"] == "tool_call":
                     item_data["outcome"] = status
                 self._connection.execute(
@@ -861,7 +985,11 @@ class SqliteRuntimeStore:
                     (
                         status,
                         timestamp,
-                        json.dumps(item_data, separators=(",", ":"), ensure_ascii=False),
+                        json_dumps(
+                            item_data,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ),
                         item_id,
                     ),
                 )
@@ -910,7 +1038,7 @@ class SqliteRuntimeStore:
                         "truncated": False,
                         "errorCode": error_code,
                     }
-                    result_content = json.dumps(
+                    result_content = json_dumps(
                         result,
                         ensure_ascii=False,
                         separators=(",", ":"),
@@ -951,7 +1079,7 @@ class SqliteRuntimeStore:
                             result_content,
                             timestamp,
                             timestamp,
-                            json.dumps(
+                            json_dumps(
                                 result_data,
                                 separators=(",", ":"),
                                 ensure_ascii=False,
@@ -1056,7 +1184,7 @@ class SqliteRuntimeStore:
             for row in rows:
                 self._apply_projection_event(
                     row["event_type"],
-                    json.loads(row["payload_json"]),
+                    json_loads(row["payload_json"]),
                     timestamp=row["created_at"],
                 )
 
@@ -1172,7 +1300,7 @@ class SqliteRuntimeStore:
                         item["status"],
                         item["content"],
                         item["updatedAt"],
-                        json.dumps(
+                        json_dumps(
                             item.get("data", {}),
                             separators=(",", ":"),
                             ensure_ascii=False,
@@ -1209,7 +1337,11 @@ class SqliteRuntimeStore:
                 item["content"],
                 item["createdAt"],
                 item["updatedAt"],
-                json.dumps(item.get("data", {}), separators=(",", ":"), ensure_ascii=False),
+                json_dumps(
+                    item.get("data", {}),
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
             ),
         )
 
@@ -1282,7 +1414,11 @@ class SqliteRuntimeStore:
                 run_id,
                 item_id,
                 timestamp,
-                json.dumps(event_payload, separators=(",", ":"), ensure_ascii=False),
+                json_dumps(
+                    event_payload,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
             ),
         )
         if cursor.lastrowid is None:
@@ -1346,7 +1482,7 @@ class SqliteRuntimeStore:
             role=str(row["role"]) if row["role"] is not None else None,
             status=status if status is not None else str(row["status"]),
             content=str(row["content"]),
-            data=data if data is not None else json.loads(row["data_json"]),
+            data=data if data is not None else json_loads(row["data_json"]),
             created_at=str(row["created_at"]),
             updated_at=updated_at if updated_at is not None else str(row["updated_at"]),
         )
@@ -1362,5 +1498,5 @@ class SqliteRuntimeStore:
             run_id=row["run_id"],
             item_id=row["item_id"],
             timestamp=row["created_at"],
-            payload=json.loads(row["payload_json"]),
+            payload=json_loads(row["payload_json"]),
         )

@@ -104,7 +104,13 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     threadList: "ikaros:runtime:thread-list",
     turnStart: "ikaros:runtime:turn-start",
     runCancel: "ikaros:runtime:run-cancel",
-    eventReplay: "ikaros:runtime:event-replay"
+    eventReplay: "ikaros:runtime:event-replay",
+    providerList: "ikaros:runtime:provider-list",
+    providerConfigure: "ikaros:runtime:provider-configure",
+    providerDisconnect: "ikaros:runtime:provider-disconnect",
+    providerRemove: "ikaros:runtime:provider-remove",
+    modelList: "ikaros:runtime:model-list",
+    modelSetEnabled: "ikaros:runtime:model-set-enabled"
   },
   preferences: {
     changed: "ikaros:preferences:changed",

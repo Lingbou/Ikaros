@@ -52,6 +52,62 @@ export interface RuntimeReplayResult {
   hasMore: boolean;
 }
 
+export interface RuntimeProviderSummary {
+  id: string;
+  displayName: string;
+  origin: "builtin" | "custom";
+  configured: boolean;
+  credentialConfigured: boolean;
+  health: "unknown" | "ready" | "error";
+}
+
+export interface RuntimeModelSummary {
+  providerId: string;
+  id: string;
+  displayName: string;
+  enabled: boolean;
+}
+
+export interface RuntimeModelInput {
+  id: string;
+  displayName: string;
+}
+
+export type RuntimeProviderConfigureParams =
+  | {
+      kind: "deepseek";
+      apiKey: string;
+      models: RuntimeModelInput[];
+    }
+  | {
+      kind: "custom";
+      providerId: string;
+      displayName: string;
+      baseUrl: string;
+      apiKey?: string;
+      headers?: Record<string, string>;
+      models: RuntimeModelInput[];
+    };
+
+export interface RuntimeProviderConfigureResult {
+  provider: RuntimeProviderSummary;
+}
+
+export interface RuntimeProviderRemoveResult {
+  removed: boolean;
+  providerId: string;
+}
+
+export interface RuntimeModelSetEnabledParams {
+  providerId: string;
+  modelId: string;
+  enabled: boolean;
+}
+
+export interface RuntimeModelSetEnabledResult {
+  model: RuntimeModelSummary;
+}
+
 export interface RuntimeRpcFailure {
   kind: "json_rpc";
   code: number;
@@ -71,6 +127,16 @@ export interface IkarosRuntimeApi {
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
   cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
   replayEvents(afterSeq: number, limit?: number): Promise<RuntimeReplayResult>;
+  listProviders(): Promise<{ providers: RuntimeProviderSummary[] }>;
+  configureProvider(
+    params: RuntimeProviderConfigureParams
+  ): Promise<RuntimeProviderConfigureResult>;
+  disconnectProvider(providerId: "deepseek"): Promise<RuntimeProviderConfigureResult>;
+  removeProvider(providerId: string): Promise<RuntimeProviderRemoveResult>;
+  listModels(): Promise<{ models: RuntimeModelSummary[] }>;
+  setModelEnabled(
+    params: RuntimeModelSetEnabledParams
+  ): Promise<RuntimeModelSetEnabledResult>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
 }
 
@@ -88,5 +154,21 @@ export interface IkarosRuntimeBridgeApi {
     afterSeq: number,
     limit?: number
   ): Promise<RuntimeInvocationResult<RuntimeReplayResult>>;
+  listProviders(): Promise<
+    RuntimeInvocationResult<{ providers: RuntimeProviderSummary[] }>
+  >;
+  configureProvider(
+    params: RuntimeProviderConfigureParams
+  ): Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>;
+  disconnectProvider(
+    providerId: "deepseek"
+  ): Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>;
+  removeProvider(
+    providerId: string
+  ): Promise<RuntimeInvocationResult<RuntimeProviderRemoveResult>>;
+  listModels(): Promise<RuntimeInvocationResult<{ models: RuntimeModelSummary[] }>>;
+  setModelEnabled(
+    params: RuntimeModelSetEnabledParams
+  ): Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
 }

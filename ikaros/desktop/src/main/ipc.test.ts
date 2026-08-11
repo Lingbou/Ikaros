@@ -59,6 +59,7 @@ describe("desktop window controls", () => {
     electron.handlers.clear();
     electron.windows.length = 0;
     electron.runtimeNotification.listener = undefined;
+    electron.runtimeHost.request.mockReset();
   });
 
   it("lets a trusted renderer minimize its own window", async () => {
@@ -127,6 +128,58 @@ describe("desktop window controls", () => {
     expect(electron.runtimeHost.request).toHaveBeenCalledWith("run.cancel", {
       runId: "run-123",
     });
+  });
+
+  it.each([
+    ["ikaros:runtime:provider-list", [], "provider.list", undefined],
+    [
+      "ikaros:runtime:provider-configure",
+      [
+        {
+          kind: "deepseek",
+          apiKey: "write-only-secret",
+          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+        }
+      ],
+      "provider.configure",
+      {
+        kind: "deepseek",
+        apiKey: "write-only-secret",
+        models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+      }
+    ],
+    ["ikaros:runtime:provider-disconnect", ["deepseek"], "provider.disconnect", {
+      providerId: "deepseek"
+    }],
+    ["ikaros:runtime:provider-remove", ["local"], "provider.remove", {
+      providerId: "local"
+    }],
+    ["ikaros:runtime:model-list", [], "model.list", undefined],
+    [
+      "ikaros:runtime:model-set-enabled",
+      [{ providerId: "local", modelId: "model", enabled: false }],
+      "model.set_enabled",
+      { providerId: "local", modelId: "model", enabled: false }
+    ]
+  ])("forwards %s through the narrow Runtime RPC bridge", async (channel, args, method, params) => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true)
+    };
+    electron.runtimeHost.request.mockResolvedValueOnce({});
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    const event = { sender: {} };
+
+    const handler = electron.handlers.get(channel as string);
+    expect(handler).toBeDefined();
+    await handler?.(event, ...(args as unknown[]));
+
+    expect(trustPolicy.assertTrustedIpc).toHaveBeenCalledWith(event);
+    if (params === undefined) {
+      expect(electron.runtimeHost.request).toHaveBeenLastCalledWith(method);
+    } else {
+      expect(electron.runtimeHost.request).toHaveBeenLastCalledWith(method, params);
+    }
   });
 
   it("forwards the stable thread.create request ID to the Runtime", async () => {

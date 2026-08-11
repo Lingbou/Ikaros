@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -13,15 +13,25 @@ from .providers import (
     ProviderAdapter,
     ProviderMessage,
     ProviderRequest,
+    ProviderResolver,
+    ReasoningDelta,
     ResponseCompleted,
     TextDelta,
     ToolCallCompleted,
+)
+from .security import (
+    ProtectedStreamGuard,
+    contains_protected_value,
+    json_contains_protected_value,
 )
 from .storage import SqliteRuntimeStore
 from .tools import ToolCall, ToolExecutionCancelled, ToolExecutor, ToolResult
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
+ProtectedValues = Callable[[], Sequence[str]]
 _LOGGER = logging.getLogger("ikaros_runtime.agent")
+_MAX_REASONING_CHARACTERS = 1_000_000
+_PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
 
 
 class RunExecutor(Protocol):
@@ -34,10 +44,12 @@ class AgentLoop:
     def __init__(
         self,
         store: SqliteRuntimeStore,
-        providers: dict[str, ProviderAdapter],
+        providers: Mapping[str, ProviderAdapter] | ProviderResolver,
         publish: EventPublisher,
         tool_executor: ToolExecutor | None = None,
         max_steps: int = 16,
+        *,
+        protected_values: ProtectedValues | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -46,12 +58,13 @@ class AgentLoop:
         self._publish = publish
         self._tool_executor = tool_executor
         self._max_steps = max_steps
+        self._protected_values = protected_values or _empty_protected_values
 
     async def run(self, run_id: str, cancellation: CancellationToken) -> None:
         try:
             cancellation.raise_if_cancelled()
             run = self._store.get_run(run_id)
-            provider = self._providers.get(run.provider_id)
+            provider = self._resolve_provider(run.provider_id)
             if provider is None:
                 raise ValueError(f"unknown provider: {run.provider_id}")
 
@@ -77,14 +90,19 @@ class AgentLoop:
                         self._tool_executor.definitions if self._tool_executor is not None else ()
                     ),
                 )
-                assistant_item_id, tool_calls = await self._provider_step(
+                assistant_item_id, tool_calls, reasoning_content = await self._provider_step(
                     run_id,
                     provider,
                     request,
                     cancellation,
                 )
                 if tool_calls:
-                    await self._execute_tool_calls(run_id, tool_calls, cancellation)
+                    await self._execute_tool_calls(
+                        run_id,
+                        tool_calls,
+                        cancellation,
+                        reasoning_content=reasoning_content,
+                    )
                     continue
                 if assistant_item_id is None:
                     raise RuntimeError("provider completed without text or a tool call")
@@ -97,7 +115,7 @@ class AgentLoop:
         except RunCancelled:
             await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
         except Exception:
-            _LOGGER.exception("Run %s failed", run_id)
+            _LOGGER.error("Run %s failed", run_id)
             await self._publish_terminal_events(self._store.terminalize_run(run_id, "failed"))
 
     async def cancel(self, run_id: str) -> None:
@@ -113,13 +131,21 @@ class AgentLoop:
         provider: ProviderAdapter,
         request: ProviderRequest,
         cancellation: CancellationToken,
-    ) -> tuple[str | None, tuple[ToolCall, ...]]:
+    ) -> tuple[str | None, tuple[ToolCall, ...], str | None]:
         assistant_item_id: str | None = None
         tool_calls: list[ToolCall] = []
         call_ids: set[str] = set()
+        reasoning_parts: list[str] = []
+        reasoning_characters = 0
+        reasoning_seen = False
+        text_seen = False
+        protected_values = self._current_protected_values()
+        text_guard = ProtectedStreamGuard(protected_values)
+        reasoning_guard = ProtectedStreamGuard(protected_values)
         completed = False
         async for event in provider.stream(request, cancellation=cancellation):
             cancellation.raise_if_cancelled()
+            self._assert_protected_values_unchanged(protected_values)
             if completed:
                 raise RuntimeError("provider emitted an event after response.completed")
             if isinstance(event, TextDelta):
@@ -127,12 +153,25 @@ class AgentLoop:
                     raise RuntimeError("provider mixed text and tool calls in one response")
                 if not event.delta:
                     continue
+                text_seen = True
+                safe_delta = text_guard.feed(event.delta)
+                if not safe_delta:
+                    continue
                 if assistant_item_id is None:
                     assistant_item_id, started = self._store.create_assistant_item(run_id)
                     await self._publish(started)
-                await self._publish(self._store.append_text_delta(assistant_item_id, event.delta))
+                    self._assert_protected_values_unchanged(protected_values)
+                await self._publish(self._store.append_text_delta(assistant_item_id, safe_delta))
+            elif isinstance(event, ReasoningDelta):
+                reasoning_seen = True
+                reasoning_characters += len(event.delta)
+                if reasoning_characters > _MAX_REASONING_CHARACTERS:
+                    raise RuntimeError("provider reasoning exceeded the supported size")
+                safe_delta = reasoning_guard.feed(event.delta)
+                if safe_delta:
+                    reasoning_parts.append(safe_delta)
             elif isinstance(event, ToolCallCompleted):
-                if assistant_item_id is not None:
+                if text_seen:
                     raise RuntimeError("provider mixed text and tool calls in one response")
                 call = event.call
                 if (
@@ -153,26 +192,42 @@ class AgentLoop:
                 raise RuntimeError("provider emitted an unknown event")
         if not completed:
             raise RuntimeError("provider stream ended without response.completed")
-        return assistant_item_id, tuple(tool_calls)
+        self._assert_protected_values_unchanged(protected_values)
+        trailing_text = text_guard.finish()
+        if trailing_text:
+            if assistant_item_id is None:
+                assistant_item_id, started = self._store.create_assistant_item(run_id)
+                await self._publish(started)
+                self._assert_protected_values_unchanged(protected_values)
+            await self._publish(self._store.append_text_delta(assistant_item_id, trailing_text))
+        trailing_reasoning = reasoning_guard.finish()
+        if trailing_reasoning:
+            reasoning_parts.append(trailing_reasoning)
+        reasoning_content = "".join(reasoning_parts) if reasoning_seen else None
+        return assistant_item_id, tuple(tool_calls), reasoning_content
 
     async def _execute_tool_calls(
         self,
         run_id: str,
         calls: Sequence[ToolCall],
         cancellation: CancellationToken,
+        *,
+        reasoning_content: str | None,
     ) -> None:
         executor = self._tool_executor
         if executor is None:
             raise RuntimeError("provider requested a tool but no ToolExecutor is available")
+        self._assert_tool_request_safe(calls, reasoning_content)
         step_id = f"step_{uuid.uuid4().hex}"
         item_ids: list[str] = []
-        for call in calls:
+        for index, call in enumerate(calls):
             item_id, started = self._store.create_tool_call_item(
                 run_id,
                 step_id=step_id,
                 call_id=call.id,
                 tool_name=call.name,
                 arguments=call.arguments,
+                reasoning_content=reasoning_content if index == 0 else None,
             )
             item_ids.append(item_id)
             await self._publish(started)
@@ -183,26 +238,31 @@ class AgentLoop:
                 cancellation.raise_if_cancelled()
                 result = await executor.execute(call, cancellation=cancellation)
             except ToolExecutionCancelled as error:
-                await self._publish_tool_result(item_id, error.result, "cancelled")
+                await self._publish_tool_result(item_id, call, error.result, "cancelled")
                 await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
                 raise RunCancelled from error
             except RunCancelled:
                 await self._publish_tool_result(
                     item_id,
+                    call,
                     self._cancelled_before_execution(call),
                     "cancelled",
                 )
                 await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
                 raise
             status = "completed" if result.ok else "failed"
-            await self._publish_tool_result(item_id, result, status)
+            await self._publish_tool_result(item_id, call, result, status)
 
     async def _publish_tool_result(
         self,
         item_id: str,
+        call: ToolCall,
         result: ToolResult,
         status: str,
     ) -> None:
+        result, protected = self._safe_tool_result(call, result)
+        if protected and status != "cancelled":
+            status = "failed"
         await self._publish_terminal_events(
             self._store.complete_tool_call(
                 item_id,
@@ -212,6 +272,65 @@ class AgentLoop:
             )
         )
 
+    def _assert_tool_request_safe(
+        self,
+        calls: Sequence[ToolCall],
+        reasoning_content: str | None,
+    ) -> None:
+        protected_values = self._current_protected_values()
+        if not protected_values:
+            return
+        value = {
+            "reasoningContent": reasoning_content,
+            "calls": [
+                {"id": call.id, "name": call.name, "arguments": call.arguments} for call in calls
+            ],
+        }
+        if json_contains_protected_value(value, protected_values):
+            raise RuntimeError("provider tool request contained protected configuration data")
+
+    def _safe_tool_result(
+        self,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> tuple[ToolResult, bool]:
+        protected_values = self._current_protected_values()
+        if not protected_values:
+            return result, False
+        wire = result.to_wire()
+        model_content = result.to_model_content()
+        if not (
+            json_contains_protected_value(wire, protected_values)
+            or contains_protected_value(model_content, protected_values)
+        ):
+            return result, False
+        return (
+            ToolResult(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                ok=False,
+                output=_PROTECTED_TOOL_OUTPUT_MESSAGE,
+                details={
+                    "stdout": "",
+                    "stderr": "",
+                    "exitCode": None,
+                    "durationMs": 0,
+                    "timedOut": False,
+                    "truncated": False,
+                    "errorCode": "protected_output",
+                },
+                cancelled=result.cancelled,
+            ),
+            True,
+        )
+
+    def _current_protected_values(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(value for value in self._protected_values() if value))
+
+    def _assert_protected_values_unchanged(self, snapshot: Sequence[str]) -> None:
+        if self._current_protected_values() != tuple(snapshot):
+            raise RuntimeError("protected configuration changed during provider response")
+
     async def _cancel_unexecuted_tool_calls(
         self,
         call_items: Sequence[tuple[ToolCall, str]],
@@ -219,6 +338,7 @@ class AgentLoop:
         for call, item_id in call_items:
             await self._publish_tool_result(
                 item_id,
+                call,
                 self._cancelled_before_execution(call),
                 "cancelled",
             )
@@ -273,7 +393,12 @@ class AgentLoop:
                     calls.append(ToolCall(call_id, tool_name, arguments))
                     index += 1
                 messages.append(
-                    ProviderMessage(role="assistant", content="", tool_calls=tuple(calls))
+                    ProviderMessage(
+                        role="assistant",
+                        content="",
+                        tool_calls=tuple(calls),
+                        reasoning_content=_reasoning_content(item),
+                    )
                 )
                 continue
             if item.kind == "tool_result":
@@ -291,6 +416,24 @@ class AgentLoop:
                 continue
             raise RuntimeError(f"unknown context item kind: {item.kind}")
         return messages
+
+    def _resolve_provider(self, provider_id: str) -> ProviderAdapter | None:
+        if isinstance(self._providers, Mapping):
+            return self._providers.get(provider_id)
+        return self._providers.resolve(provider_id)
+
+
+def _reasoning_content(item: ContextItem) -> str | None:
+    value = item.data.get("reasoningContent")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError("tool call reasoning context is invalid")
+    return value
+
+
+def _empty_protected_values() -> tuple[str, ...]:
+    return ()
 
 
 @dataclass(slots=True)
@@ -402,7 +545,7 @@ class AgentScheduler:
                 try:
                     await self._loop.run(run_id, entry.cancellation)
                 except Exception:
-                    _LOGGER.exception("Unhandled scheduler failure for run %s", run_id)
+                    _LOGGER.error("Unhandled scheduler failure for run %s", run_id)
                 finally:
                     self._entries.pop(run_id, None)
             finally:

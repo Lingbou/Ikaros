@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from .cancellation import CancellationToken
+from .json_codec import loads as json_loads
 from .tools import ToolCall, ToolDefinition
 
 
@@ -16,6 +16,7 @@ class ProviderMessage:
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
+    reasoning_content: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,11 @@ class TextDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class ReasoningDelta:
+    delta: str
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCallCompleted:
     call: ToolCall
 
@@ -40,7 +46,7 @@ class ResponseCompleted:
     """The provider finished one response without further stream events."""
 
 
-type ProviderEvent = TextDelta | ToolCallCompleted | ResponseCompleted
+type ProviderEvent = TextDelta | ReasoningDelta | ToolCallCompleted | ResponseCompleted
 
 
 class ProviderAdapter(Protocol):
@@ -50,6 +56,10 @@ class ProviderAdapter(Protocol):
         *,
         cancellation: CancellationToken,
     ) -> AsyncIterator[ProviderEvent]: ...
+
+
+class ProviderResolver(Protocol):
+    def resolve(self, provider_id: str) -> ProviderAdapter | None: ...
 
 
 class ScriptedProvider:
@@ -116,8 +126,8 @@ class ScriptedProvider:
 
 def _scripted_tool_summary(content: str) -> str:
     try:
-        result = json.loads(content)
-    except json.JSONDecodeError:
+        result = json_loads(content)
+    except ValueError:
         return f"Command result: {content}"
     if not isinstance(result, dict):
         return f"Command result: {content}"

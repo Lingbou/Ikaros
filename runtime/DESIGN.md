@@ -98,6 +98,7 @@ All Runtime-owned local files live below the current user's Ikaros home:
 ~/.ikaros/
   config.yaml          provider and model configuration, including API keys
   state.db             canonical SQLite journal and projections
+  runtime.lock         process-lifetime exclusive ownership of this home
   skills/              created when user-installed Skills are supported
   logs/                created only if persistent file logging is enabled
 ```
@@ -110,6 +111,15 @@ runtime must never print the full configuration, include it in diagnostics, or
 copy those values into `state.db`, events, exceptions, or logs, but it does not
 claim encryption at rest.
 
+Exactly one Runtime process may own a Runtime home. It acquires `runtime.lock`
+before reading configuration, opening SQLite, or running crash recovery and
+holds the lock until all server handlers, Agent work, and database handles have
+closed. A rapidly restarted Desktop may wait briefly for the previous Runtime
+to release the lock; a second live owner never emits readiness and never
+mutates the journal. The lock file is stable and is not unlinked on release, so
+POSIX processes cannot accidentally lock different inodes. Operating-system
+handle cleanup makes the lock recoverable after a crash.
+
 V1 keeps the configuration surface intentionally small. `config.yaml` contains
 only a schema version and provider/model records that the user has actually
 added. There is no global default provider or model. Host, ephemeral port,
@@ -121,6 +131,11 @@ When no configuration has been saved, a missing `config.yaml` is equivalent to
 an empty provider map. The file is created on the first real Provider/model
 configuration write; the runtime does not prepopulate DeepSeek, Custom
 providers, or model rows.
+
+`config.yaml` is capped at 256 KiB on both read and write. A mutation is
+serialized and size-checked before its temporary file is atomically replaced;
+any validation, serialization, size, or replace failure leaves both the prior
+file and the in-memory configuration unchanged.
 
 Conceptually:
 
@@ -376,6 +391,13 @@ parsed only after the call is complete, then validated against the registered
 Tool schema. Invalid or incomplete JSON becomes a structured protocol error and
 must never reach ToolExecutor.
 
+Both JSON-RPC and upstream SSE use strict JSON: non-standard constants,
+non-finite numbers (including exponent overflow), integers outside JavaScript's
+safe range `[-(2^53-1), 2^53-1]`, and excessively deep nesting are rejected
+before values cross a protocol boundary. Outgoing wire and journal serialization
+enforces the same numeric rules instead of emitting values that JavaScript would
+turn into `NaN`, `Infinity`, or an imprecise integer.
+
 ### Provider and model records
 
 Secret-bearing configuration and client-visible projections are distinct
@@ -442,8 +464,10 @@ an authoritative runtime concept.
 
 V1 has no disabled Provider state. Removing a Custom Provider deletes its full
 entry from `config.yaml`, including its API key, headers, and models. The
-operation is rejected while an active Run is using that Provider; otherwise it
-does not need a replacement-default workflow because no global default exists.
+operation is rejected while any Run is queued or running; otherwise it does not
+need a replacement-default workflow because no global default exists. This
+V1-wide mutation barrier keeps the protected-value set stable across Provider
+streaming and Tool execution.
 The Desktop action should therefore be labelled Remove rather than Disconnect.
 The built-in DeepSeek preset itself cannot be removed. Disconnecting DeepSeek
 only clears its configured API key and leaves the preset and explicit model
@@ -457,6 +481,32 @@ only redacted configuration state. Header names and values reject CR/LF, and
 header merging is case-insensitive. No dedicated header-secret system is part
 of V1.
 
+To preserve that invariant, configuration rejects an exact credential value
+that appears inside a public Provider/model field or the existing event
+journal. Once configured, Thread and Turn write commands containing an exact
+credential value are also rejected before an event is created.
+Provider updates validate public fields against the union of credentials before
+and after the mutation, so rotating or removing a credential cannot promote the
+old value into a later public projection.
+
+Credential protection follows data provenance rather than an impossible
+alphabet-wide byte-ban. Immutable JSON-RPC schema, protocol constants, enum
+values, and generated identifiers are not configuration values: for example, a
+custom Header equal to `a`, `2.0`, or `full_access` does not make the same fixed
+protocol text a secret disclosure. Client-controlled RPC IDs reject an exact
+short credential and also reject a credential of eight or more characters when
+embedded in a larger value. Method names are fixed dispatch selectors and are
+never echoed or logged. Dynamic public Provider/model fields, Thread/Turn
+inputs, and existing journal values are checked before commit. Streaming model
+text, reasoning, Tool arguments, and Tool Results keep strict cross-delta
+substring detection for every configured credential value.
+
+This is a boundary on Runtime-managed transport, output, and persistence, not a
+sandbox or data-loss-prevention claim. Under `Full access`, a command or Skill
+script can independently read, transform, or transmit any data available to the
+current operating-system user; exact-value filtering of Tool Results does not
+constrain what the child process itself can do.
+
 The runtime caches HTTP clients per effective provider configuration and closes
 them on replacement or shutdown. Connect, response-header, and stream-idle
 timeouts are distinct. A request may be retried only before any content or Tool
@@ -465,6 +515,10 @@ duplicate output. Provider failures normalize to stable categories such as
 authentication, rate limit, context overflow, invalid request, timeout,
 network, server, cancelled, protocol, and unknown, with safe optional status,
 request ID, and retryability metadata.
+
+Cancellation also owns transport cleanup. If response headers and cancellation
+become ready in the same event-loop turn, the completed response is explicitly
+closed before cancellation wins; a leased connection is never abandoned.
 
 A deterministic `ScriptedProvider` remains separate from this adapter and is
 used for Agent-loop and event-ordering tests without credentials or network

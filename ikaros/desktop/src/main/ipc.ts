@@ -5,6 +5,13 @@ import type {
   RuntimeCancelRunResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeModelSetEnabledParams,
+  RuntimeModelSetEnabledResult,
+  RuntimeModelSummary,
+  RuntimeProviderConfigureParams,
+  RuntimeProviderConfigureResult,
+  RuntimeProviderRemoveResult,
+  RuntimeProviderSummary,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
@@ -99,6 +106,12 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.turnStart,
     DESKTOP_IPC_CHANNELS.runtime.runCancel,
     DESKTOP_IPC_CHANNELS.runtime.eventReplay,
+    DESKTOP_IPC_CHANNELS.runtime.providerList,
+    DESKTOP_IPC_CHANNELS.runtime.providerConfigure,
+    DESKTOP_IPC_CHANNELS.runtime.providerDisconnect,
+    DESKTOP_IPC_CHANNELS.runtime.providerRemove,
+    DESKTOP_IPC_CHANNELS.runtime.modelList,
+    DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
     DESKTOP_IPC_CHANNELS.preferences.get,
     DESKTOP_IPC_CHANNELS.preferences.update,
     DESKTOP_IPC_CHANNELS.window.close,
@@ -131,6 +144,66 @@ export function registerDesktopIpc(
         runtimeHost.request<RuntimeThreadCreateResult>("thread.create", {
           title,
           clientRequestId
+        })
+      );
+    }
+  );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.providerList, async (event) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() =>
+      runtimeHost.request<{ providers: RuntimeProviderSummary[] }>("provider.list")
+    );
+  });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.providerConfigure,
+    async (event, params: RuntimeProviderConfigureParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeProviderConfigureResult>("provider.configure", {
+          ...params
+        })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.providerDisconnect,
+    async (event, providerId: unknown) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeProviderConfigureResult>("provider.disconnect", {
+          providerId
+        })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.providerRemove,
+    async (event, providerId: unknown) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeProviderRemoveResult>("provider.remove", { providerId })
+      );
+    }
+  );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.modelList, async (event) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() =>
+      runtimeHost.request<{ models: RuntimeModelSummary[] }>("model.list")
+    );
+  });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
+    async (event, params: RuntimeModelSetEnabledParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeModelSetEnabledResult>("model.set_enabled", {
+          ...params
         })
       );
     }

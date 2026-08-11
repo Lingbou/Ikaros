@@ -71,6 +71,10 @@ export function Composer({
   const draft = useAppStore((state) => state.draft);
   const runStatus = useAppStore((state) => state.runStatus);
   const runtimeMode = useAppStore((state) => state.runtimeMode);
+  const providers = useAppStore((state) => state.providers);
+  const models = useAppStore((state) => state.models);
+  const selectedModel = useAppStore((state) => state.selectedModel);
+  const selectModel = useAppStore((state) => state.selectModel);
   const setDraft = useAppStore((state) => state.setDraft);
   const sendDraft = useAppStore((state) => state.sendDraft);
   const stopRun = useAppStore((state) => state.stopRun);
@@ -83,7 +87,31 @@ export function Composer({
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const canStop = runStatus === "queued" || runStatus === "running";
-  const submitBlocked = isRunActive(runStatus) && !canStop;
+  const runtimeModelOptions = useMemo(() => {
+    const configuredProviders = new Map(
+      providers
+        .filter((provider) => provider.configured)
+        .map((provider) => [provider.id, provider.displayName] as const),
+    );
+    return models.flatMap((candidate) => {
+      const providerName = configuredProviders.get(candidate.providerId);
+      if (!providerName || !candidate.enabled) return [];
+      return [
+        {
+          providerId: candidate.providerId,
+          modelId: candidate.id,
+          label: `${providerName} · ${candidate.displayName}`,
+        },
+      ];
+    });
+  }, [models, providers]);
+  const selectedRuntimeModel = runtimeModelOptions.find(
+    (candidate) =>
+      candidate.providerId === selectedModel?.providerId &&
+      candidate.modelId === selectedModel.modelId,
+  );
+  const runtimeModelMissing = runtimeMode && !selectedRuntimeModel;
+  const submitBlocked = (isRunActive(runStatus) && !canStop) || runtimeModelMissing;
   const slashMatch = draft.match(/^\/([^\s]*)$/);
   const slashQuery = slashMatch?.[1].toLowerCase() ?? "";
   const slashCommands = useMemo(
@@ -135,7 +163,7 @@ export function Composer({
   }, [onClearanceChange]);
 
   const send = () => {
-    if (isRunActive(runStatus)) return;
+    if (isRunActive(runStatus) || runtimeModelMissing) return;
     void sendDraft();
   };
 
@@ -335,13 +363,16 @@ export function Composer({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
-                  disabled={runtimeMode}
+                  disabled={runtimeMode && runtimeModelOptions.length === 0}
                   onPointerDown={() => setSlashDismissed(true)}
                   className="hidden h-8 min-w-0 items-center gap-1 rounded-lg px-2 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
                 >
                   <span className="max-w-28 truncate">
                     {runtimeMode
-                      ? "Scripted"
+                      ? selectedRuntimeModel?.label ??
+                        (runtimeModelOptions.length === 0
+                          ? t("composer.configureModel")
+                          : t("composer.selectModel"))
                       : model === "local"
                         ? t("composer.localModel")
                         : model}
@@ -356,18 +387,39 @@ export function Composer({
                   sideOffset={8}
                   className="glass-menu z-[90] min-w-52 rounded-xl p-1"
                 >
-                  {MODEL_OPTIONS.map((candidate) => (
-                    <DropdownMenu.Item
-                      key={candidate}
-                      onSelect={() => setModel(candidate)}
-                      className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                    >
-                      <span className="flex size-4 items-center justify-center text-[var(--accent)]">
-                        {model === candidate ? <Check size={12} /> : null}
-                      </span>
-                      {candidate === "local" ? t("composer.localModel") : candidate}
-                    </DropdownMenu.Item>
-                  ))}
+                  {runtimeMode
+                    ? runtimeModelOptions.map((candidate) => (
+                        <DropdownMenu.Item
+                          key={`${candidate.providerId}/${candidate.modelId}`}
+                          onSelect={() =>
+                            selectModel({
+                              providerId: candidate.providerId,
+                              modelId: candidate.modelId,
+                            })
+                          }
+                          className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                        >
+                          <span className="flex size-4 items-center justify-center text-[var(--accent)]">
+                            {selectedRuntimeModel?.providerId === candidate.providerId &&
+                            selectedRuntimeModel.modelId === candidate.modelId ? (
+                              <Check size={12} />
+                            ) : null}
+                          </span>
+                          {candidate.label}
+                        </DropdownMenu.Item>
+                      ))
+                    : MODEL_OPTIONS.map((candidate) => (
+                        <DropdownMenu.Item
+                          key={candidate}
+                          onSelect={() => setModel(candidate)}
+                          className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                        >
+                          <span className="flex size-4 items-center justify-center text-[var(--accent)]">
+                            {model === candidate ? <Check size={12} /> : null}
+                          </span>
+                          {candidate === "local" ? t("composer.localModel") : candidate}
+                        </DropdownMenu.Item>
+                      ))}
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>

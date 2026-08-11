@@ -24,6 +24,59 @@ def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> No
         store.close()
 
 
+def test_credential_conflict_scan_uses_dynamic_projections_not_fixed_schema(
+    tmp_path: Path,
+) -> None:
+    protected = "split-projection-credential-sentinel"
+    split_at = len(protected) // 2
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Safe thread")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="safe user content",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        assistant_item_id, _ = store.create_assistant_item(prepared.run_id)
+        store.append_text_delta(assistant_item_id, protected[:split_at])
+        store.append_text_delta(assistant_item_id, protected[split_at:])
+        tool_item_id, _ = store.create_tool_call_item(
+            prepared.run_id,
+            step_id="step-safe",
+            call_id="call-safe",
+            tool_name="process_run",
+            arguments={"command": "echo safe"},
+        )
+        store.complete_tool_call(
+            tool_item_id,
+            status="completed",
+            result={
+                "toolCallId": "call-safe",
+                "toolName": "process_run",
+                "ok": True,
+                "output": "safe",
+                "cancelled": False,
+                "stdout": "safe",
+                "stderr": "",
+                "exitCode": 0,
+                "durationMs": 1,
+                "timedOut": False,
+                "truncated": False,
+            },
+            result_content='{"output":"safe"}',
+        )
+
+        assert store.journal_contains_protected_values((protected,)) is True
+        assert store.journal_contains_protected_values(("full_access",)) is False
+        assert store.journal_contains_protected_values(("stdout",)) is False
+        assert store.journal_contains_protected_values(("item.completed",)) is False
+    finally:
+        store.close()
+
+
 def test_client_request_ids_make_thread_and_turn_creation_idempotent(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:

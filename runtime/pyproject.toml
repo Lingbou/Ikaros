@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = "GPL-3.0-only"
 dependencies = [
+  "httpx>=0.28.1,<1",
+  "pyyaml>=6.0.2,<7",
   "websockets>=15.0.1,<16",
 ]
 
@@ -22,6 +24,7 @@ dev = [
   "pytest>=8.4.1,<9",
   "pytest-asyncio>=1.1.0,<2",
   "ruff>=0.12.8,<1",
+  "types-pyyaml>=6.0.12.20250516,<7",
 ]
 
 [tool.hatch.build.targets.wheel]

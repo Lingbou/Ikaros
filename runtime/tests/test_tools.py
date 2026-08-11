@@ -4,8 +4,9 @@ import asyncio
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +30,35 @@ def _executor() -> ToolExecutor:
     return ToolExecutor(ToolRegistry([ProcessRunTool()]), FullAccessPolicy())
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows process creation flags")
+async def test_process_run_hides_the_root_shell_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    fake_process = cast(asyncio.subprocess.Process, object())
+
+    async def fake_create_subprocess_exec(*arguments: str, **options: Any) -> Any:
+        captured["arguments"] = arguments
+        captured["options"] = options
+        return fake_process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        process_tool,
+        "_create_windows_job",
+        lambda process: cast(Any, object()),
+    )
+
+    spawned = await process_tool._spawn_process("Write-Output 'hidden'", None)
+
+    assert spawned.process is fake_process
+    flags = captured["options"]["creationflags"]
+    assert flags & subprocess.CREATE_NO_WINDOW
+    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert flags & 0x00000004
+
+
 def _process_is_alive(pid: int) -> bool:
     if os.name == "nt":
         completed = subprocess.run(
@@ -37,6 +67,7 @@ def _process_is_alive(pid: int) -> bool:
             capture_output=True,
             text=True,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return re.search(rf'"{pid}"', completed.stdout) is not None
     try:
@@ -68,20 +99,42 @@ async def _wait_for_process_exit(pid: int) -> None:
 
 def _background_child_command(pid_file: Path, *, inherit_output: bool) -> str:
     if os.name == "nt":
-        escaped_path = str(pid_file).replace("'", "''")
-        window_option = "-NoNewWindow" if inherit_output else "-WindowStyle Hidden"
-        return (
-            "$child = Start-Process powershell.exe "
-            "-ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command',"
-            "'Start-Sleep -Seconds 60') -PassThru "
-            f"{window_option}; "
-            f"[IO.File]::WriteAllText('{escaped_path}', [string]$child.Id); "
-            "Write-Output 'root-exited'"
+        return _windows_sleep_child_command(
+            pid_file,
+            inherit_output=inherit_output,
+            wait_for_exit=False,
         )
     redirect = " >/dev/null 2>&1" if not inherit_output else ""
     return (
         'sh -c \'printf "%s" "$$" > "$1"; sleep 60\' sh '
         f"'{pid_file}'{redirect} & printf 'root-exited\\n'"
+    )
+
+
+def _windows_sleep_child_command(
+    pid_file: Path,
+    *,
+    inherit_output: bool,
+    wait_for_exit: bool,
+) -> str:
+    escaped_path = str(pid_file).replace("'", "''")
+    if not inherit_output:
+        python_path = sys.executable.replace("'", "''")
+        helper = str(Path(__file__).parent / "fixtures" / "spawn_sleep_child.py").replace("'", "''")
+        wait_mode = "wait" if wait_for_exit else "detach"
+        tail = "" if wait_for_exit else "; Write-Output 'root-exited'"
+        return f"& '{python_path}' '{helper}' '{escaped_path}' '{wait_mode}'{tail}"
+    tail = "$child.WaitForExit()" if wait_for_exit else "Write-Output 'root-exited'"
+    return (
+        "$psi = [Diagnostics.ProcessStartInfo]::new(); "
+        "$psi.FileName = 'powershell.exe'; "
+        "$psi.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "
+        '"Start-Sleep -Seconds 60"\'; '
+        "$psi.UseShellExecute = $false; "
+        "$psi.CreateNoWindow = $true; "
+        "$child = [Diagnostics.Process]::Start($psi); "
+        f"[IO.File]::WriteAllText('{escaped_path}', [string]$child.Id); "
+        f"{tail}"
     )
 
 
@@ -186,13 +239,10 @@ async def test_cancelling_the_executor_task_still_terminates_the_process_tree(
 ) -> None:
     pid_file = tmp_path / "child.pid"
     if os.name == "nt":
-        escaped_path = str(pid_file).replace("'", "''")
-        command = (
-            "$child = Start-Process powershell.exe "
-            "-ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command',"
-            "'Start-Sleep -Seconds 60') -PassThru; "
-            f"[IO.File]::WriteAllText('{escaped_path}', [string]$child.Id); "
-            "Wait-Process -Id $child.Id"
+        command = _windows_sleep_child_command(
+            pid_file,
+            inherit_output=False,
+            wait_for_exit=True,
         )
     else:
         command = f"sleep 60 & child=$!; printf '%s' \"$child\" > '{pid_file}'; wait $child"

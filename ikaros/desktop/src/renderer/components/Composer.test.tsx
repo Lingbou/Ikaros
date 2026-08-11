@@ -148,6 +148,84 @@ describe("Composer input and clearance", () => {
     expect(stopRun).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks Runtime submission when no runnable model is configured", () => {
+    const sendDraft = vi.fn(async () => undefined);
+    useAppStore.setState({
+      runtimeMode: true,
+      providers: [],
+      models: [],
+      selectedModel: null,
+      draft: "hello",
+      runStatus: "idle",
+      sendDraft,
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByRole("button", { name: "Full access" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Configure a model" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message Ikaros" }), {
+      key: "Enter",
+    });
+    expect(sendDraft).not.toHaveBeenCalled();
+  });
+
+  it("lets Runtime users explicitly choose between multiple runnable models", () => {
+    useAppStore.setState({
+      runtimeMode: true,
+      providers: [
+        {
+          id: "test-provider",
+          displayName: "Test Provider",
+          origin: "custom",
+          configured: true,
+          credentialConfigured: false,
+          health: "unknown",
+        },
+      ],
+      models: [
+        {
+          providerId: "test-provider",
+          id: "model-a",
+          displayName: "Model A",
+          enabled: true,
+        },
+        {
+          providerId: "test-provider",
+          id: "model-b",
+          displayName: "Model B",
+          enabled: true,
+        },
+      ],
+      selectedModel: null,
+      draft: "hello",
+      runStatus: "idle",
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    const modelTrigger = screen.getByRole("button", { name: "Select a model" });
+    expect(modelTrigger).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.pointerDown(modelTrigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Test Provider · Model B" }));
+
+    expect(useAppStore.getState().selectedModel).toEqual({
+      providerId: "test-provider",
+      modelId: "model-b",
+    });
+    expect(screen.getByRole("button", { name: "Test Provider · Model B" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Full access" })).toBeDisabled();
+  });
+
   it("reports clearance from the measured composer surface instead of a fixed height", () => {
     const onClearanceChange = vi.fn();
     const { container } = render(

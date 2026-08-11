@@ -9,6 +9,13 @@ import {
 import type {
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeModelSetEnabledParams,
+  RuntimeModelSetEnabledResult,
+  RuntimeModelSummary,
+  RuntimeProviderConfigureParams,
+  RuntimeProviderConfigureResult,
+  RuntimeProviderRemoveResult,
+  RuntimeProviderSummary,
   RuntimeCancelRunResult,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
@@ -51,6 +58,34 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         afterSeq,
         limit
       ) as Promise<RuntimeInvocationResult<RuntimeReplayResult>>,
+    listProviders: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.providerList) as Promise<
+        RuntimeInvocationResult<{ providers: RuntimeProviderSummary[] }>
+      >,
+    configureProvider: (params: RuntimeProviderConfigureParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.providerConfigure,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>,
+    disconnectProvider: (providerId: "deepseek") =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.providerDisconnect,
+        providerId
+      ) as Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>,
+    removeProvider: (providerId: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.providerRemove,
+        providerId
+      ) as Promise<RuntimeInvocationResult<RuntimeProviderRemoveResult>>,
+    listModels: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.modelList) as Promise<
+        RuntimeInvocationResult<{ models: RuntimeModelSummary[] }>
+      >,
+    setModelEnabled: (params: RuntimeModelSetEnabledParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>,
     onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
       subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener)
   }),

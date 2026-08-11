@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-import json
 import logging
+import math
 import os
 import secrets
 import sys
@@ -19,8 +19,12 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from . import __version__
+from .config import ConfigError, ConfigStore
 from .domain import JournalEvent
+from .json_codec import dumps as json_dumps
+from .json_codec import loads as json_loads
 from .kernel import CommandOutcome, InvalidParamsError, RuntimeKernel
+from .runtime_lock import RuntimeHomeLock
 from .storage import SqliteRuntimeStore
 
 PROTOCOL_VERSION = 1
@@ -140,6 +144,14 @@ def _jsonrpc_error(request_id: object, code: int, message: str) -> dict[str, obj
     }
 
 
+def _valid_request_id(value: object) -> bool:
+    if value is None or isinstance(value, str):
+        return True
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return not isinstance(value, float) or math.isfinite(value)
+
+
 def _initialize_result() -> dict[str, object]:
     return {
         "protocolVersion": PROTOCOL_VERSION,
@@ -153,8 +165,23 @@ def _initialize_result() -> dict[str, object]:
             "tools": ["process.run"],
             "executionPolicy": "full_access",
             "runCancellation": True,
+            "providers": True,
+            "models": True,
         },
     }
+
+
+def _configuration_write_values(method: object, params: object) -> tuple[str, ...]:
+    if method != "provider.configure" or not isinstance(params, dict):
+        return ()
+    values: list[str] = []
+    api_key = params.get("apiKey")
+    if isinstance(api_key, str) and api_key:
+        values.append(api_key)
+    headers = params.get("headers")
+    if isinstance(headers, dict):
+        values.extend(value for value in headers.values() if isinstance(value, str) and value)
+    return tuple(dict.fromkeys(values))
 
 
 async def _handle_connection(
@@ -170,9 +197,26 @@ async def _handle_connection(
     event_sender: asyncio.Task[None] | None = None
     overflow_close: asyncio.Task[None] | None = None
 
-    async def send_json(value: dict[str, object]) -> None:
+    async def send_json(
+        value: dict[str, object],
+        *,
+        additional_protected_values: tuple[str, ...] = (),
+    ) -> None:
+        if kernel.response_contains_protected_value(value, additional_protected_values):
+            value = _jsonrpc_error(
+                None,
+                -32603,
+                "response contained protected configuration data",
+            )
+        try:
+            payload = json_dumps(value, separators=(",", ":"))
+        except (TypeError, ValueError):
+            payload = json_dumps(
+                _jsonrpc_error(None, -32603, "internal error"),
+                separators=(",", ":"),
+            )
         async with send_lock:
-            await connection.send(json.dumps(value, separators=(",", ":")))
+            await connection.send(payload)
 
     async def send_event(event: JournalEvent) -> None:
         await send_json({"jsonrpc": "2.0", "method": "event", "params": event.to_wire()})
@@ -209,8 +253,8 @@ async def _handle_connection(
                 continue
 
             try:
-                request: Any = json.loads(raw_message)
-            except json.JSONDecodeError:
+                request: Any = json_loads(raw_message)
+            except ValueError:
                 await send_json(_jsonrpc_error(None, -32700, "parse error"))
                 continue
 
@@ -222,6 +266,31 @@ async def _handle_connection(
             method = request.get("method")
             params = request.get("params", {})
             outcome: CommandOutcome | None = None
+
+            if not _valid_request_id(request_id):
+                await send_json(_jsonrpc_error(None, -32600, "invalid request id"))
+                continue
+
+            configuration_values = (
+                *kernel.protected_values(),
+                *_configuration_write_values(method, params),
+            )
+            if kernel.rpc_request_values_contain_protected_value(
+                request_id,
+                configuration_values,
+            ):
+                await send_json(
+                    _jsonrpc_error(
+                        None,
+                        -32600,
+                        "request contains protected configuration data",
+                    )
+                )
+                continue
+
+            if not isinstance(method, str):
+                await send_json(_jsonrpc_error(None, -32600, "invalid request method"))
+                continue
 
             if method == "initialize":
                 if (
@@ -247,6 +316,18 @@ async def _handle_connection(
                         result = outcome.result
                     elif method == "thread.list":
                         result = kernel.list_threads(params)
+                    elif method == "provider.list":
+                        result = kernel.list_providers(params)
+                    elif method == "provider.configure":
+                        result = kernel.configure_provider(params)
+                    elif method == "provider.disconnect":
+                        result = kernel.disconnect_provider(params)
+                    elif method == "provider.remove":
+                        result = kernel.remove_provider(params)
+                    elif method == "model.list":
+                        result = kernel.list_models(params)
+                    elif method == "model.set_enabled":
+                        result = kernel.set_model_enabled(params)
                     elif method == "turn.start":
                         outcome = kernel.start_turn(params)
                         result = outcome.result
@@ -263,7 +344,7 @@ async def _handle_connection(
                 except InvalidParamsError as error:
                     response = _jsonrpc_error(request_id, -32602, str(error))
                 except Exception:
-                    _LOGGER.exception("Unhandled Runtime method failure for %s", method)
+                    _LOGGER.error("Unhandled Runtime method failure")
                     response = _jsonrpc_error(request_id, -32603, "internal error")
 
             initialized_now = (
@@ -275,7 +356,10 @@ async def _handle_connection(
             shutdown_accepted = method == "runtime.shutdown" and "result" in response
             try:
                 async with asyncio.timeout(_SEND_TIMEOUT_SECONDS):
-                    await send_json(response)
+                    await send_json(
+                        response,
+                        additional_protected_values=_configuration_write_values(method, params),
+                    )
             finally:
                 if accepted_outcome is not None:
                     await kernel.finish_command(accepted_outcome)
@@ -302,22 +386,28 @@ async def _handle_connection(
 
 async def run_server(settings: ServerSettings) -> None:
     settings.validate()
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    stop_event = asyncio.Event()
-    expected_authorization = f"Bearer {settings.token}"
-    store = SqliteRuntimeStore(settings.runtime_home / "state.db")
-    recovery = store.recover_incomplete_runs()
-    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeKernel(store, event_bus.publish)
-    kernel.start(recovery.queued_run_ids)
-
-    def authenticate(connection: ServerConnection, request: Request) -> Response | None:
-        authorization = request.headers.get("Authorization", "")
-        if secrets.compare_digest(authorization, expected_authorization):
-            return None
-        return connection.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
-
+    runtime_lock = await RuntimeHomeLock.acquire(settings.runtime_home)
+    store: SqliteRuntimeStore | None = None
+    kernel: RuntimeKernel | None = None
     try:
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+        stop_event = asyncio.Event()
+        expected_authorization = f"Bearer {settings.token}"
+        config_store = ConfigStore(settings.runtime_home)
+        store = SqliteRuntimeStore(settings.runtime_home / "state.db")
+        if store.journal_contains_protected_values(config_store.protected_values()):
+            raise ConfigError("configured credentials conflict with persisted Runtime data")
+        recovery = store.recover_incomplete_runs()
+        event_bus = EventBus(next_seq=store.latest_sequence() + 1)
+        kernel = RuntimeKernel(store, event_bus.publish, config_store=config_store)
+        kernel.start(recovery.queued_run_ids)
+
+        def authenticate(connection: ServerConnection, request: Request) -> Response | None:
+            authorization = request.headers.get("Authorization", "")
+            if secrets.compare_digest(authorization, expected_authorization):
+                return None
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
+
         async with serve(
             lambda connection: _handle_connection(connection, stop_event, kernel, event_bus),
             settings.host,
@@ -333,7 +423,7 @@ async def run_server(settings: ServerSettings) -> None:
                 "port": selected_port,
                 "pid": os.getpid(),
             }
-            print(json.dumps(readiness, separators=(",", ":")), flush=True)
+            print(json_dumps(readiness, separators=(",", ":")), flush=True)
             parent_watcher = asyncio.create_task(_watch_parent(settings.parent_pid, stop_event))
             try:
                 await stop_event.wait()
@@ -341,5 +431,8 @@ async def run_server(settings: ServerSettings) -> None:
                 parent_watcher.cancel()
                 await asyncio.gather(parent_watcher, return_exceptions=True)
     finally:
-        await kernel.close()
-        store.close()
+        if kernel is not None:
+            await kernel.close()
+        if store is not None:
+            store.close()
+        runtime_lock.release()

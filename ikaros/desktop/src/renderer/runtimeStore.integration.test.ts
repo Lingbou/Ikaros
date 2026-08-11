@@ -5,6 +5,8 @@ import type {
   IkarosRuntimeApi,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeModelSummary,
+  RuntimeProviderSummary,
 } from "../shared/runtime";
 
 const createdAt = "2026-08-11T12:00:00.000Z";
@@ -47,6 +49,28 @@ async function bridgeInvocation<TResult>(
 function installRuntimeBridge(api: unknown): void {
   const desktop = api as { runtime: IkarosRuntimeApi };
   const runtime = desktop.runtime;
+  const providerCatalog = {
+    providers: [
+      {
+        id: "test-provider",
+        displayName: "Test Provider",
+        origin: "custom" as const,
+        configured: true,
+        credentialConfigured: false,
+        health: "unknown" as const,
+      },
+    ],
+  };
+  const modelCatalog = {
+    models: [
+      {
+        providerId: "test-provider",
+        id: "test-model",
+        displayName: "Test Model",
+        enabled: true,
+      },
+    ],
+  };
   const bridged = {
     ...(api as object),
     runtime: {
@@ -58,6 +82,26 @@ function installRuntimeBridge(api: unknown): void {
       cancelRun: (runId: string) => bridgeInvocation(() => runtime.cancelRun(runId)),
       replayEvents: (afterSeq: number, limit?: number) =>
         bridgeInvocation(() => runtime.replayEvents(afterSeq, limit)),
+      listProviders: () =>
+        bridgeInvocation(() =>
+          typeof runtime.listProviders === "function"
+            ? runtime.listProviders()
+            : Promise.resolve(providerCatalog),
+        ),
+      configureProvider: (params: Parameters<IkarosRuntimeApi["configureProvider"]>[0]) =>
+        bridgeInvocation(() => runtime.configureProvider(params)),
+      disconnectProvider: (providerId: "deepseek") =>
+        bridgeInvocation(() => runtime.disconnectProvider(providerId)),
+      removeProvider: (providerId: string) =>
+        bridgeInvocation(() => runtime.removeProvider(providerId)),
+      listModels: () =>
+        bridgeInvocation(() =>
+          typeof runtime.listModels === "function"
+            ? runtime.listModels()
+            : Promise.resolve(modelCatalog),
+        ),
+      setModelEnabled: (params: Parameters<IkarosRuntimeApi["setModelEnabled"]>[0]) =>
+        bridgeInvocation(() => runtime.setModelEnabled(params)),
       onEvent: runtime.onEvent,
     },
   } as IkarosDesktopApi;
@@ -178,6 +222,10 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().threads).toEqual([]);
     expect(useAppStore.getState().projects).toEqual([]);
     await useAppStore.getState().initializeRuntime();
+    expect(useAppStore.getState().selectedModel).toEqual({
+      providerId: "test-provider",
+      modelId: "test-model",
+    });
     const events = [
       runtimeEvent(2, "item.completed", "user-runtime", {
         item: messageItem("user-runtime", "user", "hello runtime", "completed")
@@ -217,8 +265,8 @@ describe("Runtime-backed renderer store", () => {
         threadId: thread.id,
         branchId: thread.defaultBranchId,
         content: "hello runtime",
-        providerId: "scripted",
-        modelId: "scripted-v1",
+        providerId: "test-provider",
+        modelId: "test-model",
         clientRequestId: expect.any(String)
       })
     );
@@ -231,6 +279,352 @@ describe("Runtime-backed renderer store", () => {
         { role: "user", content: "hello runtime" },
         { role: "assistant", content: "hello back", status: "complete" }
       ]
+    });
+  });
+
+  it("keeps a Runtime draft when no runnable model is selected", async () => {
+    const createThread = vi.fn();
+    const startTurn = vi.fn();
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [] })),
+        createThread,
+        startTurn,
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        listProviders: vi.fn(async () => ({
+          providers: [
+            {
+              id: "deepseek",
+              displayName: "DeepSeek",
+              origin: "builtin" as const,
+              configured: false,
+              credentialConfigured: false,
+              health: "unknown" as const,
+            },
+          ],
+        })),
+        listModels: vi.fn(async () => ({
+          models: [
+            {
+              providerId: "deepseek",
+              id: "deepseek-chat",
+              displayName: "DeepSeek Chat",
+              enabled: true,
+            },
+          ],
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    expect(useAppStore.getState().selectedModel).toBeNull();
+    useAppStore.getState().setDraft("keep me");
+    await useAppStore.getState().sendDraft();
+
+    expect(createThread).not.toHaveBeenCalled();
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(useAppStore.getState().draft).toBe("keep me");
+    expect(useAppStore.getState().runtimeError).toBe("No configured model is selected.");
+  });
+
+  it("snapshots the selected model when sendDraft is invoked", async () => {
+    const thread = {
+      id: "thread-runtime",
+      title: "Model snapshot",
+      defaultBranchId: "branch-runtime",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const startTurn = vi.fn(async () => ({
+      threadId: thread.id,
+      branchId: thread.defaultBranchId,
+      turnId: "turn-runtime",
+      runId: "run-runtime",
+    }));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        createThread: vi.fn(),
+        startTurn,
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        listProviders: vi.fn(async () => ({
+          providers: [
+            {
+              id: "test-provider",
+              displayName: "Test Provider",
+              origin: "custom" as const,
+              configured: true,
+              credentialConfigured: false,
+              health: "unknown" as const,
+            },
+          ],
+        })),
+        listModels: vi.fn(async () => ({
+          models: [
+            {
+              providerId: "test-provider",
+              id: "model-a",
+              displayName: "Model A",
+              enabled: true,
+            },
+            {
+              providerId: "test-provider",
+              id: "model-b",
+              displayName: "Model B",
+              enabled: true,
+            },
+          ],
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+    useAppStore.getState().selectModel({ providerId: "test-provider", modelId: "model-a" });
+    useAppStore.getState().setDraft("use the selected model");
+
+    const sending = useAppStore.getState().sendDraft();
+    useAppStore.getState().selectModel({ providerId: "test-provider", modelId: "model-b" });
+    await sending;
+
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: thread.id,
+        providerId: "test-provider",
+        modelId: "model-a",
+        content: "use the selected model",
+      }),
+    );
+    expect(useAppStore.getState().selectedModel).toEqual({
+      providerId: "test-provider",
+      modelId: "model-b",
+    });
+  });
+
+  it("reconciles model selection after disable, disconnect, and remove mutations", async () => {
+    let providers: RuntimeProviderSummary[] = [
+      {
+        id: "deepseek",
+        displayName: "DeepSeek",
+        origin: "builtin",
+        configured: true,
+        credentialConfigured: true,
+        health: "unknown",
+      },
+      {
+        id: "custom-provider",
+        displayName: "Custom Provider",
+        origin: "custom",
+        configured: true,
+        credentialConfigured: false,
+        health: "unknown",
+      },
+    ];
+    let models: RuntimeModelSummary[] = [
+      {
+        providerId: "deepseek",
+        id: "deepseek-chat",
+        displayName: "DeepSeek Chat",
+        enabled: true,
+      },
+      {
+        providerId: "custom-provider",
+        id: "custom-model",
+        displayName: "Custom Model",
+        enabled: true,
+      },
+    ];
+    const setModelEnabled = vi.fn(async ({
+      providerId,
+      modelId,
+      enabled,
+    }: {
+      providerId: string;
+      modelId: string;
+      enabled: boolean;
+    }) => {
+      models = models.map((model) =>
+        model.providerId === providerId && model.id === modelId
+          ? { ...model, enabled }
+          : model,
+      );
+      return models.find((model) => model.providerId === providerId && model.id === modelId);
+    });
+    const disconnectProvider = vi.fn(async () => {
+      providers = providers.map((provider) =>
+        provider.id === "deepseek"
+          ? { ...provider, configured: false, credentialConfigured: false }
+          : provider,
+      );
+      return providers.find((provider) => provider.id === "deepseek");
+    });
+    const removeProvider = vi.fn(async (providerId: string) => {
+      providers = providers.filter((provider) => provider.id !== providerId);
+      models = models.filter((model) => model.providerId !== providerId);
+      return { removed: true, providerId };
+    });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [] })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        listProviders: vi.fn(async () => ({ providers })),
+        listModels: vi.fn(async () => ({ models })),
+        setModelEnabled,
+        disconnectProvider,
+        removeProvider,
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    useAppStore.getState().selectModel({ providerId: "deepseek", modelId: "deepseek-chat" });
+    await useAppStore.getState().setModelEnabled({
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      enabled: false,
+    });
+    expect(useAppStore.getState().selectedModel).toEqual({
+      providerId: "custom-provider",
+      modelId: "custom-model",
+    });
+
+    await useAppStore.getState().setModelEnabled({
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      enabled: true,
+    });
+    useAppStore.getState().selectModel({ providerId: "deepseek", modelId: "deepseek-chat" });
+    await useAppStore.getState().disconnectProvider("deepseek");
+    expect(useAppStore.getState().models.some((model) => model.providerId === "deepseek")).toBe(
+      true,
+    );
+    expect(useAppStore.getState().selectedModel).toEqual({
+      providerId: "custom-provider",
+      modelId: "custom-model",
+    });
+
+    await useAppStore.getState().removeProvider("custom-provider");
+    expect(useAppStore.getState().selectedModel).toBeNull();
+    expect(disconnectProvider).toHaveBeenCalledWith("deepseek");
+    expect(removeProvider).toHaveBeenCalledWith("custom-provider");
+  });
+
+  it("ignores an older provider catalog response that finishes after a newer refresh", async () => {
+    let resolveOldProviders: ((value: { providers: RuntimeProviderSummary[] }) => void) | undefined;
+    let resolveOldModels: ((value: { models: RuntimeModelSummary[] }) => void) | undefined;
+    const oldProviders = new Promise<{ providers: RuntimeProviderSummary[] }>((resolve) => {
+      resolveOldProviders = resolve;
+    });
+    const oldModels = new Promise<{ models: RuntimeModelSummary[] }>((resolve) => {
+      resolveOldModels = resolve;
+    });
+    const staleProvider: RuntimeProviderSummary = {
+      id: "stale-provider",
+      displayName: "Stale Provider",
+      origin: "custom",
+      configured: true,
+      credentialConfigured: false,
+      health: "unknown",
+    };
+    const freshProvider: RuntimeProviderSummary = {
+      id: "fresh-provider",
+      displayName: "Fresh Provider",
+      origin: "custom",
+      configured: true,
+      credentialConfigured: false,
+      health: "unknown",
+    };
+    const staleModel: RuntimeModelSummary = {
+      providerId: "stale-provider",
+      id: "stale-model",
+      displayName: "Stale Model",
+      enabled: true,
+    };
+    const freshModel: RuntimeModelSummary = {
+      providerId: "fresh-provider",
+      id: "fresh-model",
+      displayName: "Fresh Model",
+      enabled: true,
+    };
+    const listProviders = vi
+      .fn()
+      .mockImplementationOnce(() => oldProviders)
+      .mockResolvedValueOnce({ providers: [freshProvider] });
+    const listModels = vi
+      .fn()
+      .mockImplementationOnce(() => oldModels)
+      .mockResolvedValueOnce({ models: [freshModel] });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [] })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(),
+        listProviders,
+        listModels,
+        setModelEnabled: vi.fn(async () => freshModel),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    const olderLoad = useAppStore.getState().loadProviderCatalog();
+    await vi.waitFor(() => expect(listProviders).toHaveBeenCalledTimes(1));
+    await useAppStore.getState().setModelEnabled({
+      providerId: "fresh-provider",
+      modelId: "fresh-model",
+      enabled: true,
+    });
+    resolveOldProviders?.({ providers: [staleProvider] });
+    resolveOldModels?.({ models: [staleModel] });
+    await olderLoad;
+
+    expect(useAppStore.getState().providers).toEqual([freshProvider]);
+    expect(useAppStore.getState().models).toEqual([freshModel]);
+    expect(useAppStore.getState().selectedModel).toEqual({
+      providerId: "fresh-provider",
+      modelId: "fresh-model",
     });
   });
 
@@ -1233,8 +1627,8 @@ describe("Runtime-backed renderer store", () => {
         threadId: createdThread.id,
         branchId: createdThread.defaultBranchId,
         content: "create in background",
-        providerId: "scripted",
-        modelId: "scripted-v1",
+        providerId: "test-provider",
+        modelId: "test-model",
         clientRequestId: expect.any(String)
       })
     );

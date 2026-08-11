@@ -4,7 +4,9 @@ import asyncio
 import json
 import os
 import secrets
+import shlex
 import signal
+import subprocess
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
@@ -15,10 +17,13 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import InvalidStatus
 
+from ikaros_runtime.config import ConfigError, ConfigStore, ModelInput
 from ikaros_runtime.domain import JournalEvent
-from ikaros_runtime.kernel import RuntimeKernel
+from ikaros_runtime.kernel import InvalidParamsError, RuntimeKernel
 from ikaros_runtime.server import EventBus, _handle_connection, _parent_is_alive
 from ikaros_runtime.storage import SqliteRuntimeStore
+
+_HIDDEN_PROCESS_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 class AckFailingConnection:
@@ -92,6 +97,7 @@ async def _start_runtime(token: str, runtime_home: Path) -> tuple[Process, dict[
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env={**os.environ, "IKAROS_HOME": str(runtime_home)},
+        creationflags=_HIDDEN_PROCESS_FLAGS,
     )
     try:
         assert process.stdout is not None
@@ -135,6 +141,19 @@ async def _rpc(
                 notifications.append(response["params"])
             continue
         assert response["id"] == request_id
+        return cast(dict[str, Any], response)
+
+
+async def _raw_rpc(
+    connection: ClientConnection,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    await connection.send(json.dumps(request))
+    while True:
+        response = json.loads(await connection.recv())
+        assert response["jsonrpc"] == "2.0"
+        if response.get("method") == "event":
+            continue
         return cast(dict[str, Any], response)
 
 
@@ -206,6 +225,8 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "streaming": True,
             "scriptedProvider": True,
             "runCancellation": True,
+            "providers": True,
+            "models": True,
             "tools": ["process.run"],
             "executionPolicy": "full_access",
         },
@@ -234,9 +255,1693 @@ def _journal_event(seq: int) -> JournalEvent:
     )
 
 
+async def _discard_event(_event: JournalEvent) -> None:
+    return None
+
+
+def _database_contents(runtime_home: Path) -> list[bytes]:
+    return [path.read_bytes() for path in runtime_home.glob("state.db*")]
+
+
+class FakeOpenAIEndpoint:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self._server: asyncio.Server | None = None
+
+    async def start(self) -> str:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        socket = next(iter(self._server.sockets or ()))
+        port = int(socket.getsockname()[1])
+        return f"http://127.0.0.1:{port}/v1"
+
+    async def close(self) -> None:
+        if self._server is None:
+            return
+        self._server.close()
+        await self._server.wait_closed()
+        self._server = None
+
+    async def _handle(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            header_source = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+            header_lines = header_source.decode("ascii").split("\r\n")
+            request_line = header_lines[0]
+            headers = {
+                name.strip().lower(): value.strip()
+                for line in header_lines[1:]
+                if ":" in line
+                for name, value in [line.split(":", 1)]
+            }
+            content_length = int(headers.get("content-length", "0"))
+            content = await asyncio.wait_for(reader.readexactly(content_length), timeout=5)
+            request = cast(dict[str, Any], json.loads(content))
+            request["_requestLine"] = request_line
+            self.requests.append(request)
+            body = await self._response_body(request)
+            writer.write(
+                (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).encode("ascii")
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        messages = cast(list[dict[str, Any]], request["messages"])
+        if messages[-1]["role"] == "tool":
+            return _fake_sse_text("Tool result received by fake provider.")
+        last_user = next(message for message in reversed(messages) if message["role"] == "user")
+        if last_user["content"] == "run a tool":
+            chunks = [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "reasoning_content": "fake tool reasoning",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_fake_process",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "process_run",
+                                            "arguments": '{"command":"echo gate6-tool"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+            ]
+            return _fake_sse(chunks)
+        user_messages = [message for message in messages if message["role"] == "user"]
+        if len(user_messages) == 1:
+            return _fake_sse_text("First fake response.")
+        return _fake_sse_text("Second fake response with context.")
+
+
+class InvalidNumericToolArgumentsEndpoint(FakeOpenAIEndpoint):
+    def __init__(self, command: str, invalid_number: str) -> None:
+        super().__init__()
+        self._command = command
+        self._invalid_number = invalid_number
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        del request
+        arguments = json.dumps({"command": self._command}, separators=(",", ":"))
+        arguments = arguments[:-1] + f',"timeoutMs":{self._invalid_number}}}'
+        return _fake_sse(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_invalid_numeric",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "process_run",
+                                            "arguments": arguments,
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+            ]
+        )
+
+
+class ProtectedToolEndpoint(FakeOpenAIEndpoint):
+    def __init__(self, command: str) -> None:
+        super().__init__()
+        self._command = command
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        messages = cast(list[dict[str, Any]], request["messages"])
+        if messages[-1]["role"] == "tool":
+            return _fake_sse_text("Protected tool result handled safely.")
+        arguments = json.dumps({"command": self._command}, separators=(",", ":"))
+        return _fake_sse(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_read_config",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "process_run",
+                                            "arguments": arguments,
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+            ]
+        )
+
+
+class SplitProtectedEndpoint(FakeOpenAIEndpoint):
+    def __init__(self, protected: str) -> None:
+        super().__init__()
+        self._protected = protected
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        del request
+        split_at = len(self._protected) // 2
+        return _fake_sse(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": f"safe prefix {self._protected[:split_at]}"},
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": self._protected[split_at:]},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            ]
+        )
+
+
+class DelayedProtectedEndpoint(SplitProtectedEndpoint):
+    def __init__(self, protected: str) -> None:
+        super().__init__(protected)
+        self.request_received = asyncio.Event()
+        self.release_response = asyncio.Event()
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        self.request_received.set()
+        await asyncio.wait_for(self.release_response.wait(), timeout=10)
+        return await super()._response_body(request)
+
+
+def _read_file_command(path: Path) -> str:
+    if os.name == "nt":
+        escaped = str(path).replace("'", "''")
+        return f"Get-Content -Raw -LiteralPath '{escaped}'"
+    return f"cat -- {shlex.quote(str(path))}"
+
+
+def _fake_sse(chunks: list[dict[str, Any]]) -> bytes:
+    payloads = [
+        f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode() for chunk in chunks
+    ]
+    payloads.append(b"data: [DONE]\n\n")
+    return b"".join(payloads)
+
+
+def _fake_sse_text(content: str) -> bytes:
+    return _fake_sse(
+        [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": content},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        ]
+    )
+
+
 def test_parent_process_probe_is_non_destructive() -> None:
     assert _parent_is_alive(os.getpid())
     assert not _parent_is_alive(2_147_483_647)
+
+
+@pytest.mark.asyncio
+async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_hex(32)
+    deepseek_secret = "sk-rpc-deepseek-sentinel"
+    custom_secret = "sk-rpc-custom-sentinel"
+    header_secret = "rpc-header-sentinel"
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    observed_responses: list[dict[str, Any]] = []
+    first_stderr = ""
+    try:
+        initial_providers = await _rpc(connection, 2, "provider.list", {})
+        observed_responses.append(initial_providers)
+        assert initial_providers["result"] == {
+            "providers": [
+                {
+                    "id": "deepseek",
+                    "displayName": "DeepSeek",
+                    "origin": "builtin",
+                    "configured": False,
+                    "credentialConfigured": False,
+                    "health": "unknown",
+                }
+            ]
+        }
+        assert not (tmp_path / "config.yaml").exists()
+
+        configured_deepseek = await _rpc(
+            connection,
+            3,
+            "provider.configure",
+            {
+                "kind": "deepseek",
+                "apiKey": deepseek_secret,
+                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+            },
+        )
+        observed_responses.append(configured_deepseek)
+        assert configured_deepseek["result"]["provider"] == {
+            "id": "deepseek",
+            "displayName": "DeepSeek",
+            "origin": "builtin",
+            "configured": True,
+            "credentialConfigured": True,
+            "health": "unknown",
+        }
+
+        configured_custom = await _rpc(
+            connection,
+            4,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "local",
+                "displayName": "Local",
+                "baseUrl": "http://127.0.0.1:8080/v1",
+                "apiKey": custom_secret,
+                "headers": {"X-Tenant": header_secret},
+                "models": [{"id": "local-model", "displayName": "Local Model"}],
+            },
+        )
+        observed_responses.append(configured_custom)
+        assert configured_custom["result"]["provider"]["id"] == "local"
+
+        disabled = await _rpc(
+            connection,
+            5,
+            "model.set_enabled",
+            {"providerId": "local", "modelId": "local-model", "enabled": False},
+        )
+        observed_responses.append(disabled)
+        assert disabled["result"]["model"]["enabled"] is False
+
+        providers = await _rpc(connection, 6, "provider.list", {})
+        models = await _rpc(connection, 7, "model.list", {})
+        replay = await _rpc(connection, 8, "event.replay", {"afterSeq": 0})
+        observed_responses.extend([providers, models, replay])
+        assert [provider["id"] for provider in providers["result"]["providers"]] == [
+            "deepseek",
+            "local",
+        ]
+        assert models["result"]["models"] == [
+            {
+                "providerId": "deepseek",
+                "id": "deepseek-chat",
+                "displayName": "DeepSeek Chat",
+                "enabled": True,
+            },
+            {
+                "providerId": "local",
+                "id": "local-model",
+                "displayName": "Local Model",
+                "enabled": False,
+            },
+        ]
+        assert replay["result"]["events"] == []
+        await _shutdown(connection, process, 9)
+        assert process.stderr is not None
+        first_stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+    serialized_responses = json.dumps(observed_responses)
+    for secret in (deepseek_secret, custom_secret, header_secret):
+        assert secret not in serialized_responses
+        assert secret not in first_stderr
+        assert all(secret.encode() not in content for content in _database_contents(tmp_path))
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert deepseek_secret in config_source
+    assert custom_secret in config_source
+    assert header_secret in config_source
+
+    restarted, readiness = await _start_runtime(token, tmp_path)
+    restarted_uri = f"ws://{readiness['host']}:{readiness['port']}"
+    restarted_connection = await _initialize(restarted_uri, token)
+    try:
+        restored_models = await _rpc(restarted_connection, 2, "model.list", {})
+        assert restored_models["result"]["models"][1]["enabled"] is False
+        disconnected = await _rpc(
+            restarted_connection,
+            3,
+            "provider.disconnect",
+            {"providerId": "deepseek"},
+        )
+        assert disconnected["result"]["provider"]["configured"] is False
+        after_disconnect = await _rpc(restarted_connection, 4, "model.list", {})
+        assert after_disconnect["result"]["models"][0]["id"] == "deepseek-chat"
+        removed = await _rpc(
+            restarted_connection,
+            5,
+            "provider.remove",
+            {"providerId": "local"},
+        )
+        assert removed["result"] == {"removed": True, "providerId": "local"}
+        await _shutdown(restarted_connection, restarted, 6)
+    finally:
+        if restarted.returncode is None:
+            await _stop_failed_process(restarted)
+
+    final_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert deepseek_secret not in final_source
+    assert custom_secret not in final_source
+    assert header_secret not in final_source
+    assert "deepseek-chat" in final_source
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_envelope_and_schema_errors_never_echo_credentials(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_hex(32)
+    api_key = "sk-jsonrpc-envelope-sentinel"
+    header_secret = "jsonrpc-header-envelope-sentinel"
+    proposed_key = "sk-proposed-request-id-sentinel"
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    observed: list[dict[str, Any]] = []
+    stderr = ""
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "envelope-safe",
+                "displayName": "Envelope Safe",
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "apiKey": api_key,
+                "headers": {"X-Protected": header_secret},
+                "models": [{"id": "safe-model", "displayName": "Safe Model"}],
+            },
+        )
+        observed.append(configured)
+
+        protected_id = await _raw_rpc(
+            connection,
+            {"jsonrpc": "2.0", "id": api_key, "method": "thread.list", "params": {}},
+        )
+        observed.append(protected_id)
+        assert protected_id["id"] is None
+        assert protected_id["error"] == {
+            "code": -32600,
+            "message": "request contains protected configuration data",
+        }
+
+        object_id = await _raw_rpc(
+            connection,
+            {
+                "jsonrpc": "2.0",
+                "id": {api_key: "innocent"},
+                "method": "provider.list",
+                "params": {},
+            },
+        )
+        observed.append(object_id)
+        assert object_id == {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "invalid request id"},
+        }
+
+        array_id = await _raw_rpc(
+            connection,
+            {
+                "jsonrpc": "2.0",
+                "id": [header_secret],
+                "method": "provider.list",
+                "params": {},
+            },
+        )
+        observed.append(array_id)
+        assert array_id["id"] is None
+        assert array_id["error"]["code"] == -32600
+
+        boolean_id = await _raw_rpc(
+            connection,
+            {"jsonrpc": "2.0", "id": True, "method": "provider.list", "params": {}},
+        )
+        observed.append(boolean_id)
+        assert boolean_id["id"] is None
+        assert boolean_id["error"]["code"] == -32600
+
+        protected_method = await _raw_rpc(
+            connection,
+            {"jsonrpc": "2.0", "id": 3, "method": header_secret, "params": {}},
+        )
+        observed.append(protected_method)
+        assert protected_method["id"] == 3
+        assert protected_method["error"] == {"code": -32601, "message": "method not found"}
+
+        unknown_thread_field = await _raw_rpc(
+            connection,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "thread.create",
+                "params": {api_key: "value"},
+            },
+        )
+        observed.append(unknown_thread_field)
+        assert unknown_thread_field["error"] == {
+            "code": -32602,
+            "message": "thread.create contains unsupported parameters",
+        }
+
+        unknown_replay_field = await _raw_rpc(
+            connection,
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "event.replay",
+                "params": {header_secret: 0},
+            },
+        )
+        observed.append(unknown_replay_field)
+        assert unknown_replay_field["error"] == {
+            "code": -32602,
+            "message": "event.replay contains unsupported parameters",
+        }
+
+        rejected_configuration = await _raw_rpc(
+            connection,
+            {
+                "jsonrpc": "2.0",
+                "id": proposed_key,
+                "method": "provider.configure",
+                "params": {
+                    "kind": "custom",
+                    "providerId": "must-not-persist",
+                    "displayName": "Must Not Persist",
+                    "baseUrl": "http://127.0.0.1:9/v1",
+                    "apiKey": proposed_key,
+                    "models": [{"id": "model", "displayName": "Model"}],
+                },
+            },
+        )
+        observed.append(rejected_configuration)
+        assert rejected_configuration["id"] is None
+        assert rejected_configuration["error"]["code"] == -32600
+
+        replay = await _rpc(connection, 6, "event.replay", {"afterSeq": 0, "limit": 1000})
+        observed.append(replay)
+        assert replay["result"]["events"] == []
+        await _shutdown(connection, process, 7)
+        assert process.stderr is not None
+        stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert api_key in config_source
+    assert header_secret in config_source
+    assert proposed_key not in config_source
+    serialized = json.dumps(observed, ensure_ascii=False)
+    for protected in (api_key, header_secret, proposed_key):
+        assert protected not in serialized
+        assert protected not in stderr
+        assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_jsonrpc_request_returns_parse_error(tmp_path: Path) -> None:
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    try:
+        nested = ("[" * 4000) + "0" + ("]" * 4000)
+        await connection.send(
+            '{"jsonrpc":"2.0","id":2,"method":"thread.list","params":' + nested + "}"
+        )
+        response = json.loads(await connection.recv())
+        assert response == {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32700, "message": "parse error"},
+        }
+        await _shutdown(connection, process, 3)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_unsafe_numeric_jsonrpc_request_returns_parse_error(tmp_path: Path) -> None:
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    try:
+        unsafe_numbers = [
+            "1" + ("0" * 400),
+            "9007199254740993.0",
+            "9.007199254740993e15",
+        ]
+        for unsafe_number in unsafe_numbers:
+            await connection.send(
+                '{"jsonrpc":"2.0","id":2,"method":"event.replay","params":{"afterSeq":'
+                + unsafe_number
+                + "}}"
+            )
+            response = json.loads(await connection.recv())
+            assert response == {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "parse error"},
+            }
+
+        await connection.send(
+            '{"jsonrpc":"2.0","id":9007199254740993.0,"method":"thread.list","params":{}}'
+        )
+        response = json.loads(await connection.recv())
+        assert response == {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32700, "message": "parse error"},
+        }
+        await _shutdown(connection, process, 3)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_short_and_schema_shaped_credentials_use_value_provenance(
+    tmp_path: Path,
+) -> None:
+    protected_values = (
+        "a",
+        "jsonrpc",
+        "2.0",
+        "full_access",
+        "process.run",
+        "ikaros-runtime",
+        "initialize",
+        "provider.list",
+    )
+    config = ConfigStore(tmp_path)
+    config.configure_custom(
+        provider_id="zzz",
+        display_name="ZZZ",
+        base_url="http://127.0.0.1:9/v1",
+        api_key=None,
+        headers={f"X-Protected-{index}": value for index, value in enumerate(protected_values)},
+        models=[ModelInput("zzz", "ZZZ")],
+    )
+
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    try:
+        providers = await _rpc(connection, 2, "provider.list", {})
+        assert providers["result"]["providers"][1]["id"] == "zzz"
+        replay = await _rpc(connection, 3, "event.replay", {"afterSeq": 0})
+        assert replay["result"]["events"] == []
+
+        request_id = 4
+        for protected in protected_values:
+            rejected = await _raw_rpc(
+                connection,
+                {
+                    "jsonrpc": "2.0",
+                    "id": protected,
+                    "method": "provider.list",
+                    "params": {},
+                },
+            )
+            assert rejected["id"] is None
+            assert rejected["error"]["code"] == -32600
+            request_id += 1
+
+        await _shutdown(connection, process, request_id)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_protocol_constant_shaped_credentials_do_not_block_turn_events(
+    tmp_path: Path,
+) -> None:
+    protected_values = (
+        "jsonrpc",
+        "2.0",
+        "full_access",
+        "process.run",
+        "ikaros-runtime",
+        "threadId",
+        "credentialConfigured",
+        "item.delta",
+        "assistant",
+        "message",
+    )
+    config = ConfigStore(tmp_path)
+    config.configure_custom(
+        provider_id="zzz",
+        display_name="ZZZ",
+        base_url="http://127.0.0.1:9/v1",
+        api_key=None,
+        headers={f"X-Protected-{index}": value for index, value in enumerate(protected_values)},
+        models=[ModelInput("zzz", "ZZZ")],
+    )
+
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    try:
+        created = await _rpc(connection, 2, "thread.create", {"title": "Fixed values"})
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            3,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "ZZZ",
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        events = await _collect_run_events(connection, started["result"]["runId"])
+        settled = next(event for event in events if event["type"] == "run.settled")
+        assert settled["payload"]["status"] == "completed"
+
+        replay = await _rpc(connection, 4, "event.replay", {"afterSeq": 0, "limit": 1000})
+        assert any(
+            event["payload"].get("run", {}).get("executionPolicy") == "full_access"
+            for event in replay["result"]["events"]
+        )
+        await _shutdown(connection, process, 5)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_generated_identifiers_and_timestamps_keep_public_provenance(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    try:
+        created = await _rpc(connection, 2, "thread.create", {"title": "Provenance"})
+        thread = created["result"]["thread"]
+        configured = await _rpc(
+            connection,
+            3,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "generated-provenance",
+                "displayName": "Generated Provenance",
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "apiKey": thread["id"],
+                "headers": {"X-Timestamp-Provenance": thread["createdAt"]},
+                "models": [{"id": "model", "displayName": "Model"}],
+            },
+        )
+        assert configured["result"]["provider"]["credentialConfigured"] is True
+
+        listed = await _rpc(connection, 4, "thread.list", {})
+        replay = await _rpc(connection, 5, "event.replay", {"afterSeq": 0, "limit": 1000})
+        assert listed["result"]["threads"][0]["id"] == thread["id"]
+        assert replay["result"]["events"][0]["threadId"] == thread["id"]
+        assert replay["result"]["events"][0]["timestamp"] == thread["createdAt"]
+        await _shutdown(connection, process, 6)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
+    tmp_path: Path,
+) -> None:
+    api_key = "sk-public-boundary-sentinel"
+    header_secret = "header-public-boundary-sentinel"
+    historical = "historical-content-sentinel"
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    observed: list[dict[str, Any]] = []
+    stderr = ""
+    try:
+        invalid_public_model = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "invalid-public",
+                "displayName": "Invalid Public",
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "apiKey": api_key,
+                "models": [{"id": api_key, "displayName": "Invalid Model"}],
+            },
+        )
+        observed.append(invalid_public_model)
+        assert invalid_public_model["error"]["code"] == -32602
+        assert api_key not in json.dumps(invalid_public_model)
+        assert not (tmp_path / "config.yaml").exists()
+
+        historical_thread = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": historical, "clientRequestId": "historical-thread"},
+        )
+        assert historical_thread["result"]["thread"]["title"] == historical
+        historical_collision = await _rpc(
+            connection,
+            4,
+            "provider.configure",
+            {
+                "kind": "deepseek",
+                "apiKey": historical,
+                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+            },
+        )
+        assert historical_collision["error"]["code"] == -32602
+        assert historical not in json.dumps(historical_collision)
+        assert not (tmp_path / "config.yaml").exists()
+
+        configured = await _rpc(
+            connection,
+            5,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "credential-safe",
+                "displayName": "Credential Safe",
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "apiKey": api_key,
+                "headers": {"X-Protected": header_secret},
+                "models": [{"id": "safe-model", "displayName": "Safe Model"}],
+            },
+        )
+        observed.append(configured)
+        assert configured["result"]["provider"]["credentialConfigured"] is True
+
+        providers = await _rpc(connection, 6, "provider.list", {})
+        models = await _rpc(connection, 7, "model.list", {})
+        observed.extend([providers, models])
+
+        rejected_title = await _rpc(
+            connection,
+            8,
+            "thread.create",
+            {"title": f"New {api_key}", "clientRequestId": "protected-title"},
+        )
+        observed.append(rejected_title)
+        assert rejected_title["error"]["code"] == -32602
+
+        safe_thread_response = await _rpc(
+            connection,
+            9,
+            "thread.create",
+            {"title": "Safe thread", "clientRequestId": "safe-thread"},
+        )
+        observed.append(safe_thread_response)
+        safe_thread = safe_thread_response["result"]["thread"]
+        rejected_turn = await _rpc(
+            connection,
+            10,
+            "turn.start",
+            {
+                "threadId": safe_thread["id"],
+                "branchId": safe_thread["defaultBranchId"],
+                "content": f"Do not persist {header_secret}",
+                "providerId": "credential-safe",
+                "modelId": "safe-model",
+                "clientRequestId": "protected-turn",
+            },
+        )
+        observed.append(rejected_turn)
+        assert rejected_turn["error"]["code"] == -32602
+
+        replay = await _rpc(connection, 11, "event.replay", {"afterSeq": 0, "limit": 1000})
+        observed.append(replay)
+        await _shutdown(connection, process, 12)
+        assert process.stderr is not None
+        stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    serialized_outputs = json.dumps(observed, ensure_ascii=False)
+    for protected in (api_key, header_secret):
+        assert protected in config_source
+        assert protected not in serialized_outputs
+        assert protected not in stderr
+        assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_credential_rotation_cannot_commit_an_old_secret_as_public_data(
+    tmp_path: Path,
+) -> None:
+    old_secret = "sk-old-rpc-rotation-sentinel"
+    new_secret = "sk-new-rpc-rotation-sentinel"
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    observed: list[dict[str, Any]] = []
+    stderr = ""
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "rotation-safe",
+                "displayName": "Rotation Safe",
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "apiKey": old_secret,
+                "models": [{"id": "model", "displayName": "Model"}],
+            },
+        )
+        observed.append(configured)
+
+        rejected_rotation = await _rpc(
+            connection,
+            3,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "rotation-safe",
+                "displayName": old_secret,
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "apiKey": new_secret,
+                "models": [{"id": "model", "displayName": "Model"}],
+            },
+        )
+        observed.append(rejected_rotation)
+        assert rejected_rotation["error"]["code"] == -32602
+
+        providers = await _rpc(connection, 4, "provider.list", {})
+        observed.append(providers)
+        custom = next(
+            provider
+            for provider in providers["result"]["providers"]
+            if provider["id"] == "rotation-safe"
+        )
+        assert custom["displayName"] == "Rotation Safe"
+        await _shutdown(connection, process, 5)
+        assert process.stderr is not None
+        stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+    persisted = ConfigStore(tmp_path).get_provider("rotation-safe")
+    assert persisted is not None
+    assert persisted.display_name == "Rotation Safe"
+    assert persisted.api_key == old_secret
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert new_secret not in config_source
+    serialized = json.dumps(observed, ensure_ascii=False)
+    for protected in (old_secret, new_secret):
+        assert protected not in serialized
+        assert protected not in stderr
+        assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
+    tmp_path: Path,
+) -> None:
+    endpoint = FakeOpenAIEndpoint()
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "fake",
+                "displayName": "Fake Provider",
+                "baseUrl": base_url,
+                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+            },
+        )
+        assert configured["result"]["provider"]["configured"] is True
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Fake Provider E2E", "clientRequestId": "fake-thread"},
+        )
+        thread = created["result"]["thread"]
+
+        first = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "first turn",
+                "providerId": "fake",
+                "modelId": "fake-model",
+                "clientRequestId": "fake-turn-1",
+            },
+        )
+        first_events = await _collect_run_events(connection, first["result"]["runId"])
+        assert first_events[-1]["payload"]["status"] == "completed"
+        assert any(
+            event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("content") == "First fake response."
+            for event in first_events
+        )
+
+        second = await _rpc(
+            connection,
+            5,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "second turn",
+                "providerId": "fake",
+                "modelId": "fake-model",
+                "clientRequestId": "fake-turn-2",
+            },
+        )
+        second_events = await _collect_run_events(connection, second["result"]["runId"])
+        assert second_events[-1]["payload"]["status"] == "completed"
+
+        tool_turn = await _rpc(
+            connection,
+            6,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "run a tool",
+                "providerId": "fake",
+                "modelId": "fake-model",
+                "clientRequestId": "fake-turn-3",
+            },
+        )
+        tool_events = await _collect_run_events(connection, tool_turn["result"]["runId"])
+        assert tool_events[-1]["payload"]["status"] == "completed"
+        completed_items = [
+            event["payload"]["item"]
+            for event in tool_events
+            if event["type"] == "item.completed" and "item" in event["payload"]
+        ]
+        assert any(item["kind"] == "tool_call" for item in completed_items)
+        assert any(
+            item["kind"] == "tool_result" and "gate6-tool" in item["content"]
+            for item in completed_items
+        )
+        assert any(
+            item["kind"] == "message"
+            and item["content"] == "Tool result received by fake provider."
+            for item in completed_items
+        )
+
+        assert len(endpoint.requests) == 4
+        assert any(
+            message["role"] == "assistant" and message.get("content") == "First fake response."
+            for message in endpoint.requests[1]["messages"]
+        )
+        tool_followup_messages = endpoint.requests[3]["messages"]
+        assert tool_followup_messages[-2]["reasoning_content"] == "fake tool reasoning"
+        assert tool_followup_messages[-2]["tool_calls"][0]["id"] == "call_fake_process"
+        assert tool_followup_messages[-1]["role"] == "tool"
+        assert "gate6-tool" in tool_followup_messages[-1]["content"]
+
+        await _shutdown(connection, process, 7)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_number",
+    ["1e9999", "1" + ("0" * 400)],
+    ids=["non-finite", "unsafe-integer"],
+)
+async def test_invalid_provider_tool_numbers_fail_before_agent_or_sqlite(
+    tmp_path: Path,
+    invalid_number: str,
+) -> None:
+    marker = tmp_path / "tool-must-not-run.txt"
+    if os.name == "nt":
+        escaped_marker = str(marker).replace("'", "''")
+        command = f"[IO.File]::WriteAllText('{escaped_marker}', 'ran')"
+    else:
+        command = f"printf ran > {shlex.quote(str(marker))}"
+    endpoint = InvalidNumericToolArgumentsEndpoint(command, invalid_number)
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    try:
+        await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "non-finite",
+                "displayName": "Non-finite Provider",
+                "baseUrl": base_url,
+                "models": [{"id": "non-finite-model", "displayName": "Non-finite Model"}],
+            },
+        )
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Strict JSON", "clientRequestId": "strict-json-thread"},
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "try invalid arguments",
+                "providerId": "non-finite",
+                "modelId": "non-finite-model",
+                "clientRequestId": "strict-json-turn",
+            },
+        )
+        events = await _collect_run_events(connection, started["result"]["runId"])
+
+        assert events[-1]["payload"]["status"] == "failed"
+        assert not any(
+            event["payload"].get("item", {}).get("kind") == "tool_call" for event in events
+        )
+        assert not marker.exists()
+        assert all(
+            invalid_number.encode() not in content for content in _database_contents(tmp_path)
+        )
+        assert all(b"Infinity" not in content for content in _database_contents(tmp_path))
+        assert all(b"NaN" not in content for content in _database_contents(tmp_path))
+
+        await _shutdown(connection, process, 5)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+
+@pytest.mark.asyncio
+async def test_process_tool_cannot_publish_or_persist_provider_credentials(
+    tmp_path: Path,
+) -> None:
+    api_key = "sk-tool-output-sentinel"
+    header_secret = "tool-header-output-sentinel"
+    endpoint = ProtectedToolEndpoint(_read_file_command(tmp_path / "config.yaml"))
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    live_events: list[dict[str, Any]] = []
+    replay: dict[str, Any] = {}
+    stderr = ""
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "protected-tool",
+                "displayName": "Protected Tool",
+                "baseUrl": base_url,
+                "apiKey": api_key,
+                "headers": {"X-Protected": header_secret},
+                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+            },
+        )
+        assert configured["result"]["provider"]["credentialConfigured"] is True
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Protected output", "clientRequestId": "protected-thread"},
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "read protected config",
+                "providerId": "protected-tool",
+                "modelId": "fake-model",
+                "clientRequestId": "protected-turn",
+            },
+        )
+        live_events = await _collect_run_events(connection, started["result"]["runId"])
+        assert live_events[-1]["payload"]["status"] == "completed"
+
+        result_items = [
+            event["payload"]["item"]
+            for event in live_events
+            if event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("kind") == "tool_result"
+        ]
+        assert len(result_items) == 1
+        result_item = result_items[0]
+        assert result_item["status"] == "failed"
+        result = result_item["data"]["result"]
+        assert result["ok"] is False
+        assert result["errorCode"] == "protected_output"
+        assert result["stdout"] == ""
+        assert result["stderr"] == ""
+        assert json.loads(result_item["content"]) == result
+
+        assert len(endpoint.requests) == 2
+        model_tool_result = endpoint.requests[1]["messages"][-1]
+        assert model_tool_result["role"] == "tool"
+        assert json.loads(model_tool_result["content"])["errorCode"] == "protected_output"
+
+        replay = await _rpc(connection, 5, "event.replay", {"afterSeq": 0, "limit": 1000})
+        await _shutdown(connection, process, 6)
+        assert process.stderr is not None
+        stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    serialized_outputs = json.dumps(
+        {
+            "live": live_events,
+            "replay": replay,
+            "providerRequests": endpoint.requests,
+        },
+        ensure_ascii=False,
+    )
+    for protected in (api_key, header_secret):
+        assert protected in config_source
+        assert protected not in serialized_outputs
+        assert protected not in stderr
+        assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_agent_boundary_blocks_split_credentials_from_another_provider(
+    tmp_path: Path,
+) -> None:
+    protected = "sk-other-provider-secret-sentinel"
+    endpoint = SplitProtectedEndpoint(protected)
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    live_events: list[dict[str, Any]] = []
+    replay: dict[str, Any] = {}
+    stderr = ""
+    try:
+        deepseek = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "deepseek",
+                "apiKey": protected,
+                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+            },
+        )
+        assert deepseek["result"]["provider"]["credentialConfigured"] is True
+        custom = await _rpc(
+            connection,
+            3,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "split-echo",
+                "displayName": "Split Echo",
+                "baseUrl": base_url,
+                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+            },
+        )
+        assert custom["result"]["provider"]["credentialConfigured"] is False
+        created = await _rpc(
+            connection,
+            4,
+            "thread.create",
+            {"title": "Cross-provider boundary", "clientRequestId": "cross-provider-thread"},
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            5,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "echo a protected value",
+                "providerId": "split-echo",
+                "modelId": "fake-model",
+                "clientRequestId": "cross-provider-turn",
+            },
+        )
+        live_events = await _collect_run_events(connection, started["result"]["runId"])
+        assert live_events[-1]["payload"]["status"] == "failed"
+        replay = await _rpc(connection, 6, "event.replay", {"afterSeq": 0, "limit": 1000})
+        await _shutdown(connection, process, 7)
+        assert process.stderr is not None
+        stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    serialized_outputs = json.dumps(
+        {
+            "live": live_events,
+            "replay": replay,
+            "providerRequests": endpoint.requests,
+        },
+        ensure_ascii=False,
+    )
+    assert protected in config_source
+    assert protected not in serialized_outputs
+    assert protected not in stderr
+    assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_active_run_blocks_cross_provider_credential_changes(
+    tmp_path: Path,
+) -> None:
+    protected = "sk-mid-stream-provider-secret-sentinel"
+    endpoint = DelayedProtectedEndpoint("Safe delayed response.")
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    live_events: list[dict[str, Any]] = []
+    replay: dict[str, Any] = {}
+    stderr = ""
+    try:
+        custom = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "delayed-echo",
+                "displayName": "Delayed Echo",
+                "baseUrl": base_url,
+                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+            },
+        )
+        assert custom["result"]["provider"]["credentialConfigured"] is False
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Mid-stream boundary", "clientRequestId": "mid-stream-thread"},
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "wait before echoing",
+                "providerId": "delayed-echo",
+                "modelId": "fake-model",
+                "clientRequestId": "mid-stream-turn",
+            },
+        )
+        await asyncio.wait_for(endpoint.request_received.wait(), timeout=10)
+        deepseek = await _rpc(
+            connection,
+            5,
+            "provider.configure",
+            {
+                "kind": "deepseek",
+                "apiKey": protected,
+                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+            },
+            live_events,
+        )
+        assert deepseek["error"]["code"] == -32602
+        assert "Run is active" in deepseek["error"]["message"]
+        endpoint.release_response.set()
+        live_events.extend(await _collect_run_events(connection, started["result"]["runId"]))
+        assert live_events[-1]["payload"]["status"] == "completed"
+        replay = await _rpc(connection, 6, "event.replay", {"afterSeq": 0, "limit": 1000})
+        await _shutdown(connection, process, 7)
+        assert process.stderr is not None
+        stderr = (await process.stderr.read()).decode(errors="replace")
+    finally:
+        endpoint.release_response.set()
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+    config_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    serialized_outputs = json.dumps(
+        {
+            "live": live_events,
+            "replay": replay,
+            "providerRequests": endpoint.requests,
+        },
+        ensure_ascii=False,
+    )
+    assert protected not in config_source
+    assert protected not in serialized_outputs
+    assert protected not in stderr
+    assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
+    config = ConfigStore(tmp_path)
+    config.configure_custom(
+        provider_id="local",
+        display_name="Local",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=None,
+        headers=None,
+        models=[ModelInput("model", "Model")],
+    )
+    config.configure_custom(
+        provider_id="other",
+        display_name="Other",
+        base_url="http://127.0.0.1:8081/v1",
+        api_key="sk-other-active-run-sentinel",
+        headers=None,
+        models=[ModelInput("other-model", "Other Model")],
+    )
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _event = store.create_thread("Active provider")
+    prepared = store.prepare_turn(
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content="hold configuration",
+        provider_id="local",
+        model_id="model",
+    )
+    kernel = RuntimeKernel(store, _discard_event, config_store=config)
+    try:
+        with pytest.raises(InvalidParamsError, match="Run is active"):
+            kernel.remove_provider({"providerId": "local"})
+        with pytest.raises(InvalidParamsError, match="Run is active"):
+            kernel.remove_provider({"providerId": "other"})
+        with pytest.raises(InvalidParamsError, match="Run is active"):
+            kernel.configure_provider(
+                {
+                    "kind": "deepseek",
+                    "apiKey": "full_access",
+                    "models": [{"id": "model", "displayName": "Model"}],
+                }
+            )
+        store.terminalize_run(prepared.run_id, "cancelled")
+        configured = kernel.configure_provider(
+            {
+                "kind": "deepseek",
+                "apiKey": "full_access",
+                "models": [{"id": "model", "displayName": "Model"}],
+            }
+        )
+        assert configured["provider"]["configured"] is True
+        assert kernel.remove_provider({"providerId": "local"})["removed"] is True
+    finally:
+        store.close()
+
+
+def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None:
+    config = ConfigStore(tmp_path)
+    config.configure_custom(
+        provider_id="local",
+        display_name="Local",
+        base_url="http://127.0.0.1:9/v1",
+        api_key=None,
+        headers=None,
+        models=[ModelInput("model", "Model")],
+    )
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _ = store.create_thread("Retry after removal")
+    prepared = store.prepare_turn(
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content="stable content",
+        provider_id="local",
+        model_id="model",
+        client_request_id="stable-turn-request",
+    )
+    store.terminalize_run(prepared.run_id, "cancelled")
+    kernel = RuntimeKernel(store, _discard_event, config_store=config)
+    params = {
+        "threadId": thread.id,
+        "branchId": thread.default_branch_id,
+        "content": "stable content",
+        "providerId": "local",
+        "modelId": "model",
+        "clientRequestId": "stable-turn-request",
+    }
+    try:
+        assert kernel.remove_provider({"providerId": "local"})["removed"] is True
+
+        repeated = kernel.start_turn(params)
+
+        assert repeated.result == {
+            "turnId": prepared.turn_id,
+            "runId": prepared.run_id,
+            "threadId": thread.id,
+            "branchId": thread.default_branch_id,
+        }
+        assert repeated.events_after_ack == ()
+        assert repeated.run_after_ack is None
+        with pytest.raises(InvalidParamsError, match="clientRequestId"):
+            kernel.start_turn({**params, "content": "different content"})
+        assert store._connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+def test_kernel_rejects_config_credentials_already_present_in_the_journal(
+    tmp_path: Path,
+) -> None:
+    protected = "manual-config-journal-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    store.create_thread(protected)
+    config = ConfigStore(tmp_path)
+    config.configure_deepseek(api_key=protected, models=[ModelInput("model", "Model")])
+
+    try:
+        with pytest.raises(ConfigError, match="conflict") as captured:
+            RuntimeKernel(store, _discard_event, config_store=config)
+        assert protected not in str(captured.value)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_config_fails_before_sqlite_and_never_echoes_source(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-invalid-startup-sentinel"
+    (tmp_path / "config.yaml").write_text(
+        f"version: [\napi_key: {secret}\n",
+        encoding="utf-8",
+    )
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "ikaros_runtime",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        f"--token={secrets.token_hex(32)}",
+        "--parent-pid",
+        str(os.getpid()),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "IKAROS_HOME": str(tmp_path)},
+        creationflags=_HIDDEN_PROCESS_FLAGS,
+    )
+
+    assert process.stdout is not None
+    assert await asyncio.wait_for(process.stdout.readline(), timeout=10) == b""
+    assert await asyncio.wait_for(process.wait(), timeout=10) != 0
+    assert process.stderr is not None
+    stderr = (await process.stderr.read()).decode(errors="replace")
+    assert secret not in stderr
+    assert not (tmp_path / "state.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_credential_conflict_fails_before_recovery_mutates_state(
+    tmp_path: Path,
+) -> None:
+    protected = "sk-startup-recovery-conflict-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _ = store.create_thread(protected)
+    prepared = store.prepare_turn(
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content="running before rejected startup",
+        provider_id="scripted",
+        model_id="scripted-v1",
+    )
+    store.mark_run_running(prepared.run_id)
+    store.create_assistant_item(prepared.run_id)
+    before_events, before_latest_seq = store.replay_events(0, 1000)
+    store.close()
+
+    config = ConfigStore(tmp_path)
+    config.configure_deepseek(
+        api_key=protected,
+        models=[ModelInput("deepseek-chat", "DeepSeek Chat")],
+    )
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "ikaros_runtime",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        f"--token={secrets.token_hex(32)}",
+        "--parent-pid",
+        str(os.getpid()),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "IKAROS_HOME": str(tmp_path)},
+        creationflags=_HIDDEN_PROCESS_FLAGS,
+    )
+
+    assert process.stdout is not None
+    assert await asyncio.wait_for(process.stdout.readline(), timeout=10) == b""
+    assert await asyncio.wait_for(process.wait(), timeout=10) != 0
+    assert process.stderr is not None
+    stderr = (await process.stderr.read()).decode(errors="replace")
+    assert protected not in stderr
+
+    reopened = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        after_events, after_latest_seq = reopened.replay_events(0, 1000)
+        assert reopened.run_status(prepared.run_id) == "running"
+        assert after_latest_seq == before_latest_seq
+        assert after_events == before_events
+    finally:
+        reopened.close()
 
 
 @pytest.mark.asyncio
@@ -267,6 +1972,65 @@ async def test_event_bus_drops_a_slow_sink_without_blocking_other_subscribers() 
     await event_bus.publish(_journal_event(2))
 
     assert observed == [1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("credential_position", ["key", "value"])
+async def test_response_guard_replaces_an_unexpected_protected_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    credential_position: str,
+) -> None:
+    protected = "sk-unexpected-response-sentinel"
+    config = ConfigStore(tmp_path)
+    config.configure_deepseek(
+        api_key=protected,
+        models=[ModelInput("deepseek-chat", "DeepSeek Chat")],
+    )
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    event_bus = EventBus(next_seq=1)
+    kernel = RuntimeKernel(store, event_bus.publish, config_store=config)
+    connection = AckFailingConnection(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": 1},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "thread.list",
+                "params": {},
+            },
+        ]
+    )
+    unexpected = (
+        {protected: "otherwise-safe"} if credential_position == "key" else {"value": protected}
+    )
+    monkeypatch.setattr(kernel, "list_threads", lambda _params: unexpected)
+
+    try:
+        await _handle_connection(
+            cast(ServerConnection, connection),
+            asyncio.Event(),
+            kernel,
+            event_bus,
+        )
+        guarded = next(value for value in connection.sent if value.get("error"))
+        assert guarded == {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {
+                "code": -32603,
+                "message": "response contained protected configuration data",
+            },
+        }
+        assert protected not in json.dumps(connection.sent)
+    finally:
+        await kernel.close()
+        store.close()
 
 
 @pytest.mark.asyncio
@@ -1545,3 +3309,101 @@ async def test_runtime_restart_fails_running_run_and_resumes_queued_run(
         await _shutdown(second, second_process, 400)
     finally:
         await _stop_failed_process(second_process)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_run(
+    tmp_path: Path,
+) -> None:
+    first_token = secrets.token_urlsafe(32)
+    first_process, first_ready = await _start_runtime(first_token, tmp_path)
+    first = await _initialize(
+        f"ws://{first_ready['host']}:{first_ready['port']}",
+        first_token,
+    )
+    second_process: Process | None = None
+    second: ClientConnection | None = None
+    try:
+        created = await _rpc(first, 2, "thread.create", {"title": "Single home owner"})
+        thread = created["result"]["thread"]
+        notifications: list[dict[str, Any]] = []
+        started = await _rpc(
+            first,
+            3,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "lock-owner-" + ("x" * 24_000),
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+            notifications,
+        )
+        run_id = started["result"]["runId"]
+        while not any(
+            event["type"] == "run.state_changed"
+            and event["runId"] == run_id
+            and event["payload"]["status"] == "running"
+            for event in notifications
+        ):
+            message = json.loads(await asyncio.wait_for(first.recv(), timeout=5))
+            notifications.append(message["params"])
+
+        second_token = secrets.token_urlsafe(32)
+        second_process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "ikaros_runtime",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            f"--token={second_token}",
+            "--parent-pid",
+            str(os.getpid()),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "IKAROS_HOME": str(tmp_path)},
+            creationflags=_HIDDEN_PROCESS_FLAGS,
+        )
+        assert second_process.stdout is not None
+        second_readiness = asyncio.create_task(second_process.stdout.readline())
+        await asyncio.sleep(0.25)
+        assert not second_readiness.done()
+        assert second_process.returncode is None
+
+        before_release = await _rpc(first, 4, "event.replay", {"afterSeq": 0, "limit": 1000})
+        assert not any(
+            event["type"] == "run.settled" and event["runId"] == run_id
+            for event in before_release["result"]["events"]
+        )
+
+        await _shutdown(first, first_process, 5)
+        readiness_line = await asyncio.wait_for(second_readiness, timeout=10)
+        if not readiness_line:
+            assert second_process.stderr is not None
+            stderr = (await second_process.stderr.read()).decode(errors="replace")
+            pytest.fail(f"waiting Runtime exited before readiness: {stderr}")
+        second_ready = json.loads(readiness_line)
+        second = await _initialize(
+            f"ws://{second_ready['host']}:{second_ready['port']}",
+            second_token,
+        )
+        replay = await _rpc(second, 2, "event.replay", {"afterSeq": 0, "limit": 1000})
+        run_events = [event for event in replay["result"]["events"] if event["runId"] == run_id]
+        settled = [event for event in run_events if event["type"] == "run.settled"]
+        assert len(settled) == 1
+        assert settled[0]["payload"]["status"] == "cancelled"
+        assert all(
+            event["payload"].get("reasonCode") != "runtime_interrupted" for event in run_events
+        )
+        await _shutdown(second, second_process, 3)
+    finally:
+        await first.close()
+        if second is not None:
+            await second.close()
+        await _stop_failed_process(first_process)
+        if second_process is not None:
+            await _stop_failed_process(second_process)

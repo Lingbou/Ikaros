@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .cancellation import CancellationToken, RunCancelled
 from .domain import JsonObject
+from .json_codec import dumps as json_dumps
 from .policy import ExecutionPolicy
 
 
@@ -44,7 +44,11 @@ class ToolResult:
         }
 
     def to_model_content(self) -> str:
-        return json.dumps(self.to_wire(), ensure_ascii=False, separators=(",", ":"))
+        return json_dumps(
+            self.to_wire(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     @classmethod
     def rejected(cls, call: ToolCall, *, code: str, message: str) -> ToolResult:

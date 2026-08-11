@@ -14,6 +14,7 @@ from ikaros_runtime.policy import FullAccessPolicy
 from ikaros_runtime.providers import (
     ProviderEvent,
     ProviderRequest,
+    ReasoningDelta,
     ResponseCompleted,
     TextDelta,
     ToolCallCompleted,
@@ -128,10 +129,38 @@ class RecordingTool:
         )
 
 
+class ProtectedResultTool(RecordingTool):
+    def __init__(self, protected: str) -> None:
+        super().__init__()
+        self.protected = protected
+
+    async def execute(
+        self,
+        call: ToolCall,
+        *,
+        cancellation: CancellationToken,
+    ) -> ToolResult:
+        cancellation.raise_if_cancelled()
+        self.calls.append(call)
+        return ToolResult(
+            tool_call_id=self.protected,
+            tool_name=self.protected,
+            ok=True,
+            output="otherwise-safe",
+            details={self.protected: "otherwise-safe"},
+        )
+
+
 class ToolLoopProvider:
-    def __init__(self, *, always_call: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        always_call: bool = False,
+        reasoning_content: str | None = None,
+    ) -> None:
         self.requests: list[ProviderRequest] = []
         self.always_call = always_call
+        self.reasoning_content = reasoning_content
 
     async def stream(
         self,
@@ -143,6 +172,8 @@ class ToolLoopProvider:
         self.requests.append(request)
         has_tool_result = any(message.role == "tool" for message in request.messages)
         if self.always_call or not has_tool_result:
+            if self.reasoning_content is not None:
+                yield ReasoningDelta(self.reasoning_content)
             yield ToolCallCompleted(
                 ToolCall(
                     id=f"call-{len(self.requests)}",
@@ -257,7 +288,7 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
             provider_id="tool-loop",
             model_id="tool-loop-v1",
         )
-        provider = ToolLoopProvider()
+        provider = ToolLoopProvider(reasoning_content="tool reasoning")
         tool = RecordingTool()
         executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
         loop = AgentLoop(store, {"tool-loop": provider}, publish, executor)
@@ -275,6 +306,7 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
         assert second_messages[1].tool_calls == (
             ToolCall("call-1", "process_run", {"command": "test-command"}),
         )
+        assert second_messages[1].reasoning_content == "tool reasoning"
         assert second_messages[2].tool_call_id == "call-1"
         tool_content = json.loads(second_messages[2].content)
         assert tool_content["toolCallId"] == "call-1"
@@ -318,6 +350,52 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
             )
             == before_rebuild
         )
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_replaces_a_tool_result_containing_protected_values(tmp_path: Path) -> None:
+    protected = "protected-tool-result-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Protected tool result")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run the tool safely",
+            provider_id="tool-loop",
+            model_id="tool-loop-v1",
+        )
+        provider = ToolLoopProvider()
+        tool = ProtectedResultTool(protected)
+        loop = AgentLoop(
+            store,
+            {"tool-loop": provider},
+            publish,
+            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            protected_values=lambda: (protected,),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert len(provider.requests) == 2
+        tool_message = provider.requests[1].messages[-1]
+        result = json.loads(tool_message.content)
+        assert result["toolCallId"] == "call-1"
+        assert result["toolName"] == "process_run"
+        assert result["ok"] is False
+        assert result["errorCode"] == "protected_output"
+        assert result["stdout"] == ""
+        assert result["stderr"] == ""
+        serialized_events = json.dumps([event.to_wire() for event in events])
+        assert protected not in serialized_events
+        assert protected.encode() not in (tmp_path / "state.db").read_bytes()
     finally:
         store.close()
 

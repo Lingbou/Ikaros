@@ -30,6 +30,7 @@ _COMMAND_LIMIT = 32_768
 _CWD_LIMIT = 4_096
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_SUSPENDED = 0x00000004
+_CREATE_NO_WINDOW = 0x08000000
 
 
 @dataclass(slots=True)
@@ -284,6 +285,14 @@ def _shell_command(command: str) -> tuple[str, ...]:
     return ("/bin/sh", "-lc", command)
 
 
+def _windows_creation_flags() -> int:
+    return int(
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _CREATE_NEW_PROCESS_GROUP)
+        | getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
+        | _CREATE_SUSPENDED
+    )
+
+
 async def _spawn_process(
     command: str,
     cwd: str | None,
@@ -297,10 +306,7 @@ async def _spawn_process(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            creationflags=int(
-                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _CREATE_NEW_PROCESS_GROUP)
-                | _CREATE_SUSPENDED
-            ),
+            creationflags=_windows_creation_flags(),
         )
         job: _WindowsJob | None = None
         try:
@@ -408,6 +414,7 @@ async def _terminate_process_tree(spawned: _SpawnedProcess) -> None:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)),
             )
             await asyncio.wait_for(killer.wait(), timeout=5)
         except (OSError, TimeoutError):

@@ -9,6 +9,10 @@ import {
   type UiPreferences,
   type UiPreferencesPatch
 } from "../../shared/platform";
+import type {
+  RuntimeModelSetEnabledParams,
+  RuntimeProviderConfigureParams
+} from "../../shared/runtime";
 import { themeTransitionCoordinator } from "../applyUiPreferences";
 import { setUiLanguage } from "../i18n";
 import { useAppStore } from "../store";
@@ -51,6 +55,34 @@ function desktopApiWithPreferences(
             hasMore: false
           }
         }),
+        listProviders: async () => ({
+          ok: true,
+          value: {
+            providers: [
+              {
+                id: "deepseek",
+                displayName: "DeepSeek",
+                origin: "builtin",
+                configured: false,
+                credentialConfigured: false,
+                health: "unknown"
+              }
+            ]
+          }
+        }),
+        configureProvider: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        disconnectProvider: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        removeProvider: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        listModels: async () => ({ ok: true, value: { models: [] } }),
+        setModelEnabled: async () => {
+          throw new Error("not used in preference settings tests");
+        },
         onEvent: () => () => undefined
       },
       preferences: {
@@ -132,7 +164,53 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("button", { name: "Models" })).toBeTruthy();
   });
 
-  it("connects DeepSeek in memory and exposes only the two selected mock models", async () => {
+  it("requires an explicit model and configures DeepSeek without retaining its secret", async () => {
+    const configureProvider = vi.fn(async (params: RuntimeProviderConfigureParams) => {
+      if (params.kind !== "deepseek") throw new Error("expected DeepSeek configuration");
+      useAppStore.setState({
+        providers: [
+          {
+            id: "deepseek",
+            displayName: "DeepSeek",
+            origin: "builtin",
+            configured: true,
+            credentialConfigured: true,
+            health: "unknown"
+          }
+        ],
+        models: params.models.map((model) => ({
+          providerId: "deepseek",
+          id: model.id,
+          displayName: model.displayName,
+          enabled: true
+        }))
+      });
+    });
+    const setModelEnabled = vi.fn(async (params: RuntimeModelSetEnabledParams) => {
+      useAppStore.setState((state) => ({
+        models: state.models.map((model) =>
+          model.providerId === params.providerId && model.id === params.modelId
+            ? { ...model, enabled: params.enabled }
+            : model
+        )
+      }));
+    });
+    useAppStore.setState({
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: false,
+          credentialConfigured: false,
+          health: "unknown"
+        }
+      ],
+      models: [],
+      configureProvider,
+      setModelEnabled
+    });
+
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Providers" }));
 
@@ -144,18 +222,30 @@ describe("SettingsPage", () => {
     const dialog = screen.getByRole("dialog", { name: "Connect DeepSeek" });
     expect(within(dialog).queryByRole("button", { name: "Back" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Providers", hidden: true })
-    ).toBeTruthy();
+    expect(screen.getByText("Providers", { selector: "h1" })).toBeTruthy();
     const apiKey = screen.getByLabelText("DeepSeek API key") as HTMLInputElement;
     const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
     expect(apiKey.type).toBe("password");
     expect(continueButton.disabled).toBe(true);
 
     fireEvent.change(apiKey, { target: { value: "mock-secret" } });
+    expect(continueButton.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Model ID"), {
+      target: { value: "deepseek-chat" }
+    });
+    fireEvent.change(screen.getByLabelText("Model display name"), {
+      target: { value: "DeepSeek Chat" }
+    });
     expect(continueButton.disabled).toBe(false);
     fireEvent.click(continueButton);
 
+    await waitFor(() =>
+      expect(configureProvider).toHaveBeenCalledWith({
+        kind: "deepseek",
+        apiKey: "mock-secret",
+        models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+      })
+    );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByRole("button", { name: "Disconnect DeepSeek" })).toBeTruthy();
     expect(screen.queryByDisplayValue("mock-secret")).toBeNull();
@@ -167,32 +257,54 @@ describe("SettingsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
     expect(screen.getByRole("heading", { level: 1, name: "Models" })).toBeTruthy();
-    expect(screen.getByText("DeepSeek V4 Flash")).toBeTruthy();
-    expect(screen.getByText("DeepSeek V4 Pro")).toBeTruthy();
-    expect(screen.queryByText("DeepSeek Chat")).toBeNull();
-    expect(screen.queryByText("DeepSeek Reasoner")).toBeNull();
+    expect(screen.getByText("DeepSeek Chat")).toBeTruthy();
+    expect(screen.queryByText("DeepSeek V4 Flash")).toBeNull();
+    expect(screen.queryByText("DeepSeek V4 Pro")).toBeNull();
 
-    const flashSwitch = screen.getByRole("switch", {
-      name: "Toggle DeepSeek V4 Flash"
+    const modelSwitch = screen.getByRole("switch", {
+      name: "Toggle DeepSeek Chat"
     });
-    expect(flashSwitch.getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(flashSwitch);
-    expect(flashSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(modelSwitch.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(modelSwitch);
+    await waitFor(() =>
+      expect(setModelEnabled).toHaveBeenCalledWith({
+        providerId: "deepseek",
+        modelId: "deepseek-chat",
+        enabled: false
+      })
+    );
+    expect(modelSwitch.getAttribute("aria-checked")).toBe("false");
   });
 
-  it("adds a custom provider without retaining connection fields", () => {
-    const { api, update } = desktopApiWithPreferences();
-    Object.defineProperty(window, "ikarosDesktop", { configurable: true, value: api });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+  it("submits the complete custom provider configuration and retains only its summary", async () => {
+    const configureProvider = vi.fn(async (params: RuntimeProviderConfigureParams) => {
+      if (params.kind !== "custom") throw new Error("expected custom configuration");
+      useAppStore.setState({
+        providers: [
+          {
+            id: params.providerId,
+            displayName: params.displayName,
+            origin: "custom",
+            configured: true,
+            credentialConfigured: Boolean(params.apiKey),
+            health: "unknown"
+          }
+        ],
+        models: params.models.map((model) => ({
+          providerId: params.providerId,
+          id: model.id,
+          displayName: model.displayName,
+          enabled: true
+        }))
+      });
+    });
+    useAppStore.setState({ providers: [], models: [], configureProvider });
 
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Providers" }));
     fireEvent.click(screen.getByRole("button", { name: "Connect Custom provider" }));
     expect(screen.getByRole("dialog", { name: "Custom provider" })).toBeTruthy();
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Providers", hidden: true })
-    ).toBeTruthy();
+    expect(screen.getByText("Providers", { selector: "h1" })).toBeTruthy();
     const submitButton = screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement;
     expect(submitButton.disabled).toBe(true);
 
@@ -209,7 +321,7 @@ describe("SettingsPage", () => {
     fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "https://mock.invalid/v1" }
     });
-    expect(submitButton.disabled).toBe(false);
+    expect(submitButton.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("API key"), {
       target: { value: "custom-secret" }
     });
@@ -219,11 +331,16 @@ describe("SettingsPage", () => {
     fireEvent.change(screen.getByLabelText("Model display name"), {
       target: { value: "Mock Model V1" }
     });
+    expect(submitButton.disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Add model" }));
     const modelIdInputs = screen.getAllByLabelText("Model ID");
     const modelNameInputs = screen.getAllByLabelText("Model display name");
     fireEvent.change(modelIdInputs[1], { target: { value: "mock-model-v1" } });
     fireEvent.change(modelNameInputs[1], { target: { value: "Duplicate model" } });
+    expect(submitButton.disabled).toBe(true);
+    fireEvent.change(modelIdInputs[1], { target: { value: "mock-model-v2" } });
+    fireEvent.change(modelNameInputs[1], { target: { value: "Mock Model V2" } });
+    expect(submitButton.disabled).toBe(false);
     fireEvent.change(screen.getByLabelText("Header name"), {
       target: { value: "X-Mock-Auth" }
     });
@@ -232,19 +349,57 @@ describe("SettingsPage", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
+    await waitFor(() =>
+      expect(configureProvider).toHaveBeenCalledWith({
+        kind: "custom",
+        providerId: "mock-provider",
+        displayName: "Mock Provider",
+        baseUrl: "https://mock.invalid/v1",
+        apiKey: "custom-secret",
+        headers: { "X-Mock-Auth": "header-secret" },
+        models: [
+          { id: "mock-model-v1", displayName: "Mock Model V1" },
+          { id: "mock-model-v2", displayName: "Mock Model V2" }
+        ]
+      })
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText("Mock Provider")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove Mock Provider" })).toBeTruthy();
     expect(screen.queryByDisplayValue("custom-secret")).toBeNull();
     expect(screen.queryByDisplayValue("header-secret")).toBeNull();
     expect(screen.queryByDisplayValue("https://mock.invalid/v1")).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
     fireEvent.click(screen.getByRole("button", { name: "Mock Provider" }));
     expect(screen.getByText("Mock Model V1")).toBeTruthy();
     expect(screen.getAllByText("mock-model-v1")).toHaveLength(1);
-    expect(screen.queryByText("Duplicate model")).toBeNull();
+    expect(screen.getByText("Mock Model V2")).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Toggle Mock Model V1" })).toBeTruthy();
+  });
+
+  it("keeps the provider dialog open for a failed configuration retry", async () => {
+    const configureProvider = vi.fn(async () => {
+      throw new Error("safe configuration failure");
+    });
+    useAppStore.setState({ providers: [], models: [], configureProvider });
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "retry-secret" }
+    });
+    fireEvent.change(screen.getByLabelText("Model ID"), {
+      target: { value: "retry-model" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Could not save provider configuration.")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Connect DeepSeek" })).toBeTruthy();
+    expect((screen.getByLabelText("DeepSeek API key") as HTMLInputElement).value).toBe(
+      "retry-secret"
+    );
   });
 
   it("translates fixed provider UI while preserving product names", () => {
@@ -315,33 +470,45 @@ describe("SettingsPage", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("resets provider and model mock state when SettingsPage remounts", () => {
+  it("preserves the Runtime provider catalog when SettingsPage remounts", () => {
+    useAppStore.setState({
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: true,
+          credentialConfigured: true,
+          health: "unknown"
+        }
+      ],
+      models: [
+        {
+          providerId: "deepseek",
+          id: "persisted-model",
+          displayName: "Persisted Model",
+          enabled: false
+        }
+      ]
+    });
     const firstRender = render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Providers" }));
-    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
-    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
-      target: { value: "temporary" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("button", { name: "Disconnect DeepSeek" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
-    fireEvent.click(screen.getByRole("switch", { name: "Toggle DeepSeek V4 Flash" }));
+    expect(
+      screen.getByRole("switch", { name: "Toggle Persisted Model" }).getAttribute("aria-checked")
+    ).toBe("false");
     firstRender.unmount();
 
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Providers" }));
-    expect(screen.getByRole("button", { name: "Connect DeepSeek" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
-    expect((screen.getByLabelText("DeepSeek API key") as HTMLInputElement).value).toBe("");
-    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
-      target: { value: "temporary-2" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("button", { name: "Disconnect DeepSeek" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
     expect(
       screen
-        .getByRole("switch", { name: "Toggle DeepSeek V4 Flash" })
+        .getByRole("switch", { name: "Toggle Persisted Model" })
         .getAttribute("aria-checked")
-    ).toBe("true");
+    ).toBe("false");
   });
 
   it("finds Profile through settings search without adding fake sections", () => {
