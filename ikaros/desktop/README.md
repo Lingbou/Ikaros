@@ -1,15 +1,16 @@
 # Ikaros Desktop
 
-Cross-platform, mock-driven interaction prototype for the Ikaros
-general-purpose Agent on Windows and Linux. It deliberately does not connect to
-a model or persist canonical conversations yet; its job is to validate the
-interaction and event contract before a replacement runtime is designed.
+Cross-platform desktop client for the Ikaros general-purpose Agent on Windows
+and Linux. The conversation UI remains mock-driven while the first Runtime
+vertical slice is built, but Electron main now supervises and authenticates a
+long-lived local Python process.
 
 ## Run locally
 
-Prerequisites: Node.js 22.12 or newer and pnpm 11.9.
+Prerequisites: Node.js 22.12 or newer, pnpm 11.9, and uv.
 
 ```shell
+uv sync --project ../../runtime --locked
 pnpm install
 pnpm dev
 ```

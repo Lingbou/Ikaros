@@ -28,6 +28,9 @@
     "package:linux": "pnpm run build && electron-builder --config electron-builder.config.ts --linux",
     "package:win": "pnpm run build && electron-builder --config electron-builder.config.ts --win nsis --x64"
   },
+  "dependencies": {
+    "ws": "8.18.3"
+  },
   "devDependencies": {
     "@radix-ui/react-dialog": "1.1.23",
     "@radix-ui/react-dropdown-menu": "2.1.24",
@@ -40,6 +43,7 @@
     "@types/node": "26.1.2",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "43.3.0",
     "electron-builder": "26.15.3",

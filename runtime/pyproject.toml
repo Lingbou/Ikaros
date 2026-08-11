@@ -1,0 +1,44 @@
+[project]
+name = "ikaros-runtime"
+version = "0.1.0"
+description = "Long-lived local runtime for the Ikaros general-purpose Agent"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = "GPL-3.0-only"
+dependencies = [
+  "websockets>=15.0.1,<16",
+]
+
+[project.scripts]
+ikaros-runtime = "ikaros_runtime.__main__:main"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17.1,<2",
+  "pytest>=8.4.1,<9",
+  "pytest-asyncio>=1.1.0,<2",
+  "ruff>=0.12.8,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ikaros_runtime"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]

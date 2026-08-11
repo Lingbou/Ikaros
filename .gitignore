@@ -12,6 +12,7 @@
 !.env.example
 !.env.sample
 !.env.template
+**/.venv/
 
 # Rust / Cargo build artifacts
 **/target/
@@ -22,6 +23,13 @@
 *.log.*
 *.tmp
 *.temp
+
+# Python build and test artifacts
+**/__pycache__/
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.py[cod]
 
 # Ikaros desktop build and test artifacts
 /ikaros/desktop/node_modules/
