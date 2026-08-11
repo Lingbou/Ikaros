@@ -203,6 +203,125 @@ def test_terminalize_run_is_atomic_idempotent_and_uniquely_settled(tmp_path: Pat
         store.close()
 
 
+def test_terminalize_run_cancels_a_running_tool_item_before_settling(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Cancel tool")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run a command",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        tool_item_id, _ = store.create_tool_call_item(
+            prepared.run_id,
+            step_id="step-cancel",
+            call_id="call-cancel",
+            tool_name="process_run",
+            arguments={"command": "long-running"},
+        )
+
+        events = store.terminalize_run(prepared.run_id, "cancelled")
+
+        assert [event.type for event in events] == [
+            "item.completed",
+            "item.completed",
+            "run.settled",
+        ]
+        assert events[0].item_id == tool_item_id
+        assert events[0].payload["item"]["kind"] == "tool_call"
+        assert events[0].payload["item"]["status"] == "cancelled"
+        assert events[1].payload["item"]["kind"] == "tool_result"
+        assert events[1].payload["item"]["status"] == "cancelled"
+        assert events[1].payload["item"]["data"]["result"]["cancelled"] is True
+        assert events[2].payload["status"] == "cancelled"
+        assert store.terminalize_run(prepared.run_id, "cancelled") == ()
+        row = store._connection.execute(
+            "SELECT status, data_json FROM items WHERE id = ?",
+            (tool_item_id,),
+        ).fetchone()
+        assert row["status"] == "cancelled"
+        assert '"callId":"call-cancel"' in row["data_json"]
+
+        before, latest_seq = store.replay_events(0, 100)
+        store.rebuild_projections()
+        after, rebuilt_latest_seq = store.replay_events(0, 100)
+        assert after == before
+        assert rebuilt_latest_seq == latest_seq
+    finally:
+        store.close()
+
+
+def test_tool_call_and_result_completion_is_atomic(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Atomic tool result")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run a command",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        tool_item_id, _ = store.create_tool_call_item(
+            prepared.run_id,
+            step_id="step-atomic",
+            call_id="call-atomic",
+            tool_name="process_run",
+            arguments={"command": "echo atomic"},
+        )
+        store._connection.execute(
+            f"""
+            CREATE TRIGGER abort_tool_result_event
+            BEFORE INSERT ON events
+            WHEN NEW.event_type = 'item.completed'
+             AND NEW.item_id != '{tool_item_id}'
+            BEGIN
+                SELECT RAISE(ABORT, 'tool result insert failed');
+            END;
+            """
+        )
+        result = {
+            "toolCallId": "call-atomic",
+            "toolName": "process_run",
+            "ok": True,
+            "output": "atomic",
+            "cancelled": False,
+            "stdout": "atomic\n",
+            "stderr": "",
+            "exitCode": 0,
+            "durationMs": 1,
+            "timedOut": False,
+            "truncated": False,
+        }
+
+        with pytest.raises(sqlite3.IntegrityError, match="tool result insert failed"):
+            store.complete_tool_call(
+                tool_item_id,
+                status="completed",
+                result=result,
+                result_content="atomic",
+            )
+
+        rows = store._connection.execute(
+            "SELECT kind, status FROM items WHERE run_id = ? ORDER BY ordinal",
+            (prepared.run_id,),
+        ).fetchall()
+        assert [dict(row) for row in rows] == [
+            {"kind": "message", "status": "completed"},
+            {"kind": "tool_call", "status": "running"},
+        ]
+        replayed, _ = store.replay_events(0, 100)
+        assert not any(
+            event.type == "item.completed" and event.item_id == tool_item_id for event in replayed
+        )
+    finally:
+        store.close()
+
+
 def test_recovery_fails_running_runs_and_orders_queued_runs_by_event_seq(
     tmp_path: Path,
 ) -> None:
@@ -259,6 +378,57 @@ def test_recovery_fails_running_runs_and_orders_queued_runs_by_event_seq(
         assert running_terminal[0].payload["item"]["content"] == "preserved partial"
         assert running_terminal[0].payload["item"]["status"] == "failed"
         assert running_terminal[1].payload["reasonCode"] == "runtime_interrupted"
+    finally:
+        store.close()
+
+
+def test_recovery_completes_an_interrupted_tool_with_a_matching_result(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Recover tool")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run before crash",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        call_item_id, _ = store.create_tool_call_item(
+            prepared.run_id,
+            step_id="step-recovery",
+            call_id="call-recovery",
+            tool_name="process_run",
+            arguments={"command": "long-running"},
+        )
+
+        store.recover_incomplete_runs()
+
+        replayed, _ = store.replay_events(0, 100)
+        terminal = [
+            event
+            for event in replayed
+            if event.run_id == prepared.run_id
+            and event.type in {"item.completed", "run.settled"}
+            and (
+                event.type == "run.settled"
+                or event.payload.get("item", {}).get("kind") in {"tool_call", "tool_result"}
+            )
+        ]
+        assert [event.type for event in terminal] == [
+            "item.completed",
+            "item.completed",
+            "run.settled",
+        ]
+        assert terminal[0].item_id == call_item_id
+        assert terminal[0].payload["item"]["status"] == "failed"
+        result_item = terminal[1].payload["item"]
+        assert result_item["status"] == "failed"
+        assert result_item["data"]["callId"] == "call-recovery"
+        assert result_item["data"]["toolCallItemId"] == call_item_id
+        assert result_item["data"]["result"]["errorCode"] == "runtime_interrupted"
+        assert terminal[2].payload["status"] == "failed"
+        assert terminal[2].payload["reasonCode"] == "runtime_interrupted"
     finally:
         store.close()
 

@@ -54,6 +54,64 @@ function messageItem(
   };
 }
 
+function toolCallItem(
+  id: string,
+  turnId: string,
+  runId: string,
+  status: "running" | "completed" | "failed" | "cancelled",
+  callId: string,
+  durationMs?: number
+) {
+  return {
+    id,
+    turnId,
+    runId,
+    ordinal: 2,
+    kind: "tool_call",
+    role: "assistant",
+    status,
+    content: "",
+    data: {
+      stepId: "step-1",
+      callId,
+      toolName: "process_run",
+      arguments: { command: "Write-Output original-command" },
+      ...(durationMs === undefined ? {} : { durationMs })
+    },
+    createdAt: "2026-08-11T12:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z"
+  };
+}
+
+function toolResultItem(
+  id: string,
+  turnId: string,
+  runId: string,
+  status: "completed" | "failed" | "cancelled",
+  toolCallItemId: string,
+  output: string
+) {
+  return {
+    id,
+    turnId,
+    runId,
+    ordinal: 3,
+    kind: "tool_result",
+    role: "tool",
+    status,
+    content: "{}",
+    data: {
+      stepId: "step-1",
+      callId: `provider-${toolCallItemId}`,
+      toolCallItemId,
+      toolName: "process_run",
+      result: { output }
+    },
+    createdAt: "2026-08-11T12:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z"
+  };
+}
+
 describe("Runtime event projection", () => {
   it("reduces streamed Items and settled Runs into the existing conversation UI model", () => {
     const events = [
@@ -134,6 +192,142 @@ describe("Runtime event projection", () => {
       runId: "run-4",
       status: "interrupted",
       events: [{ id: "assistant-4", content: "partial", status: "interrupted" }]
+    });
+  });
+
+  it("projects replay-safe process tool lifecycle items without translating command output", () => {
+    const events = [
+      event(2, "item.completed", "turn-tools", "run-tools", "user-tools", {
+        item: messageItem(
+          "user-tools",
+          "turn-tools",
+          "run-tools",
+          "user",
+          "/process.run Write-Output original-command",
+          "completed"
+        )
+      }),
+      event(3, "item.started", "turn-tools", "run-tools", "call-success", {
+        item: toolCallItem(
+          "call-success",
+          "turn-tools",
+          "run-tools",
+          "running",
+          "provider-success"
+        )
+      }),
+      event(4, "item.completed", "turn-tools", "run-tools", "call-success", {
+        item: toolCallItem(
+          "call-success",
+          "turn-tools",
+          "run-tools",
+          "completed",
+          "provider-success",
+          12
+        )
+      }),
+      event(5, "item.completed", "turn-tools", "run-tools", "result-success", {
+        item: toolResultItem(
+          "result-success",
+          "turn-tools",
+          "run-tools",
+          "completed",
+          "call-success",
+          "original-output\nsecond-line"
+        )
+      }),
+      event(6, "item.started", "turn-tools", "run-tools", "call-failed", {
+        item: toolCallItem(
+          "call-failed",
+          "turn-tools",
+          "run-tools",
+          "running",
+          "provider-failed"
+        )
+      }),
+      event(7, "item.completed", "turn-tools", "run-tools", "call-failed", {
+        item: toolCallItem(
+          "call-failed",
+          "turn-tools",
+          "run-tools",
+          "failed",
+          "provider-failed"
+        )
+      }),
+      event(8, "item.completed", "turn-tools", "run-tools", "result-failed", {
+        item: toolResultItem(
+          "result-failed",
+          "turn-tools",
+          "run-tools",
+          "failed",
+          "call-failed",
+          "failure-output"
+        )
+      }),
+      event(9, "item.started", "turn-tools", "run-tools", "call-cancelled", {
+        item: toolCallItem(
+          "call-cancelled",
+          "turn-tools",
+          "run-tools",
+          "running",
+          "provider-cancelled"
+        )
+      }),
+      event(10, "item.completed", "turn-tools", "run-tools", "call-cancelled", {
+        item: toolCallItem(
+          "call-cancelled",
+          "turn-tools",
+          "run-tools",
+          "cancelled",
+          "provider-cancelled"
+        )
+      }),
+      event(11, "item.completed", "turn-tools", "run-tools", "result-cancelled", {
+        item: toolResultItem(
+          "result-cancelled",
+          "turn-tools",
+          "run-tools",
+          "cancelled",
+          "call-cancelled",
+          "partial-output"
+        )
+      })
+    ];
+
+    const once = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    const twice = replayRuntimeEvents(once, events);
+    const projected = twice[0]?.branches[0]?.turns[0]?.events;
+
+    expect(projected).toHaveLength(7);
+    expect(projected?.[1]).toMatchObject({
+      id: "call-success",
+      type: "tool_call",
+      toolName: "process.run",
+      label: { source: "app", kind: "tool.runProcess" },
+      status: "success",
+      arguments: { command: "Write-Output original-command" },
+      durationMs: 12
+    });
+    expect(projected?.[2]).toMatchObject({
+      id: "result-success",
+      type: "tool_result",
+      toolCallId: "call-success",
+      status: "success",
+      summary: { source: "app", kind: "result.processCompleted" },
+      output: "original-output\nsecond-line"
+    });
+    expect(projected?.[3]).toMatchObject({ type: "tool_call", status: "error" });
+    expect(projected?.[4]).toMatchObject({
+      type: "tool_result",
+      status: "error",
+      summary: { source: "app", kind: "result.processFailed" }
+    });
+    expect(projected?.[5]).toMatchObject({ type: "tool_call", status: "interrupted" });
+    expect(projected?.[6]).toMatchObject({
+      type: "tool_result",
+      status: "interrupted",
+      summary: { source: "app", kind: "result.processInterrupted" },
+      output: "partial-output"
     });
   });
 });

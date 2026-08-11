@@ -6,8 +6,11 @@ from typing import Any
 
 from .agent import AgentLoop, AgentScheduler, EventPublisher
 from .domain import JournalEvent
+from .policy import FullAccessPolicy
+from .process_tool import ProcessRunTool
 from .providers import ScriptedProvider
 from .storage import SqliteRuntimeStore
+from .tools import ToolExecutor, ToolRegistry
 
 
 class InvalidParamsError(ValueError):
@@ -37,7 +40,8 @@ class RuntimeKernel:
     def __init__(self, store: SqliteRuntimeStore, publish: EventPublisher) -> None:
         self._store = store
         scripted = ScriptedProvider()
-        loop = AgentLoop(store, {scripted.id: scripted}, publish)
+        tools = ToolExecutor(ToolRegistry([ProcessRunTool()]), FullAccessPolicy())
+        loop = AgentLoop(store, {scripted.id: scripted}, publish, tools)
         self._scheduler = AgentScheduler(loop)
         self._publish = publish
 
@@ -145,9 +149,7 @@ class RuntimeKernel:
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
         if status in {"completed", "failed", "cancelled"}:
-            return CommandOutcome(
-                result={"accepted": False, "runId": run_id, "status": status}
-            )
+            return CommandOutcome(result={"accepted": False, "runId": run_id, "status": status})
         return CommandOutcome(
             result={"accepted": True, "runId": run_id, "status": status},
             cancel_after_ack=run_id,

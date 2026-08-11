@@ -22,6 +22,9 @@ class CancellationToken:
         if self.is_cancelled:
             raise RunCancelled
 
+    async def wait(self) -> None:
+        await self._cancelled.wait()
+
     async def sleep(self, delay: float) -> None:
         self.raise_if_cancelled()
         if delay <= 0:

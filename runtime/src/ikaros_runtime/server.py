@@ -150,6 +150,8 @@ def _initialize_result() -> dict[str, object]:
             "eventReplay": True,
             "streaming": True,
             "scriptedProvider": True,
+            "tools": ["process.run"],
+            "executionPolicy": "full_access",
             "runCancellation": True,
         },
     }

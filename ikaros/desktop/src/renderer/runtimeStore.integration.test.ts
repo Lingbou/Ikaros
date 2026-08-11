@@ -234,6 +234,142 @@ describe("Runtime-backed renderer store", () => {
     });
   });
 
+  it("replays persisted process tool Items into the production store projection", async () => {
+    const thread = {
+      id: "thread-runtime",
+      title: "Tool replay",
+      defaultBranchId: "branch-runtime",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const toolCall = {
+      id: "tool-call-runtime",
+      turnId: "turn-runtime",
+      runId: "run-runtime",
+      ordinal: 2,
+      kind: "tool_call",
+      role: "assistant",
+      status: "running",
+      content: "",
+      data: {
+        stepId: "step-runtime",
+        callId: "provider-call-runtime",
+        toolName: "process_run",
+        arguments: { command: "Write-Output runtime-tool" }
+      },
+      createdAt,
+      updatedAt: createdAt
+    };
+    const events = [
+      runtimeEvent(1, "item.completed", "user-runtime", {
+        item: messageItem(
+          "user-runtime",
+          "user",
+          "/process.run Write-Output runtime-tool",
+          "completed"
+        )
+      }),
+      runtimeEvent(2, "run.state_changed", null, { status: "queued" }),
+      runtimeEvent(3, "run.state_changed", null, { status: "running" }),
+      runtimeEvent(4, "item.started", toolCall.id, { item: toolCall }),
+      runtimeEvent(5, "item.completed", toolCall.id, {
+        item: {
+          ...toolCall,
+          status: "completed",
+          data: { ...toolCall.data, outcome: "completed", durationMs: 14 }
+        }
+      }),
+      runtimeEvent(6, "item.completed", "tool-result-runtime", {
+        item: {
+          id: "tool-result-runtime",
+          turnId: "turn-runtime",
+          runId: "run-runtime",
+          ordinal: 3,
+          kind: "tool_result",
+          role: "tool",
+          status: "completed",
+          content: "{}",
+          data: {
+            stepId: "step-runtime",
+            callId: "provider-call-runtime",
+            toolCallItemId: toolCall.id,
+            toolName: "process_run",
+            result: {
+              ok: true,
+              output: "runtime-tool\nsecond-line",
+              stdout: "runtime-tool\n",
+              stderr: "",
+              exitCode: 0,
+              timedOut: false,
+              truncated: false
+            }
+          },
+          createdAt,
+          updatedAt: createdAt
+        }
+      }),
+      runtimeEvent(7, "item.started", "assistant-runtime", {
+        item: messageItem("assistant-runtime", "assistant", "", "streaming")
+      }),
+      runtimeEvent(8, "item.completed", "assistant-runtime", {
+        item: messageItem(
+          "assistant-runtime",
+          "assistant",
+          "Command exited with code 0.",
+          "completed"
+        )
+      }),
+      runtimeEvent(9, "run.settled", null, { status: "completed" })
+    ];
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events,
+          latestSeq: 9,
+          nextAfterSeq: 9,
+          hasMore: false
+        })),
+        onEvent: vi.fn(() => () => undefined)
+      },
+      preferences: {},
+      windowControls: {}
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    const state = useAppStore.getState();
+    const projected = state.threads[0]?.branches[0]?.turns[0];
+    expect(state.runtimeSeq).toBe(9);
+    expect(state.runStatus).toBe("completed");
+    expect(projected?.events).toMatchObject([
+      { type: "message", role: "user" },
+      {
+        id: toolCall.id,
+        type: "tool_call",
+        toolName: "process.run",
+        status: "success",
+        durationMs: 14
+      },
+      {
+        id: "tool-result-runtime",
+        type: "tool_result",
+        toolCallId: toolCall.id,
+        status: "success",
+        output: "runtime-tool\nsecond-line"
+      },
+      { type: "message", role: "assistant", status: "complete" }
+    ]);
+    expect(projected?.events.some((event) => event.type === "permission_request")).toBe(false);
+  });
+
   it("keeps a canonical running Turn when turn.start is accepted but its ACK is lost", async () => {
     const listeners = new Set<(event: RuntimeJournalEvent) => void>();
     const thread = {

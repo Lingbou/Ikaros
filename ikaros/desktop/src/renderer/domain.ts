@@ -28,8 +28,12 @@ export type AppEventTextKind =
   | "tool.inspectArchiveMetadata"
   | "tool.testArchiveExtraction"
   | "tool.exportReportPackage"
+  | "tool.runProcess"
   | "result.archiveManifestVerified"
   | "result.windowsReservedNames"
+  | "result.processCompleted"
+  | "result.processFailed"
+  | "result.processInterrupted"
   | "permission.moveReceiptsTitle"
   | "permission.moveReceiptsDescription"
   | "status.buildingBrief"
@@ -82,7 +86,7 @@ export interface ToolCallEvent extends EventBase {
 export interface ToolResultEvent extends EventBase {
   type: "tool_result";
   toolCallId: string;
-  status: "success" | "error";
+  status: "success" | "error" | "interrupted";
   summary: EventText;
   output: string;
 }

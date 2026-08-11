@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -9,8 +10,22 @@ import pytest
 from ikaros_runtime.agent import AgentLoop, AgentScheduler
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
 from ikaros_runtime.domain import JournalEvent
-from ikaros_runtime.providers import ProviderRequest
+from ikaros_runtime.policy import FullAccessPolicy
+from ikaros_runtime.providers import (
+    ProviderEvent,
+    ProviderRequest,
+    ResponseCompleted,
+    TextDelta,
+    ToolCallCompleted,
+)
 from ikaros_runtime.storage import SqliteRuntimeStore
+from ikaros_runtime.tools import (
+    ToolCall,
+    ToolDefinition,
+    ToolExecutor,
+    ToolRegistry,
+    ToolResult,
+)
 
 
 class FailingProvider:
@@ -19,12 +34,12 @@ class FailingProvider:
         request: ProviderRequest,
         *,
         cancellation: CancellationToken,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[ProviderEvent]:
         cancellation.raise_if_cancelled()
         await asyncio.sleep(0)
         if request.messages:
             raise RuntimeError("expected provider failure")
-        yield "unreachable"
+        yield TextDelta("unreachable")
 
 
 class FailingOnceExecutor:
@@ -52,12 +67,13 @@ class PausingProvider:
         request: ProviderRequest,
         *,
         cancellation: CancellationToken,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[ProviderEvent]:
         del request
-        yield "partial"
+        yield TextDelta("partial")
         self.first_delta_emitted.set()
         await cancellation.sleep(60)
-        yield "late"
+        yield TextDelta("late")
+        yield ResponseCompleted()
 
 
 class BlockingExecutor:
@@ -78,8 +94,69 @@ class BlockingExecutor:
         self.cancelled_queued.append(run_id)
 
 
+class RecordingTool:
+    definition = ToolDefinition(
+        name="process_run",
+        description="test process tool",
+        input_schema={"type": "object"},
+    )
+
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+
+    async def execute(
+        self,
+        call: ToolCall,
+        *,
+        cancellation: CancellationToken,
+    ) -> ToolResult:
+        cancellation.raise_if_cancelled()
+        self.calls.append(call)
+        return ToolResult(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            ok=True,
+            output="tool-output",
+            details={
+                "stdout": "tool-output\n",
+                "stderr": "",
+                "exitCode": 0,
+                "durationMs": 3,
+                "timedOut": False,
+                "truncated": False,
+            },
+        )
+
+
+class ToolLoopProvider:
+    def __init__(self, *, always_call: bool = False) -> None:
+        self.requests: list[ProviderRequest] = []
+        self.always_call = always_call
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        cancellation.raise_if_cancelled()
+        self.requests.append(request)
+        has_tool_result = any(message.role == "tool" for message in request.messages)
+        if self.always_call or not has_tool_result:
+            yield ToolCallCompleted(
+                ToolCall(
+                    id=f"call-{len(self.requests)}",
+                    name="process_run",
+                    arguments={"command": "test-command"},
+                )
+            )
+        else:
+            yield TextDelta("final answer")
+        yield ResponseCompleted()
+
+
 @pytest.mark.asyncio
-async def test_provider_failure_terminalizes_item_and_settles_run_once(tmp_path: Path) -> None:
+async def test_provider_failure_settles_run_once_without_an_empty_message(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     events: list[JournalEvent] = []
 
@@ -109,8 +186,7 @@ async def test_provider_failure_terminalizes_item_and_settles_run_once(tmp_path:
         ]
         assert len(settled) == 1
         assert settled[0].payload["status"] == "failed"
-        assert len(assistant_terminal) == 1
-        assert assistant_terminal[0].payload["item"]["status"] == "failed"
+        assert assistant_terminal == []
     finally:
         store.close()
 
@@ -151,14 +227,139 @@ async def test_running_provider_stops_after_cancellation_and_preserves_partial_t
         terminal = [
             event
             for event in events
-            if event.run_id == prepared.run_id
-            and event.type in {"item.completed", "run.settled"}
+            if event.run_id == prepared.run_id and event.type in {"item.completed", "run.settled"}
         ]
         assert deltas == ["partial"]
         assert [event.type for event in terminal] == ["item.completed", "run.settled"]
         assert terminal[0].payload["item"]["content"] == "partial"
         assert terminal[0].payload["item"]["status"] == "cancelled"
         assert terminal[1].payload["status"] == "cancelled"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Tool loop")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run the tool",
+            provider_id="tool-loop",
+            model_id="tool-loop-v1",
+        )
+        provider = ToolLoopProvider()
+        tool = RecordingTool()
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        loop = AgentLoop(store, {"tool-loop": provider}, publish, executor)
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert [call.id for call in tool.calls] == ["call-1"]
+        assert len(provider.requests) == 2
+        second_messages = provider.requests[1].messages
+        assert [message.role for message in second_messages] == [
+            "user",
+            "assistant",
+            "tool",
+        ]
+        assert second_messages[1].tool_calls == (
+            ToolCall("call-1", "process_run", {"command": "test-command"}),
+        )
+        assert second_messages[2].tool_call_id == "call-1"
+        tool_content = json.loads(second_messages[2].content)
+        assert tool_content["toolCallId"] == "call-1"
+        assert tool_content["stdout"] == "tool-output\n"
+
+        run_events = [event for event in events if event.run_id == prepared.run_id]
+        item_kinds = [
+            event.payload["item"]["kind"]
+            for event in run_events
+            if event.type in {"item.started", "item.completed"} and "item" in event.payload
+        ]
+        assert item_kinds == [
+            "tool_call",
+            "tool_call",
+            "tool_result",
+            "message",
+            "message",
+        ]
+        assert [event.type for event in run_events] == [
+            "run.state_changed",
+            "item.started",
+            "item.completed",
+            "item.completed",
+            "item.started",
+            "item.delta",
+            "item.completed",
+            "run.settled",
+        ]
+        assert not any(event.type.startswith("permission.") for event in run_events)
+        assert run_events[-1].payload["status"] == "completed"
+
+        before_rebuild = store.context_items(
+            thread.default_branch_id,
+            through_turn_id=prepared.turn_id,
+        )
+        store.rebuild_projections()
+        assert (
+            store.context_items(
+                thread.default_branch_id,
+                through_turn_id=prepared.turn_id,
+            )
+            == before_rebuild
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_step_limit_settles_an_infinite_tool_loop_once(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Step bound")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="loop forever",
+            provider_id="tool-loop",
+            model_id="tool-loop-v1",
+        )
+        provider = ToolLoopProvider(always_call=True)
+        tool = RecordingTool()
+        loop = AgentLoop(
+            store,
+            {"tool-loop": provider},
+            publish,
+            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            max_steps=2,
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        settled = [
+            event
+            for event in events
+            if event.run_id == prepared.run_id and event.type == "run.settled"
+        ]
+        assert len(provider.requests) == 2
+        assert len(tool.calls) == 2
+        assert len(settled) == 1
+        assert settled[0].payload["status"] == "failed"
     finally:
         store.close()
 

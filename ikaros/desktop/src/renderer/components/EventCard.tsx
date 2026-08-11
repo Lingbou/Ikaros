@@ -74,7 +74,11 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
   return (
     <div className="event-card-shadow flex w-full items-start gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3.5 py-3 text-left">
       <span className={cx("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--panel-hover)]", status.className)}>
-        {event.toolName.includes("extract") ? <SquareTerminal size={14} /> : <Wrench size={14} />}
+        {event.toolName === "process.run" || event.toolName.includes("extract") ? (
+          <SquareTerminal size={14} />
+        ) : (
+          <Wrench size={14} />
+        )}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
@@ -96,27 +100,38 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
 
 function ToolResultCard({ event }: { event: ToolResultEvent }) {
   const { t } = useTranslation();
-  const failed = event.status === "error";
+  const presentation = {
+    success: {
+      icon: <Check size={13} className="mt-0.5 shrink-0 text-[#72d3a7]" />,
+      className: "border-[#396b58]/40 bg-[#24463a]/15",
+    },
+    error: {
+      icon: <AlertTriangle size={13} className="mt-0.5 shrink-0 text-[#ff8585]" />,
+      className: "border-[#8b4444]/45 bg-[#4b2626]/18",
+    },
+    interrupted: {
+      icon: <AlertTriangle size={13} className="mt-0.5 shrink-0 text-[#d8a36f]" />,
+      className: "border-[#8b6a44]/45 bg-[#4b3b26]/18",
+    },
+  }[event.status];
   return (
     <div
       className={cx(
         "ml-10 flex w-[calc(100%-2.5rem)] items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left",
-        failed
-          ? "border-[#8b4444]/45 bg-[#4b2626]/18"
-          : "border-[#396b58]/40 bg-[#24463a]/15",
+        presentation.className,
       )}
     >
-      {failed ? (
-        <AlertTriangle size={13} className="mt-0.5 shrink-0 text-[#ff8585]" />
-      ) : (
-        <Check size={13} className="mt-0.5 shrink-0 text-[#72d3a7]" />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className="block text-[11px] leading-[16px] text-[var(--text)]">
+      {presentation.icon}
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] leading-[16px] text-[var(--text)]">
           {resolveEventText(event.summary, t)}
-        </span>
-        <span className="mt-0.5 block truncate font-mono text-[10px] leading-[14px] text-[var(--muted)]">{event.output}</span>
-      </span>
+        </div>
+        {event.output ? (
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-[var(--muted)]">
+            {event.output}
+          </pre>
+        ) : null}
+      </div>
     </div>
   );
 }

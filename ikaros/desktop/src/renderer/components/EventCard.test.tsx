@@ -34,6 +34,50 @@ afterEach(() => {
 });
 
 describe("EventCard localization boundary", () => {
+  it("renders process command cards with localized copy and multiline invariant output", () => {
+    const toolCall: ToolCallEvent = {
+      id: "process-call",
+      turnId: "process-turn",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      type: "tool_call",
+      toolName: "process.run",
+      label: appEventText("tool.runProcess"),
+      status: "interrupted",
+      arguments: { command: "Write-Output original-command" },
+      durationMs: 25,
+    };
+    const output = "original-output\nsecond-line";
+    const result: ToolResultEvent = {
+      id: "process-result",
+      turnId: "process-turn",
+      createdAt: "2026-08-12T00:00:00.025Z",
+      type: "tool_result",
+      toolCallId: toolCall.id,
+      status: "interrupted",
+      summary: appEventText("result.processInterrupted"),
+      output,
+    };
+
+    const { container } = render(
+      <>
+        <EventCard event={toolCall} />
+        <EventCard event={result} />
+      </>,
+    );
+
+    expect(screen.getByText("Running command")).toBeInTheDocument();
+    expect(screen.getByText("Command interrupted")).toBeInTheDocument();
+    expect(container).toHaveTextContent("Write-Output original-command");
+    expect(container.querySelector("pre")?.textContent).toBe(output);
+
+    act(() => setUiLanguage("zh-CN"));
+
+    expect(screen.getByText("正在运行命令")).toBeInTheDocument();
+    expect(screen.getByText("命令已中断")).toBeInTheDocument();
+    expect(container).toHaveTextContent("Write-Output original-command");
+    expect(container.querySelector("pre")?.textContent).toBe(output);
+  });
+
   it("retranslates app-owned event copy while preserving command data and paths", () => {
     setUiLanguage("en");
     useAppStore.setState({ runStatus: "waiting_permission" });

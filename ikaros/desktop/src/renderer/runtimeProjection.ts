@@ -1,5 +1,6 @@
 import type { RuntimeJournalEvent, RuntimeThreadSummary } from "../shared/runtime";
 import type { AgentEvent, Thread, Turn, TurnStatus } from "./domain";
+import { appEventText, externalEventText } from "./domain";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -62,16 +63,16 @@ function updateTurn(
   };
 }
 
-function upsertMessage(
+function upsertAgentEvent(
   thread: Thread,
   event: RuntimeJournalEvent,
-  message: AgentEvent
+  projected: AgentEvent
 ): Thread {
   if (!event.branchId || !event.turnId) {
     return thread;
   }
   return updateTurn(thread, event.branchId, event.turnId, (turn) => {
-    const existing = turn?.events.some((candidate) => candidate.id === message.id);
+    const existing = turn?.events.some((candidate) => candidate.id === projected.id);
     return {
       id: event.turnId as string,
       branchId: event.branchId as string,
@@ -79,11 +80,22 @@ function upsertMessage(
       status: turn?.status ?? "running",
       events: existing
         ? (turn?.events ?? []).map((candidate) =>
-            candidate.id === message.id ? message : candidate
+            candidate.id === projected.id ? projected : candidate
           )
-        : [...(turn?.events ?? []), message]
+        : [...(turn?.events ?? []), projected]
     };
   });
+}
+
+function toolStatus(status: unknown): "running" | "success" | "error" | "interrupted" {
+  if (status === "completed") return "success";
+  if (status === "failed") return "error";
+  if (status === "cancelled") return "interrupted";
+  return "running";
+}
+
+function displayToolName(name: string): string {
+  return name === "process_run" ? "process.run" : name;
 }
 
 function projectThreadCreated(
@@ -131,7 +143,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         typeof item.content === "string" &&
         (item.role === "user" || item.role === "assistant")
       ) {
-        next = upsertMessage(thread, event, {
+        next = upsertAgentEvent(thread, event, {
           id: item.id,
           turnId: event.turnId,
           type: "message",
@@ -148,6 +160,63 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           createdAt: typeof item.createdAt === "string" ? item.createdAt : event.timestamp
         });
       }
+    } else if (
+      isRecord(item) &&
+      item.kind === "tool_call" &&
+      typeof item.id === "string" &&
+      isRecord(item.data) &&
+      typeof item.data.toolName === "string" &&
+      isRecord(item.data.arguments)
+    ) {
+      const toolName = displayToolName(item.data.toolName);
+      next = upsertAgentEvent(thread, event, {
+        id: item.id,
+        turnId: event.turnId,
+        type: "tool_call",
+        toolName,
+        label:
+          item.data.toolName === "process_run"
+            ? appEventText("tool.runProcess")
+            : externalEventText(toolName),
+        status: toolStatus(item.status),
+        arguments: item.data.arguments,
+        durationMs:
+          typeof item.data.durationMs === "number" ? item.data.durationMs : undefined,
+        createdAt: typeof item.createdAt === "string" ? item.createdAt : event.timestamp
+      });
+    } else if (
+      isRecord(item) &&
+      item.kind === "tool_result" &&
+      typeof item.id === "string" &&
+      isRecord(item.data) &&
+      typeof item.data.toolCallItemId === "string" &&
+      isRecord(item.data.result)
+    ) {
+      const status = toolStatus(item.status);
+      const resultStatus = status === "running" ? "error" : status;
+      const toolName =
+        typeof item.data.toolName === "string"
+          ? displayToolName(item.data.toolName)
+          : "tool";
+      next = upsertAgentEvent(thread, event, {
+        id: item.id,
+        turnId: event.turnId,
+        type: "tool_result",
+        toolCallId: item.data.toolCallItemId,
+        status: resultStatus,
+        summary:
+          item.data.toolName === "process_run"
+            ? appEventText(
+                resultStatus === "success"
+                  ? "result.processCompleted"
+                  : resultStatus === "interrupted"
+                    ? "result.processInterrupted"
+                    : "result.processFailed"
+              )
+            : externalEventText(toolName),
+        output: typeof item.data.result.output === "string" ? item.data.result.output : "",
+        createdAt: typeof item.createdAt === "string" ? item.createdAt : event.timestamp
+      });
     }
   } else if (event.type === "item.delta" && event.itemId && typeof event.payload.delta === "string") {
     next = updateTurn(thread, event.branchId, event.turnId, (turn) => ({

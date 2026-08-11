@@ -63,6 +63,15 @@ class RunDescriptor:
     branch_id: str
     provider_id: str
     model_id: str
+    execution_policy: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextItem:
+    kind: str
+    role: str | None
+    content: str
+    data: JsonObject
 
 
 @dataclass(frozen=True, slots=True)

@@ -205,15 +205,19 @@ client can resume from a cursor without guessing what it missed.
 Representative event semantics are:
 
 ```text
-item.started
-item.delta
-item.completed
-tool.started
-tool.progress
-tool.completed
+item.started                    message or tool-call Item entered an active state
+item.delta                      bounded message streaming delta
+item.completed                  message, tool-call, or tool-result terminal snapshot
 run.state_changed
 run.settled
 ```
+
+V1 represents Tool lifecycle records as typed Items instead of maintaining a
+second Tool-only event hierarchy. A Tool Call is written as a running
+`tool_call` Item before the side effect starts. Its terminal snapshot and the
+matching `tool_result` Item are committed together, then published in journal
+sequence. V1 does not emit `tool.progress`; process output is delivered once in
+the bounded terminal result.
 
 Names remain subject to a dedicated protocol specification. Their semantic
 distinctions are already locked: commands are acknowledged quickly, execution
@@ -263,12 +267,13 @@ win that race. Clients must use the single durable `run.settled` event as the
 outcome and treat repeated cancellation of an already terminal Run as
 `accepted: false`.
 
-Terminalization updates the assistant Item, Turn, and Run and appends
-`run.settled` in one SQLite transaction. A partial assistant Item therefore
-cannot appear complete when its Run is cancelled or fails, and a partial
-terminal state cannot survive a failed transaction. A partial unique index on
-the journal enforces at most one `run.settled` per Run; terminalization is also
-idempotent so completion, cancellation, shutdown, and recovery can safely race.
+Terminalization updates every active message or Tool Item, the Turn, and the
+Run and appends `run.settled` in one SQLite transaction. Partial assistant text
+or a running Tool therefore cannot appear complete when its Run is cancelled
+or fails, and a partial terminal state cannot survive a failed transaction. A
+partial unique index on the journal enforces at most one `run.settled` per Run;
+terminalization is also idempotent so completion, cancellation, shutdown, and
+recovery can safely race.
 
 On clean shutdown the Scheduler stops accepting work, cooperatively cancels the
 active Run, terminalizes queued and reserved Runs as `cancelled`, and waits for
@@ -472,6 +477,26 @@ Local file primitives such as read, write, and edit can coexist with a general
 process/command tool. The first completion gate only requires real command
 execution; it does not turn command execution into the product boundary.
 
+The first registered command Tool has the provider-facing function name
+`process_run`. OpenAI-compatible endpoints restrict function names to letters,
+digits, underscores, and hyphens, so the dot-separated product label
+`process.run` is not sent upstream. Desktop displays `process.run`, and the
+deterministic provider exposes `/process.run <command>` as its explicit test
+syntax. The adapter and ToolRegistry keep the mapping at the provider boundary.
+
+`process_run` accepts only `command`, optional `cwd`, and optional `timeoutMs`.
+On Windows it creates the shell suspended, assigns it to a kill-on-close Job
+Object, and only then resumes it; on POSIX it creates a new session/process
+group. The deadline covers root-process exit and both output pipes reaching
+EOF, so a root shell cannot evade timeout by exiting while a background child
+keeps a pipe open. The executor drains stdout and stderr concurrently, retains
+at most 64 KiB from each stream, and distinguishes normal non-zero exit,
+timeout, and user cancellation. Completion, timeout, cancellation, and task
+teardown all close the supervised tree; cancellation preserves bounded partial
+output in a matching Tool Result before the Run settles. The child receives an
+explicit allowlist of ordinary OS environment variables rather than Electron's
+entire environment, so unrelated launch-time secrets are not inherited.
+
 A Skill is an instruction and resource bundle that may contain references,
 assets, and scripts. Loading a Skill does not import third-party Python into the
 long-lived runtime, and scripts are not expanded into one model ToolDescriptor
@@ -517,6 +542,14 @@ Full access; they are not deferred as part of the permission UI.
 Full access means a third-party Skill script can exercise the current operating
 system user's authority. This is an explicit development-version trade-off, not
 a sandbox or security guarantee.
+
+The current SQLite schema version is 5. Each Run snapshots
+`execution_policy = full_access`, and each Item has structured `data_json` for
+Tool Call arguments and normalized results. Rebuilding projections from the
+journal restores these records and the provider context. A bounded Agent loop
+persists all calls from a provider Step before serial execution, returns every
+result under the original provider call ID, and stops a provider that exceeds
+the maximum Step count.
 
 ## Desktop projection
 

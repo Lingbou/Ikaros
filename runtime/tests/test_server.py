@@ -125,9 +125,7 @@ async def _rpc(
     notifications: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     await connection.send(
-        json.dumps(
-            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        )
+        json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
     )
     while True:
         response = json.loads(await connection.recv())
@@ -178,10 +176,7 @@ async def _replay_until_run_settled(
             )
             events.extend(page)
             cursor = int(response["result"]["nextAfterSeq"])
-        if any(
-            event["type"] == "run.settled" and event["runId"] == run_id
-            for event in events
-        ):
+        if any(event["type"] == "run.settled" and event["runId"] == run_id for event in events):
             return events
         await asyncio.sleep(0.01)
     raise AssertionError(f"run {run_id} did not settle")
@@ -211,6 +206,8 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "streaming": True,
             "scriptedProvider": True,
             "runCancellation": True,
+            "tools": ["process.run"],
+            "executionPolicy": "full_access",
         },
     }
     return connection
@@ -435,10 +432,7 @@ async def test_cancel_between_turn_prepare_and_activation_prevents_execution(
         run_events = [event for event in replayed if event.run_id == run_id]
         assert not any(
             event.type in {"item.started", "item.delta"}
-            or (
-                event.type == "run.state_changed"
-                and event.payload["status"] == "running"
-            )
+            or (event.type == "run.state_changed" and event.payload["status"] == "running")
             for event in run_events
         )
         settled = [event for event in run_events if event.type == "run.settled"]
@@ -535,9 +529,7 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
         assert not first_connection.ack_completed.is_set()
         assert not first_task.done()
 
-        second_response = next(
-            value for value in second_connection.sent if value.get("id") == 2
-        )
+        second_response = next(value for value in second_connection.sent if value.get("id") == 2)
         second_run_id = cast(str, second_response["result"]["runId"])
         assert store.run_status(second_run_id) == "queued"
         replayed_before_first_ack, _ = store.replay_events(0, 1000)
@@ -550,9 +542,7 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
 
         first_ack_gate.set()
         await asyncio.wait_for(first_task, timeout=1)
-        first_response = next(
-            value for value in first_connection.sent if value.get("id") == 2
-        )
+        first_response = next(value for value in first_connection.sent if value.get("id") == 2)
         first_run_id = cast(str, first_response["result"]["runId"])
 
         replayed: list[JournalEvent] = []
@@ -561,8 +551,7 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
             settled_ids = [
                 event.run_id
                 for event in replayed
-                if event.type == "run.settled"
-                and event.run_id in {first_run_id, second_run_id}
+                if event.type == "run.settled" and event.run_id in {first_run_id, second_run_id}
             ]
             if len(settled_ids) == 2:
                 break
@@ -635,9 +624,7 @@ async def test_natural_completion_can_win_after_cancel_is_accepted(
         assert store.run_status(run_id) == "completed"
         replayed, _ = store.replay_events(0, 2000)
         settled = [
-            event
-            for event in replayed
-            if event.type == "run.settled" and event.run_id == run_id
+            event for event in replayed if event.type == "run.settled" and event.run_id == run_id
         ]
         assert len(settled) == 1
         assert settled[0].payload["status"] == "completed"
@@ -772,11 +759,14 @@ async def test_client_request_ids_make_mutating_commands_exactly_once(tmp_path: 
         )
         run_events = [event for event in replayed if event["runId"] == run_id]
         assert sum(event["type"] == "run.settled" for event in run_events) == 1
-        assert sum(
-            event["type"] == "item.completed"
-            and event["payload"].get("item", {}).get("role") == "user"
-            for event in run_events
-        ) == 1
+        assert (
+            sum(
+                event["type"] == "item.completed"
+                and event["payload"].get("item", {}).get("role") == "user"
+                for event in run_events
+            )
+            == 1
+        )
         user_event = next(
             event
             for event in run_events
@@ -825,15 +815,17 @@ async def test_scripted_provider_streams_two_contextual_turns_and_settles_once(
         ]
         assert first_types.count("item.delta") >= 2
         assert first_types[-2:] == ["item.completed", "run.settled"]
-        assert sum(
-            event["type"] == "run.settled" and event["runId"] == first_run_id
-            for event in first_events
-        ) == 1
+        assert (
+            sum(
+                event["type"] == "run.settled" and event["runId"] == first_run_id
+                for event in first_events
+            )
+            == 1
+        )
         first_answer = next(
             event["payload"]["item"]["content"]
             for event in first_events
-            if event["type"] == "item.completed"
-            and event["payload"]["item"]["role"] == "assistant"
+            if event["type"] == "item.completed" and event["payload"]["item"]["role"] == "assistant"
         )
         assert first_answer == "Scripted response to: alpha"
 
@@ -854,8 +846,7 @@ async def test_scripted_provider_streams_two_contextual_turns_and_settles_once(
         second_answer = next(
             event["payload"]["item"]["content"]
             for event in second_events
-            if event["type"] == "item.completed"
-            and event["payload"]["item"]["role"] == "assistant"
+            if event["type"] == "item.completed" and event["payload"]["item"]["role"] == "assistant"
         )
         assert second_answer == (
             "Previous user: alpha\n"
@@ -866,6 +857,197 @@ async def test_scripted_provider_streams_two_contextual_turns_and_settles_once(
             event["seq"] for event in first_events + second_events
         )
         assert sum(event["type"] == "run.settled" for event in second_events) == 1
+        await _shutdown(connection, process, 5)
+    finally:
+        await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_scripted_provider_runs_a_real_command_and_continues_the_conversation(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_urlsafe(32)
+    process, ready = await _start_runtime(token, tmp_path)
+    try:
+        connection = await _initialize(f"ws://{ready['host']}:{ready['port']}", token)
+        created = await _rpc(connection, 2, "thread.create", {"title": "Tool turn"})
+        thread = created["result"]["thread"]
+        command = (
+            "Write-Output 'gate5-tool-output'"
+            if os.name == "nt"
+            else "printf 'gate5-tool-output\\n'"
+        )
+        prompt = f"/process.run {command}"
+        started = await _rpc(
+            connection,
+            3,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": prompt,
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        run_id = started["result"]["runId"]
+        events = await _collect_run_events(connection, run_id)
+        run_events = [event for event in events if event["runId"] == run_id]
+        tool_call_events = [
+            event
+            for event in run_events
+            if event["type"] in {"item.started", "item.completed"}
+            and event["payload"].get("item", {}).get("kind") == "tool_call"
+        ]
+        tool_results = [
+            event
+            for event in run_events
+            if event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("kind") == "tool_result"
+        ]
+        assistant = next(
+            event["payload"]["item"]
+            for event in run_events
+            if event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("kind") == "message"
+            and event["payload"]["item"].get("role") == "assistant"
+        )
+
+        assert [event["payload"]["item"]["status"] for event in tool_call_events] == [
+            "running",
+            "completed",
+        ]
+        assert len(tool_results) == 1
+        result = tool_results[0]["payload"]["item"]["data"]["result"]
+        assert result["toolName"] == "process_run"
+        assert result["exitCode"] == 0
+        assert result["ok"] is True
+        assert "gate5-tool-output" in result["stdout"]
+        assert "gate5-tool-output" in assistant["content"]
+        assert not any(event["type"].startswith("permission.") for event in run_events)
+        assert sum(event["type"] == "run.settled" for event in run_events) == 1
+
+        replayed = await _replay_until_run_settled(
+            connection,
+            run_id,
+            request_id=100,
+        )
+        replayed_run = [event for event in replayed if event["runId"] == run_id]
+        assert [event["seq"] for event in replayed_run] == [event["seq"] for event in run_events]
+
+        follow_up = await _rpc(
+            connection,
+            200,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "what happened",
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        follow_up_events = await _collect_run_events(
+            connection,
+            follow_up["result"]["runId"],
+        )
+        follow_up_answer = next(
+            event["payload"]["item"]["content"]
+            for event in follow_up_events
+            if event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("role") == "assistant"
+        )
+        assert f"Previous user: {prompt}" in follow_up_answer
+        assert "Previous assistant: Command exited with code 0." in follow_up_answer
+        assert "Current user: what happened" in follow_up_answer
+        await _shutdown(connection, process, 201)
+    finally:
+        await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_process_run_preserves_partial_output_and_clears_running_tool(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_urlsafe(32)
+    process, ready = await _start_runtime(token, tmp_path)
+    try:
+        connection = await _initialize(f"ws://{ready['host']}:{ready['port']}", token)
+        created = await _rpc(connection, 2, "thread.create", {"title": "Cancel tool"})
+        thread = created["result"]["thread"]
+        command = (
+            "Write-Output 'before-stop'; Start-Sleep -Seconds 60"
+            if os.name == "nt"
+            else "printf 'before-stop\\n'; sleep 60"
+        )
+        started = await _rpc(
+            connection,
+            3,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": f"/process.run {command}",
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        run_id = started["result"]["runId"]
+        events: list[dict[str, Any]] = []
+        while True:
+            message = json.loads(await asyncio.wait_for(connection.recv(), timeout=10))
+            assert message["method"] == "event"
+            event = message["params"]
+            events.append(event)
+            if (
+                event["runId"] == run_id
+                and event["type"] == "item.started"
+                and event["payload"].get("item", {}).get("kind") == "tool_call"
+            ):
+                break
+        await asyncio.sleep(0.75)
+        notifications: list[dict[str, Any]] = []
+        cancelled = await _rpc(
+            connection,
+            4,
+            "run.cancel",
+            {"runId": run_id},
+            notifications,
+        )
+        assert cancelled["result"] == {
+            "accepted": True,
+            "runId": run_id,
+            "status": "running",
+        }
+        events.extend(notifications)
+        events.extend(await _collect_run_events(connection, run_id))
+        run_events = [event for event in events if event["runId"] == run_id]
+        tool_call_terminal = next(
+            event["payload"]["item"]
+            for event in run_events
+            if event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("kind") == "tool_call"
+        )
+        tool_result = next(
+            event["payload"]["item"]
+            for event in run_events
+            if event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("kind") == "tool_result"
+        )
+        settled = [event for event in run_events if event["type"] == "run.settled"]
+
+        assert tool_call_terminal["status"] == "cancelled"
+        assert tool_result["status"] == "cancelled"
+        assert tool_result["data"]["result"]["cancelled"] is True
+        assert "before-stop" in tool_result["data"]["result"]["stdout"]
+        assert len(settled) == 1
+        assert settled[0]["payload"]["status"] == "cancelled"
+        assert not any(
+            event["type"] == "item.completed"
+            and event["payload"].get("item", {}).get("role") == "assistant"
+            and event["payload"].get("item", {}).get("kind") == "message"
+            for event in run_events
+        )
         await _shutdown(connection, process, 5)
     finally:
         await _stop_failed_process(process)
@@ -1030,10 +1212,7 @@ async def test_jsonrpc_cancel_queued_run_never_executes_provider_and_replays_onc
         run_events = [event for event in replayed if event["runId"] == queued_run_id]
         assert not any(
             event["type"] in {"item.started", "item.delta"}
-            or (
-                event["type"] == "run.state_changed"
-                and event["payload"]["status"] == "running"
-            )
+            or (event["type"] == "run.state_changed" and event["payload"]["status"] == "running")
             for event in run_events
         )
         settled = [event for event in run_events if event["type"] == "run.settled"]
@@ -1174,8 +1353,7 @@ async def test_run_cancel_ack_precedes_canonical_cancelled_events(tmp_path: Path
         )
         run_id = started["result"]["runId"]
         while not any(
-            event["type"] == "item.delta" and event["runId"] == run_id
-            for event in notifications
+            event["type"] == "item.delta" and event["runId"] == run_id for event in notifications
         ):
             message = json.loads(await asyncio.wait_for(connection.recv(), timeout=5))
             assert message["method"] == "event"
@@ -1195,8 +1373,7 @@ async def test_run_cancel_ack_precedes_canonical_cancelled_events(tmp_path: Path
             "status": "running",
         }
         assert not any(
-            event["type"] == "run.settled" and event["runId"] == run_id
-            for event in before_ack
+            event["type"] == "run.settled" and event["runId"] == run_id for event in before_ack
         )
 
         terminal_events = await _collect_run_events(connection, run_id)
@@ -1262,14 +1439,15 @@ async def test_websocket_disconnect_does_not_cancel_run_and_replay_has_no_gaps(
         replayed = await _replay_until_run_settled(second, run_id, request_id=2)
         run_events = [event for event in replayed if event["runId"] == run_id]
         assert process.returncode is None
-        assert [event["seq"] for event in replayed] == list(
-            range(1, len(replayed) + 1)
-        )
+        assert [event["seq"] for event in replayed] == list(range(1, len(replayed) + 1))
         assert len({event["seq"] for event in replayed}) == len(replayed)
         assert sum(event["type"] == "run.settled" for event in run_events) == 1
-        assert next(
-            event for event in run_events if event["type"] == "run.settled"
-        )["payload"]["status"] == "completed"
+        assert (
+            next(event for event in run_events if event["type"] == "run.settled")["payload"][
+                "status"
+            ]
+            == "completed"
+        )
         await _shutdown(second, process, 400)
     finally:
         await _stop_failed_process(process)
