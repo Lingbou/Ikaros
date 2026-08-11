@@ -1,14 +1,16 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowLeft,
+  Cable,
   Check,
   ChevronDown,
   CircleUserRound,
   Palette,
   Search,
+  Sparkles,
   Settings
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 import {
@@ -32,10 +34,89 @@ import { useTranslation } from "../i18n";
 import { useAppStore } from "../store";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { ProfileSettings } from "./ProfileSettings";
+import {
+  ModelsSettings,
+  ProvidersSettings,
+  type CustomProvider,
+  type ProviderModel
+} from "./ProviderModelSettings";
 import { cx } from "./ui";
 
 const LANGUAGE_OPTIONS: readonly UiLanguagePreference[] = ["en", "zh-CN"];
-type SettingsSection = "general" | "profile" | "appearance";
+type SettingsSection = "general" | "profile" | "appearance" | "providers" | "models";
+
+interface ProviderSettingsState {
+  deepSeekConnected: boolean;
+  deepSeekModels: ProviderModel[];
+  customProviders: CustomProvider[];
+}
+
+type ProviderSettingsAction =
+  | { type: "connect-deepseek" }
+  | { type: "disconnect-deepseek" }
+  | { type: "add-custom"; provider: CustomProvider }
+  | { type: "disconnect-custom"; providerId: string }
+  | { type: "toggle-deepseek-model"; modelId: string }
+  | { type: "toggle-custom-model"; providerId: string; modelId: string };
+
+function createProviderSettingsState(): ProviderSettingsState {
+  return {
+    deepSeekConnected: false,
+    deepSeekModels: [
+      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", enabled: true },
+      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", enabled: true }
+    ],
+    customProviders: []
+  };
+}
+
+function providerSettingsReducer(
+  state: ProviderSettingsState,
+  action: ProviderSettingsAction
+): ProviderSettingsState {
+  switch (action.type) {
+    case "connect-deepseek":
+      return { ...state, deepSeekConnected: true };
+    case "disconnect-deepseek":
+      return { ...state, deepSeekConnected: false };
+    case "add-custom":
+      return {
+        ...state,
+        customProviders: [
+          ...state.customProviders.filter((provider) => provider.id !== action.provider.id),
+          action.provider
+        ]
+      };
+    case "disconnect-custom":
+      return {
+        ...state,
+        customProviders: state.customProviders.filter(
+          (provider) => provider.id !== action.providerId
+        )
+      };
+    case "toggle-deepseek-model":
+      return {
+        ...state,
+        deepSeekModels: state.deepSeekModels.map((model) =>
+          model.id === action.modelId ? { ...model, enabled: !model.enabled } : model
+        )
+      };
+    case "toggle-custom-model":
+      return {
+        ...state,
+        customProviders: state.customProviders.map((provider) =>
+          provider.id === action.providerId
+            ? {
+                ...provider,
+                models: provider.models.map((model) =>
+                  model.id === action.modelId ? { ...model, enabled: !model.enabled } : model
+                )
+              }
+            : provider
+        )
+      };
+  }
+}
 
 function GeneralSettings({
   preferences,
@@ -134,6 +215,11 @@ export function SettingsPage() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(prefersDarkColorScheme);
   const [savingCount, setSavingCount] = useState(0);
   const [saveFailed, setSaveFailed] = useState(false);
+  const [providerSettings, dispatchProviderSettings] = useReducer(
+    providerSettingsReducer,
+    undefined,
+    createProviderSettingsState
+  );
   const preferencesRef = useRef(preferences);
   const persistedPreferencesRef = useRef(cloneUiPreferences(DEFAULT_UI_PREFERENCES));
   const saveRevisionRef = useRef(0);
@@ -196,9 +282,7 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>("[data-settings-heading]")?.focus();
-    });
+    document.querySelector<HTMLElement>("[data-settings-heading]")?.focus();
   }, [activeSection]);
 
   const persistPatch = (patch: UiPreferencesPatch, transitionOrigin?: ThemeTransitionOrigin) => {
@@ -262,7 +346,9 @@ export function SettingsPage() {
     () => [
       { id: "general" as const, label: t("settings.general"), Icon: Settings },
       { id: "profile" as const, label: t("settings.profile"), Icon: CircleUserRound },
-      { id: "appearance" as const, label: t("settings.appearance"), Icon: Palette }
+      { id: "appearance" as const, label: t("settings.appearance"), Icon: Palette },
+      { id: "providers" as const, label: t("settings.providers.title"), Icon: Cable },
+      { id: "models" as const, label: t("settings.models.title"), Icon: Sparkles }
     ],
     [t]
   );
@@ -343,7 +429,7 @@ export function SettingsPage() {
             />
           ) : activeSection === "profile" ? (
             <ProfileSettings />
-          ) : (
+          ) : activeSection === "appearance" ? (
             <AppearanceSettings
               preferences={preferences}
               systemPrefersDark={systemPrefersDark}
@@ -357,6 +443,37 @@ export function SettingsPage() {
               onPreviewTheme={previewTheme}
               onPersistTheme={persistTheme}
               onReduceMotionChange={(reduceMotion) => persistPatch({ reduceMotion })}
+            />
+          ) : activeSection === "providers" ? (
+            <ProvidersSettings
+              deepSeekConnected={providerSettings.deepSeekConnected}
+              customProviders={providerSettings.customProviders}
+              onConnectDeepSeek={() => dispatchProviderSettings({ type: "connect-deepseek" })}
+              onDisconnectDeepSeek={() =>
+                dispatchProviderSettings({ type: "disconnect-deepseek" })
+              }
+              onAddCustomProvider={(provider) =>
+                dispatchProviderSettings({ type: "add-custom", provider })
+              }
+              onDisconnectCustomProvider={(providerId) =>
+                dispatchProviderSettings({ type: "disconnect-custom", providerId })
+              }
+            />
+          ) : (
+            <ModelsSettings
+              deepSeekConnected={providerSettings.deepSeekConnected}
+              deepSeekModels={providerSettings.deepSeekModels}
+              customProviders={providerSettings.customProviders}
+              onToggleDeepSeekModel={(modelId) =>
+                dispatchProviderSettings({ type: "toggle-deepseek-model", modelId })
+              }
+              onToggleCustomModel={(providerId, modelId) =>
+                dispatchProviderSettings({
+                  type: "toggle-custom-model",
+                  providerId,
+                  modelId
+                })
+              }
             />
           )}
           <p aria-live="polite" className="mt-2 min-h-4 px-1 text-[11px] leading-4 text-[#e08b8b]">

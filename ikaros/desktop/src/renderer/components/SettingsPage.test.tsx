@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -66,6 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   themeTransitionCoordinator.dispose();
   Reflect.deleteProperty(document, "startViewTransition");
   Reflect.deleteProperty(window, "ikarosDesktop");
@@ -105,6 +106,220 @@ describe("SettingsPage", () => {
     );
     expect(screen.getByRole("slider", { name: "Contrast" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Translucent sidebar" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Providers" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Models" })).toBeTruthy();
+  });
+
+  it("connects DeepSeek in memory and exposes only the two selected mock models", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+
+    expect(screen.getByRole("heading", { level: 1, name: "Providers" })).toBeTruthy();
+    expect(screen.getByText("DeepSeek")).toBeTruthy();
+    expect(screen.getByText("Custom provider")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+    const dialog = screen.getByRole("dialog", { name: "Connect DeepSeek" });
+    expect(within(dialog).queryByRole("button", { name: "Back" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Providers", hidden: true })
+    ).toBeTruthy();
+    const apiKey = screen.getByLabelText("DeepSeek API key") as HTMLInputElement;
+    const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+    expect(apiKey.type).toBe("password");
+    expect(continueButton.disabled).toBe(true);
+
+    fireEvent.change(apiKey, { target: { value: "mock-secret" } });
+    expect(continueButton.disabled).toBe(false);
+    fireEvent.click(continueButton);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: "Disconnect DeepSeek" })).toBeTruthy();
+    expect(screen.queryByDisplayValue("mock-secret")).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { level: 1, name: "Providers" })
+      )
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Models" })).toBeTruthy();
+    expect(screen.getByText("DeepSeek V4 Flash")).toBeTruthy();
+    expect(screen.getByText("DeepSeek V4 Pro")).toBeTruthy();
+    expect(screen.queryByText("DeepSeek Chat")).toBeNull();
+    expect(screen.queryByText("DeepSeek Reasoner")).toBeNull();
+
+    const flashSwitch = screen.getByRole("switch", {
+      name: "Toggle DeepSeek V4 Flash"
+    });
+    expect(flashSwitch.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(flashSwitch);
+    expect(flashSwitch.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("adds a custom provider without retaining connection fields", () => {
+    const { api, update } = desktopApiWithPreferences();
+    Object.defineProperty(window, "ikarosDesktop", { configurable: true, value: api });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Custom provider" }));
+    expect(screen.getByRole("dialog", { name: "Custom provider" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Providers", hidden: true })
+    ).toBeTruthy();
+    const submitButton = screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement;
+    expect(submitButton.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("Provider ID"), {
+      target: { value: "mock-provider" }
+    });
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "   " }
+    });
+    expect(submitButton.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Mock Provider" }
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://mock.invalid/v1" }
+    });
+    expect(submitButton.disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText("API key"), {
+      target: { value: "custom-secret" }
+    });
+    fireEvent.change(screen.getByLabelText("Model ID"), {
+      target: { value: "mock-model-v1" }
+    });
+    fireEvent.change(screen.getByLabelText("Model display name"), {
+      target: { value: "Mock Model V1" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    const modelIdInputs = screen.getAllByLabelText("Model ID");
+    const modelNameInputs = screen.getAllByLabelText("Model display name");
+    fireEvent.change(modelIdInputs[1], { target: { value: "mock-model-v1" } });
+    fireEvent.change(modelNameInputs[1], { target: { value: "Duplicate model" } });
+    fireEvent.change(screen.getByLabelText("Header name"), {
+      target: { value: "X-Mock-Auth" }
+    });
+    fireEvent.change(screen.getByLabelText("Header value"), {
+      target: { value: "header-secret" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    expect(screen.getByText("Mock Provider")).toBeTruthy();
+    expect(screen.queryByDisplayValue("custom-secret")).toBeNull();
+    expect(screen.queryByDisplayValue("header-secret")).toBeNull();
+    expect(screen.queryByDisplayValue("https://mock.invalid/v1")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mock Provider" }));
+    expect(screen.getByText("Mock Model V1")).toBeTruthy();
+    expect(screen.getAllByText("mock-model-v1")).toHaveLength(1);
+    expect(screen.queryByText("Duplicate model")).toBeNull();
+    expect(screen.getByRole("switch", { name: "Toggle Mock Model V1" })).toBeTruthy();
+  });
+
+  it("translates fixed provider UI while preserving product names", () => {
+    setUiLanguage("zh-CN");
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "供应商" }));
+    expect(screen.getByRole("heading", { level: 1, name: "供应商" })).toBeTruthy();
+    expect(screen.getByText("DeepSeek")).toBeTruthy();
+    expect(screen.getByText("自定义供应商")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "连接 DeepSeek" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "连接 自定义供应商" })).toBeTruthy();
+  });
+
+  it("dismisses the custom provider dialog without redundant navigation controls", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    const trigger = screen.getByRole("button", { name: "Connect Custom provider" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    const dialog = screen.getByRole("dialog", { name: "Custom provider" });
+    expect(within(dialog).queryByRole("button", { name: "Back" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("Provider ID"), {
+      target: { value: "discarded-draft" }
+    });
+    fireEvent.click(screen.getByTestId("provider-dialog-overlay"));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect((screen.getByLabelText("Provider ID") as HTMLInputElement).value).toBe("");
+    fireEvent.keyDown(screen.getByLabelText("Provider ID"), { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("dismisses the DeepSeek dialog while preserving the providers page", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    const trigger = screen.getByRole("button", { name: "Connect DeepSeek" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    const dialog = screen.getByRole("dialog", { name: "Connect DeepSeek" });
+    expect(within(dialog).queryByRole("button", { name: "Back" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "discarded-secret" }
+    });
+    fireEvent.keyDown(screen.getByLabelText("DeepSeek API key"), { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect((screen.getByLabelText("DeepSeek API key") as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByTestId("provider-dialog-overlay"));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("resets provider and model mock state when SettingsPage remounts", () => {
+    const firstRender = render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "temporary" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Toggle DeepSeek V4 Flash" }));
+    firstRender.unmount();
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    expect(screen.getByRole("button", { name: "Connect DeepSeek" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+    expect((screen.getByLabelText("DeepSeek API key") as HTMLInputElement).value).toBe("");
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "temporary-2" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    expect(
+      screen
+        .getByRole("switch", { name: "Toggle DeepSeek V4 Flash" })
+        .getAttribute("aria-checked")
+    ).toBe("true");
   });
 
   it("finds Profile through settings search without adding fake sections", () => {

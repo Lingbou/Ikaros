@@ -16,4 +16,9 @@
 
 ## Integration boundary
 
-The renderer consumes an `AgentClient` event stream. A production client can replace `MockAgentClient` without changing domain records or presentation components.
+The renderer consumes an `AgentClient`-shaped projection stream. Presentation
+components should remain reusable, but the current `domain.ts` records are UI
+projections rather than the runtime wire protocol. Production integration adds
+versioned wire DTOs, a `RuntimeClient`, and a projection reducer; it must not
+freeze mock scenarios, whole-card replacement events, or the global active-Run
+state into the runtime contract.

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const electron = vi.hoisted(() => {
@@ -49,7 +50,7 @@ describe("Linux desktop window", () => {
     expect(options).toEqual(
       expect.objectContaining({
         frame: false,
-        icon: "/opt/ikaros/resources/app.asar/build/icon.png",
+        icon: join(electron.app.getAppPath(), "build/icon.png"),
         titleBarStyle: "hidden",
       }),
     );
