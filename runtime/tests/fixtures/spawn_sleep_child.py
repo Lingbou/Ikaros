@@ -6,14 +6,13 @@ from pathlib import Path
 
 
 def main() -> int:
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    child_executable = pythonw if pythonw.is_file() else Path(sys.executable)
     child = subprocess.Popen(
         [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Start-Sleep -Seconds 60",
+            str(child_executable),
+            "-c",
+            "import time; time.sleep(60)",
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

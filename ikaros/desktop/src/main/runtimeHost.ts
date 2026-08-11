@@ -152,6 +152,7 @@ export interface RuntimeHostOptions {
   runtimeRoot: string;
   runtimeHome?: string;
   pythonExecutable?: string;
+  stderrSink?: (message: string) => void;
   parentPid?: number;
   startTimeoutMs?: number;
   stopTimeoutMs?: number;
@@ -592,7 +593,12 @@ export class RuntimeHost {
     this.child = child;
     child.once("exit", () => this.handleChildExit(child, generation));
     child.stderr.on("data", (chunk: Buffer) => {
-      process.stderr.write(`[ikaros-runtime] ${chunk.toString()}`);
+      const message = `[ikaros-runtime] ${chunk.toString()}`;
+      if (this.options.stderrSink) {
+        this.options.stderrSink(message);
+      } else {
+        process.stderr.write(message);
+      }
     });
 
     try {
