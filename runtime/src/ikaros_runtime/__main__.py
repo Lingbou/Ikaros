@@ -6,7 +6,7 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
-from .server import ServerSettings, run_server
+from .bootstrap import ServerSettings, run_runtime_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,7 +32,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         parent_pid=args.parent_pid,
         runtime_home=Path(os.environ.get("IKAROS_HOME", Path.home() / ".ikaros")),
     )
-    asyncio.run(run_server(settings))
+    asyncio.run(run_runtime_server(settings))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,17 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronRight, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Check,
+  ChevronRight,
+  ListPlus,
+  Plus,
+  RefreshCw,
+  Search,
+  Sparkles,
+  Trash2
+} from "lucide-react";
+import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -11,6 +22,7 @@ import {
 import { flushSync } from "react-dom";
 
 import type {
+  RuntimeDiscoveredModel,
   RuntimeModelInput,
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
@@ -22,6 +34,7 @@ import { cx } from "./ui";
 export interface ProvidersSettingsProps {
   providers: readonly RuntimeProviderSummary[];
   models: readonly RuntimeModelSummary[];
+  onDiscoverDeepSeekModels(apiKey: string): Promise<RuntimeDiscoveredModel[]>;
   onConfigureProvider(params: RuntimeProviderConfigureParams): Promise<void>;
   onDisconnectDeepSeek(): Promise<void>;
   onRemoveCustomProvider(providerId: string): Promise<void>;
@@ -53,6 +66,8 @@ interface CustomProviderDraft {
   models: DraftModel[];
   headers: DraftHeader[];
 }
+
+type ModelDiscoveryStatus = "idle" | "loading" | "ready" | "empty" | "error";
 
 type ProviderDialog = "deepseek" | "custom";
 const CUSTOM_PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -260,30 +275,83 @@ function SubmitButton({ children, disabled = false }: { children: ReactNode; dis
 
 function ModelDraftEditor({
   models,
-  onChange
+  onChange,
+  discoveredModels,
+  discoveryStatus = "idle",
+  discoveryDisabled = false,
+  onDiscover
 }: {
   models: readonly DraftModel[];
   onChange(models: DraftModel[]): void;
+  discoveredModels?: readonly RuntimeDiscoveredModel[];
+  discoveryStatus?: ModelDiscoveryStatus;
+  discoveryDisabled?: boolean;
+  onDiscover?(): void;
 }) {
   const { t } = useTranslation();
   const update = (key: number, patch: Partial<Omit<DraftModel, "key">>) => {
     onChange(models.map((model) => (model.key === key ? { ...model, ...patch } : model)));
   };
+  const canChooseDiscoveredModel = Boolean(discoveredModels?.length);
+  const discoverButtonLabel =
+    discoveryStatus === "loading"
+      ? t("settings.providers.fetchingModels")
+      : discoveryStatus === "error" || discoveryStatus === "empty"
+        ? t("settings.providers.retryFetchModels")
+        : discoveryStatus === "ready"
+          ? t("settings.providers.refreshModels")
+          : t("settings.providers.fetchModels");
+  const discoveryMessage =
+    discoveryStatus === "loading"
+      ? t("settings.providers.fetchingModels")
+      : discoveryStatus === "empty"
+        ? t("settings.providers.noFetchedModels")
+        : discoveryStatus === "error"
+          ? t("settings.providers.fetchModelsFailed")
+          : discoveryStatus === "ready"
+            ? t("settings.providers.fetchedModels", {
+                count: discoveredModels?.length ?? 0
+              })
+            : "";
   return (
     <fieldset className="pt-1">
-      <legend className="mb-2.5 text-[12px] font-semibold leading-[18px] text-[var(--text)]">
+      <legend className="sr-only">
         {t("settings.providers.models")}
       </legend>
-      <div className="space-y-2">
-        {models.map((model) => (
-          <div key={model.key} className="flex items-center gap-2">
-            <input
-              value={model.id}
-              onChange={(event) => update(model.key, { id: event.currentTarget.value })}
-              aria-label={t("settings.providers.modelId")}
-              placeholder={t("settings.providers.modelIdPlaceholder")}
-              className={cx(inputClassName, "min-w-0 flex-1")}
+      <div className="mb-2.5 flex min-h-8 items-center justify-between gap-3">
+        <span className="text-[12px] font-semibold leading-[18px] text-[var(--text)]">
+          {t("settings.providers.models")}
+        </span>
+        {onDiscover ? (
+          <button
+            type="button"
+            disabled={discoveryDisabled || discoveryStatus === "loading"}
+            onClick={onDiscover}
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold leading-4 text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-[var(--muted-strong)]"
+          >
+            <RefreshCw
+              size={12}
+              aria-hidden="true"
+              className={discoveryStatus === "loading" ? "animate-spin" : undefined}
             />
+            {discoverButtonLabel}
+          </button>
+        ) : null}
+      </div>
+      {onDiscover ? (
+        <p
+          aria-live="polite"
+          className={cx(
+            "mb-2 min-h-4 text-[11px] leading-4",
+            discoveryStatus === "error" ? "text-[#e08b8b]" : "text-[var(--muted)]"
+          )}
+        >
+          {discoveryMessage}
+        </p>
+      ) : null}
+      <div className="space-y-2">
+        {models.map((model, rowIndex) => (
+          <div key={model.key} className="flex items-center gap-2">
             <input
               value={model.displayName}
               onChange={(event) =>
@@ -293,6 +361,66 @@ function ModelDraftEditor({
               placeholder={t("settings.providers.modelDisplayNamePlaceholder")}
               className={cx(inputClassName, "min-w-0 flex-1")}
             />
+            <input
+              value={model.id}
+              onChange={(event) => update(model.key, { id: event.currentTarget.value })}
+              aria-label={t("settings.providers.modelId")}
+              placeholder={t("settings.providers.modelIdPlaceholder")}
+              className={cx(inputClassName, "min-w-0 flex-1")}
+            />
+            {onDiscover ? (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={!canChooseDiscoveredModel}
+                    aria-label={t("settings.providers.chooseFetchedModel", {
+                      row: rowIndex + 1
+                    })}
+                    className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--muted)]"
+                  >
+                    <ListPlus size={14} aria-hidden="true" />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    side="bottom"
+                    align="end"
+                    sideOffset={5}
+                    className="glass-menu z-[140] max-h-[260px] min-w-[260px] max-w-[420px] overflow-y-auto rounded-xl p-1.5"
+                  >
+                    {discoveredModels?.map((candidate) => {
+                      const selectedElsewhere = models.some(
+                        (item) => item.key !== model.key && item.id.trim() === candidate.id
+                      );
+                      const selectedHere = model.id.trim() === candidate.id;
+                      return (
+                        <DropdownMenu.Item
+                          key={candidate.id}
+                          disabled={selectedElsewhere}
+                          onSelect={() => update(model.key, { id: candidate.id })}
+                          className="flex min-h-9 cursor-default select-none items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] leading-4 text-[var(--text)] outline-none data-[disabled]:opacity-35 data-[highlighted]:bg-[var(--surface-hover)]"
+                        >
+                          <span className="flex size-4 shrink-0 items-center justify-center text-[var(--accent)]">
+                            {selectedHere ? <Check size={13} aria-hidden="true" /> : null}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">
+                              {candidate.displayName}
+                            </span>
+                            {candidate.displayName !== candidate.id ? (
+                              <span className="block truncate text-[10px] text-[var(--muted)]">
+                                {candidate.id}
+                              </span>
+                            ) : null}
+                          </span>
+                        </DropdownMenu.Item>
+                      );
+                    })}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            ) : null}
             <button
               type="button"
               aria-label={t("settings.providers.removeModel")}
@@ -319,19 +447,55 @@ function ModelDraftEditor({
 function DeepSeekConnectForm({
   existingModels,
   onConnected,
-  onConnect
+  onConnect,
+  onDiscoverModels
 }: {
   existingModels: readonly RuntimeModelSummary[];
   onConnected(): void;
   onConnect(params: RuntimeProviderConfigureParams): Promise<void>;
+  onDiscoverModels(apiKey: string): Promise<RuntimeDiscoveredModel[]>;
 }) {
   const { t } = useTranslation();
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState(() => createModelDrafts(existingModels));
+  const [discoveredModels, setDiscoveredModels] = useState<RuntimeDiscoveredModel[]>([]);
+  const [discoveryStatus, setDiscoveryStatus] = useState<ModelDiscoveryStatus>("idle");
   const [submitting, setSubmitting] = useState(false);
   const [failed, setFailed] = useState(false);
   const apiKeyInput = useRef<HTMLInputElement>(null);
+  const discoveryRevision = useRef(0);
   const configuredModels = normalizedModels(models);
+
+  useEffect(
+    () => () => {
+      discoveryRevision.current += 1;
+    },
+    []
+  );
+
+  const changeApiKey = (nextApiKey: string) => {
+    discoveryRevision.current += 1;
+    setApiKey(nextApiKey);
+    setDiscoveredModels([]);
+    setDiscoveryStatus("idle");
+  };
+
+  const discoverModels = async () => {
+    const normalizedKey = apiKey.trim();
+    if (!normalizedKey || discoveryStatus === "loading" || submitting) return;
+
+    const revision = ++discoveryRevision.current;
+    setDiscoveryStatus("loading");
+    try {
+      const candidates = await onDiscoverModels(normalizedKey);
+      if (revision !== discoveryRevision.current) return;
+      setDiscoveredModels(candidates);
+      setDiscoveryStatus(candidates.length > 0 ? "ready" : "empty");
+    } catch {
+      if (revision !== discoveryRevision.current) return;
+      setDiscoveryStatus("error");
+    }
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -342,10 +506,13 @@ function DeepSeekConnectForm({
     setFailed(false);
     try {
       await onConnect({ kind: "deepseek", apiKey: normalizedKey, models: configuredModels });
+      discoveryRevision.current += 1;
       if (apiKeyInput.current) apiKeyInput.current.value = "";
       flushSync(() => {
         setApiKey("");
         setModels([createModelDraft()]);
+        setDiscoveredModels([]);
+        setDiscoveryStatus("idle");
       });
       onConnected();
     } catch {
@@ -366,7 +533,7 @@ function DeepSeekConnectForm({
           autoComplete="off"
           aria-label={t("settings.providers.deepSeekApiKey")}
           value={apiKey}
-          onChange={(event) => setApiKey(event.currentTarget.value)}
+          onChange={(event) => changeApiKey(event.currentTarget.value)}
           placeholder={t("settings.providers.apiKeyPlaceholder")}
           className={inputClassName}
         />
@@ -375,7 +542,14 @@ function DeepSeekConnectForm({
         {t("settings.providers.credentialNotice")}
       </p>
       <div className="mt-5">
-        <ModelDraftEditor models={models} onChange={setModels} />
+        <ModelDraftEditor
+          models={models}
+          onChange={setModels}
+          discoveredModels={discoveredModels}
+          discoveryStatus={discoveryStatus}
+          discoveryDisabled={!apiKey.trim() || submitting}
+          onDiscover={() => void discoverModels()}
+        />
       </div>
       <p aria-live="polite" className="mt-3 min-h-4 text-[11px] leading-4 text-[#e08b8b]">
         {failed ? t("settings.providers.saveFailed") : ""}
@@ -593,6 +767,7 @@ function CustomProviderForm({
 export function ProvidersSettings({
   providers,
   models,
+  onDiscoverDeepSeekModels,
   onConfigureProvider,
   onDisconnectDeepSeek,
   onRemoveCustomProvider
@@ -778,6 +953,7 @@ export function ProvidersSettings({
                 existingModels={deepSeekModels}
                 onConnected={() => setActiveDialog(null)}
                 onConnect={onConfigureProvider}
+                onDiscoverModels={onDiscoverDeepSeekModels}
               />
             ) : activeDialog === "custom" ? (
               <CustomProviderForm

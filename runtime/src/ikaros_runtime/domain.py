@@ -12,10 +12,25 @@ def utc_now() -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceSummary:
+    id: str
+    name: str
+    root_uri: str | None
+
+    def to_wire(self) -> JsonObject:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "rootUri": self.root_uri,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ThreadSummary:
     id: str
     title: str | None
     default_branch_id: str
+    workspace: WorkspaceSummary | None
     created_at: str
     updated_at: str
 
@@ -24,6 +39,7 @@ class ThreadSummary:
             "id": self.id,
             "title": self.title,
             "defaultBranchId": self.default_branch_id,
+            "workspace": self.workspace.to_wire() if self.workspace is not None else None,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         }
@@ -64,6 +80,7 @@ class RunDescriptor:
     provider_id: str
     model_id: str
     execution_policy: str
+    workspace: WorkspaceSummary | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,3 +104,11 @@ class PreparedTurn:
 @dataclass(frozen=True, slots=True)
 class RecoveryPlan:
     queued_run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CommandOutcome:
+    result: JsonObject
+    events_after_ack: tuple[JournalEvent, ...] = ()
+    run_after_ack: str | None = None
+    cancel_after_ack: str | None = None

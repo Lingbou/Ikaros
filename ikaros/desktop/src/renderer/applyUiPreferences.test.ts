@@ -33,7 +33,9 @@ const lightTheme: ThemePreferences = {
 const preferences: UiPreferences = {
   colorScheme: "system",
   language: "zh-CN",
+  username: "User",
   sidebarCollapsed: false,
+  sidebarWidth: 260,
   reduceMotion: true,
   darkTheme,
   lightTheme

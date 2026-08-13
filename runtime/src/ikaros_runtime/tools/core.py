@@ -4,9 +4,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .cancellation import CancellationToken, RunCancelled
-from .domain import JsonObject
-from .json_codec import dumps as json_dumps
+from ..cancellation import CancellationToken, RunCancelled
+from ..domain import JsonObject
+from ..json_codec import dumps as json_dumps
 from .policy import ExecutionPolicy
 
 
@@ -83,6 +83,7 @@ class Tool(Protocol):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
+        default_cwd: str | None = None,
     ) -> ToolResult: ...
 
 
@@ -121,6 +122,7 @@ class ToolExecutor:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
+        default_cwd: str | None = None,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
         tool = self._registry.resolve(call.name)
@@ -132,7 +134,11 @@ class ToolExecutor:
             )
         self._policy.authorize(call.name, call.arguments)
         cancellation.raise_if_cancelled()
-        return await tool.execute(call, cancellation=cancellation)
+        return await tool.execute(
+            call,
+            cancellation=cancellation,
+            default_cwd=default_cwd,
+        )
 
 
 def require_exact_arguments(

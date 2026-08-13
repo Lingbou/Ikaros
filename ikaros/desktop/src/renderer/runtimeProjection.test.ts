@@ -1,15 +1,49 @@
 import { describe, expect, it } from "vitest";
 
 import type { RuntimeJournalEvent, RuntimeThreadSummary } from "../shared/runtime";
-import { projectRuntimeThreads, replayRuntimeEvents } from "./runtimeProjection";
+import {
+  projectRuntimeProjects,
+  projectRuntimeThreads,
+  replayRuntimeEvents,
+} from "./runtimeProjection";
 
 const summary: RuntimeThreadSummary = {
   id: "thread-1",
   title: "Runtime chat",
   defaultBranchId: "branch-1",
+  workspace: null,
   createdAt: "2026-08-11T12:00:00.000Z",
   updatedAt: "2026-08-11T12:00:00.000Z"
 };
+
+describe("Runtime workspace projection", () => {
+  it("groups workspace Threads once and leaves ordinary Threads standalone", () => {
+    const workspace = {
+      id: "workspace-ikaros",
+      name: "Ikaros",
+      rootUri: "C:\\Workspace\\github\\Ikaros",
+    };
+    const summaries = [
+      { ...summary, id: "project-thread-1", workspace },
+      { ...summary, id: "project-thread-2", workspace },
+      { ...summary, id: "ordinary-thread", workspace: null },
+    ];
+
+    expect(projectRuntimeThreads(summaries).map((thread) => thread.projectId)).toEqual([
+      workspace.id,
+      workspace.id,
+      null,
+    ]);
+    expect(projectRuntimeProjects(summaries)).toEqual([
+      {
+        id: workspace.id,
+        name: workspace.name,
+        color: "var(--muted-strong)",
+        rootUri: workspace.rootUri,
+      },
+    ]);
+  });
+});
 
 function event(
   seq: number,

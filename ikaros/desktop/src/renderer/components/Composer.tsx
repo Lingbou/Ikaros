@@ -56,7 +56,7 @@ const MODEL_OPTIONS = ["Ikaros", "DeepSeek", "local"] as const;
 type AccessMode = (typeof ACCESS_OPTIONS)[number]["id"];
 type ModelId = (typeof MODEL_OPTIONS)[number];
 
-function AccessIcon({ mode, size = 13 }: { mode: AccessMode; size?: number }) {
+function AccessIcon({ mode, size = 11 }: { mode: AccessMode; size?: number }) {
   if (mode === "ask") return <Hand size={size} />;
   if (mode === "full") return <ShieldAlert size={size} />;
   return <ShieldCheck size={size} />;
@@ -78,8 +78,10 @@ export function Composer({
   const setDraft = useAppStore((state) => state.setDraft);
   const sendDraft = useAppStore((state) => state.sendDraft);
   const stopRun = useAppStore((state) => state.stopRun);
+  const bindWorkspaceFromFolder = useAppStore((state) => state.bindWorkspaceFromFolder);
   const [accessMode, setAccessMode] = useState<AccessMode>("full");
   const [model, setModel] = useState<ModelId>("Ikaros");
+  const [projectFolderError, setProjectFolderError] = useState(false);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -88,19 +90,16 @@ export function Composer({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const canStop = runStatus === "queued" || runStatus === "running";
   const runtimeModelOptions = useMemo(() => {
-    const configuredProviders = new Map(
-      providers
-        .filter((provider) => provider.configured)
-        .map((provider) => [provider.id, provider.displayName] as const),
+    const configuredProviderIds = new Set(
+      providers.filter((provider) => provider.configured).map((provider) => provider.id),
     );
     return models.flatMap((candidate) => {
-      const providerName = configuredProviders.get(candidate.providerId);
-      if (!providerName || !candidate.enabled) return [];
+      if (!configuredProviderIds.has(candidate.providerId) || !candidate.enabled) return [];
       return [
         {
           providerId: candidate.providerId,
           modelId: candidate.id,
-          label: `${providerName} · ${candidate.displayName}`,
+          label: candidate.displayName,
         },
       ];
     });
@@ -179,6 +178,13 @@ export function Composer({
     setDraft(`${command.token} `);
     setSlashDismissed(true);
     queueMicrotask(() => textareaRef.current?.focus());
+  };
+
+  const addProjectFolder = () => {
+    setProjectFolderError(false);
+    void bindWorkspaceFromFolder().catch(() => {
+      setProjectFolderError(true);
+    });
   };
 
   return (
@@ -266,10 +272,10 @@ export function Composer({
               <DropdownMenu.Trigger asChild>
                 <IconButton
                   label={t("composer.addContext")}
-                  className="size-8 rounded-full border border-[var(--border-soft)] bg-[var(--panel)]"
+                  className="size-7 rounded-full border border-[var(--border-soft)] bg-[var(--panel)]"
                   onPointerDown={() => setSlashDismissed(true)}
                 >
-                  <Plus size={16} />
+                  <Plus size={13} />
                 </IconButton>
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
@@ -282,8 +288,8 @@ export function Composer({
                   <DropdownMenu.Item disabled className="outline-none">
                     <MenuItem icon={<Paperclip size={14} />} label={t("composer.attachFile")} detail={t("common.unavailable")} disabled />
                   </DropdownMenu.Item>
-                  <DropdownMenu.Item disabled className="outline-none">
-                    <MenuItem icon={<FolderPlus size={14} />} label={t("composer.addProjectFolder")} detail={t("common.unavailable")} disabled />
+                  <DropdownMenu.Item onSelect={addProjectFolder} className="outline-none">
+                    <MenuItem icon={<FolderPlus size={14} />} label={t("composer.addProjectFolder")} />
                   </DropdownMenu.Item>
                   <DropdownMenu.Item disabled className="outline-none">
                     <MenuItem icon={<Wrench size={14} />} label={t("composer.chooseTools")} detail={t("common.unavailable")} disabled />
@@ -296,17 +302,18 @@ export function Composer({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
+                  aria-label={t(access.shortLabelKey)}
                   disabled={runtimeMode}
                   onPointerDown={() => setSlashDismissed(true)}
                   className={
                     accessMode === "full"
-                      ? "flex h-8 items-center gap-1.5 rounded-full bg-[#4a2b1f] px-2.5 text-[11px] text-[#ff9a67] hover:bg-[#553225]"
-                      : "flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                      ? "flex h-7 items-center gap-1 rounded-full bg-[#4a2b1f] px-2 text-[10px] leading-4 text-[#ff9a67] hover:bg-[#553225]"
+                      : "flex h-7 items-center gap-1 rounded-full px-2 text-[10px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                   }
                 >
                   <AccessIcon mode={accessMode} />
                   <span className="hidden sm:inline">{t(access.shortLabelKey)}</span>
-                  <ChevronDown size={11} className="text-[var(--muted)]" />
+                  <ChevronDown size={9} className="text-[var(--muted)]" />
                 </button>
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
@@ -365,9 +372,9 @@ export function Composer({
                   type="button"
                   disabled={runtimeMode && runtimeModelOptions.length === 0}
                   onPointerDown={() => setSlashDismissed(true)}
-                  className="hidden h-8 min-w-0 items-center gap-1 rounded-lg px-2 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
+                  className="hidden h-8 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[10px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
                 >
-                  <span className="max-w-28 truncate">
+                  <span className="min-w-0 max-w-[148px] truncate">
                     {runtimeMode
                       ? selectedRuntimeModel?.label ??
                         (runtimeModelOptions.length === 0
@@ -385,7 +392,7 @@ export function Composer({
                   side="top"
                   align="end"
                   sideOffset={8}
-                  className="glass-menu z-[90] min-w-52 rounded-xl p-1"
+                  className="glass-menu z-[90] min-w-48 max-w-[280px] rounded-xl p-1"
                 >
                   {runtimeMode
                     ? runtimeModelOptions.map((candidate) => (
@@ -397,7 +404,7 @@ export function Composer({
                               modelId: candidate.modelId,
                             })
                           }
-                          className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                          className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[11px] leading-4 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
                         >
                           <span className="flex size-4 items-center justify-center text-[var(--accent)]">
                             {selectedRuntimeModel?.providerId === candidate.providerId &&
@@ -405,7 +412,7 @@ export function Composer({
                               <Check size={12} />
                             ) : null}
                           </span>
-                          {candidate.label}
+                          <span className="min-w-0 truncate">{candidate.label}</span>
                         </DropdownMenu.Item>
                       ))
                     : MODEL_OPTIONS.map((candidate) => (
@@ -438,6 +445,11 @@ export function Composer({
               )}
             </button>
           </div>
+          {projectFolderError ? (
+            <div role="alert" className="px-1 pt-1.5 text-[11px] leading-4 text-[#e07070]">
+              {t("composer.addProjectFolderFailed")}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

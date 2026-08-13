@@ -7,6 +7,8 @@ import { useAppStore } from "./store";
 
 export function usePlatformPreferences() {
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
+  const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
+  const setProfileUsername = useAppStore((state) => state.setProfileUsername);
 
   useEffect(() => {
     const api = window.ikarosDesktop;
@@ -27,6 +29,8 @@ export function usePlatformPreferences() {
       applyingHostValue = true;
       applyDocumentPreferences(preferences, colorSchemeQuery?.matches ?? true);
       setSidebarOpen(!preferences.sidebarCollapsed);
+      setSidebarWidth(preferences.sidebarWidth);
+      setProfileUsername(preferences.username);
       applyingHostValue = false;
       initialized = true;
     };
@@ -69,5 +73,5 @@ export function usePlatformPreferences() {
       unsubscribeStore();
       colorSchemeQuery?.removeEventListener("change", onSystemSchemeChanged);
     };
-  }, [setSidebarOpen]);
+  }, [setProfileUsername, setSidebarOpen, setSidebarWidth]);
 }

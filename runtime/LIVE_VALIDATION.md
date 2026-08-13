@@ -39,9 +39,10 @@ argument or environment variable.
 
 ## Credential evidence
 
-The live credential was persisted through `provider.configure`. Within
-Ikaros-owned state, its only permitted persistent location is
-`%USERPROFILE%/.ikaros/config.yaml`.
+The live credential was persisted through `provider.configure` inside a unique
+temporary Runtime home. The live smoke never uses the user's normal
+`%USERPROFILE%/.ikaros` directory, and removes its temporary Runtime home after
+the credential checks complete.
 
 The following checks passed without printing or hashing the credential:
 
@@ -50,16 +51,16 @@ The following checks passed without printing or hashing the credential:
 - JSON-RPC responses, replayed events, Provider/Model summaries, and the
   renderer store snapshot did not contain it;
 - `SqliteRuntimeStore.journal_contains_protected_values` returned false;
-- raw-byte scans of `state.db*`, `runtime.lock`, temporary files, and every
-  other Ikaros-owned file returned no match;
+- raw-byte scans of the temporary `state.db*`, `runtime.lock`, and every other
+  file in the isolated Runtime home returned no match;
 - raw-byte scans of repository tracked and untracked files returned no match;
-- `config.yaml` contained exactly one matching value;
+- the temporary `config.yaml` contained the expected matching value and was
+  removed with the isolated Runtime home;
 - the source credential file supplied for validation was preserved because its
   deletion was not authorized.
 
-On this machine, `icacls` reported only the current user, `SYSTEM`, and
-`Administrators` on `config.yaml`; no broad `Everyone`, `Users`, or
-`Authenticated Users` grant was present.
+The user's existing Provider configuration and conversation database are not
+read, modified, or removed by the live smoke.
 
 ## Re-running
 

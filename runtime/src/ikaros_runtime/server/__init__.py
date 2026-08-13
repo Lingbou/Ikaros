@@ -1,0 +1,1 @@
+"""Authenticated loopback WebSocket transport."""

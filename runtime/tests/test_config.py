@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ikaros_runtime.config import (
+from ikaros_runtime.providers.registry import (
     DEEPSEEK_BASE_URL,
     ConfigError,
     ConfigStore,
@@ -81,7 +81,7 @@ def test_deepseek_write_is_explicit_atomic_and_redacted(tmp_path: Path) -> None:
         assert (home / "config.yaml").stat().st_mode & 0o777 == 0o600
 
 
-def test_deepseek_disconnect_retains_explicit_models_and_is_idempotent(tmp_path: Path) -> None:
+def test_deepseek_disconnect_removes_models_and_is_idempotent(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path)
     store.configure_deepseek(api_key="sk-private", models=[model()])
 
@@ -91,8 +91,47 @@ def test_deepseek_disconnect_retains_explicit_models_and_is_idempotent(tmp_path:
     assert summary.configured is False
     assert summary.credential_configured is False
     assert repeated == summary
-    assert store.model_summaries()[0].id == "deepseek-chat"
-    assert "api_key" not in yaml.safe_load(store.path.read_text())["providers"]["deepseek"]
+    assert store.get_provider("deepseek") is None
+    assert store.model_summaries() == ()
+    assert not store.path.exists()
+
+
+def test_deepseek_disconnect_preserves_custom_provider_across_reload(tmp_path: Path) -> None:
+    custom_key = "sk-custom-must-survive"
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(api_key="sk-deepseek-remove", models=[model()])
+    store.configure_custom(
+        provider_id="local",
+        display_name="Local Provider",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=custom_key,
+        headers=None,
+        models=[model("local-model", "Local Model")],
+    )
+    store.set_model_enabled("local", "local-model", False)
+
+    store.disconnect_deepseek()
+
+    assert store.get_provider("deepseek") is None
+    custom = store.get_provider("local")
+    assert custom is not None
+    assert custom.api_key == custom_key
+    assert [(item.id, item.display_name, item.enabled) for item in custom.models] == [
+        ("local-model", "Local Model", False)
+    ]
+
+    reloaded = ConfigStore(tmp_path)
+    assert reloaded.get_provider("deepseek") is None
+    restored_custom = reloaded.get_provider("local")
+    assert restored_custom is not None
+    assert restored_custom.api_key == custom_key
+    assert [(item.id, item.display_name, item.enabled) for item in restored_custom.models] == [
+        ("local-model", "Local Model", False)
+    ]
+    assert reloaded.protected_values() == (custom_key,)
+    assert [(item.provider_id, item.id) for item in reloaded.model_summaries()] == [
+        ("local", "local-model")
+    ]
 
 
 def test_custom_provider_supports_optional_key_headers_and_reload(tmp_path: Path) -> None:
@@ -516,7 +555,7 @@ def test_failed_atomic_replace_preserves_file_memory_and_cleans_temporary_file(
         del source, target
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("ikaros_runtime.config.os.replace", fail_replace)
+    monkeypatch.setattr("ikaros_runtime.providers.registry.os.replace", fail_replace)
 
     with pytest.raises(ConfigError) as captured:
         store.configure_deepseek(api_key="sk-new-secret", models=[model("new", "New")])
@@ -547,7 +586,7 @@ def test_successful_replace_does_not_depend_on_post_commit_target_chmod(
             raise OSError("target chmod must not run after atomic replace")
         original_chmod(path, mode)
 
-    monkeypatch.setattr("ikaros_runtime.config.os.chmod", reject_target_chmod)
+    monkeypatch.setattr("ikaros_runtime.providers.registry.os.chmod", reject_target_chmod)
 
     store.configure_deepseek(api_key="sk-replaced", models=[model("new", "New")])
 

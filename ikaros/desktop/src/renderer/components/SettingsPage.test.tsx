@@ -73,6 +73,9 @@ function desktopApiWithPreferences(
         configureProvider: async () => {
           throw new Error("not used in preference settings tests");
         },
+        discoverProviderModels: async () => {
+          throw new Error("not used in preference settings tests");
+        },
         disconnectProvider: async () => {
           throw new Error("not used in preference settings tests");
         },
@@ -84,6 +87,9 @@ function desktopApiWithPreferences(
           throw new Error("not used in preference settings tests");
         },
         onEvent: () => () => undefined
+      },
+      workspace: {
+        chooseDirectory: async () => null
       },
       preferences: {
         get: async () => cloneUiPreferences(current),
@@ -141,8 +147,8 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Profile" }));
 
     expect(screen.getByRole("heading", { level: 1, name: "Profile" })).toBeTruthy();
-    expect(screen.getByText("HC")).toBeTruthy();
-    expect(screen.getByText("hc")).toBeTruthy();
+    expect(screen.getByText("US")).toBeTruthy();
+    expect(screen.getByText("User")).toBeTruthy();
     expect(screen.queryByText(/@/)).toBeNull();
     expect(screen.queryByText("Free")).toBeNull();
     expect(screen.queryByText("Share")).toBeNull();
@@ -274,6 +280,192 @@ describe("SettingsPage", () => {
       })
     );
     expect(modelSwitch.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("removes the DeepSeek model group after disconnecting the provider", async () => {
+    const disconnectedProvider = {
+      id: "deepseek",
+      displayName: "DeepSeek",
+      origin: "builtin" as const,
+      configured: false,
+      credentialConfigured: false,
+      health: "unknown" as const
+    };
+    const disconnectProvider = vi.fn(async (providerId: "deepseek") => {
+      expect(providerId).toBe("deepseek");
+      useAppStore.setState({ providers: [disconnectedProvider], models: [] });
+    });
+    useAppStore.setState({
+      providers: [
+        {
+          ...disconnectedProvider,
+          configured: true,
+          credentialConfigured: true
+        }
+      ],
+      models: [
+        {
+          providerId: "deepseek",
+          id: "deepseek-chat",
+          displayName: "DeepSeek Chat",
+          enabled: true
+        }
+      ],
+      disconnectProvider
+    });
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect DeepSeek" }));
+
+    await waitFor(() => expect(disconnectProvider).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Connect DeepSeek" })).toBeTruthy()
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+
+    expect(screen.getByRole("heading", { level: 1, name: "Models" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "DeepSeek" })).toBeNull();
+    expect(screen.queryByText("DeepSeek Chat")).toBeNull();
+    expect(screen.getByText("Connect a provider to manage its models.")).toBeTruthy();
+  });
+
+  it("fetches DeepSeek models without replacing a manual row until one is selected", async () => {
+    const discoverDeepSeekModels = vi.fn(async (apiKey: string) => {
+      expect(apiKey).toBe("discovery-secret");
+      return [
+        { id: "deepseek-chat", displayName: "DeepSeek Chat" },
+        { id: "deepseek-reasoner", displayName: "DeepSeek Reasoner" }
+      ];
+    });
+    useAppStore.setState({ providers: [], models: [], discoverDeepSeekModels });
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+
+    const fetchButton = screen.getByRole("button", { name: "Fetch models" });
+    const chooseButton = screen.getByRole("button", {
+      name: "Choose a fetched model for row 1"
+    });
+    const displayNameInput = screen.getByLabelText("Model display name");
+    const modelIdInput = screen.getByLabelText("Model ID");
+    expect(
+      displayNameInput.compareDocumentPosition(modelIdInput) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).not.toBe(0);
+    expect((displayNameInput as HTMLInputElement).placeholder).toBe("Display name");
+    expect((modelIdInput as HTMLInputElement).placeholder).toBe("model-id");
+    expect((fetchButton as HTMLButtonElement).disabled).toBe(true);
+    expect((chooseButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("Model ID"), {
+      target: { value: "manual-model" }
+    });
+    fireEvent.change(screen.getByLabelText("Model display name"), {
+      target: { value: "Manual model" }
+    });
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "discovery-secret" }
+    });
+    expect((fetchButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(fetchButton);
+
+    expect(await screen.findByText("Fetched 2 models.")).toBeTruthy();
+    expect(discoverDeepSeekModels).toHaveBeenCalledOnce();
+    expect((screen.getByLabelText("Model ID") as HTMLInputElement).value).toBe(
+      "manual-model"
+    );
+
+    fireEvent.pointerDown(chooseButton);
+    fireEvent.click(screen.getByRole("menuitem", { name: /DeepSeek Reasoner/ }));
+    expect((screen.getByLabelText("Model ID") as HTMLInputElement).value).toBe(
+      "deepseek-reasoner"
+    );
+    expect((screen.getByLabelText("Model display name") as HTMLInputElement).value).toBe(
+      "Manual model"
+    );
+
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "different-secret" }
+    });
+    expect(screen.queryByText("Fetched 2 models.")).toBeNull();
+    expect((chooseButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("fills only the model ID from discovery and falls back to it when saving", async () => {
+    const configureProvider = vi.fn(async () => undefined);
+    const discoverDeepSeekModels = vi.fn(async () => [
+      { id: "deepseek-reasoner", displayName: "DeepSeek Reasoner" }
+    ]);
+    useAppStore.setState({
+      providers: [],
+      models: [],
+      configureProvider,
+      discoverDeepSeekModels
+    });
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "discovery-secret" }
+    });
+
+    const chooseButton = screen.getByRole("button", {
+      name: "Choose a fetched model for row 1"
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Fetch models" }));
+    await waitFor(() => expect((chooseButton as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.pointerDown(chooseButton);
+    fireEvent.click(screen.getByRole("menuitem", { name: /DeepSeek Reasoner/ }));
+
+    expect((screen.getByLabelText("Model display name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Model ID") as HTMLInputElement).value).toBe(
+      "deepseek-reasoner"
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(configureProvider).toHaveBeenCalledWith({
+        kind: "deepseek",
+        apiKey: "discovery-secret",
+        models: [{ id: "deepseek-reasoner", displayName: "deepseek-reasoner" }]
+      })
+    );
+  });
+
+  it("keeps manual models while discovery fails, retries, or returns no models", async () => {
+    const discoverDeepSeekModels = vi
+      .fn<() => Promise<never[]>>()
+      .mockRejectedValueOnce(new Error("safe discovery failure"))
+      .mockResolvedValueOnce([]);
+    useAppStore.setState({ providers: [], models: [], discoverDeepSeekModels });
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect DeepSeek" }));
+    fireEvent.change(screen.getByLabelText("DeepSeek API key"), {
+      target: { value: "retry-secret" }
+    });
+    fireEvent.change(screen.getByLabelText("Model ID"), {
+      target: { value: "manual-model" }
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Fetch models" }));
+    expect(
+      await screen.findByText("Could not fetch models. Check the API key and try again.")
+    ).toBeTruthy();
+    expect((screen.getByLabelText("Model ID") as HTMLInputElement).value).toBe(
+      "manual-model"
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByText("No models were returned. You can still add one manually.")
+    ).toBeTruthy();
+    expect(discoverDeepSeekModels).toHaveBeenCalledTimes(2);
   });
 
   it("submits the complete custom provider configuration and retains only its summary", async () => {
@@ -412,6 +604,9 @@ describe("SettingsPage", () => {
     expect(screen.getByText("自定义供应商")).toBeTruthy();
     expect(screen.getByRole("button", { name: "连接 DeepSeek" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "连接 自定义供应商" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "连接 DeepSeek" }));
+    expect(screen.getByRole("button", { name: "获取模型" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "为第 1 行选择已获取的模型" })).toBeTruthy();
   });
 
   it("dismisses the custom provider dialog without redundant navigation controls", async () => {

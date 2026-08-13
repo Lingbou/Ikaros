@@ -6,8 +6,13 @@ import {
   cloneUiPreferences,
   DEFAULT_DARK_THEME,
   DEFAULT_LIGHT_THEME,
+  DEFAULT_PROFILE_USERNAME,
+  DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_UI_PREFERENCES,
+  MAX_SIDEBAR_WIDTH,
+  MAX_PROFILE_USERNAME_LENGTH,
   mergeUiPreferences,
+  MIN_SIDEBAR_WIDTH,
   type CodeFontPreference,
   type ColorSchemePreference,
   type ThemePreferences,
@@ -49,6 +54,39 @@ function isCodeFont(value: unknown): value is CodeFontPreference {
 
 function isContrast(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100;
+}
+
+function isSidebarWidth(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= MIN_SIDEBAR_WIDTH &&
+    value <= MAX_SIDEBAR_WIDTH
+  );
+}
+
+function storedUsername(value: unknown): string {
+  if (typeof value !== "string") {
+    return DEFAULT_PROFILE_USERNAME;
+  }
+  const username = value.trim();
+  return username.length > 0 && username.length <= MAX_PROFILE_USERNAME_LENGTH
+    ? username
+    : DEFAULT_PROFILE_USERNAME;
+}
+
+function usernamePatch(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new TypeError("username must be a string.");
+  }
+  const username = value.trim();
+  if (!username || username.length > MAX_PROFILE_USERNAME_LENGTH) {
+    throw new TypeError(
+      `username must contain 1 to ${MAX_PROFILE_USERNAME_LENGTH} characters after trimming.`
+    );
+  }
+  return username;
 }
 
 function sanitizeStoredTheme(
@@ -136,10 +174,14 @@ export function sanitizeStoredPreferences(value: unknown): UiPreferences {
     language: isUiLanguage(value.language)
       ? value.language
       : DEFAULT_UI_PREFERENCES.language,
+    username: storedUsername(value.username),
     sidebarCollapsed:
       typeof value.sidebarCollapsed === "boolean"
         ? value.sidebarCollapsed
         : DEFAULT_UI_PREFERENCES.sidebarCollapsed,
+    sidebarWidth: isSidebarWidth(value.sidebarWidth)
+      ? value.sidebarWidth
+      : DEFAULT_SIDEBAR_WIDTH,
     reduceMotion:
       typeof value.reduceMotion === "boolean"
         ? value.reduceMotion
@@ -170,11 +212,24 @@ export function sanitizePreferencesPatch(value: unknown): UiPreferencesPatch {
     patch.language = value.language;
   }
 
+  if ("username" in value) {
+    patch.username = usernamePatch(value.username);
+  }
+
   if ("sidebarCollapsed" in value) {
     if (typeof value.sidebarCollapsed !== "boolean") {
       throw new TypeError("sidebarCollapsed must be a boolean.");
     }
     patch.sidebarCollapsed = value.sidebarCollapsed;
+  }
+
+  if ("sidebarWidth" in value) {
+    if (!isSidebarWidth(value.sidebarWidth)) {
+      throw new TypeError(
+        `sidebarWidth must be an integer from ${MIN_SIDEBAR_WIDTH} to ${MAX_SIDEBAR_WIDTH}.`
+      );
+    }
+    patch.sidebarWidth = value.sidebarWidth;
   }
 
   if ("reduceMotion" in value) {

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-
-class RunCancelled(Exception):
-    """Cooperative cancellation requested for an Agent Run."""
+from .errors import RunCancelled
 
 
 class CancellationToken:

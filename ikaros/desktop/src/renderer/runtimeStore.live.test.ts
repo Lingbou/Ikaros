@@ -1,8 +1,8 @@
 /// <reference types="node" />
 
 import { randomBytes } from "node:crypto";
-import { readFile, readdir, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import type {
   RuntimeJournalEvent,
   RuntimeModelSetEnabledResult,
   RuntimeProviderConfigureResult,
+  RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
@@ -26,7 +27,6 @@ import { activeBranch, type AgentEvent, type Thread, type Turn } from "./domain"
 
 const liveEnabled = process.env.IKAROS_LIVE_DEEPSEEK_SMOKE === "1";
 const runtimeRoot = resolve(process.cwd(), "..", "..", "runtime");
-const runtimeHome = join(homedir(), ".ikaros");
 
 async function bridgeInvocation<TResult>(
   operation: () => Promise<TResult>,
@@ -51,12 +51,9 @@ function runtimeBridge(
   return {
     listThreads: () =>
       bridgeInvocation(() => host.request<{ threads: RuntimeThreadSummary[] }>("thread.list")),
-    createThread: (title, clientRequestId) =>
+    createThread: (params) =>
       bridgeInvocation(() =>
-        host.request<RuntimeThreadCreateResult>("thread.create", {
-          title,
-          ...(clientRequestId === undefined ? {} : { clientRequestId }),
-        }),
+        host.request<RuntimeThreadCreateResult>("thread.create", { ...params }),
       ),
     startTurn: (params) =>
       bridgeInvocation(() => host.request<RuntimeTurnStartResult>("turn.start", { ...params })),
@@ -85,6 +82,12 @@ function runtimeBridge(
     configureProvider: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeProviderConfigureResult>("provider.configure", { ...params }),
+      ),
+    discoverProviderModels: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeProviderDiscoverModelsResult>("provider.discover_models", {
+          ...params,
+        }),
       ),
     disconnectProvider: (providerId) =>
       bridgeInvocation(() =>
@@ -246,6 +249,7 @@ async function filesUnder(root: string): Promise<string[]> {
 async function assertCredentialIsolated(
   apiKey: string,
   providerConfigured: boolean,
+  runtimeHome: string,
 ): Promise<void> {
   const credential = Buffer.from(apiKey, "utf8");
   const configPath = join(runtimeHome, "config.yaml");
@@ -288,9 +292,11 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
         throw new Error("The DeepSeek credential file has an invalid format.");
       }
 
+      const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-live-"));
       const runtimeStderr: string[] = [];
       const host = new RuntimeHost({
         runtimeRoot,
+        runtimeHome,
         startTimeoutMs: 30_000,
         stopTimeoutMs: 15_000,
         stderrSink: (message) => runtimeStderr.push(message),
@@ -302,8 +308,7 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
           rawEvents.push(notification.params as RuntimeJournalEvent);
         }
       });
-      const markerDirectory = join(tmpdir(), `ikaros-live-${randomBytes(8).toString("hex")}`);
-      const pidFile = `${markerDirectory}.pid`;
+      const pidFile = join(runtimeHome, "nested-process.pid");
       let providerConfigured = false;
       let spawnedChildPid: number | undefined;
       let testFailure: unknown;
@@ -527,7 +532,12 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
           failures.push(error);
         }
         try {
-          await assertCredentialIsolated(apiKey, providerConfigured);
+          await assertCredentialIsolated(apiKey, providerConfigured, runtimeHome);
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await rm(runtimeHome, { force: true, recursive: true });
         } catch (error) {
           failures.push(error);
         }

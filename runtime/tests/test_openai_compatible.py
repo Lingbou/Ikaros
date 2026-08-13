@@ -10,14 +10,7 @@ import httpx
 import pytest
 
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
-from ikaros_runtime.config import ConfigStore, ModelConfig, ModelInput, ProviderConfig
-from ikaros_runtime.openai_compatible import (
-    OpenAICompatibleAdapter,
-    ProviderFailure,
-    ProviderTimeouts,
-)
-from ikaros_runtime.provider_registry import RuntimeProviderRegistry
-from ikaros_runtime.providers import (
+from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderMessage,
     ProviderRequest,
@@ -26,7 +19,20 @@ from ikaros_runtime.providers import (
     TextDelta,
     ToolCallCompleted,
 )
-from ikaros_runtime.tools import ToolCall, ToolDefinition
+from ikaros_runtime.providers.openai_compatible.adapter import (
+    OpenAICompatibleAdapter,
+    ProviderFailure,
+    ProviderTimeouts,
+)
+from ikaros_runtime.providers.openai_compatible.discovery import discover_openai_compatible_models
+from ikaros_runtime.providers.registry import (
+    ConfigStore,
+    ModelConfig,
+    ModelInput,
+    ProviderConfig,
+    RuntimeProviderRegistry,
+)
+from ikaros_runtime.tools.core import ToolCall, ToolDefinition
 
 
 class ChunkStream(httpx.AsyncByteStream):
@@ -127,6 +133,140 @@ async def collect(
             cancellation=cancellation or CancellationToken(),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_uses_bearer_and_normalizes_catalog() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        captured["method"] = incoming.method
+        captured["url"] = str(incoming.url)
+        captured["headers"] = dict(incoming.headers)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={
+                "object": "list",
+                "data": [
+                    {"id": "deepseek-v4-pro", "object": "model"},
+                    {"id": "deepseek-v4-flash", "owned_by": "deepseek"},
+                    {"id": "deepseek-v4-pro"},
+                ],
+            },
+        )
+
+    discovery_provider = provider(headers=())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        models = await discover_openai_compatible_models(discovery_provider, client=client)
+
+    assert [(model.id, model.display_name) for model in models] == [
+        ("deepseek-v4-flash", "DeepSeek V4 Flash"),
+        ("deepseek-v4-pro", "DeepSeek V4 Pro"),
+    ]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://provider.invalid/v1/models"
+    headers = cast(dict[str, str], captured["headers"])
+    assert headers["authorization"] == "Bearer sk-provider-secret"
+    assert headers["accept"] == "application/json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "category", "message"),
+    [
+        (401, "authentication", "provider authentication failed"),
+        (429, "rate_limit", "provider rate limit was reached"),
+    ],
+)
+async def test_model_discovery_http_failures_are_safe(
+    status: int,
+    category: str,
+    message: str,
+) -> None:
+    secret = "sk-model-discovery-sentinel"
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, content=f"upstream {secret}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailure) as captured:
+            await discover_openai_compatible_models(
+                provider(api_key=secret, headers=()),
+                client=client,
+            )
+
+    assert captured.value.category == category
+    assert str(captured.value) == message
+    assert secret not in str(captured.value)
+    assert secret not in repr(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_normalizes_timeout_and_network_errors() -> None:
+    async def timeout_handler(_incoming: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timeout-body-must-not-leak")
+
+    async def network_handler(_incoming: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network-body-must-not-leak")
+
+    cases = [
+        (timeout_handler, "timeout", "provider model discovery timed out"),
+        (
+            network_handler,
+            "network",
+            "provider model discovery network request failed",
+        ),
+    ]
+    for handler, category, message in cases:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(ProviderFailure) as captured:
+                await discover_openai_compatible_models(provider(headers=()), client=client)
+        assert captured.value.category == category
+        assert str(captured.value) == message
+        assert "must-not-leak" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, json={}),
+        httpx.Response(200, json={"data": {"id": "model"}}),
+        httpx.Response(200, json={"data": [None]}),
+        httpx.Response(200, json={"data": [{"id": 7}]}),
+        httpx.Response(200, json={"data": [{"id": "bad\nmodel"}]}),
+        httpx.Response(200, content=b"not-json"),
+    ],
+)
+async def test_model_discovery_rejects_invalid_schemas(response: httpx.Response) -> None:
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            ProviderFailure,
+            match="provider returned an invalid models response",
+        ):
+            await discover_openai_compatible_models(provider(headers=()), client=client)
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_blocks_a_credential_in_remote_model_id() -> None:
+    secret = "sk-discovery-echo-sentinel"
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": f"model-{secret}"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailure) as captured:
+            await discover_openai_compatible_models(
+                provider(api_key=secret, headers=()),
+                client=client,
+            )
+
+    assert str(captured.value) == "provider response contained protected configuration data"
+    assert secret not in repr(captured.value)
 
 
 @pytest.mark.asyncio

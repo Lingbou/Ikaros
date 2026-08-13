@@ -9,9 +9,12 @@ import type {
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
   RuntimeProviderConfigureResult,
+  RuntimeProviderDiscoverModelsParams,
+  RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
   RuntimeReplayResult,
+  RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
   RuntimeTurnStartParams,
@@ -97,11 +100,8 @@ export class RuntimeClient implements IkarosRuntimeApi {
     return unwrapRuntimeInvocation(this.api.listThreads());
   }
 
-  createThread(
-    title: string | null,
-    clientRequestId?: string
-  ): Promise<RuntimeThreadCreateResult> {
-    return unwrapRuntimeInvocation(this.api.createThread(title, clientRequestId));
+  createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult> {
+    return unwrapRuntimeInvocation(this.api.createThread(params));
   }
 
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult> {
@@ -124,6 +124,12 @@ export class RuntimeClient implements IkarosRuntimeApi {
     params: RuntimeProviderConfigureParams
   ): Promise<RuntimeProviderConfigureResult> {
     return unwrapRuntimeInvocation(this.api.configureProvider(params));
+  }
+
+  discoverProviderModels(
+    params: RuntimeProviderDiscoverModelsParams
+  ): Promise<RuntimeProviderDiscoverModelsResult> {
+    return unwrapRuntimeInvocation(this.api.discoverProviderModels(params));
   }
 
   disconnectProvider(providerId: "deepseek"): Promise<RuntimeProviderConfigureResult> {

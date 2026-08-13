@@ -1,7 +1,13 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  cloneUiPreferences,
+  DEFAULT_UI_PREFERENCES,
+  mergeUiPreferences,
+  type UiPreferencesPatch
+} from "../../shared/platform";
 import { setUiLanguage } from "../i18n";
 import { LOCAL_PROFILE } from "../localProfile";
 import { useAppStore } from "../store";
@@ -11,7 +17,32 @@ afterEach(() => {
   cleanup();
   setUiLanguage("en");
   useAppStore.getState().setProfileUsername(LOCAL_PROFILE.name);
+  Reflect.deleteProperty(window, "ikarosDesktop");
 });
+
+function installPreferencesApi(
+  updateImplementation?: (patch: UiPreferencesPatch) => Promise<typeof DEFAULT_UI_PREFERENCES>
+) {
+  let current = cloneUiPreferences(DEFAULT_UI_PREFERENCES);
+  const update = vi.fn(
+    updateImplementation ??
+      (async (patch: UiPreferencesPatch) => {
+        current = mergeUiPreferences(current, patch);
+        return cloneUiPreferences(current);
+      })
+  );
+  Object.defineProperty(window, "ikarosDesktop", {
+    configurable: true,
+    value: {
+      preferences: {
+        get: vi.fn(async () => cloneUiPreferences(current)),
+        update,
+        onChanged: vi.fn(() => vi.fn())
+      }
+    }
+  });
+  return update;
+}
 
 describe("ProfileSettings", () => {
   it("renders the complete mock activity profile without account-only details", () => {
@@ -106,14 +137,15 @@ describe("ProfileSettings", () => {
     );
   });
 
-  it("edits only the in-memory username and resets canceled drafts", () => {
+  it("persists a normalized username and resets canceled drafts", async () => {
+    const update = installPreferencesApi();
     render(<ProfileSettings />);
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const username = screen.getByRole("textbox", { name: "Username" });
     expect(screen.getAllByRole("textbox")).toHaveLength(1);
     expect(username).toHaveAttribute("maxlength", "32");
-    expect(username).toHaveValue("hc");
+    expect(username).toHaveValue("User");
     expect(screen.queryByText(/display name/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/@handle/i)).not.toBeInTheDocument();
 
@@ -121,7 +153,8 @@ describe("ProfileSettings", () => {
     expect(screen.getByText("NL")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(useAppStore.getState().profileUsername).toBe("Nova Lane");
+    await waitFor(() => expect(useAppStore.getState().profileUsername).toBe("Nova Lane"));
+    expect(update).toHaveBeenCalledWith({ username: "Nova Lane" });
     expect(screen.getByRole("heading", { level: 2, name: "Nova Lane" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
@@ -144,6 +177,23 @@ describe("ProfileSettings", () => {
     });
 
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("keeps the dialog open and the previous username when persistence fails", async () => {
+    installPreferencesApi(async () => {
+      throw new Error("disk unavailable");
+    });
+    render(<ProfileSettings />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Username" }), {
+      target: { value: "Nova Lane" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save the username.");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(useAppStore.getState().profileUsername).toBe(LOCAL_PROFILE.name);
   });
 
   it("translates the complete activity profile into Simplified Chinese", () => {

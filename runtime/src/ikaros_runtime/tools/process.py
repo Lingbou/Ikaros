@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .cancellation import CancellationToken
-from .domain import JsonObject
-from .tools import (
+from ..cancellation import CancellationToken
+from ..domain import JsonObject
+from .core import (
     ToolCall,
     ToolDefinition,
     ToolExecutionCancelled,
@@ -65,7 +65,10 @@ class _WindowsJob:
 class ProcessRunTool:
     definition = ToolDefinition(
         name="process_run",
-        description="Run a command in the local operating system shell and capture its output.",
+        description=(
+            "Run a command in the local operating system shell and capture its output. "
+            "Commands default to the current Thread workspace when one is attached."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -87,8 +90,9 @@ class ProcessRunTool:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
+        default_cwd: str | None = None,
     ) -> ToolResult:
-        validated = _validate_arguments(call)
+        validated = _validate_arguments(call, default_cwd=default_cwd)
         if isinstance(validated, ToolResult):
             return validated
         command, cwd, timeout_ms = validated
@@ -219,6 +223,8 @@ class ProcessRunTool:
 
 def _validate_arguments(
     call: ToolCall,
+    *,
+    default_cwd: str | None = None,
 ) -> tuple[str, str | None, int] | ToolResult:
     mismatch = require_exact_arguments(
         call.arguments,
@@ -236,7 +242,7 @@ def _validate_arguments(
             message=f"command must be a non-empty string of at most {_COMMAND_LIMIT} characters",
         )
 
-    cwd_value = call.arguments.get("cwd")
+    cwd_value = call.arguments.get("cwd", default_cwd)
     cwd: str | None = None
     if cwd_value is not None:
         if not isinstance(cwd_value, str) or not cwd_value.strip() or len(cwd_value) > _CWD_LIMIT:
@@ -246,6 +252,8 @@ def _validate_arguments(
                 message=f"cwd must be a non-empty string of at most {_CWD_LIMIT} characters",
             )
         path = Path(cwd_value).expanduser()
+        if not path.is_absolute() and default_cwd is not None:
+            path = Path(default_cwd) / path
         try:
             resolved = path.resolve(strict=True)
         except OSError as error:

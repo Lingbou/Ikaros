@@ -1,9 +1,11 @@
 # Ikaros Desktop
 
 Cross-platform desktop client for the Ikaros general-purpose Agent on Windows
-and Linux. The conversation UI remains mock-driven while the first Runtime
-vertical slice is built, but Electron main now supervises and authenticates a
-long-lived local Python process.
+and Linux. Electron main supervises one long-lived local Python Runtime and
+connects to it over authenticated, loopback WebSocket JSON-RPC. The production
+Desktop conversation path is Runtime-backed; deterministic mocks remain only
+for tests, non-Electron renderer harnesses, and UI capabilities that have not
+yet received Runtime protocol support.
 
 ## Run locally
 
@@ -53,26 +55,88 @@ sudo dnf install ./dist/Ikaros-0.1.0-linux-x86_64.rpm
 `package:win` creates an unsigned Windows x64 NSIS development installer. It
 is a prototype artifact, not a signed production release.
 
-## Prototype scenarios
+## Current feature boundary
 
-The deterministic `MockAgentClient` covers:
+### Runtime-backed
 
-1. Streaming response and stop.
-2. Tool success and failure.
-3. Permission allow and deny.
-4. Interrupt, retry, and recovery.
-5. Artifact and file output.
+The production path is:
 
-Projects are conversational workspaces and may exist without a local folder.
-Threads with a project assignment appear only under that project; standalone
-threads appear only under Recents. Both use the same run, permission, recovery,
-artifact, and branching capabilities.
-Editing an earlier message creates a branch instead of truncating history.
+```text
+React renderer
+  -> typed preload API
+  -> trusted Electron IPC
+  -> Electron RuntimeHost
+  -> authenticated loopback WebSocket JSON-RPC
+  -> Python Runtime
+```
 
-## Boundary
+The Runtime currently owns:
 
-The React renderer depends on `AgentClient` and platform ports, never on raw
-Electron IPC. The preload exposes only a narrow typed API for window controls
-and UI preferences. A future desktop adapter may connect Electron main to a
-headless runtime over a versioned stdio protocol; the renderer must not own the
-runtime process or canonical Agent state.
+- `thread.list` and `thread.create`, including optional workspace snapshots;
+- `turn.start`, streamed Item events, multi-Turn context, and settled Run state;
+- `run.cancel`, event replay, sequence-based reconnect catch-up, and SQLite
+  recovery across Runtime restarts;
+- DeepSeek and Custom OpenAI-compatible Provider configuration, real DeepSeek
+  model discovery, Model enablement, Provider disconnect/removal, and
+  `~/.ikaros/config.yaml` persistence;
+- the ScriptedProvider used by deterministic integration tests and real
+  OpenAI-compatible streaming Providers used by normal conversations; and
+- the `process.run` Tool, executed under the V1 `full_access` policy with
+  timeout, cancellation, bounded output, and process-tree cleanup.
+
+The renderer projects canonical Runtime messages, streamed deltas,
+`process.run` Tool Calls and Tool Results, and Run state into the conversation
+UI. It does not use `MockAgentClient` when the Electron Runtime bridge is
+available.
+
+Projects are not separate Runtime resources and there is no Project API. A
+Project is a Desktop grouping derived from a Thread's optional workspace.
+Project chats and ordinary chats both use `thread.create -> turn.start`; the
+only difference is that a project Thread carries a workspace snapshot. That
+workspace is persisted by the Runtime and becomes the default working
+directory for `process.run`. A selected folder without a Thread exists only as
+temporary Desktop state until the first message creates that Thread.
+
+### Desktop-owned local state
+
+Some real product state belongs to Desktop rather than the Agent Runtime:
+
+- theme, UI language, fonts, reduced-motion preference, sidebar state, and the
+  local profile username are persisted by Electron in `ui-preferences.json`;
+- the system directory picker creates workspace snapshots, while Projects are
+  derived from Runtime Threads in the renderer;
+- Search filters the titles of Threads already loaded in the renderer; it is
+  not a Runtime or semantic-search API; and
+- drafts, selected Model, expanded Project groups, and settings navigation are
+  renderer session state.
+
+### Mock, placeholder, or not connected
+
+The following UI surfaces are not production Runtime capabilities yet:
+
+- `MockAgentClient` and its five deterministic scenarios remain for tests and
+  non-Electron renderer development only;
+- `/mock-1`, `/mock-2`, and `/mock-3` only insert placeholder text; Skills do
+  not yet have a loader, registry, RPC surface, or execution lifecycle;
+- Profile metrics, activity history, insights, and most-used Skills are static
+  demonstration data;
+- permission cards and Ask/Safe/Full choices belong to the mock prototype;
+  Runtime V1 always uses `full_access` and emits no permission requests;
+- editing a message to fork history, multiple Branches, retry/resume recovery,
+  Artifacts, file-change events, and generic status rows are mock-only UI
+  projections without corresponding Runtime RPCs or events; and
+- attachments, tool selection, and response regeneration are disabled
+  placeholders;
+- Provider health is currently reported as `unknown`; no health-check workflow
+  is connected; and
+- automatic model discovery currently supports only DeepSeek. Custom
+  OpenAI-compatible Provider models are entered manually.
+
+## Architecture boundary
+
+The React renderer never owns the Runtime process or canonical Agent state and
+never talks to raw WebSocket or Electron IPC. Electron main owns Runtime
+supervision, authentication, reconnect, and the narrow IPC bridge. Runtime
+wire DTOs remain separate from renderer projection types so future capabilities
+can extend the protocol without turning mock-specific cards into canonical
+state.

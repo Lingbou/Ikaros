@@ -41,7 +41,11 @@ describe("Composer input and clearance", () => {
     expect(screen.queryByRole("button", { name: "Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Research" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Full access" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Full access" })).toHaveClass(
+      "h-7",
+      "text-[10px]",
+    );
+    expect(screen.getByRole("button", { name: "Add context" })).toHaveClass("size-7");
     expect(screen.getByRole("button", { name: "Ikaros" })).toBeVisible();
   });
 
@@ -121,6 +125,44 @@ describe("Composer input and clearance", () => {
 
     fireEvent.compositionEnd(textarea);
     expect(screen.getByRole("listbox", { name: "Slash commands" })).toBeVisible();
+  });
+
+  it("binds a selected project folder from the context menu", async () => {
+    const bindWorkspaceFromFolder = vi.fn(async () => undefined);
+    useAppStore.setState({ bindWorkspaceFromFolder } as Partial<typeof initialState>);
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Add context" }));
+    const projectFolderItem = await screen.findByRole("menuitem", {
+      name: "Add project folder",
+    });
+    expect(projectFolderItem).not.toHaveTextContent("Unavailable");
+    fireEvent.click(projectFolderItem);
+
+    expect(bindWorkspaceFromFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a fixed localized error when project folder binding fails", async () => {
+    const bindWorkspaceFromFolder = vi.fn(async () => {
+      throw new Error("C:\\private\\workspace: directory picker exploded");
+    });
+    useAppStore.setState({ bindWorkspaceFromFolder } as Partial<typeof initialState>);
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Add context" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add project folder" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not add project folder.");
+    expect(screen.queryByText(/private|directory picker exploded/i)).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Message Ikaros" })).toBeVisible();
   });
 
   it("does not turn Enter into Stop while a run is active", () => {
@@ -215,13 +257,15 @@ describe("Composer input and clearance", () => {
     expect(modelTrigger).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     fireEvent.pointerDown(modelTrigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Test Provider · Model B" }));
+    expect(screen.queryByText(/Test Provider/)).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Model A" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Model B" }));
 
     expect(useAppStore.getState().selectedModel).toEqual({
       providerId: "test-provider",
       modelId: "model-b",
     });
-    expect(screen.getByRole("button", { name: "Test Provider · Model B" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Model B" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Full access" })).toBeDisabled();
   });

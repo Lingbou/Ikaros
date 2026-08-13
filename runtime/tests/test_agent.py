@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from ikaros_runtime.agent import AgentLoop, AgentScheduler
+from ikaros_runtime.agent.loop import AgentLoop
+from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
-from ikaros_runtime.domain import JournalEvent
-from ikaros_runtime.policy import FullAccessPolicy
-from ikaros_runtime.providers import (
+from ikaros_runtime.domain import JournalEvent, WorkspaceSummary
+from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderRequest,
     ReasoningDelta,
@@ -20,13 +20,14 @@ from ikaros_runtime.providers import (
     ToolCallCompleted,
 )
 from ikaros_runtime.storage import SqliteRuntimeStore
-from ikaros_runtime.tools import (
+from ikaros_runtime.tools.core import (
     ToolCall,
     ToolDefinition,
     ToolExecutor,
     ToolRegistry,
     ToolResult,
 )
+from ikaros_runtime.tools.policy import FullAccessPolicy
 
 
 class FailingProvider:
@@ -104,15 +105,18 @@ class RecordingTool:
 
     def __init__(self) -> None:
         self.calls: list[ToolCall] = []
+        self.default_cwds: list[str | None] = []
 
     async def execute(
         self,
         call: ToolCall,
         *,
         cancellation: CancellationToken,
+        default_cwd: str | None = None,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
         self.calls.append(call)
+        self.default_cwds.append(default_cwd)
         return ToolResult(
             tool_call_id=call.id,
             tool_name=call.name,
@@ -139,8 +143,10 @@ class ProtectedResultTool(RecordingTool):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
+        default_cwd: str | None = None,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
+        del default_cwd
         self.calls.append(call)
         return ToolResult(
             tool_call_id=self.protected,
@@ -296,6 +302,7 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
         await loop.run(prepared.run_id, CancellationToken())
 
         assert [call.id for call in tool.calls] == ["call-1"]
+        assert tool.default_cwds == [None]
         assert len(provider.requests) == 2
         second_messages = provider.requests[1].messages
         assert [message.role for message in second_messages] == [
@@ -350,6 +357,47 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
             )
             == before_rebuild
         )
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_passes_the_thread_workspace_to_tool_execution(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+
+    async def publish(_event: JournalEvent) -> None:
+        return
+
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        thread, _ = store.create_thread(
+            "Workspace tool loop",
+            workspace=WorkspaceSummary(
+                id="workspace-test",
+                name="Workspace",
+                root_uri=str(workspace.resolve()),
+            ),
+        )
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run in the workspace",
+            provider_id="tool-loop",
+            model_id="tool-loop-v1",
+        )
+        provider = ToolLoopProvider()
+        tool = RecordingTool()
+        loop = AgentLoop(
+            store,
+            {"tool-loop": provider},
+            publish,
+            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert tool.default_cwds == [str(workspace.resolve())]
     finally:
         store.close()
 

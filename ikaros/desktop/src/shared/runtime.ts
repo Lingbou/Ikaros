@@ -1,7 +1,14 @@
+export interface RuntimeWorkspaceSummary {
+  id: string;
+  name: string;
+  rootUri: string | null;
+}
+
 export interface RuntimeThreadSummary {
   id: string;
   title: string | null;
   defaultBranchId: string;
+  workspace: RuntimeWorkspaceSummary | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -21,6 +28,12 @@ export interface RuntimeJournalEvent {
 export interface RuntimeThreadCreateResult {
   thread: RuntimeThreadSummary;
   event: RuntimeJournalEvent;
+}
+
+export interface RuntimeThreadCreateParams {
+  title: string | null;
+  workspace: RuntimeWorkspaceSummary | null;
+  clientRequestId?: string;
 }
 
 export interface RuntimeTurnStartParams {
@@ -73,6 +86,17 @@ export interface RuntimeModelInput {
   displayName: string;
 }
 
+export type RuntimeDiscoveredModel = RuntimeModelInput;
+
+export interface RuntimeProviderDiscoverModelsParams {
+  kind: "deepseek";
+  apiKey: string;
+}
+
+export interface RuntimeProviderDiscoverModelsResult {
+  models: RuntimeDiscoveredModel[];
+}
+
 export type RuntimeProviderConfigureParams =
   | {
       kind: "deepseek";
@@ -120,10 +144,7 @@ export type RuntimeInvocationResult<TResult> =
 
 export interface IkarosRuntimeApi {
   listThreads(): Promise<{ threads: RuntimeThreadSummary[] }>;
-  createThread(
-    title: string | null,
-    clientRequestId?: string
-  ): Promise<RuntimeThreadCreateResult>;
+  createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult>;
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
   cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
   replayEvents(afterSeq: number, limit?: number): Promise<RuntimeReplayResult>;
@@ -131,6 +152,9 @@ export interface IkarosRuntimeApi {
   configureProvider(
     params: RuntimeProviderConfigureParams
   ): Promise<RuntimeProviderConfigureResult>;
+  discoverProviderModels(
+    params: RuntimeProviderDiscoverModelsParams
+  ): Promise<RuntimeProviderDiscoverModelsResult>;
   disconnectProvider(providerId: "deepseek"): Promise<RuntimeProviderConfigureResult>;
   removeProvider(providerId: string): Promise<RuntimeProviderRemoveResult>;
   listModels(): Promise<{ models: RuntimeModelSummary[] }>;
@@ -143,8 +167,7 @@ export interface IkarosRuntimeApi {
 export interface IkarosRuntimeBridgeApi {
   listThreads(): Promise<RuntimeInvocationResult<{ threads: RuntimeThreadSummary[] }>>;
   createThread(
-    title: string | null,
-    clientRequestId?: string
+    params: RuntimeThreadCreateParams
   ): Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>;
   startTurn(
     params: RuntimeTurnStartParams
@@ -160,6 +183,9 @@ export interface IkarosRuntimeBridgeApi {
   configureProvider(
     params: RuntimeProviderConfigureParams
   ): Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>;
+  discoverProviderModels(
+    params: RuntimeProviderDiscoverModelsParams
+  ): Promise<RuntimeInvocationResult<RuntimeProviderDiscoverModelsResult>>;
   disconnectProvider(
     providerId: "deepseek"
   ): Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>;

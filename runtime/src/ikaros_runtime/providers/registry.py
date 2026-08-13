@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
-from .security import contains_protected_value
+from ..errors import ConfigError
+from ..security import contains_protected_value
+from .base import (
+    ModelConfig,
+    ModelInput,
+    ProviderAdapter,
+    ProviderConfig,
+)
+from .scripted import ScriptedProvider
 
 CONFIG_VERSION = 1
 DEEPSEEK_PROVIDER_ID = "deepseek"
@@ -26,10 +35,6 @@ _RESERVED_PROVIDER_IDS = frozenset({DEEPSEEK_PROVIDER_ID, "scripted"})
 _TRANSPORT_HEADERS = frozenset(
     {"accept", "connection", "content-length", "content-type", "host", "transfer-encoding"}
 )
-
-
-class ConfigError(ValueError):
-    """A safe configuration error whose message never contains source values."""
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -72,38 +77,6 @@ _UniqueKeyLoader.add_constructor(
 
 
 @dataclass(frozen=True, slots=True)
-class ModelInput:
-    id: str
-    display_name: str
-
-
-@dataclass(frozen=True, slots=True)
-class ModelConfig:
-    id: str
-    display_name: str
-    enabled: bool
-    supports_tools: bool
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class ProviderConfig:
-    id: str
-    display_name: str
-    origin: str
-    base_url: str
-    api_key: str | None
-    headers: tuple[tuple[str, str], ...]
-    models: tuple[ModelConfig, ...]
-
-    @property
-    def configured(self) -> bool:
-        return self.origin == "custom" or self.api_key is not None
-
-    def header_map(self) -> dict[str, str]:
-        return dict(self.headers)
-
-
-@dataclass(frozen=True, slots=True)
 class ProviderSummary:
     id: str
     display_name: str
@@ -121,6 +94,22 @@ class ProviderSummary:
             "credentialConfigured": self.credential_configured,
             "health": self.health,
         }
+
+
+def deepseek_discovery_provider(api_key: object) -> ProviderConfig:
+    """Build a validated, non-persistent DeepSeek transport configuration."""
+
+    normalized_key = _secret(api_key, required=True)
+    assert normalized_key is not None
+    return ProviderConfig(
+        id=DEEPSEEK_PROVIDER_ID,
+        display_name=DEEPSEEK_DISPLAY_NAME,
+        origin="builtin",
+        base_url=DEEPSEEK_BASE_URL,
+        api_key=normalized_key,
+        headers=(),
+        models=(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,17 +238,11 @@ class ConfigStore:
         provider = self._providers.get(DEEPSEEK_PROVIDER_ID)
         if provider is None:
             return self.provider_summaries()[0]
-        disconnected = ProviderConfig(
-            id=provider.id,
-            display_name=provider.display_name,
-            origin=provider.origin,
-            base_url=provider.base_url,
-            api_key=None,
-            headers=provider.headers,
-            models=provider.models,
-        )
-        self._replace(disconnected)
-        return self._summary(disconnected)
+        updated = dict(self._providers)
+        del updated[DEEPSEEK_PROVIDER_ID]
+        self._persist(updated)
+        self._providers = updated
+        return self.provider_summaries()[0]
 
     def remove_custom(self, provider_id: str) -> None:
         normalized_id = _custom_provider_id(provider_id)
@@ -728,3 +711,81 @@ def _headers(value: Any, *, has_api_key: bool) -> tuple[tuple[str, str], ...]:
 
 def _contains_control_character(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+class ManagedProviderAdapter(ProviderAdapter, Protocol):
+    async def aclose(self) -> None: ...
+
+
+AdapterFactory = Callable[[ProviderConfig], ManagedProviderAdapter]
+
+
+class RuntimeProviderRegistry:
+    def __init__(
+        self,
+        config_store: ConfigStore,
+        *,
+        adapter_factory: AdapterFactory,
+    ) -> None:
+        self._config_store = config_store
+        self._scripted = ScriptedProvider()
+        self._adapter_factory = adapter_factory
+        self._adapters: dict[str, tuple[ProviderConfig, ManagedProviderAdapter]] = {}
+        self._retired: list[ManagedProviderAdapter] = []
+        self._close_tasks: set[asyncio.Task[None]] = set()
+
+    def resolve(self, provider_id: str) -> ProviderAdapter | None:
+        if provider_id == self._scripted.id:
+            return self._scripted
+        provider = self._config_store.get_provider(provider_id)
+        if provider is None or not provider.configured:
+            return None
+        cached = self._adapters.get(provider_id)
+        if cached is not None and cached[0] == provider:
+            return cached[1]
+        if cached is not None:
+            self._retire(cached[1])
+        adapter = self._adapter_factory(provider)
+        self._adapters[provider_id] = (provider, adapter)
+        return adapter
+
+    def configuration_changed(self, provider_id: str) -> None:
+        cached = self._adapters.pop(provider_id, None)
+        if cached is not None:
+            self._retire(cached[1])
+
+    async def close(self) -> None:
+        adapters = [adapter for _provider, adapter in self._adapters.values()]
+        adapters.extend(self._retired)
+        self._adapters.clear()
+        self._retired.clear()
+        if adapters:
+            await asyncio.gather(*(adapter.aclose() for adapter in adapters))
+        if self._close_tasks:
+            await asyncio.gather(*tuple(self._close_tasks), return_exceptions=True)
+            self._close_tasks.clear()
+
+    def _retire(self, adapter: ManagedProviderAdapter) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._retired.append(adapter)
+            return
+        task = loop.create_task(adapter.aclose(), name="ikaros-provider-client-close")
+        self._close_tasks.add(task)
+        task.add_done_callback(self._close_tasks.discard)
+
+
+__all__ = [
+    "DEEPSEEK_BASE_URL",
+    "DEEPSEEK_DISPLAY_NAME",
+    "DEEPSEEK_PROVIDER_ID",
+    "ConfigStore",
+    "ModelConfig",
+    "ModelInput",
+    "ModelSummary",
+    "ProviderConfig",
+    "ProviderSummary",
+    "RuntimeProviderRegistry",
+    "deepseek_discovery_provider",
+]

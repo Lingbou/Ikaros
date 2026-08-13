@@ -1,9 +1,15 @@
-import type { IkarosRuntimeBridgeApi } from "./runtime";
+import type { IkarosRuntimeBridgeApi, RuntimeWorkspaceSummary } from "./runtime";
 
 export type ColorSchemePreference = "system" | "light" | "dark";
 export type UiLanguagePreference = "en" | "zh-CN";
 export type UiFontPreference = "system" | "inter" | "sego-ui";
 export type CodeFontPreference = "system-mono" | "cascadia-code" | "consolas";
+
+export const DEFAULT_SIDEBAR_WIDTH = 260;
+export const MIN_SIDEBAR_WIDTH = 220;
+export const MAX_SIDEBAR_WIDTH = 520;
+export const DEFAULT_PROFILE_USERNAME = "User";
+export const MAX_PROFILE_USERNAME_LENGTH = 32;
 
 export interface ThemePreferences {
   accent: string;
@@ -20,7 +26,9 @@ export type ThemePreferencesPatch = Partial<ThemePreferences>;
 export interface UiPreferences {
   colorScheme: ColorSchemePreference;
   language: UiLanguagePreference;
+  username: string;
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
   reduceMotion: boolean;
   darkTheme: ThemePreferences;
   lightTheme: ThemePreferences;
@@ -35,6 +43,9 @@ export type UiPreferencesPatch = Partial<
 
 export interface IkarosDesktopApi {
   readonly runtime: IkarosRuntimeBridgeApi;
+  readonly workspace: {
+    chooseDirectory(): Promise<RuntimeWorkspaceSummary | null>;
+  };
   readonly preferences: {
     get(): Promise<UiPreferences>;
     update(patch: UiPreferencesPatch): Promise<UiPreferences>;
@@ -71,7 +82,9 @@ export const DEFAULT_LIGHT_THEME: Readonly<ThemePreferences> = Object.freeze({
 export const DEFAULT_UI_PREFERENCES: Readonly<UiPreferences> = Object.freeze({
   colorScheme: "dark",
   language: "en",
+  username: DEFAULT_PROFILE_USERNAME,
   sidebarCollapsed: false,
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   reduceMotion: false,
   darkTheme: DEFAULT_DARK_THEME,
   lightTheme: DEFAULT_LIGHT_THEME
@@ -107,10 +120,14 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     eventReplay: "ikaros:runtime:event-replay",
     providerList: "ikaros:runtime:provider-list",
     providerConfigure: "ikaros:runtime:provider-configure",
+    providerDiscoverModels: "ikaros:runtime:provider-discover-models",
     providerDisconnect: "ikaros:runtime:provider-disconnect",
     providerRemove: "ikaros:runtime:provider-remove",
     modelList: "ikaros:runtime:model-list",
     modelSetEnabled: "ikaros:runtime:model-set-enabled"
+  },
+  workspace: {
+    chooseDirectory: "ikaros:workspace:choose-directory"
   },
   preferences: {
     changed: "ikaros:preferences:changed",

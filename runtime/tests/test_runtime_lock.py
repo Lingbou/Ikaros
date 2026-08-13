@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ikaros_runtime.runtime_lock import RuntimeHomeLock, RuntimeHomeLockError
+from ikaros_runtime.server.host import RuntimeHomeLock, RuntimeHomeLockError
 
 
 @pytest.mark.asyncio
@@ -38,7 +38,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from ikaros_runtime.runtime_lock import RuntimeHomeLock
+from ikaros_runtime.server.host import RuntimeHomeLock
 
 
 async def main() -> None:

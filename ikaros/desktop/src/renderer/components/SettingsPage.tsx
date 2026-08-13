@@ -136,6 +136,7 @@ export function SettingsPage() {
   const models = useAppStore((state) => state.models);
   const providerCatalogStatus = useAppStore((state) => state.providerCatalogStatus);
   const loadProviderCatalog = useAppStore((state) => state.loadProviderCatalog);
+  const discoverDeepSeekModels = useAppStore((state) => state.discoverDeepSeekModels);
   const configureProvider = useAppStore((state) => state.configureProvider);
   const disconnectProvider = useAppStore((state) => state.disconnectProvider);
   const removeProvider = useAppStore((state) => state.removeProvider);
@@ -380,6 +381,7 @@ export function SettingsPage() {
             <ProvidersSettings
               providers={providers}
               models={models}
+              onDiscoverDeepSeekModels={discoverDeepSeekModels}
               onConfigureProvider={configureProvider}
               onDisconnectDeepSeek={() => disconnectProvider("deepseek")}
               onRemoveCustomProvider={removeProvider}

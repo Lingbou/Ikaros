@@ -14,6 +14,7 @@ function bridgeWithListThreads(
     replayEvents: vi.fn(),
     listProviders: vi.fn(),
     configureProvider: vi.fn(),
+    discoverProviderModels: vi.fn(),
     disconnectProvider: vi.fn(),
     removeProvider: vi.fn(),
     listModels: vi.fn(),
@@ -30,6 +31,23 @@ describe("RuntimeClient", () => {
     );
 
     await expect(client.listThreads()).resolves.toEqual(threads);
+  });
+
+  it("forwards the Thread workspace snapshot without flattening it", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({ ok: true as const, value: { threads: [] } })),
+    );
+    const value = { thread: { id: "thread-1" }, event: { seq: 1 } };
+    bridge.createThread = vi.fn(async () => ({ ok: true as const, value })) as never;
+    const client = new RuntimeClient(bridge);
+    const params = {
+      title: "Workspace chat",
+      workspace: { id: "workspace-1", name: "Ikaros", rootUri: "C:\\Ikaros" },
+      clientRequestId: "create-1",
+    };
+
+    await expect(client.createThread(params)).resolves.toEqual(value);
+    expect(bridge.createThread).toHaveBeenCalledWith(params);
   });
 
   it("reconstructs definitive RPC errors without reclassifying transport errors", async () => {
@@ -88,6 +106,28 @@ describe("RuntimeClient", () => {
     expect(bridge.configureProvider).toHaveBeenCalledWith(params);
     expect(JSON.stringify(await client.configureProvider(params))).not.toContain(
       "write-only-secret"
+    );
+  });
+
+  it("forwards write-only discovery credentials and unwraps only discovered models", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({ ok: true as const, value: { threads: [] } }))
+    );
+    const models = [
+      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" }
+    ];
+    bridge.discoverProviderModels = vi.fn(async () => ({
+      ok: true as const,
+      value: { models }
+    }));
+    const client = new RuntimeClient(bridge);
+    const params = { kind: "deepseek" as const, apiKey: "write-only-discovery-secret" };
+
+    await expect(client.discoverProviderModels(params)).resolves.toEqual({ models });
+    expect(bridge.discoverProviderModels).toHaveBeenCalledWith(params);
+    expect(JSON.stringify(await client.discoverProviderModels(params))).not.toContain(
+      "write-only-discovery-secret"
     );
   });
 

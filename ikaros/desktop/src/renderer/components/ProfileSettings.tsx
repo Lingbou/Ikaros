@@ -192,19 +192,36 @@ export function ProfileSettings() {
   const setProfileUsername = useAppStore((state) => state.setProfileUsername);
   const [editOpen, setEditOpen] = useState(false);
   const [usernameDraft, setUsernameDraft] = useState(profileUsername);
+  const [savingUsername, setSavingUsername] = useState(false);
+  const [usernameSaveFailed, setUsernameSaveFailed] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("daily");
   const trimmedUsername = usernameDraft.trim();
   const monthLabels = language === "zh-CN" ? CHINESE_MONTHS : ENGLISH_MONTHS;
 
   const setDialogOpen = (open: boolean) => {
+    if (!open && savingUsername) return;
     if (open) setUsernameDraft(profileUsername);
+    if (open) setUsernameSaveFailed(false);
     setEditOpen(open);
   };
 
   const saveProfile = () => {
-    if (!trimmedUsername) return;
-    setProfileUsername(trimmedUsername);
-    setEditOpen(false);
+    if (!trimmedUsername || savingUsername) return;
+    const api = window.ikarosDesktop;
+    if (!api) {
+      setUsernameSaveFailed(true);
+      return;
+    }
+    setSavingUsername(true);
+    setUsernameSaveFailed(false);
+    void api.preferences
+      .update({ username: trimmedUsername })
+      .then((preferences) => {
+        setProfileUsername(preferences.username);
+        setEditOpen(false);
+      })
+      .catch(() => setUsernameSaveFailed(true))
+      .finally(() => setSavingUsername(false));
   };
 
   const selectActivityView = (view: ActivityView) => {
@@ -294,10 +311,17 @@ export function ProfileSettings() {
                 />
               </label>
 
+              {usernameSaveFailed ? (
+                <p role="alert" className="mt-2 text-[11px] leading-4 text-red-400">
+                  {t("settings.profileSaveFailed")}
+                </p>
+              ) : null}
+
               <div className="mt-5 flex justify-end gap-2">
                 <Dialog.Close asChild>
                   <button
                     type="button"
+                    disabled={savingUsername}
                     className="h-8 rounded-lg px-3 text-[12px] leading-[18px] text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                   >
                     {t("common.cancel")}
@@ -305,7 +329,7 @@ export function ProfileSettings() {
                 </Dialog.Close>
                 <button
                   type="submit"
-                  disabled={!trimmedUsername}
+                  disabled={!trimmedUsername || savingUsername}
                   className="h-8 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {t("settings.profileSave")}

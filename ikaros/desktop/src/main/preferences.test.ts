@@ -6,8 +6,14 @@ vi.mock("electron", () => ({
 }));
 
 import {
+  cloneUiPreferences,
   DEFAULT_DARK_THEME,
+  DEFAULT_PROFILE_USERNAME,
+  DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_UI_PREFERENCES,
+  MAX_PROFILE_USERNAME_LENGTH,
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
   mergeUiPreferences
 } from "../shared/platform";
 import { sanitizePreferencesPatch, sanitizeStoredPreferences } from "./preferences";
@@ -37,6 +43,79 @@ describe("UI preference language validation", () => {
     expect(() => sanitizePreferencesPatch({ language: "fr" })).toThrow(
       "Unsupported UI language preference.",
     );
+  });
+
+  it("migrates missing or invalid stored usernames without discarding other preferences", () => {
+    for (const username of [undefined, null, 42, "", "   ", "x".repeat(33)]) {
+      expect(
+        sanitizeStoredPreferences({ username, sidebarCollapsed: true })
+      ).toMatchObject({
+        username: DEFAULT_PROFILE_USERNAME,
+        sidebarCollapsed: true
+      });
+    }
+
+    expect(sanitizeStoredPreferences({ username: "  Nova Lane  " }).username).toBe(
+      "Nova Lane"
+    );
+  });
+
+  it("normalizes valid username patches and rejects invalid updates", () => {
+    expect(sanitizePreferencesPatch({ username: "  Nova Lane  " })).toEqual({
+      username: "Nova Lane"
+    });
+    expect(
+      sanitizePreferencesPatch({ username: "x".repeat(MAX_PROFILE_USERNAME_LENGTH) })
+    ).toEqual({ username: "x".repeat(MAX_PROFILE_USERNAME_LENGTH) });
+
+    for (const username of [null, 42, "", "   ", "x".repeat(33)]) {
+      expect(() => sanitizePreferencesPatch({ username })).toThrow(/username/);
+    }
+  });
+
+  it("migrates missing and invalid stored sidebar widths to the default", () => {
+    expect(sanitizeStoredPreferences({}).sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH);
+    for (const sidebarWidth of [
+      MIN_SIDEBAR_WIDTH - 1,
+      MAX_SIDEBAR_WIDTH + 1,
+      260.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      "260",
+    ]) {
+      expect(sanitizeStoredPreferences({ sidebarWidth }).sidebarWidth).toBe(
+        DEFAULT_SIDEBAR_WIDTH,
+      );
+    }
+  });
+
+  it("accepts bounded sidebar widths and strictly rejects invalid patches", () => {
+    for (const sidebarWidth of [MIN_SIDEBAR_WIDTH, DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]) {
+      expect(sanitizeStoredPreferences({ sidebarWidth }).sidebarWidth).toBe(sidebarWidth);
+      expect(sanitizePreferencesPatch({ sidebarWidth })).toEqual({ sidebarWidth });
+    }
+
+    for (const sidebarWidth of [
+      MIN_SIDEBAR_WIDTH - 1,
+      MAX_SIDEBAR_WIDTH + 1,
+      260.5,
+      Number.NaN,
+      Number.NEGATIVE_INFINITY,
+      "260",
+    ]) {
+      expect(() => sanitizePreferencesPatch({ sidebarWidth })).toThrow(
+        `sidebarWidth must be an integer from ${MIN_SIDEBAR_WIDTH} to ${MAX_SIDEBAR_WIDTH}.`,
+      );
+    }
+  });
+
+  it("preserves sidebar width when cloning and merging preferences", () => {
+    const resized = mergeUiPreferences(DEFAULT_UI_PREFERENCES, { sidebarWidth: 412 });
+    const cloned = cloneUiPreferences(resized);
+
+    expect(resized.sidebarWidth).toBe(412);
+    expect(cloned.sidebarWidth).toBe(412);
+    expect(cloned).not.toBe(resized);
   });
 
   it("migrates missing theme fields without discarding valid custom values", () => {

@@ -1,4 +1,7 @@
-import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { createHash } from "node:crypto";
+import { basename, resolve } from "node:path";
+
+import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 
 import { DESKTOP_IPC_CHANNELS, type UiPreferences } from "../shared/platform";
 import type {
@@ -10,13 +13,17 @@ import type {
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
   RuntimeProviderConfigureResult,
+  RuntimeProviderDiscoverModelsParams,
+  RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
   RuntimeReplayResult,
+  RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
   RuntimeTurnStartParams,
-  RuntimeTurnStartResult
+  RuntimeTurnStartResult,
+  RuntimeWorkspaceSummary
 } from "../shared/runtime";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
 import type { RendererTrustPolicy } from "./security";
@@ -96,6 +103,16 @@ function broadcastPreferences(preferences: UiPreferences): void {
   }
 }
 
+function workspaceFromDirectory(directory: string): RuntimeWorkspaceSummary {
+  const rootUri = resolve(directory);
+  const identity = process.platform === "win32" ? rootUri.toLocaleLowerCase("en-US") : rootUri;
+  return {
+    id: `workspace-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`,
+    name: basename(rootUri) || rootUri,
+    rootUri
+  };
+}
+
 export function registerDesktopIpc(
   trustPolicy: RendererTrustPolicy,
   runtimeHost: Pick<RuntimeHost, "request" | "onNotification">
@@ -108,10 +125,12 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.eventReplay,
     DESKTOP_IPC_CHANNELS.runtime.providerList,
     DESKTOP_IPC_CHANNELS.runtime.providerConfigure,
+    DESKTOP_IPC_CHANNELS.runtime.providerDiscoverModels,
     DESKTOP_IPC_CHANNELS.runtime.providerDisconnect,
     DESKTOP_IPC_CHANNELS.runtime.providerRemove,
     DESKTOP_IPC_CHANNELS.runtime.modelList,
     DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
+    DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.preferences.get,
     DESKTOP_IPC_CHANNELS.preferences.update,
     DESKTOP_IPC_CHANNELS.window.close,
@@ -138,13 +157,10 @@ export function registerDesktopIpc(
 
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.threadCreate,
-    async (event, title: unknown, clientRequestId: unknown) => {
+    async (event, params: RuntimeThreadCreateParams) => {
       trustPolicy.assertTrustedIpc(event);
       return invokeRuntime(() =>
-        runtimeHost.request<RuntimeThreadCreateResult>("thread.create", {
-          title,
-          clientRequestId
-        })
+        runtimeHost.request<RuntimeThreadCreateResult>("thread.create", { ...params })
       );
     }
   );
@@ -162,6 +178,18 @@ export function registerDesktopIpc(
       trustPolicy.assertTrustedIpc(event);
       return invokeRuntime(() =>
         runtimeHost.request<RuntimeProviderConfigureResult>("provider.configure", {
+          ...params
+        })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.providerDiscoverModels,
+    async (event, params: RuntimeProviderDiscoverModelsParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeProviderDiscoverModelsResult>("provider.discover_models", {
           ...params
         })
       );
@@ -245,6 +273,13 @@ export function registerDesktopIpc(
   ipcMain.handle(DESKTOP_IPC_CHANNELS.preferences.get, async (event) => {
     trustPolicy.assertTrustedIpc(event);
     return getUiPreferences();
+  });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.workspace.chooseDirectory, async (event) => {
+    const window = trustedRequestingWindow(event, trustPolicy);
+    const result = await dialog.showOpenDialog(window, { properties: ["openDirectory"] });
+    const directory = result.filePaths[0];
+    return result.canceled || !directory ? null : workspaceFromDirectory(directory);
   });
 
   ipcMain.handle(DESKTOP_IPC_CHANNELS.preferences.update, async (event, patch: unknown) => {

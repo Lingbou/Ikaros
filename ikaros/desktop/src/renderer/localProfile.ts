@@ -1,11 +1,13 @@
+import { DEFAULT_PROFILE_USERNAME } from "../shared/platform";
+
 export interface LocalProfile {
   readonly name: string;
   readonly initials: string;
 }
 
 export const LOCAL_PROFILE: LocalProfile = Object.freeze({
-  name: "hc",
-  initials: "HC",
+  name: DEFAULT_PROFILE_USERNAME,
+  initials: "US",
 });
 
 export function profileInitials(username: string): string {

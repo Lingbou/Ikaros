@@ -10,16 +10,16 @@ from typing import Any, cast
 
 import pytest
 
-from ikaros_runtime import process_tool
 from ikaros_runtime.cancellation import CancellationToken
-from ikaros_runtime.policy import FullAccessPolicy
-from ikaros_runtime.process_tool import ProcessRunTool
-from ikaros_runtime.tools import (
+from ikaros_runtime.tools import process as process_tool
+from ikaros_runtime.tools.core import (
     ToolCall,
     ToolExecutionCancelled,
     ToolExecutor,
     ToolRegistry,
 )
+from ikaros_runtime.tools.policy import FullAccessPolicy
+from ikaros_runtime.tools.process import ProcessRunTool
 
 
 def _command(*, windows: str, posix: str) -> str:
@@ -164,6 +164,62 @@ async def test_process_run_captures_stdout_stderr_exit_and_cwd(tmp_path: Path) -
     assert "stderr-value" in result.details["stderr"]
     assert "stdout-value" in result.output
     assert "stderr-value" in result.output
+
+
+@pytest.mark.asyncio
+async def test_process_run_uses_the_run_workspace_as_its_default_cwd(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result = await _executor().execute(
+        ToolCall(
+            "call-workspace",
+            "process_run",
+            {"command": _command(windows="(Get-Location).Path", posix="pwd")},
+        ),
+        cancellation=CancellationToken(),
+        default_cwd=str(workspace),
+    )
+
+    assert result.ok is True
+    assert result.details["cwd"] == str(workspace.resolve())
+    assert str(workspace.resolve()) in result.output.strip()
+
+
+@pytest.mark.asyncio
+async def test_process_run_resolves_relative_cwd_from_the_run_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    result = await _executor().execute(
+        ToolCall(
+            "call-relative-workspace",
+            "process_run",
+            {
+                "command": _command(windows="(Get-Location).Path", posix="pwd"),
+                "cwd": "nested",
+            },
+        ),
+        cancellation=CancellationToken(),
+        default_cwd=str(workspace),
+    )
+
+    assert result.ok is True
+    assert result.details["cwd"] == str(nested.resolve())
+
+
+@pytest.mark.asyncio
+async def test_process_run_does_not_fall_back_when_the_workspace_is_missing(
+    tmp_path: Path,
+) -> None:
+    missing_workspace = tmp_path / "removed-workspace"
+    result = await _executor().execute(
+        ToolCall("call-missing-workspace", "process_run", {"command": "echo unsafe"}),
+        cancellation=CancellationToken(),
+        default_cwd=str(missing_workspace),
+    )
+
+    assert result.ok is False
+    assert result.details["errorCode"] == "invalid_cwd"
 
 
 @pytest.mark.asyncio

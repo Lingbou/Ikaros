@@ -1,65 +1,18 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import AsyncIterator
 
-from .cancellation import CancellationToken
-from .json_codec import loads as json_loads
-from .tools import ToolCall, ToolDefinition
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderMessage:
-    role: str
-    content: str
-    tool_calls: tuple[ToolCall, ...] = ()
-    tool_call_id: str | None = None
-    reasoning_content: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderRequest:
-    model_id: str
-    messages: Sequence[ProviderMessage]
-    tools: Sequence[ToolDefinition] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class TextDelta:
-    delta: str
-
-
-@dataclass(frozen=True, slots=True)
-class ReasoningDelta:
-    delta: str
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCallCompleted:
-    call: ToolCall
-
-
-@dataclass(frozen=True, slots=True)
-class ResponseCompleted:
-    """The provider finished one response without further stream events."""
-
-
-type ProviderEvent = TextDelta | ReasoningDelta | ToolCallCompleted | ResponseCompleted
-
-
-class ProviderAdapter(Protocol):
-    def stream(
-        self,
-        request: ProviderRequest,
-        *,
-        cancellation: CancellationToken,
-    ) -> AsyncIterator[ProviderEvent]: ...
-
-
-class ProviderResolver(Protocol):
-    def resolve(self, provider_id: str) -> ProviderAdapter | None: ...
+from ..cancellation import CancellationToken
+from ..json_codec import loads as json_loads
+from ..tools.core import ToolCall
+from .base import (
+    ProviderEvent,
+    ProviderRequest,
+    ResponseCompleted,
+    TextDelta,
+    ToolCallCompleted,
+)
 
 
 class ScriptedProvider:

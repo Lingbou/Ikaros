@@ -25,6 +25,9 @@ const electron = vi.hoisted(() => {
       fromWebContents: vi.fn(() => targetWindow),
       getAllWindows: vi.fn(() => windows),
     },
+    dialog: {
+      showOpenDialog: vi.fn(),
+    },
     windows,
     targetWindow,
     runtimeNotification,
@@ -40,6 +43,7 @@ const electron = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   BrowserWindow: electron.BrowserWindow,
+  dialog: electron.dialog,
   ipcMain: electron.ipcMain,
 }));
 
@@ -60,6 +64,7 @@ describe("desktop window controls", () => {
     electron.windows.length = 0;
     electron.runtimeNotification.listener = undefined;
     electron.runtimeHost.request.mockReset();
+    electron.dialog.showOpenDialog.mockReset();
   });
 
   it("lets a trusted renderer minimize its own window", async () => {
@@ -112,6 +117,45 @@ describe("desktop window controls", () => {
     expect(electron.targetWindow.close).toHaveBeenCalledOnce();
   });
 
+  it("returns one stable workspace snapshot for a selected directory", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    electron.dialog.showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: ["C:\\Workspace\\github\\Ikaros"],
+    });
+    const event = { sender: {} };
+    const handler = electron.handlers.get("ikaros:workspace:choose-directory");
+
+    const first = await handler?.(event);
+    const second = await handler?.(event);
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      id: expect.stringMatching(/^workspace-[0-9a-f]{24}$/),
+      name: "Ikaros",
+      rootUri: expect.stringMatching(/Ikaros$/),
+    });
+    expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(electron.targetWindow, {
+      properties: ["openDirectory"],
+    });
+  });
+
+  it("leaves the workspace unchanged when directory selection is cancelled", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    electron.dialog.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+    const handler = electron.handlers.get("ikaros:workspace:choose-directory");
+
+    await expect(handler?.({ sender: {} })).resolves.toBeNull();
+  });
+
   it("forwards a trusted Run cancellation to the Runtime", async () => {
     const trustPolicy = {
       assertTrustedIpc: vi.fn(),
@@ -147,6 +191,12 @@ describe("desktop window controls", () => {
         apiKey: "write-only-secret",
         models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
       }
+    ],
+    [
+      "ikaros:runtime:provider-discover-models",
+      [{ kind: "deepseek", apiKey: "write-only-discovery-secret" }],
+      "provider.discover_models",
+      { kind: "deepseek", apiKey: "write-only-discovery-secret" }
     ],
     ["ikaros:runtime:provider-disconnect", ["deepseek"], "provider.disconnect", {
       providerId: "deepseek"
@@ -194,13 +244,19 @@ describe("desktop window controls", () => {
     electron.runtimeHost.request.mockResolvedValueOnce(created);
     const handler = electron.handlers.get("ikaros:runtime:thread-create");
     expect(handler).toBeDefined();
-    const result = await handler?.(event, "Exactly once", "thread-request-123");
+    const params = {
+      title: "Exactly once",
+      workspace: {
+        id: "workspace-ikaros",
+        name: "Ikaros",
+        rootUri: "C:\\Workspace\\github\\Ikaros",
+      },
+      clientRequestId: "thread-request-123",
+    };
+    const result = await handler?.(event, params);
 
     expect(trustPolicy.assertTrustedIpc).toHaveBeenCalledWith(event);
-    expect(electron.runtimeHost.request).toHaveBeenCalledWith("thread.create", {
-      title: "Exactly once",
-      clientRequestId: "thread-request-123",
-    });
+    expect(electron.runtimeHost.request).toHaveBeenCalledWith("thread.create", params);
     expect(result).toEqual({ ok: true, value: created });
   });
 
@@ -217,7 +273,13 @@ describe("desktop window controls", () => {
     electron.runtimeHost.request.mockRejectedValueOnce(
       new RuntimeRpcError(-32602, "thread.create rejected")
     );
-    await expect(handler?.(event, "Rejected", "request-rejected")).resolves.toEqual({
+    await expect(
+      handler?.(event, {
+        title: "Rejected",
+        workspace: null,
+        clientRequestId: "request-rejected",
+      }),
+    ).resolves.toEqual({
       ok: false,
       error: {
         kind: "json_rpc",
@@ -228,9 +290,13 @@ describe("desktop window controls", () => {
 
     const transportError = new Error("Runtime WebSocket closed.");
     electron.runtimeHost.request.mockRejectedValueOnce(transportError);
-    await expect(handler?.(event, "Ambiguous", "request-ambiguous")).rejects.toBe(
-      transportError
-    );
+    await expect(
+      handler?.(event, {
+        title: "Ambiguous",
+        workspace: null,
+        clientRequestId: "request-ambiguous",
+      }),
+    ).rejects.toBe(transportError);
   });
 
   it("survives a webContents destruction race and continues broadcasting events", () => {

@@ -7,6 +7,7 @@ import type {
   RuntimeJournalEvent,
   RuntimeModelSummary,
   RuntimeProviderSummary,
+  RuntimeThreadCreateParams,
 } from "../shared/runtime";
 
 const createdAt = "2026-08-11T12:00:00.000Z";
@@ -75,8 +76,8 @@ function installRuntimeBridge(api: unknown): void {
     ...(api as object),
     runtime: {
       listThreads: () => bridgeInvocation(() => runtime.listThreads()),
-      createThread: (title: string | null, clientRequestId?: string) =>
-        bridgeInvocation(() => runtime.createThread(title, clientRequestId)),
+      createThread: (params: Parameters<IkarosRuntimeApi["createThread"]>[0]) =>
+        bridgeInvocation(() => runtime.createThread(params)),
       startTurn: (params: Parameters<IkarosRuntimeApi["startTurn"]>[0]) =>
         bridgeInvocation(() => runtime.startTurn(params)),
       cancelRun: (runId: string) => bridgeInvocation(() => runtime.cancelRun(runId)),
@@ -90,6 +91,9 @@ function installRuntimeBridge(api: unknown): void {
         ),
       configureProvider: (params: Parameters<IkarosRuntimeApi["configureProvider"]>[0]) =>
         bridgeInvocation(() => runtime.configureProvider(params)),
+      discoverProviderModels: (
+        params: Parameters<IkarosRuntimeApi["discoverProviderModels"]>[0],
+      ) => bridgeInvocation(() => runtime.discoverProviderModels(params)),
       disconnectProvider: (providerId: "deepseek") =>
         bridgeInvocation(() => runtime.disconnectProvider(providerId)),
       removeProvider: (providerId: string) =>
@@ -160,6 +164,106 @@ afterEach(() => {
 });
 
 describe("Runtime-backed renderer store", () => {
+  it("creates project and ordinary chats through the same Thread flow with distinct workspace snapshots", async () => {
+    const pickedWorkspace = {
+      id: "workspace-ikaros",
+      name: "Ikaros",
+      rootUri: "C:\\Workspace\\github\\Ikaros",
+    };
+    const workspace = { ...pickedWorkspace, name: "Ikaros Runtime" };
+    const createdThreads = [
+      {
+        id: "thread-project",
+        title: "project request",
+        defaultBranchId: "branch-project",
+        workspace,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "thread-ordinary",
+        title: "ordinary request",
+        defaultBranchId: "branch-ordinary",
+        workspace: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+    let seq = 0;
+    const createThread = vi.fn(async (params: RuntimeThreadCreateParams) => {
+      const thread = createdThreads[seq] as (typeof createdThreads)[number];
+      seq += 1;
+      const event: RuntimeJournalEvent = {
+        seq,
+        type: "thread.created",
+        threadId: thread.id,
+        branchId: thread.defaultBranchId,
+        turnId: null,
+        runId: null,
+        itemId: null,
+        timestamp: createdAt,
+        payload: {
+          clientRequestId: params.clientRequestId,
+          thread,
+          branch: {
+            id: thread.defaultBranchId,
+            threadId: thread.id,
+            createdAt,
+            isDefault: true,
+          },
+        },
+      };
+      return { thread, event };
+    });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [] })),
+        createThread,
+        startTurn: vi.fn(async (params: { threadId: string; branchId: string }) => ({
+          ...params,
+          turnId: `turn-${params.threadId}`,
+          runId: `run-${params.threadId}`,
+        })),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      workspace: { chooseDirectory: vi.fn(async () => pickedWorkspace) },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    useAppStore.getState().stageProjectWorkspace(workspace);
+    useAppStore.getState().setDraft("project request");
+    await useAppStore.getState().sendDraft();
+    useAppStore.getState().newChat();
+    useAppStore.getState().setDraft("ordinary request");
+    await useAppStore.getState().sendDraft();
+
+    expect(createThread.mock.calls.map((call) => call[0].workspace)).toEqual([
+      workspace,
+      null,
+    ]);
+    expect(useAppStore.getState().projects).toEqual([
+      expect.objectContaining({ id: workspace.id, name: workspace.name }),
+    ]);
+    expect(
+      useAppStore.getState().threads.map((thread) => [thread.id, thread.projectId]),
+    ).toEqual([
+      ["thread-ordinary", null],
+      ["thread-project", workspace.id],
+    ]);
+  });
+
   it("projects a Run that settles before turn.start returns without Mock fixtures", async () => {
     const listeners = new Set<(event: RuntimeJournalEvent) => void>();
     const thread = {
@@ -479,6 +583,7 @@ describe("Runtime-backed renderer store", () => {
           ? { ...provider, configured: false, credentialConfigured: false }
           : provider,
       );
+      models = models.filter((model) => model.providerId !== "deepseek");
       return providers.find((provider) => provider.id === "deepseek");
     });
     const removeProvider = vi.fn(async (providerId: string) => {
@@ -532,7 +637,7 @@ describe("Runtime-backed renderer store", () => {
     useAppStore.getState().selectModel({ providerId: "deepseek", modelId: "deepseek-chat" });
     await useAppStore.getState().disconnectProvider("deepseek");
     expect(useAppStore.getState().models.some((model) => model.providerId === "deepseek")).toBe(
-      true,
+      false,
     );
     expect(useAppStore.getState().selectedModel).toEqual({
       providerId: "custom-provider",
@@ -543,6 +648,74 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().selectedModel).toBeNull();
     expect(disconnectProvider).toHaveBeenCalledWith("deepseek");
     expect(removeProvider).toHaveBeenCalledWith("custom-provider");
+  });
+
+  it("returns discovered DeepSeek candidates without mutating or refreshing the catalog", async () => {
+    const providers: RuntimeProviderSummary[] = [
+      {
+        id: "deepseek",
+        displayName: "DeepSeek",
+        origin: "builtin",
+        configured: true,
+        credentialConfigured: true,
+        health: "unknown",
+      },
+    ];
+    const models: RuntimeModelSummary[] = [
+      {
+        providerId: "deepseek",
+        id: "deepseek-chat",
+        displayName: "DeepSeek Chat",
+        enabled: true,
+      },
+    ];
+    const candidates = [
+      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
+    ];
+    const listProviders = vi.fn(async () => ({ providers }));
+    const listModels = vi.fn(async () => ({ models }));
+    const discoverProviderModels = vi.fn(async () => ({ models: candidates }));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [] })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        listProviders,
+        listModels,
+        discoverProviderModels,
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    const before = useAppStore.getState();
+    const result = await before.discoverDeepSeekModels("write-only-discovery-secret");
+    const after = useAppStore.getState();
+
+    expect(result).toEqual(candidates);
+    expect(discoverProviderModels).toHaveBeenCalledOnce();
+    expect(discoverProviderModels).toHaveBeenCalledWith({
+      kind: "deepseek",
+      apiKey: "write-only-discovery-secret",
+    });
+    expect(listProviders).toHaveBeenCalledOnce();
+    expect(listModels).toHaveBeenCalledOnce();
+    expect(after.providers).toBe(before.providers);
+    expect(after.models).toBe(before.models);
+    expect(after.selectedModel).toBe(before.selectedModel);
   });
 
   it("ignores an older provider catalog response that finishes after a newer refresh", async () => {
@@ -915,7 +1088,8 @@ describe("Runtime-backed renderer store", () => {
       updatedAt: createdAt
     };
     let createdEvent: RuntimeJournalEvent | undefined;
-    const createThread = vi.fn(async (_title: string | null, clientRequestId?: string) => {
+    const createThread = vi.fn(async (params: RuntimeThreadCreateParams) => {
+      const clientRequestId = params.clientRequestId;
       createdEvent = {
         seq: 1,
         type: "thread.created",
@@ -978,10 +1152,10 @@ describe("Runtime-backed renderer store", () => {
 
     expect(createThread).toHaveBeenCalledOnce();
     expect(startTurn).toHaveBeenCalledOnce();
-    expect(createThread.mock.calls[0]?.[1]).toEqual(expect.any(String));
+    expect(createThread.mock.calls[0]?.[0].clientRequestId).toEqual(expect.any(String));
     expect(startTurn.mock.calls[0]?.[0].clientRequestId).toEqual(expect.any(String));
     expect(startTurn.mock.calls[0]?.[0].clientRequestId).not.toBe(
-      createThread.mock.calls[0]?.[1]
+      createThread.mock.calls[0]?.[0].clientRequestId
     );
     expect(useAppStore.getState().threads).toHaveLength(1);
     expect(useAppStore.getState().selectedThreadId).toBe(thread.id);
@@ -1000,7 +1174,8 @@ describe("Runtime-backed renderer store", () => {
       updatedAt: createdAt
     };
     let createAttempts = 0;
-    const createThread = vi.fn(async (_title: string | null, clientRequestId?: string) => {
+    const createThread = vi.fn(async (params: RuntimeThreadCreateParams) => {
+      const clientRequestId = params.clientRequestId;
       createAttempts += 1;
       if (createAttempts <= 5) throw new Error("Runtime connection unavailable");
       const event: RuntimeJournalEvent = {
@@ -1061,7 +1236,9 @@ describe("Runtime-backed renderer store", () => {
     await sending;
 
     expect(createThread).toHaveBeenCalledTimes(6);
-    expect(new Set(createThread.mock.calls.map((call) => call[1])).size).toBe(1);
+    expect(
+      new Set(createThread.mock.calls.map((call) => call[0].clientRequestId)).size,
+    ).toBe(1);
     expect(startTurn).toHaveBeenCalledOnce();
     expect(useAppStore.getState().selectedThreadId).toBe(thread.id);
     expect(useAppStore.getState().draft).toBe("");
@@ -1137,7 +1314,8 @@ describe("Runtime-backed renderer store", () => {
       updatedAt: createdAt
     };
     let createAttempts = 0;
-    const createThread = vi.fn(async (_title: string | null, clientRequestId?: string) => {
+    const createThread = vi.fn(async (params: RuntimeThreadCreateParams) => {
+      const clientRequestId = params.clientRequestId;
       createAttempts += 1;
       if (createAttempts === 1) {
         throw new Error("socket closed after thread.create was sent");
@@ -1199,7 +1377,9 @@ describe("Runtime-backed renderer store", () => {
     await sending;
 
     expect(createThread).toHaveBeenCalledTimes(2);
-    expect(new Set(createThread.mock.calls.map((call) => call[1])).size).toBe(1);
+    expect(
+      new Set(createThread.mock.calls.map((call) => call[0].clientRequestId)).size,
+    ).toBe(1);
     expect(replayEvents).toHaveBeenCalledTimes(2);
     expect(startTurn).toHaveBeenCalledOnce();
     expect(useAppStore.getState().selectedThreadId).toBe(thread.id);
@@ -2165,6 +2345,100 @@ describe("Runtime-backed renderer store", () => {
     });
     expect(useAppStore.getState().runtimeError).toBeNull();
     expect(replayEvents).toHaveBeenCalledTimes(4);
+  });
+
+  it("recovers a completed Run when Stop races with a retained-prefix replay", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Retained journal prefix",
+      defaultBranchId: "branch-runtime",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const initialEvents = [
+      runtimeEvent(227, "item.completed", "user-runtime", {
+        item: messageItem("user-runtime", "user", "hello", "completed")
+      }),
+      runtimeEvent(228, "run.state_changed", null, { status: "running" }),
+      runtimeEvent(229, "item.started", "assistant-runtime", {
+        item: messageItem("assistant-runtime", "assistant", "", "streaming")
+      }),
+      runtimeEvent(230, "item.delta", "assistant-runtime", { delta: "Hi" })
+    ];
+    const completedEvents = [
+      runtimeEvent(231, "item.completed", "assistant-runtime", {
+        item: messageItem("assistant-runtime", "assistant", "Hi", "completed")
+      }),
+      runtimeEvent(232, "run.settled", null, { status: "completed" })
+    ];
+    const cancelRun = vi.fn(async () => ({
+      accepted: false,
+      runId: "run-runtime",
+      status: "completed" as const
+    }));
+    const replayEvents = vi
+      .fn()
+      .mockResolvedValueOnce({
+        events: initialEvents,
+        latestSeq: 230,
+        nextAfterSeq: 230,
+        hasMore: false
+      })
+      .mockResolvedValueOnce({
+        events: completedEvents,
+        latestSeq: 232,
+        nextAfterSeq: 232,
+        hasMore: false
+      });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun,
+        replayEvents,
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        })
+      },
+      preferences: {},
+      windowControls: {}
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    expect(useAppStore.getState().runtimeSeq).toBe(230);
+    expect(useAppStore.getState().runStatus).toBe("running");
+    expect(
+      useAppStore.getState().threads[0]?.branches[0]?.turns[0]?.events
+    ).toMatchObject([
+      { role: "user", content: "hello", status: "complete" },
+      { role: "assistant", content: "Hi", status: "streaming" }
+    ]);
+
+    useAppStore.getState().stopRun();
+    await vi.waitFor(() => expect(useAppStore.getState().runStatus).toBe("completed"));
+
+    expect(cancelRun).toHaveBeenCalledOnce();
+    expect(cancelRun).toHaveBeenCalledWith("run-runtime");
+    expect(replayEvents).toHaveBeenNthCalledWith(2, 230, 500);
+    expect(useAppStore.getState().runtimeSeq).toBe(232);
+    expect(
+      useAppStore.getState().threads[0]?.branches[0]?.turns[0]
+    ).toMatchObject({
+      runId: "run-runtime",
+      status: "completed",
+      events: [
+        { role: "user", content: "hello", status: "complete" },
+        { role: "assistant", content: "Hi", status: "complete" }
+      ]
+    });
   });
 
   it("stops the selected Runtime Run once and waits for canonical cancellation", async () => {

@@ -14,10 +14,13 @@ import type {
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
   RuntimeProviderConfigureResult,
+  RuntimeProviderDiscoverModelsParams,
+  RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
   RuntimeCancelRunResult,
   RuntimeReplayResult,
+  RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
   RuntimeTurnStartParams,
@@ -36,11 +39,10 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList) as Promise<
         RuntimeInvocationResult<{ threads: RuntimeThreadSummary[] }>
       >,
-    createThread: (title: string | null, clientRequestId?: string) =>
+    createThread: (params: RuntimeThreadCreateParams) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.threadCreate,
-        title,
-        clientRequestId
+        params
       ) as Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>,
     startTurn: (params: RuntimeTurnStartParams) =>
       ipcRenderer.invoke(
@@ -67,6 +69,11 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.providerConfigure,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeProviderConfigureResult>>,
+    discoverProviderModels: (params: RuntimeProviderDiscoverModelsParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.providerDiscoverModels,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeProviderDiscoverModelsResult>>,
     disconnectProvider: (providerId: "deepseek") =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.providerDisconnect,
@@ -88,6 +95,12 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
       ) as Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>,
     onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
       subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener)
+  }),
+  workspace: Object.freeze({
+    chooseDirectory: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.workspace.chooseDirectory) as Promise<
+        import("../shared/runtime").RuntimeWorkspaceSummary | null
+      >
   }),
   preferences: Object.freeze({
     get: () => ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.preferences.get) as Promise<UiPreferences>,

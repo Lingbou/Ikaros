@@ -668,7 +668,7 @@ describe("core store invariants", () => {
     expect(useAppStore.getState().settingsOpen).toBe(false);
   });
 
-  it("keeps the editable profile username in Zustand memory", () => {
+  it("keeps the projected profile username in Zustand state", () => {
     expect(useAppStore.getState().profileUsername).toBe(LOCAL_PROFILE.name);
     expect(useAppStore.getInitialState().profileUsername).toBe(LOCAL_PROFILE.name);
 
@@ -681,13 +681,64 @@ describe("core store invariants", () => {
     expect(useAppStore.getState().profileUsername).toBe(LOCAL_PROFILE.name);
   });
 
+  it("keeps sidebar width as renderer state for drag previews", () => {
+    expect(useAppStore.getState().sidebarWidth).toBe(260);
+
+    useAppStore.getState().setSidebarWidth(404);
+
+    expect(useAppStore.getState().sidebarWidth).toBe(404);
+    expect(useAppStore.getInitialState().sidebarWidth).toBe(260);
+  });
+
+  it("stages a new project workspace without fabricating a Runtime Thread", () => {
+    const workspace = {
+      id: "workspace-new",
+      name: "Named project",
+      rootUri: "C:\\Workspace\\named-project",
+    };
+    const beforeThreadIds = useAppStore.getState().threads.map((thread) => thread.id);
+
+    useAppStore.getState().stageProjectWorkspace(workspace);
+
+    const state = useAppStore.getState();
+    expect(state.projects).toContainEqual({
+      ...workspace,
+      color: "var(--muted-strong)",
+    });
+    expect(state.threads.map((thread) => thread.id)).toEqual(beforeThreadIds);
+    expect(state.newThreadWorkspace).toEqual(workspace);
+    expect(state.selectedThreadId).toBeNull();
+    expect(state.expandedProjects[workspace.id]).toBe(true);
+  });
+
+  it("reuses the canonical project snapshot when a staged workspace id already exists", () => {
+    const existing = useAppStore.getState().projects[0];
+    if (!existing) throw new Error("Expected a project fixture");
+    const beforeProjects = useAppStore.getState().projects;
+
+    useAppStore.getState().stageProjectWorkspace({
+      id: existing.id,
+      name: "Ignored rename",
+      rootUri: "C:\\Different\\root",
+    });
+
+    const state = useAppStore.getState();
+    expect(state.projects).toBe(beforeProjects);
+    expect(state.newThreadWorkspace).toEqual({
+      id: existing.id,
+      name: existing.name,
+      rootUri: existing.rootUri ?? null,
+    });
+    expect(state.projects.filter((project) => project.id === existing.id)).toHaveLength(1);
+  });
+
   it.each([
     ["hc", "HC"],
     ["  ikaros  ", "IK"],
     ["March Seven", "MS"],
     ["  March   Seventh  ", "MS"],
     ["伊卡洛斯", "伊卡"],
-    ["   ", "HC"],
+    ["   ", "US"],
   ])("derives profile initials from %j", (username, expected) => {
     expect(profileInitials(username)).toBe(expected);
   });

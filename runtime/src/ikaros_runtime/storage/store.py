@@ -4,120 +4,44 @@ import sqlite3
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from .domain import (
+from ..domain import (
     ContextItem,
     JournalEvent,
     PreparedTurn,
     RecoveryPlan,
     RunDescriptor,
     ThreadSummary,
+    WorkspaceSummary,
     utc_now,
 )
-from .json_codec import dumps as json_dumps
-from .json_codec import loads as json_loads
-from .security import (
-    contains_protected_value,
-    json_contains_protected_value,
-    json_values_contain_protected_value,
+from ..json_codec import dumps as json_dumps
+from ..json_codec import loads as json_loads
+from .journal import (
+    append_event,
+    event_from_row,
+    latest_sequence,
+    projection_rows,
+    replay_events,
 )
-
-_SCHEMA_VERSION = 5
-_INITIAL_SCHEMA = """
-CREATE TABLE events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type TEXT NOT NULL,
-    thread_id TEXT,
-    branch_id TEXT,
-    created_at TEXT NOT NULL,
-    payload_json TEXT NOT NULL
-);
-
-CREATE INDEX events_thread_seq_idx ON events(thread_id, seq);
-
-CREATE TABLE threads (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    default_branch_id TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE branches (
-    id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL,
-    is_default INTEGER NOT NULL CHECK (is_default IN (0, 1))
-);
-
-CREATE UNIQUE INDEX branches_default_thread_idx
-ON branches(thread_id) WHERE is_default = 1;
-"""
-
-_MIGRATION_2 = """
-ALTER TABLE events ADD COLUMN turn_id TEXT;
-ALTER TABLE events ADD COLUMN run_id TEXT;
-ALTER TABLE events ADD COLUMN item_id TEXT;
-
-CREATE INDEX events_run_seq_idx ON events(run_id, seq);
-
-CREATE TABLE turns (
-    id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-    branch_id TEXT NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
-    ordinal INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(branch_id, ordinal)
-);
-
-CREATE TABLE runs (
-    id TEXT PRIMARY KEY,
-    turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
-    provider_id TEXT NOT NULL,
-    model_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    settled_at TEXT
-);
-
-CREATE TABLE items (
-    id TEXT PRIMARY KEY,
-    turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
-    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    ordinal INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    role TEXT,
-    status TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(run_id, ordinal)
-);
-"""
-
-_MIGRATION_3 = """
-CREATE UNIQUE INDEX events_one_settled_per_run
-ON events(run_id) WHERE event_type = 'run.settled';
-"""
-
-_MIGRATION_4 = """
-ALTER TABLE threads ADD COLUMN client_request_id TEXT;
-ALTER TABLE runs ADD COLUMN client_request_id TEXT;
-
-CREATE UNIQUE INDEX threads_client_request_id_idx
-ON threads(client_request_id) WHERE client_request_id IS NOT NULL;
-
-CREATE UNIQUE INDEX runs_client_request_id_idx
-ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
-"""
-
-_MIGRATION_5 = """
-ALTER TABLE runs ADD COLUMN execution_policy TEXT NOT NULL DEFAULT 'full_access';
-ALTER TABLE items ADD COLUMN data_json TEXT NOT NULL DEFAULT '{}';
-"""
+from .projections import (
+    apply_event,
+    contains_protected_projection_values,
+    context_items,
+    context_messages,
+    find_turn_by_client_request_id,
+    get_run,
+    has_active_runs,
+    item_location,
+    item_row,
+    list_threads,
+    next_item_ordinal,
+    run_status,
+    workspace_from_json,
+    workspace_to_json,
+)
+from .schema import migrate
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
@@ -132,153 +56,64 @@ class SqliteRuntimeStore:
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA synchronous = NORMAL")
         try:
-            self._migrate()
+            migrate(self._connection)
         except BaseException:
             self._connection.close()
-            raise
-
-    def _migrate(self) -> None:
-        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
-        if version > _SCHEMA_VERSION:
-            raise RuntimeError(
-                f"state database schema {version} is newer than supported schema {_SCHEMA_VERSION}"
-            )
-        if version == 0:
-            self._apply_migration(_INITIAL_SCHEMA, target_version=1)
-            version = 1
-        if version == 1:
-            self._apply_migration(_MIGRATION_2, target_version=2)
-            version = 2
-        if version == 2:
-            self._apply_migration(_MIGRATION_3, target_version=3)
-            version = 3
-        if version == 3:
-            self._apply_migration(_MIGRATION_4, target_version=4)
-            version = 4
-        if version == 4:
-            self._apply_migration(_MIGRATION_5, target_version=5)
-
-    def _apply_migration(self, script: str, *, target_version: int) -> None:
-        transaction = (
-            f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {target_version};\nCOMMIT;"
-        )
-        try:
-            self._connection.executescript(transaction)
-        except BaseException:
-            if self._connection.in_transaction:
-                self._connection.rollback()
             raise
 
     def close(self) -> None:
         self._connection.close()
 
     def has_active_runs(self) -> bool:
-        row = self._connection.execute(
-            """
-            SELECT 1
-            FROM runs
-            WHERE status IN ('queued', 'running')
-            LIMIT 1
-            """
-        ).fetchone()
-        return row is not None
+        return has_active_runs(self._connection)
 
     def journal_contains_protected_values(self, protected_values: Sequence[str]) -> bool:
-        values = tuple(dict.fromkeys(value for value in protected_values if value))
-        if not values:
-            return False
-        thread_rows = self._connection.execute(
-            """
-            SELECT title, client_request_id
-            FROM threads
-            """
-        ).fetchall()
-        if any(
-            json_contains_protected_value(
-                (row["title"], row["client_request_id"]),
-                values,
-            )
-            for row in thread_rows
-        ):
-            return True
+        return contains_protected_projection_values(self._connection, protected_values)
 
-        run_rows = self._connection.execute(
-            """
-            SELECT provider_id, model_id, client_request_id
-            FROM runs
-            """
-        ).fetchall()
-        for row in run_rows:
-            references = [row["client_request_id"]]
-            if row["provider_id"] != "scripted":
-                references.extend((row["provider_id"], row["model_id"]))
-            if json_contains_protected_value(references, values):
-                return True
-
-        item_rows = self._connection.execute(
-            """
-            SELECT kind, content, data_json
-            FROM items
-            """
-        ).fetchall()
-        for row in item_rows:
-            kind = str(row["kind"])
-            content = str(row["content"])
-            data = json_loads(row["data_json"])
-            if kind == "message":
-                if contains_protected_value(content, values):
-                    return True
-                if json_values_contain_protected_value(data, values):
-                    return True
-            elif kind == "tool_call":
-                tool_call_dynamic = (
-                    data.get("callId"),
-                    data.get("toolName"),
-                    data.get("arguments"),
-                    data.get("reasoningContent"),
-                )
-                if json_contains_protected_value(tool_call_dynamic, values):
-                    return True
-            elif kind == "tool_result":
-                tool_result_dynamic = (data.get("callId"), data.get("toolName"))
-                if json_contains_protected_value(tool_result_dynamic, values):
-                    return True
-                if json_values_contain_protected_value(data.get("result"), values):
-                    return True
-            elif contains_protected_value(content, values) or json_contains_protected_value(
-                data,
-                values,
-            ):
-                return True
-        return False
-
-    def create_thread(self, title: str | None) -> tuple[ThreadSummary, JournalEvent]:
-        thread, event, _created = self._create_thread(title, client_request_id=None)
+    def create_thread(
+        self,
+        title: str | None,
+        *,
+        workspace: WorkspaceSummary | None = None,
+    ) -> tuple[ThreadSummary, JournalEvent]:
+        thread, event, _created = self._create_thread(
+            title,
+            workspace=workspace,
+            client_request_id=None,
+        )
         return thread, event
 
     def create_thread_once(
         self,
         title: str | None,
         client_request_id: str,
+        *,
+        workspace: WorkspaceSummary | None = None,
     ) -> tuple[ThreadSummary, JournalEvent, bool]:
-        return self._create_thread(title, client_request_id=client_request_id)
+        return self._create_thread(
+            title,
+            workspace=workspace,
+            client_request_id=client_request_id,
+        )
 
     def _create_thread(
         self,
         title: str | None,
         *,
+        workspace: WorkspaceSummary | None,
         client_request_id: str | None,
     ) -> tuple[ThreadSummary, JournalEvent, bool]:
         if client_request_id is not None:
             existing = self._connection.execute(
                 """
-                SELECT id, title, default_branch_id, created_at, updated_at
+                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
                 FROM threads WHERE client_request_id = ?
                 """,
                 (client_request_id,),
             ).fetchone()
             if existing is not None:
-                if existing["title"] != title:
+                existing_workspace = workspace_from_json(existing["workspace_json"])
+                if existing["title"] != title or existing_workspace != workspace:
                     raise LookupError(
                         "clientRequestId was already used with different thread.create parameters"
                     )
@@ -300,10 +135,11 @@ class SqliteRuntimeStore:
                         id=str(existing["id"]),
                         title=existing["title"],
                         default_branch_id=str(existing["default_branch_id"]),
+                        workspace=existing_workspace,
                         created_at=str(existing["created_at"]),
                         updated_at=str(existing["updated_at"]),
                     ),
-                    self._event_from_row(event_row),
+                    event_from_row(event_row),
                     False,
                 )
 
@@ -314,6 +150,7 @@ class SqliteRuntimeStore:
             id=thread_id,
             title=title,
             default_branch_id=branch_id,
+            workspace=workspace,
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -332,10 +169,19 @@ class SqliteRuntimeStore:
             self._connection.execute(
                 """
                 INSERT INTO threads(
-                    id, title, default_branch_id, created_at, updated_at, client_request_id
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, title, default_branch_id, workspace_json,
+                    created_at, updated_at, client_request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (thread_id, title, branch_id, timestamp, timestamp, client_request_id),
+                (
+                    thread_id,
+                    title,
+                    branch_id,
+                    workspace_to_json(workspace),
+                    timestamp,
+                    timestamp,
+                    client_request_id,
+                ),
             )
             self._connection.execute(
                 """
@@ -354,23 +200,7 @@ class SqliteRuntimeStore:
         return thread, event, True
 
     def list_threads(self) -> list[ThreadSummary]:
-        rows = self._connection.execute(
-            """
-            SELECT id, title, default_branch_id, created_at, updated_at
-            FROM threads
-            ORDER BY updated_at DESC, id
-            """
-        ).fetchall()
-        return [
-            ThreadSummary(
-                id=row["id"],
-                title=row["title"],
-                default_branch_id=row["default_branch_id"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
-            for row in rows
-        ]
+        return list_threads(self._connection)
 
     def find_turn_by_client_request_id(
         self,
@@ -382,44 +212,14 @@ class SqliteRuntimeStore:
         model_id: str,
         client_request_id: str,
     ) -> PreparedTurn | None:
-        existing = self._connection.execute(
-            """
-            SELECT r.id AS run_id, r.turn_id, r.provider_id, r.model_id,
-                   t.thread_id, t.branch_id, i.content
-            FROM runs r
-            JOIN turns t ON t.id = r.turn_id
-            JOIN items i ON i.run_id = r.id AND i.ordinal = 1
-            WHERE r.client_request_id = ?
-            """,
-            (client_request_id,),
-        ).fetchone()
-        if existing is None:
-            return None
-        expected = (
-            thread_id,
-            branch_id,
-            provider_id,
-            model_id,
-            content,
-        )
-        actual = (
-            str(existing["thread_id"]),
-            str(existing["branch_id"]),
-            str(existing["provider_id"]),
-            str(existing["model_id"]),
-            str(existing["content"]),
-        )
-        if actual != expected:
-            raise LookupError(
-                "clientRequestId was already used with different turn.start parameters"
-            )
-        return PreparedTurn(
-            turn_id=str(existing["turn_id"]),
-            run_id=str(existing["run_id"]),
-            thread_id=str(existing["thread_id"]),
-            branch_id=str(existing["branch_id"]),
-            initial_events=(),
-            newly_created=False,
+        return find_turn_by_client_request_id(
+            self._connection,
+            thread_id=thread_id,
+            branch_id=branch_id,
+            content=content,
+            provider_id=provider_id,
+            model_id=model_id,
+            client_request_id=client_request_id,
         )
 
     def prepare_turn(
@@ -571,35 +371,10 @@ class SqliteRuntimeStore:
         )
 
     def get_run(self, run_id: str) -> RunDescriptor:
-        row = self._connection.execute(
-            """
-            SELECT r.id, r.turn_id, r.provider_id, r.model_id, r.execution_policy,
-                   t.thread_id, t.branch_id
-            FROM runs r JOIN turns t ON t.id = r.turn_id
-            WHERE r.id = ?
-            """,
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            raise LookupError("run was not found")
-        return RunDescriptor(
-            id=row["id"],
-            turn_id=row["turn_id"],
-            thread_id=row["thread_id"],
-            branch_id=row["branch_id"],
-            provider_id=row["provider_id"],
-            model_id=row["model_id"],
-            execution_policy=row["execution_policy"],
-        )
+        return get_run(self._connection, run_id)
 
     def run_status(self, run_id: str) -> str:
-        row = self._connection.execute(
-            "SELECT status FROM runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            raise LookupError("run was not found")
-        return str(row["status"])
+        return run_status(self._connection, run_id)
 
     def context_messages(
         self,
@@ -607,26 +382,7 @@ class SqliteRuntimeStore:
         *,
         through_turn_id: str,
     ) -> list[tuple[str, str]]:
-        boundary = self._connection.execute(
-            "SELECT ordinal FROM turns WHERE id = ? AND branch_id = ?",
-            (through_turn_id, branch_id),
-        ).fetchone()
-        if boundary is None:
-            raise LookupError("context boundary turn was not found")
-        rows = self._connection.execute(
-            """
-            SELECT i.role, i.content
-            FROM items i JOIN turns t ON t.id = i.turn_id
-            WHERE t.branch_id = ?
-              AND t.ordinal <= ?
-              AND i.kind = 'message'
-              AND i.status = 'completed'
-              AND i.role IN ('user', 'assistant')
-            ORDER BY t.ordinal, i.ordinal
-            """,
-            (branch_id, int(boundary["ordinal"])),
-        ).fetchall()
-        return [(row["role"], row["content"]) for row in rows]
+        return context_messages(self._connection, branch_id, through_turn_id=through_turn_id)
 
     def context_items(
         self,
@@ -634,41 +390,7 @@ class SqliteRuntimeStore:
         *,
         through_turn_id: str,
     ) -> list[ContextItem]:
-        boundary = self._connection.execute(
-            "SELECT ordinal FROM turns WHERE id = ? AND branch_id = ?",
-            (through_turn_id, branch_id),
-        ).fetchone()
-        if boundary is None:
-            raise LookupError("context boundary turn was not found")
-        rows = self._connection.execute(
-            """
-            SELECT i.kind, i.role, i.content, i.data_json
-            FROM items i
-            JOIN turns t ON t.id = i.turn_id
-            JOIN runs r ON r.id = i.run_id
-            WHERE t.branch_id = ?
-              AND t.ordinal <= ?
-              AND (
-                (i.kind = 'message' AND i.status = 'completed'
-                 AND i.role IN ('user', 'assistant'))
-                OR
-                (i.kind IN ('tool_call', 'tool_result')
-                 AND i.status IN ('completed', 'failed')
-                 AND (t.id = ? OR r.status = 'completed'))
-              )
-            ORDER BY t.ordinal, i.ordinal
-            """,
-            (branch_id, int(boundary["ordinal"]), through_turn_id),
-        ).fetchall()
-        return [
-            ContextItem(
-                kind=str(row["kind"]),
-                role=str(row["role"]) if row["role"] is not None else None,
-                content=str(row["content"]),
-                data=json_loads(row["data_json"]),
-            )
-            for row in rows
-        ]
+        return context_items(self._connection, branch_id, through_turn_id=through_turn_id)
 
     def mark_run_running(self, run_id: str) -> JournalEvent:
         run = self.get_run(run_id)
@@ -740,7 +462,7 @@ class SqliteRuntimeStore:
         return item_id, event
 
     def append_text_delta(self, item_id: str, delta: str) -> JournalEvent:
-        location = self._item_location(item_id)
+        location = item_location(self._connection, item_id)
         timestamp = utc_now()
         with self._connection:
             updated = self._connection.execute(
@@ -776,7 +498,7 @@ class SqliteRuntimeStore:
         run = self.get_run(run_id)
         item_id = f"item_{uuid.uuid4().hex}"
         timestamp = utc_now()
-        ordinal = self._next_item_ordinal(run_id)
+        ordinal = next_item_ordinal(self._connection, run_id)
         data = {
             "stepId": step_id,
             "callId": call_id,
@@ -842,7 +564,7 @@ class SqliteRuntimeStore:
     ) -> tuple[JournalEvent, JournalEvent]:
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("tool status is not terminal")
-        row = self._item_row(tool_call_item_id)
+        row = item_row(self._connection, tool_call_item_id)
         if row["kind"] != "tool_call" or row["status"] != "running":
             raise RuntimeError("tool call item is not running")
         timestamp = utc_now()
@@ -852,7 +574,7 @@ class SqliteRuntimeStore:
         if isinstance(duration_ms, int) and not isinstance(duration_ms, bool):
             call_data["durationMs"] = duration_ms
         result_item_id = f"item_{uuid.uuid4().hex}"
-        result_ordinal = self._next_item_ordinal(str(row["run_id"]))
+        result_ordinal = next_item_ordinal(self._connection, str(row["run_id"]))
         result_data = {
             "stepId": call_data["stepId"],
             "callId": call_data["callId"],
@@ -1020,7 +742,7 @@ class SqliteRuntimeStore:
                 )
                 if item_row["kind"] == "tool_call":
                     result_item_id = f"item_{uuid.uuid4().hex}"
-                    result_ordinal = self._next_item_ordinal(run_id)
+                    result_ordinal = next_item_ordinal(self._connection, run_id)
                     error_code = reason_code or (
                         "cancelled" if status == "cancelled" else "run_failed"
                     )
@@ -1149,32 +871,13 @@ class SqliteRuntimeStore:
         return RecoveryPlan(tuple(str(row["id"]) for row in queued_rows))
 
     def replay_events(self, after_seq: int, limit: int) -> tuple[list[JournalEvent], int]:
-        rows = self._connection.execute(
-            """
-            SELECT seq, event_type, thread_id, branch_id, turn_id, run_id, item_id,
-                   created_at, payload_json
-            FROM events
-            WHERE seq > ?
-            ORDER BY seq
-            LIMIT ?
-            """,
-            (after_seq, limit),
-        ).fetchall()
-        events = [self._event_from_row(row) for row in rows]
-        latest_seq = int(
-            self._connection.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
-        )
-        return events, latest_seq
+        return replay_events(self._connection, after_seq, limit)
 
     def latest_sequence(self) -> int:
-        return int(
-            self._connection.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
-        )
+        return latest_sequence(self._connection)
 
     def rebuild_projections(self) -> None:
-        rows = self._connection.execute(
-            "SELECT event_type, created_at, payload_json FROM events ORDER BY seq"
-        ).fetchall()
+        rows = projection_rows(self._connection)
         with self._connection:
             self._connection.execute("DELETE FROM items")
             self._connection.execute("DELETE FROM runs")
@@ -1182,204 +885,12 @@ class SqliteRuntimeStore:
             self._connection.execute("DELETE FROM branches")
             self._connection.execute("DELETE FROM threads")
             for row in rows:
-                self._apply_projection_event(
+                apply_event(
+                    self._connection,
                     row["event_type"],
                     json_loads(row["payload_json"]),
                     timestamp=row["created_at"],
                 )
-
-    def _apply_projection_event(
-        self,
-        event_type: str,
-        payload: dict[str, Any],
-        *,
-        timestamp: str,
-    ) -> None:
-        if event_type == "thread.created":
-            thread = payload["thread"]
-            branch = payload["branch"]
-            self._connection.execute(
-                """
-                INSERT INTO threads(
-                    id, title, default_branch_id, created_at, updated_at, client_request_id
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    thread["id"],
-                    thread["title"],
-                    thread["defaultBranchId"],
-                    thread["createdAt"],
-                    thread["updatedAt"],
-                    payload.get("clientRequestId"),
-                ),
-            )
-            self._connection.execute(
-                "INSERT INTO branches(id, thread_id, created_at, is_default) VALUES (?, ?, ?, ?)",
-                (
-                    branch["id"],
-                    branch["threadId"],
-                    branch["createdAt"],
-                    int(branch["isDefault"]),
-                ),
-            )
-        elif event_type == "item.completed" and "turn" in payload:
-            turn = payload["turn"]
-            run = payload["run"]
-            item = payload["item"]
-            self._connection.execute(
-                """
-                INSERT INTO turns(id, thread_id, branch_id, ordinal, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    turn["id"],
-                    turn["threadId"],
-                    turn["branchId"],
-                    turn["ordinal"],
-                    turn["status"],
-                    turn["createdAt"],
-                    turn["updatedAt"],
-                ),
-            )
-            self._connection.execute(
-                """
-                INSERT INTO runs(
-                    id, turn_id, provider_id, model_id, execution_policy, status,
-                    created_at, settled_at, client_request_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run["id"],
-                    run["turnId"],
-                    run["providerId"],
-                    run["modelId"],
-                    run.get("executionPolicy", "full_access"),
-                    run["status"],
-                    run["createdAt"],
-                    run["settledAt"],
-                    run.get("clientRequestId"),
-                ),
-            )
-            self._insert_projected_item(item)
-            self._connection.execute(
-                "UPDATE threads SET updated_at = ? WHERE id = ?",
-                (turn["updatedAt"], turn["threadId"]),
-            )
-        elif event_type == "run.state_changed":
-            self._connection.execute(
-                "UPDATE runs SET status = ? WHERE id = ?",
-                (payload["status"], payload.get("runId")),
-            )
-            self._connection.execute(
-                "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
-                (payload["status"], timestamp, payload.get("turnId")),
-            )
-        elif event_type == "item.started":
-            self._insert_projected_item(payload["item"])
-        elif event_type == "item.delta":
-            self._connection.execute(
-                "UPDATE items SET content = content || ?, updated_at = ? WHERE id = ?",
-                (payload["delta"], timestamp, payload.get("itemId")),
-            )
-        elif event_type == "item.completed":
-            item = payload["item"]
-            existing = self._connection.execute(
-                "SELECT 1 FROM items WHERE id = ?",
-                (item["id"],),
-            ).fetchone()
-            if existing is None:
-                self._insert_projected_item(item)
-            else:
-                self._connection.execute(
-                    """
-                    UPDATE items
-                    SET status = ?, content = ?, updated_at = ?, data_json = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        item["status"],
-                        item["content"],
-                        item["updatedAt"],
-                        json_dumps(
-                            item.get("data", {}),
-                            separators=(",", ":"),
-                            ensure_ascii=False,
-                        ),
-                        item["id"],
-                    ),
-                )
-        elif event_type == "run.settled":
-            self._connection.execute(
-                "UPDATE runs SET status = ?, settled_at = ? WHERE id = ?",
-                (payload["status"], payload.get("settledAt"), payload.get("runId")),
-            )
-            self._connection.execute(
-                "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
-                (payload["status"], payload.get("settledAt"), payload.get("turnId")),
-            )
-
-    def _insert_projected_item(self, item: dict[str, Any]) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO items(
-                id, turn_id, run_id, ordinal, kind, role, status, content,
-                created_at, updated_at, data_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                item["id"],
-                item["turnId"],
-                item["runId"],
-                item["ordinal"],
-                item["kind"],
-                item["role"],
-                item["status"],
-                item["content"],
-                item["createdAt"],
-                item["updatedAt"],
-                json_dumps(
-                    item.get("data", {}),
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ),
-            ),
-        )
-
-    def _item_location(self, item_id: str) -> sqlite3.Row:
-        row = self._connection.execute(
-            """
-            SELECT i.turn_id, i.run_id, t.thread_id, t.branch_id
-            FROM items i JOIN turns t ON t.id = i.turn_id
-            WHERE i.id = ?
-            """,
-            (item_id,),
-        ).fetchone()
-        if row is None:
-            raise LookupError("item was not found")
-        return cast(sqlite3.Row, row)
-
-    def _item_row(self, item_id: str) -> sqlite3.Row:
-        row = self._connection.execute(
-            """
-            SELECT i.id, i.turn_id, i.run_id, i.ordinal, i.kind, i.role, i.status,
-                   i.content, i.created_at, i.updated_at, i.data_json,
-                   t.thread_id, t.branch_id
-            FROM items i JOIN turns t ON t.id = i.turn_id
-            WHERE i.id = ?
-            """,
-            (item_id,),
-        ).fetchone()
-        if row is None:
-            raise LookupError("item was not found")
-        return cast(sqlite3.Row, row)
-
-    def _next_item_ordinal(self, run_id: str) -> int:
-        return int(
-            self._connection.execute(
-                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM items WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()[0]
-        )
 
     def _append_event(
         self,
@@ -1393,46 +904,16 @@ class SqliteRuntimeStore:
         payload: dict[str, Any],
         timestamp: str,
     ) -> JournalEvent:
-        event_payload = {
-            **payload,
-            **({"turnId": turn_id} if turn_id is not None else {}),
-            **({"runId": run_id} if run_id is not None else {}),
-            **({"itemId": item_id} if item_id is not None else {}),
-        }
-        cursor = self._connection.execute(
-            """
-            INSERT INTO events(
-                event_type, thread_id, branch_id, turn_id, run_id, item_id,
-                created_at, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event_type,
-                thread_id,
-                branch_id,
-                turn_id,
-                run_id,
-                item_id,
-                timestamp,
-                json_dumps(
-                    event_payload,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ),
-            ),
-        )
-        if cursor.lastrowid is None:
-            raise RuntimeError("SQLite did not return an event sequence")
-        return JournalEvent(
-            seq=cursor.lastrowid,
-            type=event_type,
+        return append_event(
+            self._connection,
+            event_type=event_type,
             thread_id=thread_id,
             branch_id=branch_id,
             turn_id=turn_id,
             run_id=run_id,
             item_id=item_id,
+            payload=payload,
             timestamp=timestamp,
-            payload=event_payload,
         )
 
     @staticmethod
@@ -1485,18 +966,4 @@ class SqliteRuntimeStore:
             data=data if data is not None else json_loads(row["data_json"]),
             created_at=str(row["created_at"]),
             updated_at=updated_at if updated_at is not None else str(row["updated_at"]),
-        )
-
-    @staticmethod
-    def _event_from_row(row: sqlite3.Row) -> JournalEvent:
-        return JournalEvent(
-            seq=int(row["seq"]),
-            type=row["event_type"],
-            thread_id=row["thread_id"],
-            branch_id=row["branch_id"],
-            turn_id=row["turn_id"],
-            run_id=row["run_id"],
-            item_id=row["item_id"],
-            timestamp=row["created_at"],
-            payload=json_loads(row["payload_json"]),
         )

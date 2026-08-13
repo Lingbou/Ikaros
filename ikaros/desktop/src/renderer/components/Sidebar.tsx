@@ -1,16 +1,32 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import {
+  ChevronDown,
+  ChevronRight,
+  SquarePen,
   Folder,
   PanelRightClose,
   Plus,
   Search,
   Settings,
 } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  DEFAULT_SIDEBAR_WIDTH,
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+} from "../../shared/platform";
 import { standaloneThreads, type Thread } from "../domain";
 import { useTranslation } from "../i18n";
 import { profileInitials } from "../localProfile";
 import { useAppStore } from "../store";
+import { CreateProjectDialog } from "./CreateProjectDialog";
 import { cx, IconButton } from "./ui";
 
 type NavigationThread = Pick<Thread, "id" | "projectId" | "title">;
@@ -20,6 +36,35 @@ type ThreadNavigation = {
 };
 
 let cachedThreadNavigation: ThreadNavigation | undefined;
+
+const SIDEBAR_KEYBOARD_STEP = 10;
+const SIDEBAR_KEYBOARD_LARGE_STEP = 40;
+const RESIZABLE_SIDEBAR_MEDIA_QUERY = "(min-width: 900px)";
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)));
+}
+
+function canResizeSidebar(): boolean {
+  return typeof window.matchMedia === "function"
+    ? window.matchMedia(RESIZABLE_SIDEBAR_MEDIA_QUERY).matches
+    : window.innerWidth >= 900;
+}
+
+function useResizableSidebar(): boolean {
+  const [resizable, setResizable] = useState(canResizeSidebar);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(RESIZABLE_SIDEBAR_MEDIA_QUERY);
+    const update = () => setResizable(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return resizable;
+}
 
 function selectThreadNavigation(state: { threads: Thread[] }): ThreadNavigation {
   const cached = cachedThreadNavigation;
@@ -78,21 +123,135 @@ export function Sidebar() {
   const { threads, recentThreads } = useAppStore(selectThreadNavigation);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const sidebarOpen = useAppStore((state) => state.sidebarOpen);
+  const sidebarWidth = useAppStore((state) => state.sidebarWidth);
   const profileUsername = useAppStore((state) => state.profileUsername);
   const expandedProjects = useAppStore((state) => state.expandedProjects);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
+  const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
   const setSearchOpen = useAppStore((state) => state.setSearchOpen);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const selectThread = useAppStore((state) => state.selectThread);
   const toggleProject = useAppStore((state) => state.toggleProject);
   const newChat = useAppStore((state) => state.newChat);
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [projectsExpanded, setProjectsExpanded] = useState(true);
+  const [recentsExpanded, setRecentsExpanded] = useState(true);
+  const [resizing, setResizing] = useState(false);
+  const resizable = useResizableSidebar();
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    previewWidth: number;
+  } | null>(null);
+
+  const persistSidebarWidth = (width: number) => {
+    const nextWidth = clampSidebarWidth(width);
+    setSidebarWidth(nextWidth);
+    void window.ikarosDesktop?.preferences.update({ sidebarWidth: nextWidth }).catch(() => undefined);
+  };
+
+  useEffect(
+    () => () => {
+      const drag = dragRef.current;
+      dragRef.current = null;
+      if (drag) setSidebarWidth(drag.startWidth);
+      delete document.documentElement.dataset.resizingSidebar;
+    },
+    [setSidebarWidth],
+  );
+
+  useEffect(() => {
+    if (resizable || !dragRef.current) return;
+    const { startWidth } = dragRef.current;
+    dragRef.current = null;
+    setResizing(false);
+    delete document.documentElement.dataset.resizingSidebar;
+    setSidebarWidth(startWidth);
+  }, [resizable, setSidebarWidth]);
+
+  const beginResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !resizable) return;
+    event.preventDefault();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+      previewWidth: sidebarWidth,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizing(true);
+    document.documentElement.dataset.resizingSidebar = "true";
+  };
+
+  const previewResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const nextWidth = clampSidebarWidth(drag.startWidth + event.clientX - drag.startX);
+    drag.previewWidth = nextWidth;
+    setSidebarWidth(nextWidth);
+  };
+
+  const finishResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const nextWidth = drag.previewWidth;
+    dragRef.current = null;
+    setResizing(false);
+    delete document.documentElement.dataset.resizingSidebar;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    persistSidebarWidth(nextWidth);
+  };
+
+  const cancelResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    setResizing(false);
+    delete document.documentElement.dataset.resizingSidebar;
+    setSidebarWidth(drag.startWidth);
+  };
+
+  const handleLostPointerCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const nextWidth = drag.previewWidth;
+    dragRef.current = null;
+    setResizing(false);
+    delete document.documentElement.dataset.resizingSidebar;
+    persistSidebarWidth(nextWidth);
+  };
+
+  const resizeWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!resizable) return;
+    const step = event.shiftKey ? SIDEBAR_KEYBOARD_LARGE_STEP : SIDEBAR_KEYBOARD_STEP;
+    const nextWidth =
+      event.key === "ArrowLeft"
+        ? sidebarWidth - step
+        : event.key === "ArrowRight"
+          ? sidebarWidth + step
+          : event.key === "Home"
+            ? MIN_SIDEBAR_WIDTH
+            : event.key === "End"
+              ? MAX_SIDEBAR_WIDTH
+              : null;
+    if (nextWidth === null) return;
+    event.preventDefault();
+    persistSidebarWidth(nextWidth);
+  };
 
   return (
+    <>
     <aside
       data-open={sidebarOpen}
+      data-resizing={resizing || undefined}
       aria-label={t("sidebar.workspaceNavigation")}
-      className="responsive-sidebar sidebar-gradient flex w-[clamp(248px,14.3vw,274px)] shrink-0 flex-col overflow-hidden border-r border-[var(--border-soft)] transition-[width,transform] duration-200"
+      className="responsive-sidebar sidebar-gradient relative flex shrink-0 flex-col overflow-visible transition-[width,transform] duration-200"
+      style={{ width: sidebarOpen ? sidebarWidth : 0 }}
     >
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-r border-[var(--border-soft)]">
       <div className="flex h-[50px] shrink-0 items-center gap-2 px-3.5">
         <div
           aria-label={t("sidebar.currentWorkspace", { name: "Ikaros" })}
@@ -124,11 +283,31 @@ export function Sidebar() {
 
       <ScrollArea.Root className="mt-4 min-h-0 flex-1 overflow-hidden">
         <ScrollArea.Viewport className="app-scrollbar h-full w-full px-2 pb-5">
-          <div className="px-1.5 pb-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
-            {t("sidebar.projects")}
-          </div>
-          <div className="space-y-2">
-            {projects.map((project) => {
+          <section aria-labelledby="project-chats-label">
+            <div className="group flex h-7 items-center px-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
+              <button
+                id="project-chats-label"
+                type="button"
+                aria-expanded={projectsExpanded}
+                onClick={() => setProjectsExpanded((expanded) => !expanded)}
+                className="flex min-w-0 items-center gap-1 rounded-md outline-none transition-colors hover:text-[var(--text)] focus-visible:text-[var(--text)]"
+              >
+                <span>{t("sidebar.projects")}</span>
+                <span className="opacity-0 transition-opacity group-hover:opacity-100">
+                  {projectsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
+              </button>
+              <span className="min-w-0 flex-1" />
+              <IconButton
+                label={t("sidebar.newProjectChat")}
+                className="size-6 opacity-0 transition-opacity group-hover:opacity-100"
+                onClick={() => setCreateProjectOpen(true)}
+              >
+                <Plus size={13} />
+              </IconButton>
+            </div>
+            {projectsExpanded ? <div className="space-y-2">
+              {projects.map((project) => {
               const expanded = expandedProjects[project.id];
               const projectThreads = threads.filter(
                 (thread) => thread.projectId === project.id,
@@ -175,14 +354,34 @@ export function Sidebar() {
                   ) : null}
                 </section>
               );
-            })}
-          </div>
+              })}
+            </div> : null}
+          </section>
 
-          <section aria-labelledby="recent-chats-label">
-            <div id="recent-chats-label" className="mt-1 px-1.5 pb-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
-              {t("sidebar.recents")}
+          <section aria-labelledby="recent-chats-label" className="mt-1">
+            <div className="group flex h-7 items-center px-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
+              <button
+                id="recent-chats-label"
+                type="button"
+                aria-expanded={recentsExpanded}
+                onClick={() => setRecentsExpanded((expanded) => !expanded)}
+                className="flex min-w-0 items-center gap-1 rounded-md outline-none transition-colors hover:text-[var(--text)] focus-visible:text-[var(--text)]"
+              >
+                <span>{t("sidebar.recents")}</span>
+                <span className="opacity-0 transition-opacity group-hover:opacity-100">
+                  {recentsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
+              </button>
+              <span className="min-w-0 flex-1" />
+              <IconButton
+                label={t("sidebar.newChat")}
+                className="size-6 opacity-0 transition-opacity group-hover:opacity-100"
+                onClick={newChat}
+              >
+                <SquarePen size={13} />
+              </IconButton>
             </div>
-            <div className="space-y-px">
+            {recentsExpanded ? <div className="space-y-px">
               {recentThreads.map((thread) => (
                 <button
                   key={`recent-${thread.id}`}
@@ -201,7 +400,7 @@ export function Sidebar() {
                   </span>
                 </button>
               ))}
-            </div>
+            </div> : null}
           </section>
         </ScrollArea.Viewport>
         <ScrollArea.Scrollbar orientation="vertical" className="flex w-2.5 touch-none p-0.5">
@@ -244,6 +443,31 @@ export function Sidebar() {
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
       </div>
+      </div>
+      <div
+        role="separator"
+        aria-label={t("sidebar.resize")}
+        aria-orientation="vertical"
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuemax={MAX_SIDEBAR_WIDTH}
+        aria-valuenow={sidebarWidth}
+        tabIndex={sidebarOpen && resizable ? 0 : -1}
+        aria-hidden={!resizable || undefined}
+        data-resizing={resizing || undefined}
+        className="sidebar-resizer"
+        onPointerDown={beginResize}
+        onPointerMove={previewResize}
+        onPointerUp={finishResize}
+        onPointerCancel={cancelResize}
+        onLostPointerCapture={handleLostPointerCapture}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          if (resizable) persistSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+        }}
+        onKeyDown={resizeWithKeyboard}
+      />
     </aside>
+    <CreateProjectDialog open={createProjectOpen} onOpenChange={setCreateProjectOpen} />
+    </>
   );
 }

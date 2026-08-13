@@ -49,7 +49,9 @@ describe("effective color scheme", () => {
     const preferences: UiPreferences = {
       colorScheme: "system",
       language: "en",
+      username: "User",
       sidebarCollapsed: false,
+      sidebarWidth: 260,
       reduceMotion: false,
       lightTheme,
       darkTheme

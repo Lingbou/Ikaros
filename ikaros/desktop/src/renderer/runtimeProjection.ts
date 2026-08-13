@@ -1,5 +1,9 @@
-import type { RuntimeJournalEvent, RuntimeThreadSummary } from "../shared/runtime";
-import type { AgentEvent, Thread, Turn, TurnStatus } from "./domain";
+import type {
+  RuntimeJournalEvent,
+  RuntimeThreadSummary,
+  RuntimeWorkspaceSummary,
+} from "../shared/runtime";
+import type { AgentEvent, Project, Thread, Turn, TurnStatus } from "./domain";
 import { appEventText, externalEventText } from "./domain";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -7,9 +11,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function projectRuntimeThread(summary: RuntimeThreadSummary): Thread {
+  const workspace = summary.workspace ?? null;
   return {
     id: summary.id,
-    projectId: null,
+    projectId: workspace?.id ?? null,
     title: summary.title ?? "",
     activeBranchId: summary.defaultBranchId,
     updatedAt: summary.updatedAt,
@@ -27,6 +32,43 @@ export function projectRuntimeThread(summary: RuntimeThreadSummary): Thread {
 
 export function projectRuntimeThreads(summaries: RuntimeThreadSummary[]): Thread[] {
   return summaries.map(projectRuntimeThread);
+}
+
+export function projectRuntimeProjects(
+  summaries: readonly RuntimeThreadSummary[],
+): Project[] {
+  const workspaces = new Map<string, RuntimeWorkspaceSummary>();
+  for (const summary of summaries) {
+    const workspace = summary.workspace ?? null;
+    if (workspace && !workspaces.has(workspace.id)) {
+      workspaces.set(workspace.id, workspace);
+    }
+  }
+  return [...workspaces.values()].map((workspace) => ({
+    id: workspace.id,
+    name: workspace.name,
+    color: "var(--muted-strong)",
+    ...(workspace.rootUri === null ? {} : { rootUri: workspace.rootUri }),
+  }));
+}
+
+export function runtimeThreadWorkspaceFromEvent(
+  event: RuntimeJournalEvent,
+): RuntimeWorkspaceSummary | null | undefined {
+  if (event.type !== "thread.created" || !isRecord(event.payload.thread)) {
+    return undefined;
+  }
+  const workspace = event.payload.thread.workspace;
+  if (workspace === null) return null;
+  if (
+    !isRecord(workspace) ||
+    typeof workspace.id !== "string" ||
+    typeof workspace.name !== "string" ||
+    (workspace.rootUri !== null && typeof workspace.rootUri !== "string")
+  ) {
+    return undefined;
+  }
+  return workspace as unknown as RuntimeWorkspaceSummary;
 }
 
 function runtimeStatus(status: unknown): TurnStatus | undefined {

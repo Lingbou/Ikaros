@@ -1,8 +1,9 @@
 # Ikaros Runtime Architecture
 
-Status: first vertical-slice decisions locked on 2026-08-11. This document
-records the intended kernel boundary; it is not a claim that the runtime has
-already been implemented.
+Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
+2026-08-12. This is a living architecture record: sections describing the
+current vertical slice reflect the implementation, while explicitly marked
+future capabilities remain design direction rather than shipped behavior.
 
 ## Product boundary
 
@@ -167,13 +168,21 @@ providers:
     headers: {}          # optional, normally omitted
 ```
 
-Model records are explicit configuration. V1 never calls an upstream `/models`
-endpoint and never synthesizes model rows from frontend mock data. The empty
-configuration contains no Provider or model rows; each row appears only after
-the user adds it. A Custom Provider's `headers` field is a simple optional
-string map. It has no separate secret type, persistence subsystem, merge UI, or
-lifecycle; when the map is absent or empty, it has no effect on request
-construction.
+Model records are explicit configuration and are never synthesized from
+frontend fixture data. For the built-in DeepSeek profile, Desktop may call
+`provider.discover_models` with a user-entered API key. The Runtime validates a
+temporary, non-persistent DeepSeek transport configuration, requests the
+upstream `/models` endpoint, and returns a bounded list of model IDs/display
+names without persisting or projecting the credential. The user chooses rows
+from that result before `provider.configure` writes the Provider and models.
+Custom Provider models remain user-entered in V1; model discovery is not a
+generic Provider operation.
+
+The empty configuration contains no configured Provider or model rows; the
+built-in DeepSeek summary remains visible as an unconfigured preset. A Custom
+Provider's `headers` field is a simple optional string map. It has no separate
+secret type, persistence subsystem, merge UI, or lifecycle; when the map is
+absent or empty, it has no effect on request construction.
 
 The client always sends the selected `provider_id/model_id` with `turn.start`.
 The Desktop may visually preselect the sole available model, but the protocol
@@ -184,14 +193,18 @@ never infers a model from map order or persists a hidden global default.
 
 ## Authority boundary
 
-The runtime is authoritative for:
+The implemented vertical slice makes the Runtime authoritative for:
 
-- Threads, Branches, Turns, Runs, Items, and their ordering;
+- Threads, each Thread's default Branch, Turns, Runs, Items, and their ordering;
 - Agent-loop and provider execution;
-- tool validation, execution, cancellation, and normalized results;
-- execution policy;
-- Skills and the context injected from them;
+- `process_run` validation, execution, cancellation, and normalized results;
+- the fixed `FullAccessPolicy` execution-policy snapshot;
+- Provider/model configuration and selection; and
 - canonical persisted Agent state.
+
+Additional Branch operations, Skills, and future Tool families must also be
+Runtime-owned when they are implemented. They are not capabilities of the
+current vertical slice.
 
 Clients own presentation-only state such as theme, UI language, transient
 selection, layout, and local username display. A client may project runtime
@@ -200,13 +213,20 @@ records into convenient UI shapes, but those shapes are not the wire protocol.
 ## Domain model
 
 ```text
-Project?                optional organizational workspace
-  -> Thread             one conversation
-    -> Branch           one immutable path through edited/forked history
-      -> Turn           one user request and all work caused by it
-        -> Run          one execution, retry, or recovery attempt
-          -> Item       message, tool call/result, artifact, and similar record
+Thread                   one conversation, optionally carrying workspace metadata
+  -> Branch              one immutable conversation path; V1 creates the default only
+    -> Turn              one user request and all work caused by it
+      -> Run             one execution attempt
+        -> Item          message or tool call/result record in the current slice
 ```
+
+`Project` is a Desktop presentation concept, not a Runtime resource or API.
+Desktop deduplicates the optional `Thread.workspace` summaries into Project
+groups. Project and ordinary chats use the same Thread/Turn/Run path; a
+workspace root supplies the default `cwd` for `process_run` when the Tool Call
+does not provide one. Branch fork, retry/recovery links, Artifact records, and
+additional Item kinds remain compatible with this hierarchy but are not yet
+exposed by the first Runtime slice.
 
 Inside the Agent loop, a Run contains zero or more Steps. A Step is one model
 request plus the tool calls and results needed before the next model request.
@@ -433,9 +453,11 @@ usable.
 
 V1 does not need OpenCode's online model database, dynamic SDK downloads,
 provider plugins, OAuth, prices, model variants, or broad vendor-specific
-capability inference. It also performs no model discovery request. In
-particular, model capabilities must not be guessed from name substrings. Any
-reasoning replay field or Tool support is declared by the model/profile data.
+capability inference. Its only discovery operation is the explicit DeepSeek
+`provider.discover_models` request described above; Custom Provider models are
+entered manually. Model capabilities are not guessed from name substrings.
+Tool support is declared by the configured model/profile data, while compatible
+`reasoning_content` is normalized and replayed by the adapter when present.
 
 The public projection never includes API keys or custom header values:
 
@@ -455,12 +477,13 @@ ModelSummary
   enabled
 ```
 
-Runtime operations should expose provider configuration separately from the
-model catalog, for example `provider.list`, `provider.configure`,
-`provider.remove`, `provider.test`, `model.list`, and `model.set_enabled`.
-`configured` means valid configuration exists; `ready` means an explicit test
-or real request succeeded. The current Mock `deepSeekConnected` Boolean is not
-an authoritative runtime concept.
+Runtime operations expose Provider configuration separately from the model
+catalog through `provider.list`, `provider.configure`,
+`provider.discover_models`, `provider.disconnect`, `provider.remove`,
+`model.list`, and `model.set_enabled`. `configured` means valid configuration
+exists. `health` remains `unknown` in the current slice; a durable health-test
+workflow is not implemented. No frontend Boolean is authoritative for Provider
+state.
 
 V1 has no disabled Provider state. Removing a Custom Provider deletes its full
 entry from `config.yaml`, including its API key, headers, and models. The
@@ -470,8 +493,8 @@ V1-wide mutation barrier keeps the protected-value set stable across Provider
 streaming and Tool execution.
 The Desktop action should therefore be labelled Remove rather than Disconnect.
 The built-in DeepSeek preset itself cannot be removed. Disconnecting DeepSeek
-only clears its configured API key and leaves the preset and explicit model
-records available for later reconfiguration.
+deletes its saved configuration, including the API key and model records, while
+the unconfigured built-in summary remains available for later reconfiguration.
 
 API keys and custom header values may cross the authenticated loopback channel
 only in a write-only configuration command. They are written to
@@ -526,10 +549,11 @@ access.
 
 ## Built-in tools and Skills
 
-The ToolRegistry is extensible even though the first runnable gate is small.
-Local file primitives such as read, write, and edit can coexist with a general
-process/command tool. The first completion gate only requires real command
-execution; it does not turn command execution into the product boundary.
+The current ToolRegistry contains only `process_run`. It is extensible so later
+file primitives such as read, write, and edit can coexist with the general
+process/command Tool, but those primitives are not implemented in the current
+vertical slice. Command execution proves the Tool loop; it does not define the
+eventual product boundary.
 
 The first registered command Tool has the provider-facing function name
 `process_run`. OpenAI-compatible endpoints restrict function names to letters,
@@ -551,13 +575,14 @@ output in a matching Tool Result before the Run settles. The child receives an
 explicit allowlist of ordinary OS environment variables rather than Electron's
 entire environment, so unrelated launch-time secrets are not inherited.
 
-A Skill is an instruction and resource bundle that may contain references,
-assets, and scripts. Loading a Skill does not import third-party Python into the
-long-lived runtime, and scripts are not expanded into one model ToolDescriptor
-per file.
+A future Skill integration treats a Skill as an instruction and resource bundle
+that may contain references, assets, and scripts. Loading a Skill will not
+import third-party Python into the long-lived runtime, and scripts will not be
+expanded into one model ToolDescriptor per file. Skill discovery, selection,
+and instruction injection are not implemented in the first Runtime slice.
 
-Instead, Skill instructions tell the Agent when and how to invoke a script via
-the same general process/command tool used elsewhere:
+When that integration is added, Skill instructions tell the Agent when and how
+to invoke a script via the same general process/command tool used elsewhere:
 
 ```text
 Skill discovery and selection
@@ -568,11 +593,11 @@ Skill discovery and selection
   -> append the result and return it to the Agent loop
 ```
 
-All command execution, including Skill scripts, shares argument validation,
-working-directory and environment handling, timeouts, cancellation, process
-tree cleanup, output truncation, lifecycle events, and error normalization. The
-runtime may attribute a script path back to its Skill for UI and audit records;
-that attribution does not create a separate executor.
+Skill scripts will therefore share the implemented command executor's argument
+validation, working-directory and environment handling, timeouts, cancellation,
+process-tree cleanup, output truncation, lifecycle events, and error
+normalization. A future Runtime may attribute a script path back to its Skill
+for UI and audit records; that attribution does not create a separate executor.
 
 ## Execution policy
 
@@ -593,11 +618,13 @@ Timeouts, cancellation, output limits, child-process cleanup, and minimal
 environment construction are execution-reliability requirements even under
 Full access; they are not deferred as part of the permission UI.
 
-Full access means a third-party Skill script can exercise the current operating
-system user's authority. This is an explicit development-version trade-off, not
-a sandbox or security guarantee.
+Full access means `process_run` can exercise the current operating-system
+user's authority. Once Skill scripts are integrated through the same executor,
+they will inherit that authority as well. This is an explicit
+development-version trade-off, not a sandbox or security guarantee.
 
-The current SQLite schema version is 5. Each Run snapshots
+The current SQLite schema version is 6. Thread projections include optional
+`workspace_json`. Each Run snapshots
 `execution_policy = full_access`, and each Item has structured `data_json` for
 Tool Call arguments and normalized results. Rebuilding projections from the
 journal restores these records and the provider context. A bounded Agent loop
@@ -608,18 +635,18 @@ the maximum Step count.
 ## Desktop projection
 
 The current renderer's `AgentEvent` type remains a UI projection rather than
-being frozen as the wire schema. Expected mappings include:
+being frozen as the wire schema. Current mappings and explicit gaps are:
 
 | Desktop concept | Runtime source |
 | --- | --- |
-| project and ordinary conversation lists | Project and Thread projections |
+| project and ordinary conversation lists | Thread projections; Desktop groups non-null `Thread.workspace` values as Projects |
 | streaming response | message Item lifecycle events |
 | Stop | Run cancellation command and terminal event |
 | tool card | tool Item lifecycle events |
-| edited earlier user message | immutable Branch fork |
-| Turn Navigator | Turn/Item projection used only for navigation |
-| retry or recovery | a new Run linked to the previous Run |
-| artifacts and file changes | typed Item/event projections |
+| edited earlier user message | mock-only UI; no Runtime Branch-fork command yet |
+| Turn Navigator | projected current Turn/Item records used only for navigation |
+| retry or recovery | mock-only UI; no Runtime retry/resume command yet |
+| artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
 | theme, language, username | client-only UI state |
 
@@ -627,65 +654,64 @@ The runtime sends stable semantics and original content, never pretranslated
 Chinese or English labels. Fixed phrases such as tool status and Run state are
 translated by renderer i18n; user and model message content is not translated.
 
-The current mock cannot be integrated by changing one constructor alone. The
-production boundary requires separate wire DTOs, a `RuntimeClient`, and a
-projection reducer that converts sequenced runtime records into renderer
-records. In particular:
+### Current Desktop integration
 
-- `ScenarioId`, seeded scenarios, fixed timestamps, and `playScenario` are mock
-  concepts and do not enter the runtime contract.
-- the current `AgentEvent` records are whole renderable cards, streaming text is
-  represented by replacement, and `RunStatus` mixes Turn and Run state; these
-  are not wire events;
-- the current store keeps one global active Run and cancels the Mock client when
-  creating or selecting a conversation. Runtime integration must track Runs by
-  `runId` and `threadId`; navigation changes visibility, not task lifetime;
-- Branch IDs, history, and fork relationships become runtime-authoritative
-  instead of being created locally by the renderer;
-- the current Composer defaults to `ask`, while its access and model selectors
-  are local visual state that is not included in `sendDraft`. Runtime
-  integration must make `Full access` the effective V1 policy and remove any
-  implication that the current mock selector controls execution;
-- provider/model forms are currently ephemeral mock state. Credentials and
-  provider catalogs become runtime concerns only when real integration begins;
-  theme, UI language, font, layout, and username presentation stay client-side.
-- the Custom Provider form already describes an OpenAI-compatible endpoint but
-  currently discards Base URL, API key, and custom headers on submit. Production
-  integration sends those fields once to `provider.configure` and retains only
-  a redacted `ProviderSummary` in renderer state;
-- current hard-coded DeepSeek model rows are mock data and must not become the
-  runtime catalog. Provider/model summaries come from the Runtime.
-- the current Composer's `Ikaros`, `DeepSeek`, and `local` model choices are
-  local Mock strings and are not sent with a prompt. Production Composer choices
-  come from `model.list` and `turn.start` carries the selected Provider/model
-  reference; there is no global default block in `config.yaml`.
-- the current Custom action labelled Disconnect actually removes an in-memory
-  row. Production UI calls the Runtime's destructive `provider.remove` and uses
-  Remove wording; DeepSeek remains a built-in preset whose disconnect action
-  clears only its API key.
+The production boundary now contains separate wire DTOs, a typed preload/IPC
+API, a `RuntimeClient`, and a projection reducer that converts sequenced Runtime
+events into renderer records. Electron main supervises and authenticates the
+Python process, reconnects the WebSocket, replays gaps, and keeps Runs alive
+when renderer navigation changes. Desktop uses stable request IDs for
+`thread.create` and `turn.start`, projects Runtime Threads and workspaces,
+selects from `model.list`, sends the explicit Provider/model reference with
+each Turn, and drives Stop through `run.cancel`.
 
-## First runnable vertical slice
+Provider and model forms call the Runtime's configuration operations. Secret
+fields cross only the write command and are not retained in renderer state;
+catalog refresh uses redacted summaries. DeepSeek model discovery uses the
+entered API key without first persisting it. Custom Provider removal and
+DeepSeek disconnect use their distinct Runtime operations, and either action
+removes the corresponding saved model rows.
 
-The first version is deliberately limited to one real conversation path. It is
-complete when all of the following are demonstrated end to end:
+The renderer's `AgentEvent` and `RunStatus` types remain UI projections rather
+than wire schema. `ScenarioId`, seeded conversations, fixed timestamps,
+`playScenario`, mock slash commands, profile statistics, permission/recovery
+cards, and Artifact/file-change fixtures remain outside the Runtime contract.
+The `MockAgentClient` is used only when the typed Desktop Runtime bridge is
+absent and by deterministic UI tests; it does not drive the packaged Desktop's
+conversation path.
 
-1. Electron `RuntimeHost` starts one Python runtime and keeps it alive across
-   renderer navigation.
-2. A client connects through the versioned protocol and uses one Thread and its
-   default Branch.
+The Runtime-backed Composer fixes execution to `Full access`; its access picker
+is disabled rather than authorizing execution locally. Attachments and Tool
+selection are unavailable. Editing an earlier message, Branch switching/fork,
+retry/resume, regenerate, interactive permission decisions, and first-class
+Artifact/file-change production still need dedicated Runtime commands and event
+semantics before those UI surfaces can become functional.
+
+## Implemented vertical slice
+
+The first version deliberately implements one narrow but real conversation
+path. The following have been demonstrated end to end:
+
+1. Electron `RuntimeHost` starts one authenticated Python Runtime and keeps it
+   alive across renderer navigation.
+2. Desktop connects through the versioned WebSocket JSON-RPC protocol, restores
+   persisted Threads, and replays the sequenced event journal.
 3. The same conversation completes at least two sequential user Turns, and the
-   later provider request receives the prior completed conversation context.
-4. The selected built-in DeepSeek profile or a configured Custom
-   OpenAI-compatible profile streams a response and can request the general
-   command tool through the same adapter.
-5. The runtime executes the command serially, captures a normalized ToolResult,
+   later Provider request receives the prior completed conversation context.
+4. The built-in DeepSeek profile and configured Custom OpenAI-compatible
+   profiles share one streaming adapter and can request the general command
+   Tool.
+5. The Runtime executes the command serially, captures a normalized ToolResult,
    returns it to the model, and the model produces a final assistant answer.
-6. The Run and Item lifecycle reaches a coherent settled state and is projected
-   correctly by the Desktop client.
-7. The deterministic provider covers the loop and event ordering without a
-   network dependency.
+6. Run and Item lifecycles settle coherently and are projected by the Desktop;
+   Stop propagates through Run and child-process-tree cancellation.
+7. The deterministic Provider covers the loop and event ordering without a
+   network dependency, while the opt-in live test covers the real DeepSeek path.
 
-This gate does not require web search, browser or desktop control, durable
+The live validation evidence, including credential containment checks, is
+recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
+
+This slice does not implement web search, browser or desktop control, durable
 memory, background or scheduled tasks, messaging channels, MCP/connectors,
-Subagents, a plugin marketplace, or a complex approval system. Those are later
-general-Agent capability packs, not rejected product directions.
+Subagents, a plugin marketplace, or a complex approval system. Those remain
+later general-Agent capability packs, not rejected product directions.

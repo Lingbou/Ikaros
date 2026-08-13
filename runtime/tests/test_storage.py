@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ikaros_runtime.domain import WorkspaceSummary
 from ikaros_runtime.storage import SqliteRuntimeStore
 
 
@@ -20,6 +21,72 @@ def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> No
         replayed, latest_seq = store.replay_events(0, 100)
         assert replayed == [event]
         assert latest_seq == 1
+    finally:
+        store.close()
+
+
+def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: Path) -> None:
+    database_path = tmp_path / "state.db"
+    workspace_root = tmp_path / "research"
+    workspace_root.mkdir()
+    workspace = WorkspaceSummary("workspace-research", "Research", str(workspace_root.resolve()))
+    store = SqliteRuntimeStore(database_path)
+    try:
+        expected, event, created = store.create_thread_once(
+            "Workspace thread",
+            "workspace-create",
+            workspace=workspace,
+        )
+
+        assert created is True
+        assert expected.workspace == workspace
+        assert event.payload["thread"]["workspace"] == {
+            "id": "workspace-research",
+            "name": "Research",
+            "rootUri": str(workspace_root.resolve()),
+        }
+        assert store.list_threads() == [expected]
+
+        store.rebuild_projections()
+        assert store.list_threads() == [expected]
+    finally:
+        store.close()
+
+    reloaded = SqliteRuntimeStore(database_path)
+    try:
+        assert reloaded.list_threads() == [expected]
+        repeated, repeated_event, repeated_created = reloaded.create_thread_once(
+            "Workspace thread",
+            "workspace-create",
+            workspace=workspace,
+        )
+        assert repeated == expected
+        assert repeated_event == event
+        assert repeated_created is False
+        with pytest.raises(LookupError, match="different thread.create parameters"):
+            reloaded.create_thread_once(
+                "Workspace thread",
+                "workspace-create",
+                workspace=WorkspaceSummary("workspace-other", "Other", None),
+            )
+    finally:
+        reloaded.close()
+
+
+def test_run_descriptor_inherits_its_thread_workspace(tmp_path: Path) -> None:
+    workspace = WorkspaceSummary("workspace-run", "Run Workspace", None)
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Workspace run", workspace=workspace)
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="use workspace",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+
+        assert store.get_run(prepared.run_id).workspace == workspace
     finally:
         store.close()
 
@@ -73,6 +140,20 @@ def test_credential_conflict_scan_uses_dynamic_projections_not_fixed_schema(
         assert store.journal_contains_protected_values(("full_access",)) is False
         assert store.journal_contains_protected_values(("stdout",)) is False
         assert store.journal_contains_protected_values(("item.completed",)) is False
+    finally:
+        store.close()
+
+
+def test_credential_conflict_scan_includes_thread_workspace(tmp_path: Path) -> None:
+    protected = "workspace-credential-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        store.create_thread(
+            "Workspace credential",
+            workspace=WorkspaceSummary("workspace-safe", protected, None),
+        )
+
+        assert store.journal_contains_protected_values((protected,)) is True
     finally:
         store.close()
 

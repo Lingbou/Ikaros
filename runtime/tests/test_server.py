@@ -17,10 +17,13 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import InvalidStatus
 
-from ikaros_runtime.config import ConfigError, ConfigStore, ModelInput
+from ikaros_runtime.bootstrap import RuntimeApplication
 from ikaros_runtime.domain import JournalEvent
-from ikaros_runtime.kernel import InvalidParamsError, RuntimeKernel
-from ikaros_runtime.server import EventBus, _handle_connection, _parent_is_alive
+from ikaros_runtime.errors import ConfigError, InvalidParamsError
+from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
+from ikaros_runtime.server.connection import handle_connection
+from ikaros_runtime.server.event_hub import EventHub
+from ikaros_runtime.server.host import _parent_is_alive
 from ikaros_runtime.storage import SqliteRuntimeStore
 
 _HIDDEN_PROCESS_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -656,7 +659,14 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
         )
         assert disconnected["result"]["provider"]["configured"] is False
         after_disconnect = await _rpc(restarted_connection, 4, "model.list", {})
-        assert after_disconnect["result"]["models"][0]["id"] == "deepseek-chat"
+        assert after_disconnect["result"]["models"] == [
+            {
+                "providerId": "local",
+                "id": "local-model",
+                "displayName": "Local Model",
+                "enabled": False,
+            }
+        ]
         removed = await _rpc(
             restarted_connection,
             5,
@@ -669,11 +679,107 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
         if restarted.returncode is None:
             await _stop_failed_process(restarted)
 
-    final_source = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert deepseek_secret not in final_source
-    assert custom_secret not in final_source
-    assert header_secret not in final_source
-    assert "deepseek-chat" in final_source
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.asyncio
+async def test_provider_model_discovery_rpc_is_ephemeral_and_secret_guarded(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-rpc-discovery-sentinel"
+    captured_provider: ProviderConfig | None = None
+
+    async def discover(provider: ProviderConfig) -> tuple[ModelInput, ...]:
+        nonlocal captured_provider
+        captured_provider = provider
+        return (
+            ModelInput("deepseek-v4-flash", "DeepSeek V4 Flash"),
+            ModelInput("deepseek-v4-pro", "DeepSeek V4 Pro"),
+        )
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event, model_discovery=discover)
+    connection = AckFailingConnection(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": 1},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "provider.discover_models",
+                "params": {"kind": "deepseek", "apiKey": secret},
+            },
+        ]
+    )
+    try:
+        await handle_connection(
+            cast(ServerConnection, connection),
+            asyncio.Event(),
+            kernel.router,
+            EventHub(next_seq=1),
+            kernel.security,
+            kernel.finish_command,
+        )
+        assert connection.sent[1] == {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "models": [
+                    {"id": "deepseek-v4-flash", "displayName": "DeepSeek V4 Flash"},
+                    {"id": "deepseek-v4-pro", "displayName": "DeepSeek V4 Pro"},
+                ]
+            },
+        }
+        assert captured_provider is not None
+        assert captured_provider.id == "deepseek"
+        assert captured_provider.api_key == secret
+        assert captured_provider.models == ()
+        assert not (tmp_path / "config.yaml").exists()
+        assert store.latest_sequence() == 0
+        assert all(secret.encode() not in content for content in _database_contents(tmp_path))
+        assert secret not in json.dumps(connection.sent)
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"kind": "deepseek"},
+        {"kind": "custom", "apiKey": "safe-key"},
+        {"kind": "deepseek", "apiKey": 7},
+        {"kind": "deepseek", "apiKey": "safe-key", "extra": True},
+    ],
+)
+async def test_provider_model_discovery_rejects_invalid_params(
+    tmp_path: Path,
+    params: dict[str, Any],
+) -> None:
+    called = False
+
+    async def discover(_provider: ProviderConfig) -> tuple[ModelInput, ...]:
+        nonlocal called
+        called = True
+        return ()
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event, model_discovery=discover)
+    try:
+        with pytest.raises(InvalidParamsError):
+            await kernel.providers.discover_provider_models(params)
+        assert called is False
+        assert not (tmp_path / "config.yaml").exists()
+        assert store.latest_sequence() == 0
+    finally:
+        await kernel.close()
+        store.close()
 
 
 @pytest.mark.asyncio
@@ -1753,14 +1859,14 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
         provider_id="local",
         model_id="model",
     )
-    kernel = RuntimeKernel(store, _discard_event, config_store=config)
+    kernel = RuntimeApplication(store, _discard_event, config_store=config)
     try:
         with pytest.raises(InvalidParamsError, match="Run is active"):
-            kernel.remove_provider({"providerId": "local"})
+            kernel.providers.remove_provider({"providerId": "local"})
         with pytest.raises(InvalidParamsError, match="Run is active"):
-            kernel.remove_provider({"providerId": "other"})
+            kernel.providers.remove_provider({"providerId": "other"})
         with pytest.raises(InvalidParamsError, match="Run is active"):
-            kernel.configure_provider(
+            kernel.providers.configure_provider(
                 {
                     "kind": "deepseek",
                     "apiKey": "full_access",
@@ -1768,15 +1874,16 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
                 }
             )
         store.terminalize_run(prepared.run_id, "cancelled")
-        configured = kernel.configure_provider(
+        configured = kernel.providers.configure_provider(
             {
                 "kind": "deepseek",
                 "apiKey": "full_access",
                 "models": [{"id": "model", "displayName": "Model"}],
             }
         )
-        assert configured["provider"]["configured"] is True
-        assert kernel.remove_provider({"providerId": "local"})["removed"] is True
+        provider = cast(dict[str, object], configured["provider"])
+        assert provider["configured"] is True
+        assert kernel.providers.remove_provider({"providerId": "local"})["removed"] is True
     finally:
         store.close()
 
@@ -1802,8 +1909,8 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
         client_request_id="stable-turn-request",
     )
     store.terminalize_run(prepared.run_id, "cancelled")
-    kernel = RuntimeKernel(store, _discard_event, config_store=config)
-    params = {
+    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    params: dict[str, object] = {
         "threadId": thread.id,
         "branchId": thread.default_branch_id,
         "content": "stable content",
@@ -1812,9 +1919,9 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
         "clientRequestId": "stable-turn-request",
     }
     try:
-        assert kernel.remove_provider({"providerId": "local"})["removed"] is True
+        assert kernel.providers.remove_provider({"providerId": "local"})["removed"] is True
 
-        repeated = kernel.start_turn(params)
+        repeated = kernel.turns.start_turn(params)
 
         assert repeated.result == {
             "turnId": prepared.turn_id,
@@ -1825,7 +1932,7 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
         assert repeated.events_after_ack == ()
         assert repeated.run_after_ack is None
         with pytest.raises(InvalidParamsError, match="clientRequestId"):
-            kernel.start_turn({**params, "content": "different content"})
+            kernel.turns.start_turn({**params, "content": "different content"})
         assert store._connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     finally:
         store.close()
@@ -1842,7 +1949,7 @@ def test_kernel_rejects_config_credentials_already_present_in_the_journal(
 
     try:
         with pytest.raises(ConfigError, match="conflict") as captured:
-            RuntimeKernel(store, _discard_event, config_store=config)
+            RuntimeApplication(store, _discard_event, config_store=config)
         assert protected not in str(captured.value)
     finally:
         store.close()
@@ -1947,7 +2054,7 @@ async def test_startup_credential_conflict_fails_before_recovery_mutates_state(
 @pytest.mark.asyncio
 async def test_event_bus_releases_notifications_in_sequence_order() -> None:
     observed: list[int] = []
-    event_bus = EventBus(next_seq=5)
+    event_bus = EventHub(next_seq=5)
     event_bus.subscribe(lambda event: observed.append(event.seq))
 
     await event_bus.publish(_journal_event(6))
@@ -1960,7 +2067,7 @@ async def test_event_bus_releases_notifications_in_sequence_order() -> None:
 @pytest.mark.asyncio
 async def test_event_bus_drops_a_slow_sink_without_blocking_other_subscribers() -> None:
     observed: list[int] = []
-    event_bus = EventBus(next_seq=1)
+    event_bus = EventHub(next_seq=1)
 
     def full_sink(_event: JournalEvent) -> None:
         raise asyncio.QueueFull
@@ -1988,8 +2095,8 @@ async def test_response_guard_replaces_an_unexpected_protected_payload(
         models=[ModelInput("deepseek-chat", "DeepSeek Chat")],
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    event_bus = EventBus(next_seq=1)
-    kernel = RuntimeKernel(store, event_bus.publish, config_store=config)
+    event_bus = EventHub(next_seq=1)
+    kernel = RuntimeApplication(store, event_bus.publish, config_store=config)
     connection = AckFailingConnection(
         [
             {
@@ -2009,14 +2116,16 @@ async def test_response_guard_replaces_an_unexpected_protected_payload(
     unexpected = (
         {protected: "otherwise-safe"} if credential_position == "key" else {"value": protected}
     )
-    monkeypatch.setattr(kernel, "list_threads", lambda _params: unexpected)
+    monkeypatch.setattr(kernel.threads, "list", lambda _params: unexpected)
 
     try:
-        await _handle_connection(
+        await handle_connection(
             cast(ServerConnection, connection),
             asyncio.Event(),
-            kernel,
+            kernel.router,
             event_bus,
+            kernel.security,
+            kernel.finish_command,
         )
         guarded = next(value for value in connection.sent if value.get("error"))
         assert guarded == {
@@ -2039,8 +2148,8 @@ async def test_accepted_turn_runs_even_when_the_ack_connection_disconnects(
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("ACK disconnect")
-    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeKernel(store, event_bus.publish)
+    event_bus = EventHub(next_seq=store.latest_sequence() + 1)
+    kernel = RuntimeApplication(store, event_bus.publish)
     kernel.start()
     connection = AckFailingConnection(
         [
@@ -2067,11 +2176,13 @@ async def test_accepted_turn_runs_even_when_the_ack_connection_disconnects(
 
     try:
         with pytest.raises(ConnectionError, match="simulated ACK disconnect"):
-            await _handle_connection(
+            await handle_connection(
                 cast(ServerConnection, connection),
                 asyncio.Event(),
-                kernel,
+                kernel.router,
                 event_bus,
+                kernel.security,
+                kernel.finish_command,
             )
 
         settled: list[JournalEvent] = []
@@ -2095,10 +2206,10 @@ async def test_accepted_cancel_runs_even_when_the_ack_connection_disconnects(
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Cancel ACK disconnect")
-    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeKernel(store, event_bus.publish)
+    event_bus = EventHub(next_seq=store.latest_sequence() + 1)
+    kernel = RuntimeApplication(store, event_bus.publish)
     kernel.start()
-    started = kernel.start_turn(
+    started = kernel.turns.start_turn(
         {
             "threadId": thread.id,
             "branchId": thread.default_branch_id,
@@ -2134,11 +2245,13 @@ async def test_accepted_cancel_runs_even_when_the_ack_connection_disconnects(
         )
 
         with pytest.raises(ConnectionError, match="simulated ACK disconnect"):
-            await _handle_connection(
+            await handle_connection(
                 cast(ServerConnection, connection),
                 asyncio.Event(),
-                kernel,
+                kernel.router,
                 event_bus,
+                kernel.security,
+                kernel.finish_command,
             )
 
         for _ in range(100):
@@ -2163,12 +2276,12 @@ async def test_cancel_between_turn_prepare_and_activation_prevents_execution(
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Cross-client cancellation")
-    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeKernel(store, event_bus.publish)
+    event_bus = EventHub(next_seq=store.latest_sequence() + 1)
+    kernel = RuntimeApplication(store, event_bus.publish)
     kernel.start()
 
     try:
-        started = kernel.start_turn(
+        started = kernel.turns.start_turn(
             {
                 "threadId": thread.id,
                 "branchId": thread.default_branch_id,
@@ -2178,7 +2291,7 @@ async def test_cancel_between_turn_prepare_and_activation_prevents_execution(
             }
         )
         run_id = cast(str, started.result["runId"])
-        cancelled = kernel.cancel_run({"runId": run_id})
+        cancelled = kernel.turns.cancel_run({"runId": run_id})
         assert cancelled.result == {
             "accepted": True,
             "runId": run_id,
@@ -2213,8 +2326,8 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Reverse ACK order")
-    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeKernel(store, event_bus.publish)
+    event_bus = EventHub(next_seq=store.latest_sequence() + 1)
+    kernel = RuntimeApplication(store, event_bus.publish)
     kernel.start()
     first_ack_gate = asyncio.Event()
     second_ack_gate = asyncio.Event()
@@ -2269,22 +2382,26 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
 
     try:
         first_task = asyncio.create_task(
-            _handle_connection(
+            handle_connection(
                 cast(ServerConnection, first_connection),
                 asyncio.Event(),
-                kernel,
+                kernel.router,
                 event_bus,
+                kernel.security,
+                kernel.finish_command,
             )
         )
         tasks.append(first_task)
         await asyncio.wait_for(first_connection.ack_started.wait(), timeout=1)
 
         second_task = asyncio.create_task(
-            _handle_connection(
+            handle_connection(
                 cast(ServerConnection, second_connection),
                 asyncio.Event(),
-                kernel,
+                kernel.router,
                 event_bus,
+                kernel.security,
+                kernel.finish_command,
             )
         )
         tasks.append(second_task)
@@ -2348,12 +2465,12 @@ async def test_natural_completion_can_win_after_cancel_is_accepted(
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Completion race")
-    event_bus = EventBus(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeKernel(store, event_bus.publish)
+    event_bus = EventHub(next_seq=store.latest_sequence() + 1)
+    kernel = RuntimeApplication(store, event_bus.publish)
     kernel.start()
 
     try:
-        started = kernel.start_turn(
+        started = kernel.turns.start_turn(
             {
                 "threadId": thread.id,
                 "branchId": thread.default_branch_id,
@@ -2372,7 +2489,7 @@ async def test_natural_completion_can_win_after_cancel_is_accepted(
 
         # The response represents the ACK-time decision. Post-ACK cancellation
         # is intentionally delayed here so the natural terminal transaction wins.
-        cancellation = kernel.cancel_run({"runId": run_id})
+        cancellation = kernel.turns.cancel_run({"runId": run_id})
         assert cancellation.result == {
             "accepted": True,
             "runId": run_id,
@@ -2441,6 +2558,7 @@ async def test_thread_and_event_journal_survive_runtime_restart(tmp_path: Path) 
         thread = created["result"]["thread"]
         event = created["result"]["event"]
         assert thread["title"] == "Persistent thread"
+        assert thread["workspace"] is None
         assert thread["defaultBranchId"].startswith("branch_")
         assert event["seq"] == 1
         assert event["type"] == "thread.created"
@@ -2486,6 +2604,174 @@ async def test_thread_and_event_journal_survive_runtime_restart(tmp_path: Path) 
         await _shutdown(second, second_process, 6)
     finally:
         await _stop_failed_process(second_process)
+
+
+@pytest.mark.asyncio
+async def test_thread_workspace_rpc_survives_list_replay_and_restart(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "research"
+    workspace_root.mkdir()
+    workspace = {
+        "id": "workspace-research",
+        "name": "Research",
+        "rootUri": str(workspace_root.resolve()),
+    }
+    first_token = secrets.token_urlsafe(32)
+    first_process, first_ready = await _start_runtime(first_token, tmp_path)
+    try:
+        first = await _initialize(
+            f"ws://{first_ready['host']}:{first_ready['port']}",
+            first_token,
+        )
+        created = await _rpc(
+            first,
+            2,
+            "thread.create",
+            {
+                "title": "Workspace thread",
+                "workspace": workspace,
+                "clientRequestId": "workspace-thread-create",
+            },
+        )
+        thread = created["result"]["thread"]
+        assert thread["workspace"] == workspace
+        assert created["result"]["event"]["payload"]["thread"]["workspace"] == workspace
+        repeated = await _rpc(
+            first,
+            3,
+            "thread.create",
+            {
+                "title": "Workspace thread",
+                "workspace": workspace,
+                "clientRequestId": "workspace-thread-create",
+            },
+        )
+        assert repeated["result"] == created["result"]
+        conflicting = await _rpc(
+            first,
+            4,
+            "thread.create",
+            {
+                "title": "Workspace thread",
+                "workspace": {"id": "workspace-other", "name": "Other", "rootUri": None},
+                "clientRequestId": "workspace-thread-create",
+            },
+        )
+        assert conflicting["error"]["code"] == -32602
+        listed = await _rpc(first, 5, "thread.list", {})
+        assert listed["result"]["threads"] == [thread]
+        await _shutdown(first, first_process, 6)
+    finally:
+        await _stop_failed_process(first_process)
+
+    second_token = secrets.token_urlsafe(32)
+    second_process, second_ready = await _start_runtime(second_token, tmp_path)
+    try:
+        second = await _initialize(
+            f"ws://{second_ready['host']}:{second_ready['port']}",
+            second_token,
+        )
+        listed = await _rpc(second, 2, "thread.list", {})
+        assert listed["result"]["threads"] == [thread]
+        await _shutdown(second, second_process, 3)
+    finally:
+        await _stop_failed_process(second_process)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "workspace",
+    [
+        "workspace",
+        {},
+        {"id": "id", "name": "name"},
+        {"id": "id", "name": "name", "rootUri": None, "extra": True},
+        {"id": 1, "name": "name", "rootUri": None},
+        {"id": "id", "name": "", "rootUri": None},
+        {"id": "x" * 201, "name": "name", "rootUri": None},
+        {"id": "id", "name": "x" * 201, "rootUri": None},
+        {"id": "id", "name": "name", "rootUri": 1},
+        {"id": "id", "name": "name", "rootUri": "relative/workspace"},
+    ],
+)
+async def test_thread_create_rejects_invalid_workspace(
+    tmp_path: Path,
+    workspace: object,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event)
+    try:
+        with pytest.raises(InvalidParamsError, match="workspace"):
+            kernel.threads.create({"title": "Invalid workspace", "workspace": workspace})
+        assert store.list_threads() == []
+        assert store.latest_sequence() == 0
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_workspace_cannot_contain_configured_credentials(tmp_path: Path) -> None:
+    protected = "workspace-configured-credential"
+    config = ConfigStore(tmp_path)
+    config.configure_custom(
+        provider_id="local",
+        display_name="Local",
+        base_url="http://127.0.0.1:9/v1",
+        api_key=protected,
+        headers=None,
+        models=[ModelInput("model", "Model")],
+    )
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    try:
+        with pytest.raises(InvalidParamsError, match="protected configuration"):
+            kernel.threads.create(
+                {
+                    "title": "Protected workspace",
+                    "workspace": {
+                        "id": "workspace-id",
+                        "name": protected,
+                        "rootUri": None,
+                    },
+                }
+            )
+        assert store.list_threads() == []
+        assert store.latest_sequence() == 0
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_create_normalizes_workspace_root_and_list_survives_deletion(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace" / "nested"
+    root.mkdir(parents=True)
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event)
+    try:
+        created = kernel.threads.create(
+            {
+                "title": "Normalized workspace",
+                "workspace": {
+                    "id": " workspace-id ",
+                    "name": " Workspace Name ",
+                    "rootUri": str(root / ".." / "nested"),
+                },
+            }
+        )
+        assert created.result["thread"]["workspace"] == {
+            "id": "workspace-id",
+            "name": "Workspace Name",
+            "rootUri": str(root.resolve()),
+        }
+
+        root.rmdir()
+        assert kernel.threads.list({})["threads"] == [created.result["thread"]]
+    finally:
+        await kernel.close()
+        store.close()
 
 
 @pytest.mark.asyncio

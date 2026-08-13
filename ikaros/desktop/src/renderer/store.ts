@@ -18,14 +18,18 @@ import {
   createInitialThreads,
   MockAgentClient,
 } from "./mockAgentClient";
+import { DEFAULT_SIDEBAR_WIDTH } from "../shared/platform";
 import { LOCAL_PROFILE } from "./localProfile";
 import { createRuntimeClient, isRuntimeRpcError } from "./runtimeClient";
 import {
   applyRuntimeEvent as projectRuntimeEvent,
+  projectRuntimeProjects,
   projectRuntimeThread,
   projectRuntimeThreads,
+  runtimeThreadWorkspaceFromEvent,
 } from "./runtimeProjection";
 import type {
+  RuntimeDiscoveredModel,
   RuntimeJournalEvent,
   RuntimeModelSetEnabledParams,
   RuntimeModelSummary,
@@ -34,6 +38,7 @@ import type {
   RuntimeThreadCreateResult,
   RuntimeThreadSummary,
   RuntimeTurnStartResult,
+  RuntimeWorkspaceSummary,
 } from "../shared/runtime";
 
 type EditingMessage = { eventId: string; content: string } | null;
@@ -52,6 +57,7 @@ type PendingRuntimeSubmission = {
   modelId: string;
   afterSeq: number;
   foregroundGeneration: number;
+  workspace: RuntimeWorkspaceSummary | null;
   createRequestId?: string;
   turnRequestId: string;
   turnStartClaimed: boolean;
@@ -78,6 +84,7 @@ interface AppState {
   runStatus: RunStatus;
   draft: string;
   sidebarOpen: boolean;
+  sidebarWidth: number;
   searchOpen: boolean;
   settingsOpen: boolean;
   profileUsername: string;
@@ -90,10 +97,12 @@ interface AppState {
   activeRun: RunContext | null;
   pendingRuntimeSubmissions: Record<string, PendingRuntimeSubmission>;
   pendingRuntimeNewThread: PendingRuntimeSubmission | null;
+  newThreadWorkspace: RuntimeWorkspaceSummary | null;
 
   initializeRuntime: () => Promise<void>;
   applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
   loadProviderCatalog: () => Promise<void>;
+  discoverDeepSeekModels: (apiKey: string) => Promise<RuntimeDiscoveredModel[]>;
   configureProvider: (params: RuntimeProviderConfigureParams) => Promise<void>;
   disconnectProvider: (providerId: "deepseek") => Promise<void>;
   removeProvider: (providerId: string) => Promise<void>;
@@ -101,6 +110,7 @@ interface AppState {
   selectModel: (selection: RuntimeModelSelection | null) => void;
   setDraft: (draft: string) => void;
   setSidebarOpen: (open: boolean) => void;
+  setSidebarWidth: (width: number) => void;
   setSearchOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setProfileUsername: (username: string) => void;
@@ -110,6 +120,9 @@ interface AppState {
   commitMessageEdit: (content: string) => void;
   switchBranch: (branchId: string) => void;
   newChat: () => void;
+  newProjectChat: (projectId: string) => void;
+  stageProjectWorkspace: (workspace: RuntimeWorkspaceSummary) => void;
+  bindWorkspaceFromFolder: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   sendDraft: () => Promise<void>;
   stopRun: () => void;
@@ -257,6 +270,60 @@ function hasPendingRuntimeSubmission(state: AppState, threadId: string | null): 
     : state.pendingRuntimeSubmissions[threadId] !== undefined;
 }
 
+function workspaceForProject(
+  projects: readonly Project[],
+  projectId: string,
+): RuntimeWorkspaceSummary | undefined {
+  const project = projects.find((candidate) => candidate.id === projectId);
+  if (!project) return undefined;
+  return {
+    id: project.id,
+    name: project.name,
+    rootUri: project.rootUri ?? null,
+  };
+}
+
+function sameWorkspace(
+  left: RuntimeWorkspaceSummary | null,
+  right: RuntimeWorkspaceSummary | null,
+): boolean {
+  return left?.id === right?.id;
+}
+
+function mergeRuntimeProjects(
+  projects: readonly Project[],
+  summaries: readonly RuntimeThreadSummary[],
+): Project[] {
+  return mergeWorkspaceProjects(
+    projects,
+    projectRuntimeProjects(summaries).map((project) => ({
+      id: project.id,
+      name: project.name,
+      rootUri: project.rootUri ?? null,
+    })),
+  );
+}
+
+function mergeWorkspaceProjects(
+  projects: readonly Project[],
+  workspaces: readonly RuntimeWorkspaceSummary[],
+): Project[] {
+  const additions = workspaces.map((workspace) => ({
+    id: workspace.id,
+    name: workspace.name,
+    color: "var(--muted-strong)",
+    ...(workspace.rootUri === null ? {} : { rootUri: workspace.rootUri }),
+  }));
+  if (!additions.length) return [...projects];
+  const next = new Map(projects.map((project) => [project.id, project] as const));
+  for (const project of additions) {
+    if (!next.has(project.id)) {
+      next.set(project.id, project);
+    }
+  }
+  return [...next.values()];
+}
+
 function runtimeRunStatusForSelection(
   state: AppState,
   selectedThreadId: string | null,
@@ -298,11 +365,15 @@ function ownsRuntimeSendForeground(
   epoch: number,
   selectedThreadId: string | null,
   foregroundGeneration: number,
+  workspace?: RuntimeWorkspaceSummary | null,
 ): boolean {
   return (
     state.runEpoch === epoch &&
     state.selectedThreadId === selectedThreadId &&
-    state.runtimeForegroundGeneration === foregroundGeneration
+    state.runtimeForegroundGeneration === foregroundGeneration &&
+    (selectedThreadId !== null ||
+      workspace === undefined ||
+      sameWorkspace(state.newThreadWorkspace, workspace))
   );
 }
 
@@ -565,18 +636,36 @@ function runtimeThreadCreateResultFromEvent(
   ) {
     return undefined;
   }
+  const workspace = "workspace" in value ? value.workspace : null;
+  if (
+    workspace !== null &&
+    (typeof workspace !== "object" ||
+      !("id" in workspace) ||
+      typeof workspace.id !== "string" ||
+      !("name" in workspace) ||
+      typeof workspace.name !== "string" ||
+      !("rootUri" in workspace) ||
+      (workspace.rootUri !== null && typeof workspace.rootUri !== "string"))
+  ) {
+    return undefined;
+  }
   return {
-    thread: value as RuntimeThreadSummary,
+    thread: { ...value, workspace } as unknown as RuntimeThreadSummary,
     event,
   };
 }
 
 function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
   const threads = projectRuntimeEvent(state.threads, event);
+  const createdWorkspace = runtimeThreadWorkspaceFromEvent(event);
+  const projects = createdWorkspace
+    ? mergeWorkspaceProjects(state.projects, [createdWorkspace])
+    : state.projects;
   const settledActiveRun =
     event.type === "run.settled" && event.runId === state.activeRun?.runId;
   let pendingRuntimeSubmissions = state.pendingRuntimeSubmissions;
   let pendingRuntimeNewThread = state.pendingRuntimeNewThread;
+  const pendingWorkspace = pendingRuntimeNewThread?.workspace;
   let selectedThreadId = state.selectedThreadId;
   const pendingCreateRequestId = pendingRuntimeNewThread?.createRequestId;
   if (
@@ -593,6 +682,7 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
         pendingRuntimeNewThread.epoch,
         null,
         pendingRuntimeNewThread.foregroundGeneration,
+        pendingRuntimeNewThread.workspace,
       )
     ) {
       selectedThreadId = event.threadId;
@@ -655,6 +745,7 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
   };
   return {
     threads,
+    projects,
     runtimeSeq: event.seq,
     runStatus: runtimeRunStatusForSelection(
       projectedState,
@@ -664,6 +755,11 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
     activeRun: settledActiveRun ? null : state.activeRun,
     pendingRuntimeSubmissions,
     pendingRuntimeNewThread,
+    ...(pendingRuntimeNewThread === null &&
+    pendingWorkspace !== undefined &&
+    sameWorkspace(state.newThreadWorkspace, pendingWorkspace)
+      ? { newThreadWorkspace: null }
+      : {}),
     selectedThreadId,
   };
 }
@@ -854,13 +950,20 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
     }
     bufferedRuntimeEvents = [];
 
+    // SQLite AUTOINCREMENT sequences do not restart when an older journal prefix is
+    // removed. Bootstrap from the first retained event while keeping strict
+    // contiguous-sequence checks for every event received after initialization.
+    const replayBaselineSeq =
+      replayedEvents.size > 0 ? Math.min(...replayedEvents.keys()) - 1 : 0;
+
     pendingRuntimeEvents.clear();
-    set({
+    set((state) => ({
+      projects: mergeRuntimeProjects(state.projects, listed.threads),
       threads: projectRuntimeThreads(listed.threads),
-      runtimeSeq: 0,
+      runtimeSeq: replayBaselineSeq,
       runStatus: "idle",
       activeRun: null,
-    });
+    }));
     for (const event of replayedEvents.values()) {
       pendingRuntimeEvents.set(event.seq, event);
     }
@@ -1030,8 +1133,10 @@ function adoptRuntimeCreatedThread(
       submission.epoch,
       null,
       submission.foregroundGeneration,
+      submission.workspace,
     );
     return {
+      projects: mergeRuntimeProjects(state.projects, [created.thread]),
       threads,
       pendingRuntimeSubmissions: {
         ...state.pendingRuntimeSubmissions,
@@ -1042,6 +1147,7 @@ function adoptRuntimeCreatedThread(
         },
       },
       pendingRuntimeNewThread: null,
+      newThreadWorkspace: ownsForeground ? null : state.newThreadWorkspace,
       ...(ownsForeground
         ? { selectedThreadId: threadId, runStatus: "queued" as const }
         : {}),
@@ -1272,6 +1378,7 @@ async function sendRuntimeDraft(
     modelId: selectedModelAtSend.modelId,
     afterSeq: initial.runtimeSeq,
     foregroundGeneration: initial.runtimeForegroundGeneration,
+    workspace: thread ? null : initial.newThreadWorkspace,
     createRequestId: thread ? undefined : newRuntimeRequestId("thread"),
     turnRequestId: newRuntimeRequestId("turn"),
     turnStartClaimed: false,
@@ -1303,7 +1410,12 @@ async function sendRuntimeDraft(
       set,
       get,
       submission.afterSeq,
-      () => runtimeClient.createThread(title, submission.createRequestId),
+      () =>
+        runtimeClient.createThread({
+          title,
+          workspace: submission.workspace,
+          clientRequestId: submission.createRequestId,
+        }),
       () => recoveredThreadCreateResult(get(), submission),
     );
     adoptRuntimeCreatedThread(set, get, created, submission);
@@ -1328,6 +1440,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   runStatus: "idle",
   draft: "",
   sidebarOpen: true,
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   searchOpen: false,
   settingsOpen: false,
   profileUsername: LOCAL_PROFILE.name,
@@ -1343,10 +1456,21 @@ export const useAppStore = create<AppState>()((set, get) => ({
   activeRun: null,
   pendingRuntimeSubmissions: {},
   pendingRuntimeNewThread: null,
+  newThreadWorkspace: null,
 
   initializeRuntime: () => initializeRuntimeInStore(set, get),
   applyRuntimeEvent: (event) => enqueueRuntimeEvent(set, get, event),
   loadProviderCatalog: () => refreshRuntimeProviderCatalog(set),
+  discoverDeepSeekModels: async (apiKey) => {
+    if (!runtimeClient) {
+      throw new Error("Runtime provider model discovery is unavailable.");
+    }
+    const result = await runtimeClient.discoverProviderModels({
+      kind: "deepseek",
+      apiKey,
+    });
+    return result.models;
+  },
   configureProvider: (params) =>
     mutateRuntimeProviderCatalog(set, () =>
       runtimeClient?.configureProvider(params) ?? Promise.resolve(),
@@ -1372,6 +1496,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   setDraft: (draft) => set({ draft }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
   setSearchOpen: (searchOpen) => set({ searchOpen }),
   setProfileUsername: (profileUsername) => set({ profileUsername }),
   setSettingsOpen: (settingsOpen) =>
@@ -1444,6 +1569,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         draft: "",
         editingMessage: null,
         settingsOpen: false,
+        newThreadWorkspace: null,
         runtimeForegroundGeneration: state.runtimeForegroundGeneration + 1,
       }));
       return;
@@ -1459,6 +1585,63 @@ export const useAppStore = create<AppState>()((set, get) => ({
       runEpoch: state.runEpoch + 1,
       activeRun: null,
     }));
+  },
+
+  newProjectChat: (projectId) => {
+    const state = get();
+    const workspace = workspaceForProject(state.projects, projectId);
+    if (!workspace) return;
+    if (runtimeClient) {
+      set((current) => ({
+        selectedThreadId: null,
+        runStatus: current.pendingRuntimeNewThread ? "queued" : "idle",
+        draft: "",
+        editingMessage: null,
+        settingsOpen: false,
+        newThreadWorkspace: workspace,
+        expandedProjects: { ...current.expandedProjects, [projectId]: true },
+        runtimeForegroundGeneration: current.runtimeForegroundGeneration + 1,
+      }));
+      return;
+    }
+    get().newChat();
+  },
+
+  stageProjectWorkspace: (workspace) => {
+    set((state) => {
+      const existingWorkspace = workspaceForProject(state.projects, workspace.id);
+      const canonicalWorkspace = existingWorkspace ?? workspace;
+      return {
+        projects: existingWorkspace
+          ? state.projects
+          : mergeWorkspaceProjects(state.projects, [canonicalWorkspace]),
+        selectedThreadId: null,
+        runStatus: state.pendingRuntimeNewThread ? "queued" : "idle",
+        draft: "",
+        editingMessage: null,
+        settingsOpen: false,
+        newThreadWorkspace: canonicalWorkspace,
+        expandedProjects: {
+          ...state.expandedProjects,
+          [canonicalWorkspace.id]: true,
+        },
+        runtimeForegroundGeneration: state.runtimeForegroundGeneration + 1,
+      };
+    });
+  },
+
+  bindWorkspaceFromFolder: async () => {
+    const desktop = (
+      window as unknown as Window & {
+        ikarosDesktop?: import("../shared/platform").IkarosDesktopApi;
+      }
+    ).ikarosDesktop;
+    if (!desktop) {
+      throw new Error("Desktop workspace picker is unavailable.");
+    }
+    const workspace = await desktop.workspace.chooseDirectory();
+    if (!workspace) return;
+    get().stageProjectWorkspace(workspace);
   },
 
   selectThread: async (threadId) => {

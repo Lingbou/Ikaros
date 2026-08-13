@@ -1,10 +1,62 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+
+from .errors import ConfigError, InvalidParamsError, ProtectedValueError
+
+type ProtectedValuesSource = Callable[[], Sequence[str]]
+type JournalSecretProbe = Callable[[Sequence[str]], bool]
 
 
-class ProtectedValueError(RuntimeError):
-    """Protected configuration data was detected without retaining its value."""
+class RuntimeSecurity:
+    """Centralize the Runtime's credential non-disclosure invariants."""
+
+    def __init__(
+        self,
+        protected_values: ProtectedValuesSource,
+        journal_contains: JournalSecretProbe,
+    ) -> None:
+        self._protected_values = protected_values
+        self._journal_contains = journal_contains
+
+    def assert_configuration_safe(self) -> None:
+        if self._journal_contains(self.protected_values()):
+            raise ConfigError("configured credentials conflict with persisted Runtime data")
+
+    def assert_request_safe(self, value: object) -> None:
+        protected_values = self.protected_values()
+        if protected_values and json_contains_protected_value(value, protected_values):
+            raise InvalidParamsError("request contains protected configuration data")
+
+    def assert_credentials_safe(self, values: Sequence[object]) -> None:
+        protected_values = tuple(value for value in values if isinstance(value, str) and value)
+        if self._journal_contains(protected_values):
+            raise InvalidParamsError("credentials conflict with persisted Runtime data")
+
+    def protected_values(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(value for value in self._protected_values() if value))
+
+    def rpc_request_values_contain_protected_value(
+        self,
+        value: object,
+        additional_values: Sequence[str] = (),
+    ) -> bool:
+        protected_values = (*self.protected_values(), *additional_values)
+        return bool(protected_values) and rpc_request_values_contain_protected_value(
+            value,
+            protected_values,
+        )
+
+    def response_contains_protected_value(
+        self,
+        value: object,
+        additional_values: Sequence[str] = (),
+    ) -> bool:
+        protected_values = (*self.protected_values(), *additional_values)
+        return bool(protected_values) and response_values_contain_protected_value(
+            value,
+            protected_values,
+        )
 
 
 class ProtectedStreamGuard:
@@ -217,6 +269,8 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "type",
         "updatedAt",
         "version",
+        "workspace",
+        "rootUri",
     }
 )
 
