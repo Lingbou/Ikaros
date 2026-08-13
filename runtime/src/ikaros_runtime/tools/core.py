@@ -58,11 +58,7 @@ class ToolResult:
             ok=False,
             output=message,
             details={
-                "stdout": "",
-                "stderr": "",
-                "exitCode": None,
                 "durationMs": 0,
-                "timedOut": False,
                 "truncated": False,
                 "errorCode": code,
             },

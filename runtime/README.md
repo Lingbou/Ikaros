@@ -21,10 +21,14 @@ The current Desktop/Runtime path provides:
   OpenAI-compatible provider;
 - Runtime-owned Provider and model configuration, DeepSeek model discovery,
   model enablement, DeepSeek disconnect, and Custom Provider removal;
-- the `process_run` Tool under V1's fixed `full_access` policy, including
-  bounded output, timeout, cancellation, and child-process-tree cleanup; and
-- Desktop projection of messages, Tool activity, Run state, cancellation, and
-  workspace-backed Project groups.
+- the provider-facing `process_run`, `read`, `write`, and `edit` Tools under
+  V1's fixed `full_access` policy. Command execution has bounded output,
+  timeout, cancellation, and child-process-tree cleanup; the file Tools provide
+  streaming bounded UTF-8 reads, verified atomic writes, and exact-match edits
+  that reject common stale-content races, normalize mixed line endings, and
+  serialize canonical and symlink-alias paths; and
+- Desktop projection of messages, all four Tool families, Run state,
+  cancellation, and workspace-backed Project groups.
 
 The live DeepSeek path and its credential-leak checks are recorded in
 [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
@@ -33,17 +37,19 @@ Projects are not Runtime entities. Desktop derives them from the optional
 workspace stored on each Thread; project and ordinary conversations otherwise
 use the same Thread, Turn, Run, and Item path. A workspace directory becomes
 the default working directory for `process_run` when the Tool Call does not
-supply `cwd`.
+supply `cwd`, and the base for relative `read`, `write`, and `edit` paths.
 
 ## Current limits
 
-The current Runtime registers only the provider-facing `process_run` Tool,
-displayed by Desktop as `process.run`. It does not yet discover or inject
-Skills, provide read/write/edit, web-search, browser, or attachment Tools,
-generate first-class Artifact/file-change records, fork Branches, retry or
-resume Runs, or implement interactive permission approval. Desktop's fixed
-scenario fixtures, slash-command examples, profile activity/Skill statistics,
-and permission/recovery/Artifact demonstrations therefore remain mock-only UI
+The current Runtime registers the provider-facing `process_run`, `read`,
+`write`, and `edit` Tools; Desktop maps `process_run` to the product label
+`process.run` and keeps the three file Tool names unchanged. It does not yet
+discover or inject Skills, provide
+web-search, browser, or attachment Tools, generate first-class
+Artifact/file-change records, fork Branches, retry or resume Runs, or implement
+interactive permission approval. Desktop's fixed scenario fixtures,
+slash-command examples, profile activity/Skill statistics, and
+permission/recovery/Artifact demonstrations therefore remain mock-only UI
 surfaces rather than Runtime-backed capabilities. Provider health remains
 `unknown`, and automatic model discovery is DeepSeek-only; Custom
 OpenAI-compatible Provider models are entered manually.
@@ -88,5 +94,7 @@ conversation and one explicit Tool-loop smoke syntax:
 This invokes the provider-safe `process_run` Tool under V1's fixed
 `full_access` policy, persists its bounded result, and asks the scripted
 provider for a final answer. It exists for deterministic Runtime/Desktop tests;
-real providers request the same Tool through their normal tool-calling
-protocol.
+real providers request `process_run`, `read`, `write`, and `edit` through their
+normal tool-calling protocol. The opt-in DeepSeek smoke has exercised the real
+`write -> read -> edit -> read` sequence and verified both the resulting file
+and the final model answer.

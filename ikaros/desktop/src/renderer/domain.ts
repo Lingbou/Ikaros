@@ -29,11 +29,23 @@ export type AppEventTextKind =
   | "tool.testArchiveExtraction"
   | "tool.exportReportPackage"
   | "tool.runProcess"
+  | "tool.readFile"
+  | "tool.writeFile"
+  | "tool.editFile"
   | "result.archiveManifestVerified"
   | "result.windowsReservedNames"
   | "result.processCompleted"
   | "result.processFailed"
   | "result.processInterrupted"
+  | "result.readCompleted"
+  | "result.readFailed"
+  | "result.readInterrupted"
+  | "result.writeCompleted"
+  | "result.writeFailed"
+  | "result.writeInterrupted"
+  | "result.editCompleted"
+  | "result.editFailed"
+  | "result.editInterrupted"
   | "permission.moveReceiptsTitle"
   | "permission.moveReceiptsDescription"
   | "status.buildingBrief"
@@ -86,9 +98,23 @@ export interface ToolCallEvent extends EventBase {
 export interface ToolResultEvent extends EventBase {
   type: "tool_result";
   toolCallId: string;
+  toolName?: string;
   status: "success" | "error" | "interrupted";
   summary: EventText;
   output: string;
+  path?: string;
+  errorCode?: string;
+  details?: {
+    lineStart?: number;
+    lineEnd?: number;
+    totalLines?: number;
+    nextOffset?: number;
+    bytesRead?: number;
+    bytesWritten?: number;
+    replacements?: number;
+    created?: boolean;
+    truncated?: boolean;
+  };
 }
 
 export interface PermissionEvent extends EventBase {

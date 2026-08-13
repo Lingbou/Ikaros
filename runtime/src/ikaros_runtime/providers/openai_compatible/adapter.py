@@ -410,7 +410,7 @@ def _message_to_openai(message: ProviderMessage) -> dict[str, object]:
     if message.role == "assistant" and message.tool_calls:
         value: dict[str, object] = {
             "role": "assistant",
-            "content": None,
+            "content": message.content or None,
             "tool_calls": [
                 {
                     "id": call.id,

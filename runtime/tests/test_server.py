@@ -21,12 +21,24 @@ from ikaros_runtime.bootstrap import RuntimeApplication
 from ikaros_runtime.domain import JournalEvent
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
 from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
+from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.server.connection import handle_connection
 from ikaros_runtime.server.event_hub import EventHub
 from ikaros_runtime.server.host import _parent_is_alive
 from ikaros_runtime.storage import SqliteRuntimeStore
 
 _HIDDEN_PROCESS_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+@pytest.mark.parametrize("protected", ["newline", "lf", "crlf"])
+def test_file_result_vocabulary_has_fixed_security_provenance(protected: str) -> None:
+    result = {
+        "path": "notes.txt",
+        "newline": "crlf",
+        "verified": True,
+    }
+
+    assert response_values_contain_protected_value(result, [protected]) is False
 
 
 class AckFailingConnection:
@@ -230,7 +242,7 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "runCancellation": True,
             "providers": True,
             "models": True,
-            "tools": ["process.run"],
+            "tools": ["process.run", "read", "write", "edit"],
             "executionPolicy": "full_access",
         },
     }
@@ -364,6 +376,84 @@ class FakeOpenAIEndpoint:
         if len(user_messages) == 1:
             return _fake_sse_text("First fake response.")
         return _fake_sse_text("Second fake response with context.")
+
+
+class FileToolChainEndpoint(FakeOpenAIEndpoint):
+    def __init__(self, workspace: Path) -> None:
+        super().__init__()
+        self._workspace = workspace
+        self._calls = [
+            ("call_write", "write", {"filePath": "chain.txt", "content": "alpha token"}),
+            ("call_read_before", "read", {"filePath": "chain.txt"}),
+            (
+                "call_edit",
+                "edit",
+                {"filePath": "chain.txt", "oldString": "alpha", "newString": "omega"},
+            ),
+            ("call_read_after", "read", {"filePath": "chain.txt"}),
+        ]
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        messages = cast(list[dict[str, Any]], request["messages"])
+        tool_results = [message for message in messages if message["role"] == "tool"]
+        if len(tool_results) == len(self._calls):
+            assert self._workspace.joinpath("chain.txt").read_text(encoding="utf-8") == (
+                "omega token"
+            )
+            return _fake_sse_text("File tool chain completed with omega token.")
+
+        call_id, name, arguments = self._calls[len(tool_results)]
+        chunks: list[dict[str, Any]] = []
+        if not tool_results:
+            chunks.append(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "I will update and verify the file."},
+                            "finish_reason": None,
+                        }
+                    ]
+                }
+            )
+        chunks.extend(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": json.dumps(
+                                                arguments,
+                                                separators=(",", ":"),
+                                            ),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+            ]
+        )
+        return _fake_sse(chunks)
 
 
 class InvalidNumericToolArgumentsEndpoint(FakeOpenAIEndpoint):
@@ -1075,6 +1165,11 @@ async def test_protocol_constant_shaped_credentials_do_not_block_turn_events(
         "ikaros-runtime",
         "threadId",
         "credentialConfigured",
+        "newline",
+        "nextOffset",
+        "verified",
+        "lf",
+        "crlf",
         "item.delta",
         "assistant",
         "message",
@@ -1483,6 +1578,192 @@ async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
 
 
 @pytest.mark.asyncio
+async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    endpoint = FileToolChainEndpoint(workspace)
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path / "runtime-home")
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    run_id = ""
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "file-tools-fake",
+                "displayName": "File Tools Fake",
+                "baseUrl": base_url,
+                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+            },
+        )
+        assert configured["result"]["provider"]["configured"] is True
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {
+                "title": "File Tools E2E",
+                "workspace": {
+                    "id": "file-tools-workspace",
+                    "name": "File Tools Workspace",
+                    "rootUri": str(workspace),
+                },
+            },
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "update and verify the workspace file",
+                "providerId": "file-tools-fake",
+                "modelId": "fake-model",
+            },
+        )
+        run_id = started["result"]["runId"]
+        events = await _collect_run_events(connection, run_id)
+        assert events[-1]["payload"]["status"] == "completed"
+        assert workspace.joinpath("chain.txt").read_text(encoding="utf-8") == "omega token"
+
+        completed = [
+            event["payload"]["item"]
+            for event in events
+            if event["type"] == "item.completed" and "item" in event["payload"]
+        ]
+        narrated = next(
+            item
+            for item in completed
+            if item["kind"] == "message"
+            and item.get("role") == "assistant"
+            and item["content"] == "I will update and verify the file."
+        )
+        tool_calls = [item for item in completed if item["kind"] == "tool_call"]
+        tool_results = [item for item in completed if item["kind"] == "tool_result"]
+        expected_calls = [
+            ("call_write", "write"),
+            ("call_read_before", "read"),
+            ("call_edit", "edit"),
+            ("call_read_after", "read"),
+        ]
+        assert len(tool_calls) == 4
+        assert [
+            (item["data"]["callId"], item["data"]["toolName"]) for item in tool_calls
+        ] == expected_calls
+        assert [item["status"] for item in tool_calls] == ["completed"] * 4
+
+        assert len(tool_results) == 4
+        assert [
+            (item["data"]["callId"], item["data"]["toolName"])
+            for item in tool_results
+        ] == expected_calls
+        assert [
+            (
+                item["data"]["result"]["toolCallId"],
+                item["data"]["result"]["toolName"],
+            )
+            for item in tool_results
+        ] == expected_calls
+        assert [item["data"]["toolCallItemId"] for item in tool_results] == [
+            item["id"] for item in tool_calls
+        ]
+        assert [item["data"]["result"]["ok"] for item in tool_results] == [True] * 4
+
+        read_results = [
+            item["data"]["result"]
+            for item in tool_results
+            if item["data"]["toolName"] == "read"
+        ]
+        assert len(read_results) == 2
+        assert "alpha token" in read_results[0]["output"]
+        assert "omega token" in read_results[1]["output"]
+        assert narrated["data"]["stepId"] == tool_calls[0]["data"]["stepId"]
+        assert any(
+            item["kind"] == "message"
+            and item.get("role") == "assistant"
+            and item["content"] == "File tool chain completed with omega token."
+            for item in completed
+        )
+
+        assert len(endpoint.requests) == 5
+        expected_provider_history = [expected_calls[:index] for index in range(5)]
+        assert [
+            [
+                (
+                    message["tool_call_id"],
+                    json.loads(message["content"])["toolName"],
+                )
+                for message in request["messages"]
+                if message["role"] == "tool"
+            ]
+            for request in endpoint.requests
+        ] == expected_provider_history
+        assert [
+            [
+                (call["id"], call["function"]["name"])
+                for message in request["messages"]
+                if message["role"] == "assistant"
+                for call in message.get("tool_calls", [])
+            ]
+            for request in endpoint.requests
+        ] == expected_provider_history
+
+        first_read_for_provider = json.loads(endpoint.requests[2]["messages"][-1]["content"])
+        second_read_for_provider = json.loads(endpoint.requests[4]["messages"][-1]["content"])
+        assert endpoint.requests[2]["messages"][-1]["tool_call_id"] == "call_read_before"
+        assert "alpha token" in first_read_for_provider["output"]
+        assert endpoint.requests[4]["messages"][-1]["tool_call_id"] == "call_read_after"
+        assert "omega token" in second_read_for_provider["output"]
+
+        expected_schemas = {
+            "process_run": {"command"},
+            "read": {"filePath"},
+            "write": {"filePath", "content"},
+            "edit": {"filePath", "oldString", "newString"},
+        }
+        for request in endpoint.requests:
+            definitions = {
+                tool["function"]["name"]: tool["function"]["parameters"]
+                for tool in request["tools"]
+            }
+            assert set(definitions) == set(expected_schemas)
+            for name, required in expected_schemas.items():
+                assert set(definitions[name]["required"]) == required
+
+        followup_messages = endpoint.requests[1]["messages"]
+        narrated_message = next(
+            message
+            for message in followup_messages
+            if message["role"] == "assistant"
+            and message.get("content") == "I will update and verify the file."
+        )
+        assert narrated_message["tool_calls"][0]["id"] == "call_write"
+        assert followup_messages[-1]["role"] == "tool"
+
+        replay = await _rpc(connection, 5, "event.replay", {"afterSeq": 0, "limit": 1000})
+        replayed_run = [
+            event for event in replay["result"]["events"] if event["runId"] == run_id
+        ]
+        assert [event["seq"] for event in replayed_run] == [
+            event["seq"] for event in events if event["runId"] == run_id
+        ]
+        await _shutdown(connection, process, 6)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid_number",
     ["1e9999", "1" + ("0" * 400)],
@@ -1623,8 +1904,6 @@ async def test_process_tool_cannot_publish_or_persist_provider_credentials(
         result = result_item["data"]["result"]
         assert result["ok"] is False
         assert result["errorCode"] == "protected_output"
-        assert result["stdout"] == ""
-        assert result["stderr"] == ""
         assert json.loads(result_item["content"]) == result
 
         assert len(endpoint.requests) == 2

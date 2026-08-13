@@ -277,7 +277,7 @@ afterEach(() => {
 
 describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () => {
   it(
-    "streams two contextual Turns, executes process.run, and stops a process tree",
+    "streams contextual Turns, executes file tools, and stops a process tree",
     { timeout: 300_000 },
     async () => {
       if (process.platform !== "win32") {
@@ -312,6 +312,7 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
       let providerConfigured = false;
       let spawnedChildPid: number | undefined;
       let testFailure: unknown;
+      let fileWorkspace: string | undefined;
 
       try {
         await host.start();
@@ -366,17 +367,21 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
           ),
         ).toBe(true);
 
-        const runtimeTokenCommand =
-          "$value = [Guid]::NewGuid().ToString('N').ToUpperInvariant(); " +
-          "Write-Output ('IKAROS_TOOL_RUNTIME_' + $value)";
+        fileWorkspace = await mkdtemp(join(tmpdir(), "ikaros-live-files-"));
+        const filePath = join(fileWorkspace, "tool-proof.txt");
+        const initialFileToken = `IKAROS_FILE_INITIAL_${randomBytes(8).toString("hex").toUpperCase()}`;
+        const editedFileToken = `IKAROS_FILE_EDITED_${randomBytes(8).toString("hex").toUpperCase()}`;
         useAppStore
           .getState()
           .setDraft(
-            "This is an execution validation. Before emitting any assistant text, you MUST " +
-              "call the available process_run tool exactly once with the command " +
-              `\"${runtimeTokenCommand}\". Do not answer before receiving the tool result. ` +
-              "Afterward, reply in one short line containing both the marker from my previous " +
-              "message and the exact, full stdout line. Do not call any other tool.",
+            "This is a file-tool execution validation. Use the available tools in this exact order: " +
+              `(1) call write once with filePath ${JSON.stringify(filePath)} and content ` +
+              `${JSON.stringify(initialFileToken)}, (2) call read once for that same file, ` +
+              `(3) call edit once with oldString ${JSON.stringify(initialFileToken)} and ` +
+              `newString ${JSON.stringify(editedFileToken)}, and (4) call read once more. ` +
+              "Do not use process_run and do not merely describe the calls. After all four tool " +
+              "results, reply in one short line containing the marker from my previous message " +
+              "and the final edited token.",
           );
         await useAppStore.getState().sendDraft();
         const secondTurn = await waitFor("the second DeepSeek Turn to complete", () => {
@@ -385,47 +390,57 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
           return turn.id !== firstTurn.id && turn.status === "completed" ? turn : undefined;
         });
         const secondRaw = rawEvents.filter((event) => event.runId === secondTurn.runId);
-        const toolResultEvent = secondRaw.find(
-          (event) => completedItem(event)?.kind === "tool_result",
-        );
-        const toolResultItem = toolResultEvent ? completedItem(toolResultEvent) : undefined;
-        const result = (toolResultItem?.data as { result?: Record<string, unknown> } | undefined)
-          ?.result;
-        const rawToolOutput = result?.stdout;
-        if (typeof rawToolOutput !== "string") {
-          throw new Error("The live ToolResult did not contain stdout.");
-        }
-        const runtimeToolOutput = rawToolOutput.trim();
-        expect(runtimeToolOutput).toMatch(/^IKAROS_TOOL_RUNTIME_[0-9A-F]{32}$/u);
-        expect(runtimeTokenCommand).not.toContain(runtimeToolOutput);
+        const toolCalls = secondRaw
+          .map((event) => completedItem(event))
+          .filter((item): item is NonNullable<typeof item> => item?.kind === "tool_call");
+        const toolResults = secondRaw
+          .map((event) => completedItem(event))
+          .filter((item): item is NonNullable<typeof item> => item?.kind === "tool_result");
+        expect(
+          toolCalls.map((item) =>
+            typeof item.data === "object" && item.data !== null
+              ? (item.data as Record<string, unknown>).toolName
+              : undefined,
+          ),
+        ).toEqual([
+          "write",
+          "read",
+          "edit",
+          "read",
+        ]);
+        expect(toolResults).toHaveLength(4);
+        expect(toolResults.every((item) => item.status === "completed")).toBe(true);
+        const persistedFile = await readFile(filePath, "utf8");
+        expect(persistedFile).toBe(editedFileToken);
         expect(assistantMessage(secondTurn).content).toContain(contextMarker);
-        expect(assistantMessage(secondTurn).content).toContain(runtimeToolOutput);
+        expect(assistantMessage(secondTurn).content).toContain(editedFileToken);
         expect(secondTurn.events).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               type: "tool_call",
-              toolName: "process.run",
+              toolName: "write",
               status: "success",
             }),
             expect.objectContaining({
-              type: "tool_result",
+              type: "tool_call",
+              toolName: "read",
               status: "success",
-              output: expect.stringContaining(runtimeToolOutput),
+            }),
+            expect.objectContaining({
+              type: "tool_call",
+              toolName: "edit",
+              status: "success",
             }),
           ]),
         );
-        expect(result).toEqual(
-          expect.objectContaining({
-            ok: true,
-            exitCode: 0,
-            stdout: expect.stringContaining(runtimeToolOutput),
-          }),
-        );
-        const finalAssistantEvent = secondRaw.find((event) => {
+        const lastToolResultEvent = [...secondRaw]
+          .reverse()
+          .find((event) => completedItem(event)?.kind === "tool_result");
+        const finalAssistantEvent = [...secondRaw].reverse().find((event) => {
           const item = completedItem(event);
           return item?.kind === "message" && item.role === "assistant";
         });
-        expect(toolResultEvent?.seq).toBeLessThan(finalAssistantEvent?.seq ?? 0);
+        expect(lastToolResultEvent?.seq).toBeLessThan(finalAssistantEvent?.seq ?? 0);
         expect(secondRaw.filter((event) => event.type === "run.settled")).toEqual([
           expect.objectContaining({ payload: expect.objectContaining({ status: "completed" }) }),
         ]);
@@ -530,6 +545,13 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
           await rm(pidFile, { force: true });
         } catch (error) {
           failures.push(error);
+        }
+        if (fileWorkspace !== undefined) {
+          try {
+            await rm(fileWorkspace, { force: true, recursive: true });
+          } catch (error) {
+            failures.push(error);
+          }
         }
         try {
           await assertCredentialIsolated(apiKey, providerConfigured, runtimeHome);

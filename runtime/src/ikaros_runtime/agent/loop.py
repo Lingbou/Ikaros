@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import ContextItem, JournalEvent
+from ..errors import ProtectedValueError, ProviderFailure
 from ..providers.base import (
     ProviderAdapter,
     ProviderMessage,
@@ -81,11 +82,13 @@ class AgentLoop:
                         self._tool_executor.definitions if self._tool_executor is not None else ()
                     ),
                 )
-                assistant_item_id, tool_calls, reasoning_content = await self._provider_step(
-                    run_id,
-                    provider,
-                    request,
-                    cancellation,
+                assistant_item_id, tool_calls, reasoning_content, step_id = (
+                    await self._provider_step(
+                        run_id,
+                        provider,
+                        request,
+                        cancellation,
+                    )
                 )
                 if tool_calls:
                     await self._execute_tool_calls(
@@ -94,6 +97,8 @@ class AgentLoop:
                         cancellation,
                         default_cwd=(run.workspace.root_uri if run.workspace is not None else None),
                         reasoning_content=reasoning_content,
+                        step_id=step_id,
+                        assistant_item_id=assistant_item_id,
                     )
                     continue
                 if assistant_item_id is None:
@@ -106,9 +111,15 @@ class AgentLoop:
             raise RuntimeError("provider exceeded the maximum Agent step count")
         except RunCancelled:
             await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
-        except Exception:
-            _LOGGER.error("Run %s failed", run_id)
-            await self._publish_terminal_events(self._store.terminalize_run(run_id, "failed"))
+        except Exception as error:
+            _LOGGER.exception("Run %s failed", run_id)
+            await self._publish_terminal_events(
+                self._store.terminalize_run(
+                    run_id,
+                    "failed",
+                    reason_code=_failure_reason_code(error),
+                )
+            )
 
     async def cancel(self, run_id: str) -> None:
         await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
@@ -123,14 +134,13 @@ class AgentLoop:
         provider: ProviderAdapter,
         request: ProviderRequest,
         cancellation: CancellationToken,
-    ) -> tuple[str | None, tuple[ToolCall, ...], str | None]:
+    ) -> tuple[str | None, tuple[ToolCall, ...], str | None, str | None]:
         assistant_item_id: str | None = None
         tool_calls: list[ToolCall] = []
         call_ids: set[str] = set()
         reasoning_parts: list[str] = []
         reasoning_characters = 0
         reasoning_seen = False
-        text_seen = False
         protected_values = self._current_protected_values()
         text_guard = ProtectedStreamGuard(protected_values)
         reasoning_guard = ProtectedStreamGuard(protected_values)
@@ -142,10 +152,9 @@ class AgentLoop:
                 raise RuntimeError("provider emitted an event after response.completed")
             if isinstance(event, TextDelta):
                 if tool_calls:
-                    raise RuntimeError("provider mixed text and tool calls in one response")
+                    raise RuntimeError("provider emitted text after a completed tool call")
                 if not event.delta:
                     continue
-                text_seen = True
                 safe_delta = text_guard.feed(event.delta)
                 if not safe_delta:
                     continue
@@ -163,8 +172,6 @@ class AgentLoop:
                 if safe_delta:
                     reasoning_parts.append(safe_delta)
             elif isinstance(event, ToolCallCompleted):
-                if text_seen:
-                    raise RuntimeError("provider mixed text and tool calls in one response")
                 call = event.call
                 if (
                     not isinstance(call.id, str)
@@ -196,7 +203,8 @@ class AgentLoop:
         if trailing_reasoning:
             reasoning_parts.append(trailing_reasoning)
         reasoning_content = "".join(reasoning_parts) if reasoning_seen else None
-        return assistant_item_id, tuple(tool_calls), reasoning_content
+        step_id = f"step_{uuid.uuid4().hex}" if tool_calls and assistant_item_id else None
+        return assistant_item_id, tuple(tool_calls), reasoning_content, step_id
 
     async def _execute_tool_calls(
         self,
@@ -206,12 +214,14 @@ class AgentLoop:
         *,
         default_cwd: str | None,
         reasoning_content: str | None,
+        step_id: str | None,
+        assistant_item_id: str | None,
     ) -> None:
         executor = self._tool_executor
         if executor is None:
             raise RuntimeError("provider requested a tool but no ToolExecutor is available")
         self._assert_tool_request_safe(calls, reasoning_content)
-        step_id = f"step_{uuid.uuid4().hex}"
+        step_id = step_id or f"step_{uuid.uuid4().hex}"
         item_ids: list[str] = []
         for index, call in enumerate(calls):
             item_id, started = self._store.create_tool_call_item(
@@ -224,6 +234,15 @@ class AgentLoop:
             )
             item_ids.append(item_id)
             await self._publish(started)
+
+        if assistant_item_id is not None:
+            # Journal the calls first so a crash cannot leave a completed
+            # narrated tool step whose calls never existed.  The shared step
+            # identifier still lets context reconstruction fold both Items
+            # back into the original assistant response.
+            await self._publish(
+                self._store.complete_assistant_item(assistant_item_id, step_id=step_id)
+            )
 
         call_items = list(zip(calls, item_ids, strict=True))
         for index, (call, item_id) in enumerate(call_items):
@@ -308,11 +327,7 @@ class AgentLoop:
                 ok=False,
                 output=_PROTECTED_TOOL_OUTPUT_MESSAGE,
                 details={
-                    "stdout": "",
-                    "stderr": "",
-                    "exitCode": None,
                     "durationMs": 0,
-                    "timedOut": False,
                     "truncated": False,
                     "errorCode": "protected_output",
                 },
@@ -348,11 +363,7 @@ class AgentLoop:
             ok=False,
             output="Tool call was not started because the Run was cancelled.",
             details={
-                "stdout": "",
-                "stderr": "",
-                "exitCode": None,
                 "durationMs": 0,
-                "timedOut": False,
                 "truncated": False,
                 "errorCode": "cancelled",
             },
@@ -368,33 +379,43 @@ class AgentLoop:
             if item.kind == "message":
                 if item.role not in {"user", "assistant"}:
                     raise RuntimeError("message context item has an invalid role")
+                step_id = item.data.get("stepId")
+                if item.role == "assistant" and isinstance(step_id, str):
+                    index += 1
+                    calls, index, reasoning_content = _tool_calls_for_step(
+                        items,
+                        index,
+                        step_id,
+                    )
+                    if not calls:
+                        # Calls from a failed/cancelled Run are omitted from
+                        # later context. Preserve its narration as plain text
+                        # instead of breaking every future context rebuild.
+                        messages.append(ProviderMessage(role="assistant", content=item.content))
+                        continue
+                    messages.append(
+                        ProviderMessage(
+                            role="assistant",
+                            content=item.content,
+                            tool_calls=tuple(calls),
+                            reasoning_content=reasoning_content,
+                        )
+                    )
+                    continue
                 messages.append(ProviderMessage(role=item.role, content=item.content))
                 index += 1
                 continue
             if item.kind == "tool_call":
                 step_id = item.data.get("stepId")
-                calls: list[ToolCall] = []
-                while index < len(items):
-                    candidate = items[index]
-                    if candidate.kind != "tool_call" or candidate.data.get("stepId") != step_id:
-                        break
-                    call_id = candidate.data.get("callId")
-                    tool_name = candidate.data.get("toolName")
-                    arguments = candidate.data.get("arguments")
-                    if (
-                        not isinstance(call_id, str)
-                        or not isinstance(tool_name, str)
-                        or not isinstance(arguments, dict)
-                    ):
-                        raise RuntimeError("tool call context item is invalid")
-                    calls.append(ToolCall(call_id, tool_name, arguments))
-                    index += 1
+                if not isinstance(step_id, str):
+                    raise RuntimeError("tool call context item has no step ID")
+                calls, index, reasoning_content = _tool_calls_for_step(items, index, step_id)
                 messages.append(
                     ProviderMessage(
                         role="assistant",
                         content="",
                         tool_calls=tuple(calls),
-                        reasoning_content=_reasoning_content(item),
+                        reasoning_content=reasoning_content,
                     )
                 )
                 continue
@@ -427,6 +448,48 @@ def _reasoning_content(item: ContextItem) -> str | None:
     if not isinstance(value, str):
         raise RuntimeError("tool call reasoning context is invalid")
     return value
+
+
+def _tool_calls_for_step(
+    items: Sequence[ContextItem],
+    index: int,
+    step_id: str,
+) -> tuple[list[ToolCall], int, str | None]:
+    calls: list[ToolCall] = []
+    reasoning_content: str | None = None
+    while index < len(items):
+        candidate = items[index]
+        if candidate.kind != "tool_call" or candidate.data.get("stepId") != step_id:
+            break
+        call_id = candidate.data.get("callId")
+        tool_name = candidate.data.get("toolName")
+        arguments = candidate.data.get("arguments")
+        if (
+            not isinstance(call_id, str)
+            or not isinstance(tool_name, str)
+            or not isinstance(arguments, dict)
+        ):
+            raise RuntimeError("tool call context item is invalid")
+        candidate_reasoning = _reasoning_content(candidate)
+        if candidate_reasoning is not None:
+            if reasoning_content is not None:
+                raise RuntimeError("tool call step contains duplicate reasoning context")
+            reasoning_content = candidate_reasoning
+        calls.append(ToolCall(call_id, tool_name, arguments))
+        index += 1
+    return calls, index, reasoning_content
+
+
+def _failure_reason_code(error: Exception) -> str:
+    if isinstance(error, ProviderFailure):
+        return f"provider_{error.category}"
+    if isinstance(error, ProtectedValueError):
+        return "protected_value"
+    if isinstance(error, RuntimeError) and str(error).startswith("provider "):
+        return "provider_protocol"
+    if isinstance(error, ValueError) and str(error).startswith("unknown provider"):
+        return "provider_unavailable"
+    return "agent_error"
 
 
 def _empty_protected_values() -> tuple[str, ...]:

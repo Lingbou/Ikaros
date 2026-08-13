@@ -23,8 +23,11 @@ The design synthesis is:
 
 Reference snapshots used during design:
 
-- Pi at `00eb2d1515e18e00940139f5e6568230a071f33c`: small loop, typed
-  events, provider/context separation, steer/follow-up, and an explicit settled
+- Pi's loop snapshot at `00eb2d1515e18e00940139f5e6568230a071f33c` informed
+  the original design. Its current local harness snapshot at
+  `46bb9a2c3bdb296b0d2179f7309ec6b79a7f3106` was also audited for the
+  built-in Tool behavior below: small loop, typed events, provider/context
+  separation, mutation queues, steer/follow-up, and an explicit settled
   terminal state.
 - Hermes Agent at `c0106e50e7ecedb3ce34e785d949725dc4e0e457`: an Electron-supervised,
   long-lived Python backend with multiple sessions, SQLite recovery, providers,
@@ -39,8 +42,9 @@ Reference snapshots used during design:
   separate provider profiles from protocol transports and express DeepSeek as
   an OpenAI-chat profile rather than a separate implementation.
 
-Pi's default `read`, `write`, `edit`, and `bash` tools are useful foundational
-system capabilities. They are not the boundary of a general-purpose Agent.
+Pi harness's `read`, `write`, `edit`, and `bash` Tool primitives are useful
+foundational system capabilities. They are not the boundary of a
+general-purpose Agent.
 
 ## Process topology and lifetime
 
@@ -197,7 +201,8 @@ The implemented vertical slice makes the Runtime authoritative for:
 
 - Threads, each Thread's default Branch, Turns, Runs, Items, and their ordering;
 - Agent-loop and provider execution;
-- `process_run` validation, execution, cancellation, and normalized results;
+- `process_run`, `read`, `write`, and `edit` validation, serial execution,
+  cancellation, and normalized results;
 - the fixed `FullAccessPolicy` execution-policy snapshot;
 - Provider/model configuration and selection; and
 - canonical persisted Agent state.
@@ -224,9 +229,10 @@ Thread                   one conversation, optionally carrying workspace metadat
 Desktop deduplicates the optional `Thread.workspace` summaries into Project
 groups. Project and ordinary chats use the same Thread/Turn/Run path; a
 workspace root supplies the default `cwd` for `process_run` when the Tool Call
-does not provide one. Branch fork, retry/recovery links, Artifact records, and
-additional Item kinds remain compatible with this hierarchy but are not yet
-exposed by the first Runtime slice.
+does not provide one and resolves relative `read`, `write`, and `edit` paths.
+Branch fork, retry/recovery links, Artifact records, and additional Item kinds
+remain compatible with this hierarchy but are not yet exposed by the first
+Runtime slice.
 
 Inside the Agent loop, a Run contains zero or more Steps. A Step is one model
 request plus the tool calls and results needed before the next model request.
@@ -350,7 +356,7 @@ client submits user input
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call
   -> ExecutionPolicy returns allow under FullAccessPolicy
-  -> ToolExecutor runs the command and emits lifecycle events
+  -> ToolExecutor runs the registered Tool and emits lifecycle events
   -> normalized ToolResult is appended and returned to the model
   -> the model may continue another Step
   -> final assistant Item is completed
@@ -410,6 +416,14 @@ Streaming Tool Call fragments are accumulated by call index/ID. Arguments are
 parsed only after the call is complete, then validated against the registered
 Tool schema. Invalid or incomplete JSON becomes a structured protocol error and
 must never reach ToolExecutor.
+
+An OpenAI-compatible response may contain assistant narration followed by Tool
+Calls in the same provider Step. The Agent loop persists both under one Step and
+rebuilds them as one provider message containing `content` plus `tool_calls` on
+the next request or after SQLite recovery. Text emitted after Tool Calls remains
+an invalid event order. This mixed narration/Tool-Call behavior is covered by
+offline Agent, storage-replay, and adapter regression tests; the live DeepSeek
+smoke described below proves the file-Tool chain, not that particular ordering.
 
 Both JSON-RPC and upstream SSE use strict JSON: non-standard constants,
 non-finite numbers (including exponent overflow), integers outside JavaScript's
@@ -549,11 +563,10 @@ access.
 
 ## Built-in tools and Skills
 
-The current ToolRegistry contains only `process_run`. It is extensible so later
-file primitives such as read, write, and edit can coexist with the general
-process/command Tool, but those primitives are not implemented in the current
-vertical slice. Command execution proves the Tool loop; it does not define the
-eventual product boundary.
+The current ToolRegistry contains four provider-facing Tools: `process_run`,
+`read`, `write`, and `edit`. Command and file operations share Tool definition,
+policy, cancellation, lifecycle, persistence, and result-normalization paths;
+they are not separate Agent loops.
 
 The first registered command Tool has the provider-facing function name
 `process_run`. OpenAI-compatible endpoints restrict function names to letters,
@@ -574,6 +587,47 @@ teardown all close the supervised tree; cancellation preserves bounded partial
 output in a matching Tool Result before the Run settles. The child receives an
 explicit allowlist of ordinary OS environment variables rather than Electron's
 entire environment, so unrelated launch-time secrets are not inherited.
+
+The file primitives deliberately reuse the stable reference-project behavior
+instead of adding fuzzy or model-specific editing:
+
+- `read(filePath, offset?, limit?)` reads UTF-8 text with 1-based line numbers,
+  returns at most 2,000 lines and 50 KiB per call, truncates an individual line
+  after 2,000 characters, and rejects directories, binary content, and invalid
+  UTF-8. It decodes incrementally and stops reading when the requested page or
+  byte budget is complete; `nextOffset` lets the model page forward without an
+  unnecessary full-file scan. `totalLines` is therefore present only at EOF.
+- `write(filePath, content)` creates parent directories and creates or fully
+  replaces a text file. Existing BOM, newline style, and file mode are preserved
+  where applicable. The replacement writes and `fsync`s a same-directory
+  temporary file, verifies those temporary-file bytes against the intended
+  payload with SHA-256, and only then publishes it with `os.replace`.
+  `verified: true` reports that the temporary bytes matched the intended
+  payload before publication and that `os.replace` succeeded; it does not claim
+  that the target pathname was hashed again after replacement, and the digest
+  itself is not returned to the model.
+- `edit(filePath, oldString, newString, replaceAll?)` edits an existing UTF-8
+  text file by exact match. The default succeeds only for one match; zero or
+  multiple matches leave the file unchanged, while `replaceAll: true` explicitly
+  replaces every match. Matching normalizes CRLF and lone CR to LF, then writes
+  one consistent style chosen from the file's first newline (LF when no LF was
+  present); BOM is preserved. Before replacement the Runtime compares the
+  current bytes with the bytes originally read and
+  returns `stale_content` if another process changed the file. This is a narrow
+  conditional-write check, not a filesystem transaction. V1 intentionally has
+  no fuzzy matching, formatter, LSP, or broader FileState subsystem.
+
+All three file Tools serialize access to the same resolved path with a keyed
+lock whose entry is reclaimed after the final holder or waiter. Existing
+symlink aliases resolve to their target before locking and replacement, so an
+alias and direct path share one lock and mutation preserves the symlink itself.
+If cancellation arrives during a disk operation, the holder keeps the lock
+until that operation settles and then reports cancellation rather than success.
+Relative paths resolve against the Thread workspace when one exists and
+otherwise against the Runtime working directory. Absolute paths remain allowed
+under V1 Full access.
+Desktop projects their structured lifecycle and result summaries, but a file
+operation does not yet produce a first-class Artifact or file-change/diff Item.
 
 A future Skill integration treats a Skill as an instruction and resource bundle
 that may contain references, assets, and scripts. Loading a Skill will not
@@ -618,10 +672,10 @@ Timeouts, cancellation, output limits, child-process cleanup, and minimal
 environment construction are execution-reliability requirements even under
 Full access; they are not deferred as part of the permission UI.
 
-Full access means `process_run` can exercise the current operating-system
-user's authority. Once Skill scripts are integrated through the same executor,
-they will inherit that authority as well. This is an explicit
-development-version trade-off, not a sandbox or security guarantee.
+Full access means `process_run`, `read`, `write`, and `edit` can exercise the
+current operating-system user's authority. Once Skill scripts are integrated
+through the same executor, they will inherit that authority as well. This is an
+explicit development-version trade-off, not a sandbox or security guarantee.
 
 The current SQLite schema version is 6. Thread projections include optional
 `workspace_json`. Each Run snapshots
@@ -642,7 +696,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | project and ordinary conversation lists | Thread projections; Desktop groups non-null `Thread.workspace` values as Projects |
 | streaming response | message Item lifecycle events |
 | Stop | Run cancellation command and terminal event |
-| tool card | tool Item lifecycle events |
+| tool card | `process_run`, `read`, `write`, and `edit` Item lifecycle events |
 | edited earlier user message | mock-only UI; no Runtime Branch-fork command yet |
 | Turn Navigator | projected current Turn/Item records used only for navigation |
 | retry or recovery | mock-only UI; no Runtime retry/resume command yet |
@@ -664,6 +718,13 @@ when renderer navigation changes. Desktop uses stable request IDs for
 `thread.create` and `turn.start`, projects Runtime Threads and workspaces,
 selects from `model.list`, sends the explicit Provider/model reference with
 each Turn, and drives Stop through `run.cancel`.
+
+Desktop projects `process_run` as `process.run` and projects `read`, `write`,
+and `edit` with file-specific icons, translated fixed labels, and bounded
+metadata such as path, line range, byte count, and replacement count. Write and
+edit arguments containing file content or replacement text are not copied into
+the visible card. These are Tool projections only; Artifact and file-change
+fixtures remain mock-only.
 
 Provider and model forms call the Runtime's configuration operations. Secret
 fields cross only the write command and are not retained in renderer state;
@@ -699,10 +760,14 @@ path. The following have been demonstrated end to end:
 3. The same conversation completes at least two sequential user Turns, and the
    later Provider request receives the prior completed conversation context.
 4. The built-in DeepSeek profile and configured Custom OpenAI-compatible
-   profiles share one streaming adapter and can request the general command
-   Tool.
-5. The Runtime executes the command serially, captures a normalized ToolResult,
-   returns it to the model, and the model produces a final assistant answer.
+   profiles share one streaming adapter and receive the `process_run`, `read`,
+   `write`, and `edit` Tool definitions.
+5. The Runtime executes requested Tools serially, captures normalized
+   ToolResults, returns them to the model, and the model produces a final
+   assistant answer. The most recently recorded opt-in live DeepSeek smoke
+   completed
+   `write -> read -> edit -> read`, verified the edited bytes on disk, and
+   observed the final answer containing the edited token.
 6. Run and Item lifecycles settle coherently and are projected by the Desktop;
    Stop propagates through Run and child-process-tree cancellation.
 7. The deterministic Provider covers the loop and event ordering without a

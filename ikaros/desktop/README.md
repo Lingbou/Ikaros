@@ -81,21 +81,28 @@ The Runtime currently owns:
   `~/.ikaros/config.yaml` persistence;
 - the ScriptedProvider used by deterministic integration tests and real
   OpenAI-compatible streaming Providers used by normal conversations; and
-- the `process.run` Tool, executed under the V1 `full_access` policy with
-  timeout, cancellation, bounded output, and process-tree cleanup.
+- the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
+  V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
+  command execution provides timeout, cancellation, bounded output, and
+  process-tree cleanup, while the file Tools provide streaming bounded UTF-8
+  reads, verified atomic writes, and exact-match edits that reject common
+  stale-content races.
 
 The renderer projects canonical Runtime messages, streamed deltas,
-`process.run` Tool Calls and Tool Results, and Run state into the conversation
-UI. It does not use `MockAgentClient` when the Electron Runtime bridge is
-available.
+`process.run`/`read`/`write`/`edit` Tool Calls and Tool Results, and Run state
+into the conversation UI. File cards expose bounded metadata such as path, line
+range, bytes written, and replacement count without displaying the full write
+or replacement arguments. It does not use `MockAgentClient` when the Electron
+Runtime bridge is available.
 
 Projects are not separate Runtime resources and there is no Project API. A
 Project is a Desktop grouping derived from a Thread's optional workspace.
 Project chats and ordinary chats both use `thread.create -> turn.start`; the
 only difference is that a project Thread carries a workspace snapshot. That
 workspace is persisted by the Runtime and becomes the default working
-directory for `process.run`. A selected folder without a Thread exists only as
-temporary Desktop state until the first message creates that Thread.
+directory for `process.run` and the base for relative `read`, `write`, and
+`edit` paths. A selected folder without a Thread exists only as temporary
+Desktop state until the first message creates that Thread.
 
 ### Desktop-owned local state
 
@@ -123,8 +130,9 @@ The following UI surfaces are not production Runtime capabilities yet:
 - permission cards and Ask/Safe/Full choices belong to the mock prototype;
   Runtime V1 always uses `full_access` and emits no permission requests;
 - editing a message to fork history, multiple Branches, retry/resume recovery,
-  Artifacts, file-change events, and generic status rows are mock-only UI
-  projections without corresponding Runtime RPCs or events; and
+  Artifacts, first-class file-change/diff events, and generic status rows are
+  mock-only UI projections without corresponding Runtime RPCs or events. This
+  does not include the Runtime-backed `read`, `write`, and `edit` Tool cards;
 - attachments, tool selection, and response regeneration are disabled
   placeholders;
 - Provider health is currently reported as `unknown`; no health-check workflow

@@ -24,9 +24,9 @@ from .services.providers import ModelDiscovery, ProviderService
 from .services.threads import ThreadService
 from .services.turns import TurnService
 from .storage import SqliteRuntimeStore
+from .tools import EditTool, ProcessRunTool, ReadTool, WriteTool
 from .tools.core import ToolExecutor, ToolRegistry
 from .tools.policy import FullAccessPolicy
-from .tools.process import ProcessRunTool
 
 
 class RuntimeApplication:
@@ -53,7 +53,7 @@ class RuntimeApplication:
             adapter_factory=OpenAICompatibleAdapter,
         )
         tool_executor = ToolExecutor(
-            ToolRegistry([ProcessRunTool()]),
+            ToolRegistry([ProcessRunTool(), ReadTool(), WriteTool(), EditTool()]),
             FullAccessPolicy(),
         )
         loop = AgentLoop(

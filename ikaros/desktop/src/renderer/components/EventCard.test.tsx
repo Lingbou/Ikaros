@@ -78,6 +78,115 @@ describe("EventCard localization boundary", () => {
     expect(container.querySelector("pre")?.textContent).toBe(output);
   });
 
+  it("renders compact localized file tool cards without exposing content or replacement text", () => {
+    const writeContent = "SECRET-WRITE-CONTENT";
+    const oldString = "SECRET-OLD-STRING";
+    const newString = "SECRET-NEW-STRING";
+    const readCall: ToolCallEvent = {
+      id: "read-call",
+      turnId: "file-turn",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      type: "tool_call",
+      toolName: "read",
+      label: appEventText("tool.readFile"),
+      status: "success",
+      arguments: { filePath: "notes/readme.txt", offset: 5, limit: 20 },
+    };
+    const writeCall: ToolCallEvent = {
+      ...readCall,
+      id: "write-call",
+      toolName: "write",
+      label: appEventText("tool.writeFile"),
+      arguments: { filePath: "notes/new.txt", content: writeContent },
+    };
+    const editCall: ToolCallEvent = {
+      ...readCall,
+      id: "edit-call",
+      toolName: "edit",
+      label: appEventText("tool.editFile"),
+      arguments: {
+        filePath: "notes/readme.txt",
+        oldString,
+        newString,
+        replaceAll: true,
+      },
+    };
+    const readResult: ToolResultEvent = {
+      id: "read-result",
+      turnId: "file-turn",
+      createdAt: "2026-08-12T00:00:00.025Z",
+      type: "tool_result",
+      toolCallId: readCall.id,
+      toolName: "read",
+      status: "success",
+      summary: appEventText("result.readCompleted"),
+      output: "SECRET-READ-OUTPUT",
+      path: "C:\\work\\notes\\readme.txt",
+      details: { lineStart: 5, lineEnd: 20, totalLines: 42 },
+    };
+    const editResult: ToolResultEvent = {
+      ...readResult,
+      id: "edit-result",
+      toolCallId: editCall.id,
+      toolName: "edit",
+      status: "error",
+      summary: appEventText("result.editFailed"),
+      output: "Could not find oldString in the file.",
+      errorCode: "no_match",
+      details: undefined,
+    };
+    const pagedReadResult: ToolResultEvent = {
+      ...readResult,
+      id: "paged-read-result",
+      details: {
+        lineStart: 21,
+        lineEnd: 40,
+        nextOffset: 41,
+        bytesRead: 512,
+        truncated: true,
+      },
+    };
+
+    const { container } = render(
+      <>
+        <EventCard event={readCall} />
+        <EventCard event={writeCall} />
+        <EventCard event={editCall} />
+        <EventCard event={readResult} />
+        <EventCard event={pagedReadResult} />
+        <EventCard event={editResult} />
+      </>,
+    );
+
+    expect(screen.getByText("Reading file")).toBeInTheDocument();
+    expect(screen.getByText("Writing file")).toBeInTheDocument();
+    expect(screen.getByText("Editing file")).toBeInTheDocument();
+    expect(container).toHaveTextContent("notes/readme.txt");
+    expect(container).toHaveTextContent("offset 5 · limit 20");
+    expect(container).toHaveTextContent("replace all");
+    expect(container).toHaveTextContent("Lines 5–20 of 42");
+    expect(container).toHaveTextContent("Lines 21–40");
+    expect(container).toHaveTextContent("Error code: no_match");
+    expect(container).toHaveTextContent("Could not find oldString in the file.");
+    expect(container).not.toHaveTextContent(writeContent);
+    expect(container).not.toHaveTextContent(oldString);
+    expect(container).not.toHaveTextContent(newString);
+    expect(container).not.toHaveTextContent(readResult.output);
+    expect(container.querySelector(".lucide-file-text")).toBeInTheDocument();
+    expect(container.querySelector(".lucide-file-output")).toBeInTheDocument();
+    expect(container.querySelector(".lucide-file-pen-line")).toBeInTheDocument();
+
+    act(() => setUiLanguage("zh-CN"));
+
+    expect(screen.getByText("正在读取文件")).toBeInTheDocument();
+    expect(screen.queryByText("文件编辑完成")).not.toBeInTheDocument();
+    expect(screen.getByText("无法编辑文件")).toBeInTheDocument();
+    expect(container).toHaveTextContent("起始行 5 · 最多 20 行");
+    expect(container).toHaveTextContent("第 5–20 行，共 42 行");
+    expect(container).toHaveTextContent("第 21–40 行");
+    expect(container).toHaveTextContent("错误代码：no_match");
+  });
+
   it("retranslates app-owned event copy while preserving command data and paths", () => {
     setUiLanguage("en");
     useAppStore.setState({ runStatus: "waiting_permission" });

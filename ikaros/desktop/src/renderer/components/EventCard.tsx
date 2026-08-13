@@ -5,6 +5,8 @@ import {
   CircleX,
   Clipboard,
   FileDiff,
+  FileOutput,
+  FilePenLine,
   FileText,
   GitBranch,
   LoaderCircle,
@@ -31,7 +33,7 @@ import type {
 } from "../domain";
 import { isRunActive } from "../domain";
 import { resolveEventText, resolveInterruptCopy } from "../eventCopy";
-import { useTranslation } from "../i18n";
+import { type Translate, useTranslation } from "../i18n";
 import { useAppStore } from "../store";
 import { cx, IconButton, Markdown } from "./ui";
 
@@ -46,8 +48,69 @@ const FILE_OPERATION_KEYS = {
   renamed: "events.file.renamed",
 } as const;
 
+function isFileTool(toolName: string | undefined): toolName is "read" | "write" | "edit" {
+  return toolName === "read" || toolName === "write" || toolName === "edit";
+}
+
+function toolIcon(toolName: string) {
+  if (toolName === "read") return <FileText size={14} />;
+  if (toolName === "write") return <FileOutput size={14} />;
+  if (toolName === "edit") return <FilePenLine size={14} />;
+  if (toolName === "process.run" || toolName.includes("extract")) {
+    return <SquareTerminal size={14} />;
+  }
+  return <Wrench size={14} />;
+}
+
+function fileToolCallDetails(event: ToolCallEvent, t: Translate) {
+  const path = typeof event.arguments.filePath === "string" ? event.arguments.filePath : "";
+  const metadata: string[] = [];
+  if (event.toolName === "read") {
+    if (Number.isInteger(event.arguments.offset) && Number(event.arguments.offset) > 0) {
+      metadata.push(t("events.tool.offset", { value: Number(event.arguments.offset) }));
+    }
+    if (Number.isInteger(event.arguments.limit) && Number(event.arguments.limit) > 0) {
+      metadata.push(t("events.tool.limit", { value: Number(event.arguments.limit) }));
+    }
+  } else if (event.toolName === "edit" && event.arguments.replaceAll === true) {
+    metadata.push(t("events.tool.replaceAll"));
+  }
+  return { path, metadata };
+}
+
+function fileToolResultDetails(event: ToolResultEvent, t: Translate): string[] {
+  const details = event.details;
+  if (!details) return [];
+  const metadata: string[] = [];
+  if (Number.isInteger(details.lineStart) && Number.isInteger(details.lineEnd)) {
+    metadata.push(
+      Number.isInteger(details.totalLines)
+        ? t("events.result.readRange", {
+            start: details.lineStart as number,
+            end: details.lineEnd as number,
+            total: details.totalLines as number,
+          })
+        : t("events.result.readPage", {
+            start: details.lineStart as number,
+            end: details.lineEnd as number,
+          }),
+    );
+  } else if (Number.isInteger(details.bytesRead)) {
+    metadata.push(t("events.result.bytesRead", { count: details.bytesRead as number }));
+  }
+  if (Number.isInteger(details.bytesWritten)) {
+    metadata.push(t("events.result.bytesWritten", { count: details.bytesWritten as number }));
+  }
+  if (Number.isInteger(details.replacements)) {
+    metadata.push(t("events.result.replacements", { count: details.replacements as number }));
+  }
+  if (details.truncated === true) metadata.push(t("events.result.outputTruncated"));
+  return metadata;
+}
+
 function ToolCallCard({ event }: { event: ToolCallEvent }) {
   const { t } = useTranslation();
+  const fileDetails = isFileTool(event.toolName) ? fileToolCallDetails(event, t) : undefined;
   const status = {
     running: {
       icon: <LoaderCircle size={15} className="animate-spin" />,
@@ -74,11 +137,7 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
   return (
     <div className="event-card-shadow flex w-full items-start gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3.5 py-3 text-left">
       <span className={cx("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--panel-hover)]", status.className)}>
-        {event.toolName === "process.run" || event.toolName.includes("extract") ? (
-          <SquareTerminal size={14} />
-        ) : (
-          <Wrench size={14} />
-        )}
+        {toolIcon(event.toolName)}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
@@ -90,9 +149,20 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
             {status.label}
           </span>
         </span>
-        <span className="mt-1 block truncate font-mono text-[11px] leading-[16px] text-[var(--muted)]">
-          {event.toolName} · {JSON.stringify(event.arguments)}
-        </span>
+        {fileDetails ? (
+          <span className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-[16px] text-[var(--muted)]">
+            <span className="truncate" title={fileDetails.path || undefined}>
+              {fileDetails.path || event.toolName}
+            </span>
+            {fileDetails.metadata.length > 0 ? (
+              <span className="shrink-0">· {fileDetails.metadata.join(" · ")}</span>
+            ) : null}
+          </span>
+        ) : (
+          <span className="mt-1 block truncate font-mono text-[11px] leading-[16px] text-[var(--muted)]">
+            {event.toolName} · {JSON.stringify(event.arguments)}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -100,6 +170,8 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
 
 function ToolResultCard({ event }: { event: ToolResultEvent }) {
   const { t } = useTranslation();
+  const isFileResult = isFileTool(event.toolName);
+  const metadata = isFileResult ? fileToolResultDetails(event, t) : [];
   const presentation = {
     success: {
       icon: <Check size={13} className="mt-0.5 shrink-0 text-[#72d3a7]" />,
@@ -126,7 +198,22 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
         <div className="text-[11px] leading-[16px] text-[var(--text)]">
           {resolveEventText(event.summary, t)}
         </div>
-        {event.output ? (
+        {isFileResult && event.path ? (
+          <div className="mt-1 truncate font-mono text-[10px] leading-[14px] text-[var(--muted)]" title={event.path}>
+            {event.path}
+          </div>
+        ) : null}
+        {metadata.length > 0 ? (
+          <div className="mt-1 text-[10px] leading-[14px] text-[var(--muted)]">
+            {metadata.join(" · ")}
+          </div>
+        ) : null}
+        {isFileResult && event.errorCode ? (
+          <div className="mt-1 font-mono text-[10px] leading-[14px] text-[var(--muted-strong)]">
+            {t("events.result.errorCode", { code: event.errorCode })}
+          </div>
+        ) : null}
+        {event.output && (!isFileResult || event.status !== "success") ? (
           <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-[var(--muted)]">
             {event.output}
           </pre>

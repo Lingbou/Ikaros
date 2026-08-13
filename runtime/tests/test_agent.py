@@ -157,6 +157,26 @@ class ProtectedResultTool(RecordingTool):
         )
 
 
+class StaleResultTool(RecordingTool):
+    async def execute(
+        self,
+        call: ToolCall,
+        *,
+        cancellation: CancellationToken,
+        default_cwd: str | None = None,
+    ) -> ToolResult:
+        cancellation.raise_if_cancelled()
+        del default_cwd
+        self.calls.append(call)
+        return ToolResult(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            ok=False,
+            output="File changed since it was read; read it again before editing.",
+            details={"errorCode": "stale_content", "truncated": False},
+        )
+
+
 class ToolLoopProvider:
     def __init__(
         self,
@@ -189,6 +209,46 @@ class ToolLoopProvider:
             )
         else:
             yield TextDelta("final answer")
+        yield ResponseCompleted()
+
+
+class NarratedToolLoopProvider(ToolLoopProvider):
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        cancellation.raise_if_cancelled()
+        self.requests.append(request)
+        has_tool_result = any(message.role == "tool" for message in request.messages)
+        if not has_tool_result:
+            yield TextDelta("Let me demonstrate:")
+            yield ToolCallCompleted(
+                ToolCall(
+                    id="call-narrated",
+                    name="process_run",
+                    arguments={"command": "test-command"},
+                )
+            )
+        else:
+            yield TextDelta("final answer")
+        yield ResponseCompleted()
+
+
+class TextAfterToolProvider:
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        yield ToolCallCompleted(
+            ToolCall("call-before-text", "process_run", {"command": "must-not-run"})
+        )
+        yield TextDelta("late narration")
         yield ResponseCompleted()
 
 
@@ -362,6 +422,113 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
 
 
 @pytest.mark.asyncio
+async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Narrated tool loop")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="show the tool",
+            provider_id="narrated",
+            model_id="narrated-v1",
+        )
+        provider = NarratedToolLoopProvider()
+        tool = RecordingTool()
+        loop = AgentLoop(
+            store,
+            {"narrated": provider},
+            publish,
+            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert [call.id for call in tool.calls] == ["call-narrated"]
+        assert len(provider.requests) == 2
+        second_messages = provider.requests[1].messages
+        assert [message.role for message in second_messages] == [
+            "user",
+            "assistant",
+            "tool",
+        ]
+        assert second_messages[1].content == "Let me demonstrate:"
+        assert second_messages[1].tool_calls == (
+            ToolCall("call-narrated", "process_run", {"command": "test-command"}),
+        )
+        narrated_terminal = [
+            event
+            for event in events
+            if event.type == "item.completed"
+            and event.payload.get("item", {}).get("role") == "assistant"
+            and event.payload.get("item", {}).get("content") == "Let me demonstrate:"
+        ]
+        assert len(narrated_terminal) == 1
+        assert narrated_terminal[0].payload["item"]["status"] == "completed"
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["status"] == "completed"
+
+        before_rebuild = store.context_items(
+            thread.default_branch_id,
+            through_turn_id=prepared.turn_id,
+        )
+        store.rebuild_projections()
+        rebuilt = store.context_items(
+            thread.default_branch_id,
+            through_turn_id=prepared.turn_id,
+        )
+        assert rebuilt == before_rebuild
+        replayed = AgentLoop._provider_messages(rebuilt)
+        assert replayed[1].content == "Let me demonstrate:"
+        assert replayed[1].tool_calls[0].id == "call-narrated"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_text_emitted_after_a_completed_tool_call(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Late tool text")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="reject malformed ordering",
+            provider_id="late-text",
+            model_id="late-text-v1",
+        )
+        tool = RecordingTool()
+        loop = AgentLoop(
+            store,
+            {"late-text": TextAfterToolProvider()},
+            publish,
+            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert tool.calls == []
+        settled = [event for event in events if event.type == "run.settled"]
+        assert len(settled) == 1
+        assert settled[0].payload["status"] == "failed"
+        assert settled[0].payload["reasonCode"] == "provider_protocol"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_agent_passes_the_thread_workspace_to_tool_execution(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
 
@@ -439,11 +606,66 @@ async def test_agent_replaces_a_tool_result_containing_protected_values(tmp_path
         assert result["toolName"] == "process_run"
         assert result["ok"] is False
         assert result["errorCode"] == "protected_output"
-        assert result["stdout"] == ""
-        assert result["stderr"] == ""
         serialized_events = json.dumps([event.to_wire() for event in events])
         assert protected not in serialized_events
         assert protected.encode() not in (tmp_path / "state.db").read_bytes()
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_returns_stale_content_to_the_provider_and_rebuilds_it(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Stale edit result")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="edit safely",
+            provider_id="tool-loop",
+            model_id="tool-loop-v1",
+        )
+        provider = ToolLoopProvider()
+        loop = AgentLoop(
+            store,
+            {"tool-loop": provider},
+            publish,
+            ToolExecutor(ToolRegistry([StaleResultTool()]), FullAccessPolicy()),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        result = json.loads(provider.requests[1].messages[-1].content)
+        assert result["ok"] is False
+        assert result["errorCode"] == "stale_content"
+        result_event = next(
+            event
+            for event in events
+            if event.type == "item.completed"
+            and event.payload.get("item", {}).get("kind") == "tool_result"
+        )
+        assert result_event.payload["item"]["status"] == "failed"
+        assert result_event.payload["item"]["data"]["result"]["errorCode"] == "stale_content"
+
+        before_rebuild = store.context_items(
+            thread.default_branch_id,
+            through_turn_id=prepared.turn_id,
+        )
+        store.rebuild_projections()
+        after_rebuild = store.context_items(
+            thread.default_branch_id,
+            through_turn_id=prepared.turn_id,
+        )
+        assert after_rebuild == before_rebuild
+        rebuilt_result = next(item for item in after_rebuild if item.kind == "tool_result")
+        assert json.loads(rebuilt_result.content)["errorCode"] == "stale_content"
     finally:
         store.close()
 

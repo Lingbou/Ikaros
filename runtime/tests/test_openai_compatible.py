@@ -299,7 +299,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
                     ProviderMessage(role="user", content="Run it"),
                     ProviderMessage(
                         role="assistant",
-                        content="",
+                        content="I will run it now.",
                         tool_calls=(ToolCall("call_1", "process_run", {"command": "echo one"}),),
                         reasoning_content="private reasoning replay",
                     ),
@@ -325,7 +325,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
     assert lowered["stream"] is True
     assert lowered["messages"][1] == {
         "role": "assistant",
-        "content": None,
+        "content": "I will run it now.",
         "tool_calls": [
             {
                 "id": "call_1",

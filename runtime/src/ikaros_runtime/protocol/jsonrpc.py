@@ -35,7 +35,7 @@ def initialize_result() -> dict[str, object]:
             "eventReplay": True,
             "streaming": True,
             "scriptedProvider": True,
-            "tools": ["process.run"],
+            "tools": ["process.run", "read", "write", "edit"],
             "executionPolicy": "full_access",
             "runCancellation": True,
             "providers": True,

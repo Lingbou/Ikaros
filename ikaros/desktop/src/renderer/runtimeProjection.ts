@@ -3,7 +3,15 @@ import type {
   RuntimeThreadSummary,
   RuntimeWorkspaceSummary,
 } from "../shared/runtime";
-import type { AgentEvent, Project, Thread, Turn, TurnStatus } from "./domain";
+import type {
+  AgentEvent,
+  AppEventTextKind,
+  Project,
+  Thread,
+  ToolResultEvent,
+  Turn,
+  TurnStatus,
+} from "./domain";
 import { appEventText, externalEventText } from "./domain";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -140,6 +148,91 @@ function displayToolName(name: string): string {
   return name === "process_run" ? "process.run" : name;
 }
 
+type FileToolName = "read" | "write" | "edit";
+
+function isFileToolName(name: string): name is FileToolName {
+  return name === "read" || name === "write" || name === "edit";
+}
+
+const FILE_TOOL_LABELS: Record<FileToolName, AppEventTextKind> = {
+  read: "tool.readFile",
+  write: "tool.writeFile",
+  edit: "tool.editFile",
+};
+
+const FILE_TOOL_RESULTS: Record<
+  FileToolName,
+  Record<ToolResultEvent["status"], AppEventTextKind>
+> = {
+  read: {
+    success: "result.readCompleted",
+    error: "result.readFailed",
+    interrupted: "result.readInterrupted",
+  },
+  write: {
+    success: "result.writeCompleted",
+    error: "result.writeFailed",
+    interrupted: "result.writeInterrupted",
+  },
+  edit: {
+    success: "result.editCompleted",
+    error: "result.editFailed",
+    interrupted: "result.editInterrupted",
+  },
+};
+
+function projectToolArguments(
+  toolName: string,
+  argumentsValue: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isFileToolName(toolName)) return argumentsValue;
+
+  const projected: Record<string, unknown> = {};
+  if (typeof argumentsValue.filePath === "string") {
+    projected.filePath = argumentsValue.filePath;
+  }
+  if (toolName === "read") {
+    if (Number.isInteger(argumentsValue.offset) && Number(argumentsValue.offset) > 0) {
+      projected.offset = argumentsValue.offset;
+    }
+    if (Number.isInteger(argumentsValue.limit) && Number(argumentsValue.limit) > 0) {
+      projected.limit = argumentsValue.limit;
+    }
+  } else if (toolName === "edit" && typeof argumentsValue.replaceAll === "boolean") {
+    projected.replaceAll = argumentsValue.replaceAll;
+  }
+  return projected;
+}
+
+function projectFileResultDetails(
+  result: Record<string, unknown>,
+): ToolResultEvent["details"] | undefined {
+  const details: NonNullable<ToolResultEvent["details"]> = {};
+  const integerKeys = [
+    "lineStart",
+    "lineEnd",
+    "totalLines",
+    "nextOffset",
+    "bytesRead",
+    "bytesWritten",
+    "replacements",
+  ] as const;
+  for (const key of integerKeys) {
+    const value = result[key];
+    if (Number.isInteger(value) && Number(value) >= 0) {
+      details[key] = Number(value);
+    }
+  }
+  if (typeof result.created === "boolean") details.created = result.created;
+  if (typeof result.truncated === "boolean") details.truncated = result.truncated;
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function safeFileResultOutput(value: unknown, status: ToolResultEvent["status"]): string {
+  if (status === "success" || typeof value !== "string") return "";
+  return value.slice(0, 2_000);
+}
+
 function projectThreadCreated(
   threads: Thread[],
   event: RuntimeJournalEvent
@@ -216,12 +309,13 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         turnId: event.turnId,
         type: "tool_call",
         toolName,
-        label:
-          item.data.toolName === "process_run"
+        label: isFileToolName(toolName)
+          ? appEventText(FILE_TOOL_LABELS[toolName])
+          : item.data.toolName === "process_run"
             ? appEventText("tool.runProcess")
             : externalEventText(toolName),
         status: toolStatus(item.status),
-        arguments: item.data.arguments,
+        arguments: projectToolArguments(toolName, item.data.arguments),
         durationMs:
           typeof item.data.durationMs === "number" ? item.data.durationMs : undefined,
         createdAt: typeof item.createdAt === "string" ? item.createdAt : event.timestamp
@@ -240,14 +334,30 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         typeof item.data.toolName === "string"
           ? displayToolName(item.data.toolName)
           : "tool";
+      const fileTool = isFileToolName(toolName);
+      const fileDetails = fileTool
+        ? projectFileResultDetails(item.data.result)
+        : undefined;
+      const path =
+        fileTool && typeof item.data.result.path === "string"
+          ? item.data.result.path
+          : undefined;
+      const errorCode =
+        fileTool &&
+        typeof item.data.result.errorCode === "string" &&
+        /^[A-Za-z0-9_.-]{1,80}$/.test(item.data.result.errorCode)
+          ? item.data.result.errorCode
+          : undefined;
       next = upsertAgentEvent(thread, event, {
         id: item.id,
         turnId: event.turnId,
         type: "tool_result",
         toolCallId: item.data.toolCallItemId,
+        toolName,
         status: resultStatus,
-        summary:
-          item.data.toolName === "process_run"
+        summary: fileTool
+          ? appEventText(FILE_TOOL_RESULTS[toolName][resultStatus])
+          : item.data.toolName === "process_run"
             ? appEventText(
                 resultStatus === "success"
                   ? "result.processCompleted"
@@ -256,7 +366,14 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
                     : "result.processFailed"
               )
             : externalEventText(toolName),
-        output: typeof item.data.result.output === "string" ? item.data.result.output : "",
+        output: fileTool
+          ? safeFileResultOutput(item.data.result.output, resultStatus)
+          : typeof item.data.result.output === "string"
+            ? item.data.result.output
+            : "",
+        ...(path === undefined ? {} : { path }),
+        ...(errorCode === undefined ? {} : { errorCode }),
+        ...(fileDetails === undefined ? {} : { details: fileDetails }),
         createdAt: typeof item.createdAt === "string" ? item.createdAt : event.timestamp
       });
     }

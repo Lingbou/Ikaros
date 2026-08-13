@@ -485,6 +485,61 @@ class SqliteRuntimeStore:
                 payload={"delta": delta},
             )
 
+    def complete_assistant_item(
+        self,
+        item_id: str,
+        *,
+        step_id: str | None = None,
+    ) -> JournalEvent:
+        """Complete streamed assistant text before a tool round continues.
+
+        A provider may return both assistant narration and tool calls in one
+        response.  The shared ``stepId`` lets provider-context reconstruction
+        fold those separately projected Items back into the original assistant
+        message without coupling the UI projection to provider wire formats.
+        """
+
+        row = item_row(self._connection, item_id)
+        if row["kind"] != "message" or row["role"] != "assistant":
+            raise RuntimeError("item is not an assistant message")
+        if row["status"] != "streaming":
+            raise RuntimeError("assistant item is not streaming")
+        data = json_loads(row["data_json"])
+        if step_id is not None:
+            data["stepId"] = step_id
+        timestamp = utc_now()
+        with self._connection:
+            updated = self._connection.execute(
+                """
+                UPDATE items SET status = 'completed', updated_at = ?, data_json = ?
+                WHERE id = ? AND status = 'streaming'
+                """,
+                (
+                    timestamp,
+                    json_dumps(data, separators=(",", ":"), ensure_ascii=False),
+                    item_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("assistant item is not streaming")
+            location = item_location(self._connection, item_id)
+            item = self._item_payload_from_row(
+                row,
+                status="completed",
+                updated_at=timestamp,
+                data=data,
+            )
+            return self._append_event(
+                event_type="item.completed",
+                thread_id=location["thread_id"],
+                branch_id=location["branch_id"],
+                turn_id=location["turn_id"],
+                run_id=location["run_id"],
+                item_id=item_id,
+                timestamp=timestamp,
+                payload={"item": item},
+            )
+
     def create_tool_call_item(
         self,
         run_id: str,

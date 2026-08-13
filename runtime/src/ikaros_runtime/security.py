@@ -188,12 +188,16 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "branch",
         "callId",
         "cancelled",
+        "bom",
+        "bytesRead",
+        "bytesWritten",
         "capabilities",
         "code",
         "configured",
         "content",
         "clientRequestId",
         "createdAt",
+        "created",
         "credentialConfigured",
         "cwd",
         "data",
@@ -218,18 +222,24 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "jsonrpc",
         "kind",
         "latestSeq",
+        "lineEnd",
+        "lineStart",
+        "lineTruncations",
         "message",
         "method",
         "model",
         "modelId",
         "models",
         "name",
+        "newline",
+        "nextOffset",
         "nextAfterSeq",
         "ok",
         "ordinal",
         "origin",
         "outcome",
         "output",
+        "path",
         "params",
         "payload",
         "protocolVersion",
@@ -238,6 +248,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "providers",
         "reasonCode",
         "reasoningContent",
+        "replacements",
         "removed",
         "result",
         "role",
@@ -257,6 +268,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "threadId",
         "threads",
         "timedOut",
+        "totalLines",
         "timestamp",
         "title",
         "toolCallId",
@@ -269,6 +281,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "type",
         "updatedAt",
         "version",
+        "verified",
         "workspace",
         "rootUri",
     }
@@ -321,7 +334,14 @@ def _is_fixed_response_value(path: tuple[str, ...], value: str) -> bool:
         return True
     if path[-2:] == ("server", "version"):
         return True
-    if path[-2:] == ("capabilities", "tools") and value == "process.run":
+    if path[-2:] == ("capabilities", "tools") and value in {
+        "process.run",
+        "read",
+        "write",
+        "edit",
+    }:
+        return True
+    if path and path[-1] == "newline" and value in {"lf", "crlf"}:
         return True
     if path and path[-1] == "executionPolicy" and value == "full_access":
         return True

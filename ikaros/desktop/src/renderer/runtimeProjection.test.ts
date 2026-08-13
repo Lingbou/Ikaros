@@ -146,6 +146,64 @@ function toolResultItem(
   };
 }
 
+function fileToolCallItem(
+  id: string,
+  turnId: string,
+  runId: string,
+  toolName: "read" | "write" | "edit",
+  status: "running" | "completed" | "failed" | "cancelled",
+  argumentsValue: Record<string, unknown>,
+) {
+  return {
+    id,
+    turnId,
+    runId,
+    ordinal: 2,
+    kind: "tool_call",
+    role: "assistant",
+    status,
+    content: "",
+    data: {
+      stepId: "step-files",
+      callId: `provider-${id}`,
+      toolName,
+      arguments: argumentsValue,
+    },
+    createdAt: "2026-08-11T12:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z",
+  };
+}
+
+function fileToolResultItem(
+  id: string,
+  turnId: string,
+  runId: string,
+  toolName: "read" | "write" | "edit",
+  status: "completed" | "failed" | "cancelled",
+  toolCallItemId: string,
+  result: Record<string, unknown>,
+) {
+  return {
+    id,
+    turnId,
+    runId,
+    ordinal: 3,
+    kind: "tool_result",
+    role: "tool",
+    status,
+    content: "{}",
+    data: {
+      stepId: "step-files",
+      callId: `provider-${toolCallItemId}`,
+      toolCallItemId,
+      toolName,
+      result,
+    },
+    createdAt: "2026-08-11T12:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z",
+  };
+}
+
 describe("Runtime event projection", () => {
   it("reduces streamed Items and settled Runs into the existing conversation UI model", () => {
     const events = [
@@ -363,5 +421,156 @@ describe("Runtime event projection", () => {
       summary: { source: "app", kind: "result.processInterrupted" },
       output: "partial-output"
     });
+  });
+
+  it("projects compact, replay-safe file tool events without retaining file or replacement content", () => {
+    const secretContent = "SECRET-FILE-CONTENT";
+    const oldString = "SECRET-OLD-TEXT";
+    const newString = "SECRET-NEW-TEXT";
+    const events = [
+      event(2, "item.completed", "turn-files", "run-files", "call-read", {
+        item: fileToolCallItem(
+          "call-read",
+          "turn-files",
+          "run-files",
+          "read",
+          "completed",
+          { filePath: "notes/readme.txt", offset: 3, limit: 40 },
+        ),
+      }),
+      event(3, "item.completed", "turn-files", "run-files", "result-read", {
+        item: fileToolResultItem(
+          "result-read",
+          "turn-files",
+          "run-files",
+          "read",
+          "completed",
+          "call-read",
+          {
+            output: secretContent,
+            path: "C:\\work\\notes\\readme.txt",
+            lineStart: 3,
+            lineEnd: 18,
+            bytesRead: 420,
+            nextOffset: 19,
+            truncated: true,
+          },
+        ),
+      }),
+      event(4, "item.completed", "turn-files", "run-files", "call-write", {
+        item: fileToolCallItem(
+          "call-write",
+          "turn-files",
+          "run-files",
+          "write",
+          "completed",
+          { filePath: "notes/new.txt", content: secretContent },
+        ),
+      }),
+      event(5, "item.completed", "turn-files", "run-files", "result-write", {
+        item: fileToolResultItem(
+          "result-write",
+          "turn-files",
+          "run-files",
+          "write",
+          "completed",
+          "call-write",
+          {
+            output: "Created file successfully: C:\\work\\notes\\new.txt",
+            path: "C:\\work\\notes\\new.txt",
+            bytesWritten: 128,
+            created: true,
+            truncated: false,
+          },
+        ),
+      }),
+      event(6, "item.completed", "turn-files", "run-files", "call-edit", {
+        item: fileToolCallItem(
+          "call-edit",
+          "turn-files",
+          "run-files",
+          "edit",
+          "failed",
+          {
+            filePath: "notes/readme.txt",
+            oldString,
+            newString,
+            replaceAll: false,
+          },
+        ),
+      }),
+      event(7, "item.completed", "turn-files", "run-files", "result-edit", {
+        item: fileToolResultItem(
+          "result-edit",
+          "turn-files",
+          "run-files",
+          "edit",
+          "failed",
+          "call-edit",
+          {
+            output: "File changed since it was read; read it again before editing.",
+            path: "C:\\work\\notes\\readme.txt",
+            errorCode: "stale_content",
+            truncated: false,
+          },
+        ),
+      }),
+    ];
+
+    const once = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    const twice = replayRuntimeEvents(once, events);
+    const projected = twice[0]?.branches[0]?.turns[0]?.events;
+
+    expect(projected).toHaveLength(6);
+    expect(projected?.[0]).toMatchObject({
+      type: "tool_call",
+      toolName: "read",
+      label: { source: "app", kind: "tool.readFile" },
+      arguments: { filePath: "notes/readme.txt", offset: 3, limit: 40 },
+    });
+    expect(projected?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "read",
+      summary: { source: "app", kind: "result.readCompleted" },
+      output: "",
+      path: "C:\\work\\notes\\readme.txt",
+      details: {
+        lineStart: 3,
+        lineEnd: 18,
+        nextOffset: 19,
+        bytesRead: 420,
+        truncated: true,
+      },
+    });
+    expect(projected?.[2]).toMatchObject({
+      type: "tool_call",
+      toolName: "write",
+      label: { source: "app", kind: "tool.writeFile" },
+      arguments: { filePath: "notes/new.txt" },
+    });
+    expect(projected?.[3]).toMatchObject({
+      type: "tool_result",
+      toolName: "write",
+      summary: { source: "app", kind: "result.writeCompleted" },
+      output: "",
+      details: { bytesWritten: 128, created: true },
+    });
+    expect(projected?.[4]).toMatchObject({
+      type: "tool_call",
+      toolName: "edit",
+      label: { source: "app", kind: "tool.editFile" },
+      arguments: { filePath: "notes/readme.txt", replaceAll: false },
+    });
+    expect(projected?.[5]).toMatchObject({
+      type: "tool_result",
+      toolName: "edit",
+      status: "error",
+      summary: { source: "app", kind: "result.editFailed" },
+      errorCode: "stale_content",
+      output: "File changed since it was read; read it again before editing.",
+    });
+    expect(JSON.stringify(projected)).not.toContain(secretContent);
+    expect(JSON.stringify(projected)).not.toContain(oldString);
+    expect(JSON.stringify(projected)).not.toContain(newString);
   });
 });

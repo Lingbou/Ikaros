@@ -1,7 +1,10 @@
 # Live vertical-slice validation
 
-Validated on 2026-08-12 (Asia/Shanghai) on Windows, starting from Gate 6 commit
-`48b8cd5`.
+The original process-Tool vertical slice was validated on 2026-08-12
+(Asia/Shanghai) on Windows, starting from Gate 6 commit `48b8cd5`. The most
+recently recorded extension of the same end-to-end smoke with the file Tools
+passed on 2026-08-13. This document records that run; later code revisions
+require a fresh opt-in run before they can be described as live-validated.
 
 ## Live path
 
@@ -15,23 +18,36 @@ Renderer store
   -> Desktop RuntimeHost
   -> Python Runtime
   -> DeepSeek OpenAI-compatible SSE
-  -> process.run
+  -> write -> read -> edit -> read
   -> Runtime events
   -> Renderer projection
 ```
 
-The final live run passed with the explicitly configured `deepseek-chat` model
-and proved:
+The most recently recorded file-Tool live run used the explicitly configured
+`deepseek-chat` model. Its asserted evidence was:
 
 - two sequential Turns in one Thread;
 - prior-Turn context reaching the second Provider request;
 - streamed assistant deltas;
-- one real `process_run` Tool Call;
-- a command-generated GUID that was absent from the prompt returned to the model
-  before its final answer;
+- four real DeepSeek-requested Tool Calls in the exact order `write`, `read`,
+  `edit`, `read`, with four completed Tool Results;
+- the initial token being written, read, replaced by an edited token, and read
+  again, with the edited bytes independently verified on disk;
+- the prior-Turn marker and final edited token returned by the model in its
+  final answer after the last Tool Result;
 - completed Run, Item, and renderer projections;
-- Stop issued through the renderer store;
-- a nested, hidden Windows child process terminated with the cancelled Run.
+- Desktop projections for successful `write`, `read`, and `edit` Tool activity;
+- Stop issued through the renderer store against a real `process_run` execution
+  requested by the deterministic ScriptedProvider; and
+- a nested, hidden Windows child process terminated with that cancelled Run.
+
+In that observed run, one real DeepSeek response also emitted assistant
+narration before Tool Calls, and the Runtime preserved the narration and calls
+as one Provider assistant step. This is observed-run evidence, not a
+deterministic assertion that future upstream responses will use that ordering.
+Offline regression tests cover preservation of the combined assistant step,
+SQLite rebuild behavior, exact event ordering, and rejection of text emitted
+after a completed Tool Call.
 
 The test is skipped unless `IKAROS_LIVE_DEEPSEEK_SMOKE=1`. The credential is
 read inside the test from `IKAROS_LIVE_DEEPSEEK_KEY_FILE`; its value is never an
@@ -53,7 +69,6 @@ The following checks passed without printing or hashing the credential:
 - `SqliteRuntimeStore.journal_contains_protected_values` returned false;
 - raw-byte scans of the temporary `state.db*`, `runtime.lock`, and every other
   file in the isolated Runtime home returned no match;
-- raw-byte scans of repository tracked and untracked files returned no match;
 - the temporary `config.yaml` contained the expected matching value and was
   removed with the isolated Runtime home;
 - the source credential file supplied for validation was preserved because its
@@ -61,6 +76,10 @@ The following checks passed without printing or hashing the credential:
 
 The user's existing Provider configuration and conversation database are not
 read, modified, or removed by the live smoke.
+
+Repository secret scanning is not part of the live smoke. It is handled as a
+separate read-only repository audit and is not claimed as live-test evidence
+here.
 
 ## Re-running
 
