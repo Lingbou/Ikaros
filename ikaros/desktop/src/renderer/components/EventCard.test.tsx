@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BranchEvent,
   InterruptEvent,
@@ -27,10 +27,22 @@ vi.mock("react-markdown", () => ({
 
 const initialState = useAppStore.getState();
 
+beforeEach(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
+
 afterEach(() => {
   cleanup();
   useAppStore.setState(initialState, true);
   setUiLanguage("en");
+  vi.unstubAllGlobals();
 });
 
 describe("EventCard localization boundary", () => {
@@ -59,10 +71,10 @@ describe("EventCard localization boundary", () => {
     };
 
     const { container } = render(
-      <>
+      <Tooltip.Provider>
         <EventCard event={toolCall} />
         <EventCard event={result} />
-      </>,
+      </Tooltip.Provider>,
     );
 
     expect(screen.getByText("Running command")).toBeInTheDocument();
@@ -76,6 +88,52 @@ describe("EventCard localization boundary", () => {
     expect(screen.getByText("命令已中断")).toBeInTheDocument();
     expect(container).toHaveTextContent("Write-Output original-command");
     expect(container.querySelector("pre")?.textContent).toBe(output);
+  });
+
+  it("shows the raw process command and exposes its full value", async () => {
+    const command =
+      'Get-ChildItem -Path "C:\\Workspace\\Game\\internal" -Recurse | Select-Object FullName, Length, LastWriteTime';
+    const toolCall: ToolCallEvent = {
+      id: "process-call-long",
+      turnId: "process-turn-long",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      type: "tool_call",
+      toolName: "process.run",
+      label: appEventText("tool.runProcess"),
+      status: "success",
+      arguments: { command },
+    };
+    const onToggle = vi.fn();
+    const { container } = render(
+      <Tooltip.Provider delayDuration={0}>
+        <EventCard
+          event={toolCall}
+          toolDisclosure={{
+            controlsId: "tool-result-process-call-long",
+            expanded: false,
+            onToggle,
+          }}
+        />
+      </Tooltip.Provider>,
+    );
+
+    const preview = container.querySelector('[data-command-preview="true"]');
+    const disclosure = container.querySelector<HTMLButtonElement>(
+      '[data-tool-call-id="process-call-long"]',
+    );
+    if (!preview || !disclosure) throw new Error("Expected process command controls");
+
+    expect(preview).toHaveTextContent(command);
+    expect(preview).not.toHaveTextContent("process.run");
+    expect(preview).not.toHaveTextContent('{"command"');
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+
+    fireEvent.focus(disclosure);
+    await waitFor(() => {
+      expect(screen.getByRole("tooltip")).toHaveTextContent(command);
+    });
+    expect(onToggle).not.toHaveBeenCalled();
   });
 
   it("renders compact localized file tool cards without exposing content or replacement text", () => {

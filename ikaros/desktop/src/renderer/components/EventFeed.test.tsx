@@ -264,7 +264,7 @@ describe("EventFeed dynamic row measurement", () => {
     });
   });
 
-  it("collapses only the result matched by toolCallId and restores it", async () => {
+  it("expands only the result matched by toolCallId and collapses it again", async () => {
     rowHeights.set(0, 92);
     rowHeights.set(1, 180);
     rowHeights.set(2, 92);
@@ -308,9 +308,19 @@ describe("EventFeed dynamic row measurement", () => {
     if (!firstRegion || !secondRegion) throw new Error("Expected controlled results");
 
     expect(firstButton).toHaveAttribute("type", "button");
+    expect(firstButton).toHaveAttribute("aria-expanded", "false");
+    expect(firstRegion).toHaveAttribute("aria-hidden", "true");
+    expect(firstRegion).toHaveClass("tool-result-disclosure--collapsed");
+    expect(secondButton).toHaveAttribute("aria-expanded", "false");
+    expect(secondRegion).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(firstButton);
+
     expect(firstButton).toHaveAttribute("aria-expanded", "true");
     expect(firstRegion).toHaveAttribute("aria-hidden", "false");
-    expect(secondButton).toHaveAttribute("aria-expanded", "true");
+    expect(firstRegion).not.toHaveClass("tool-result-disclosure--collapsed");
+    expect(secondButton).toHaveAttribute("aria-expanded", "false");
+    expect(secondRegion).toHaveAttribute("aria-hidden", "true");
 
     fireEvent.click(firstButton);
 
@@ -320,17 +330,9 @@ describe("EventFeed dynamic row measurement", () => {
     expect(firstRegion.closest("[data-index]")).toHaveClass(
       "event-feed-row--collapsed",
     );
-    expect(secondButton).toHaveAttribute("aria-expanded", "true");
-    expect(secondRegion).toHaveAttribute("aria-hidden", "false");
-
-    fireEvent.click(firstButton);
-
-    expect(firstButton).toHaveAttribute("aria-expanded", "true");
-    expect(firstRegion).toHaveAttribute("aria-hidden", "false");
-    expect(firstRegion).not.toHaveClass("tool-result-disclosure--collapsed");
   });
 
-  it("keeps a collapsed tool result across feed rerenders", async () => {
+  it("keeps an expanded tool result across feed rerenders", async () => {
     rowHeights.set(0, 92);
     rowHeights.set(1, 180);
     rowHeights.set(2, 72);
@@ -371,11 +373,55 @@ describe("EventFeed dynamic row measurement", () => {
     await waitFor(() => expect(container).toHaveTextContent("Done."));
     expect(
       container.querySelector('[data-tool-call-id="call-stable"]'),
-    ).toHaveAttribute("aria-expanded", "false");
+    ).toHaveAttribute("aria-expanded", "true");
     expect(document.getElementById("tool-result-call-stable")).toHaveAttribute(
       "aria-hidden",
-      "true",
+      "false",
     );
+  });
+
+  it("keeps a newly arrived tool result collapsed by default", async () => {
+    rowHeights.set(0, 92);
+    rowHeights.set(1, 180);
+    const call = toolCall("call-late-result", "Run command with a late result");
+    const thread = threadWith([call]);
+    useAppStore.setState({
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runStatus: "running",
+    });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+    await waitFor(() => {
+      expect(container.querySelectorAll<HTMLElement>("[data-index]")).toHaveLength(1);
+    });
+
+    act(() => {
+      useAppStore.getState().appendAgentEvent(
+        thread.id,
+        thread.activeBranchId,
+        toolResult("result-late", call.id, "LATE OUTPUT"),
+        "completed",
+      );
+    });
+
+    const button = await waitFor(() => {
+      const value = container.querySelector<HTMLButtonElement>(
+        '[data-tool-call-id="call-late-result"]',
+      );
+      if (!value) throw new Error("Expected disclosure after result arrival");
+      return value;
+    });
+    const region = document.getElementById("tool-result-call-late-result");
+    if (!region) throw new Error("Expected late result region");
+
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(region).toHaveAttribute("aria-hidden", "true");
+    expect(region).toHaveClass("tool-result-disclosure--collapsed");
   });
 
   it("does not add disclosure behavior without a matching result", async () => {

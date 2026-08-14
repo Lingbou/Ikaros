@@ -75,10 +75,10 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   const animatedEventIdsRef = useRef(new Set<string>());
   const animationScopeRef = useRef<string | null>(null);
   const animationScope = thread && branch ? `${thread.id}:${branch.id}` : null;
-  const [toolResultCollapse, setToolResultCollapse] = useState<{
+  const [toolResultExpansion, setToolResultExpansion] = useState<{
     scope: string | null;
-    collapsedIds: Set<string>;
-  }>({ scope: null, collapsedIds: new Set() });
+    expandedIds: Set<string>;
+  }>({ scope: null, expandedIds: new Set() });
   const [activeAnchorIndex, setActiveAnchorIndex] = useState(0);
   if (animationScopeRef.current !== animationScope) {
     animationScopeRef.current = animationScope;
@@ -94,28 +94,38 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
       const event = events[index];
       if (event?.type === "message") return event.role === "user" ? 72 : 128;
       if (event?.type === "permission_request" || event?.type === "interrupt") return 168;
+      if (
+        event?.type === "tool_result" &&
+        toolCallIds.has(event.toolCallId) &&
+        !(
+          toolResultExpansion.scope === animationScope &&
+          toolResultExpansion.expandedIds.has(event.toolCallId)
+        )
+      ) {
+        return 0;
+      }
       return 92;
     },
     getItemKey: (index) => events[index]?.id ?? index,
     overscan: 7,
   });
   const totalSize = virtualizer.getTotalSize();
-  const isToolResultCollapsed = useCallback(
+  const isToolResultExpanded = useCallback(
     (toolCallId: string) =>
-      toolResultCollapse.scope === animationScope &&
-      toolResultCollapse.collapsedIds.has(toolCallId),
-    [animationScope, toolResultCollapse],
+      toolResultExpansion.scope === animationScope &&
+      toolResultExpansion.expandedIds.has(toolCallId),
+    [animationScope, toolResultExpansion],
   );
   const toggleToolResult = useCallback(
     (toolCallId: string) => {
-      setToolResultCollapse((current) => {
-        const collapsedIds =
+      setToolResultExpansion((current) => {
+        const expandedIds =
           current.scope === animationScope
-            ? new Set(current.collapsedIds)
+            ? new Set(current.expandedIds)
             : new Set<string>();
-        if (collapsedIds.has(toolCallId)) collapsedIds.delete(toolCallId);
-        else collapsedIds.add(toolCallId);
-        return { scope: animationScope, collapsedIds };
+        if (expandedIds.has(toolCallId)) expandedIds.delete(toolCallId);
+        else expandedIds.add(toolCallId);
+        return { scope: animationScope, expandedIds };
       });
     },
     [animationScope],
@@ -255,12 +265,12 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
             const isMatchedToolResult =
               event.type === "tool_result" && toolCallIds.has(event.toolCallId);
             const isCollapsed =
-              isMatchedToolResult && isToolResultCollapsed(event.toolCallId);
+              isMatchedToolResult && !isToolResultExpanded(event.toolCallId);
             const toolDisclosure =
               event.type === "tool_call" && toolCallIdsWithResults.has(event.id)
                 ? {
                     controlsId: toolResultRegionId(event.id),
-                    expanded: !isToolResultCollapsed(event.id),
+                    expanded: isToolResultExpanded(event.id),
                     onToggle: toggleToolResult,
                   }
                 : undefined;

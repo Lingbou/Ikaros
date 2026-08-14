@@ -1,3 +1,4 @@
+import * as Tooltip from "@radix-ui/react-tooltip";
 import {
   AlertTriangle,
   Check,
@@ -50,6 +51,13 @@ const FILE_OPERATION_KEYS = {
 
 function isFileTool(toolName: string | undefined): toolName is "read" | "write" | "edit" {
   return toolName === "read" || toolName === "write" || toolName === "edit";
+}
+
+function processCommand(event: ToolCallEvent): string | undefined {
+  return event.toolName === "process.run" &&
+    typeof event.arguments.command === "string"
+    ? event.arguments.command
+    : undefined;
 }
 
 function toolIcon(toolName: string) {
@@ -123,6 +131,7 @@ function ToolCallCard({
 }) {
   const { t } = useTranslation();
   const fileDetails = isFileTool(event.toolName) ? fileToolCallDetails(event, t) : undefined;
+  const command = processCommand(event);
   const status = {
     running: {
       icon: <LoaderCircle size={15} className="animate-spin" />,
@@ -171,33 +180,61 @@ function ToolCallCard({
             ) : null}
           </span>
         ) : (
-          <span className="mt-1 block truncate font-mono text-[11px] leading-[16px] text-[var(--muted)]">
-            {event.toolName} · {JSON.stringify(event.arguments)}
+          <span
+            data-command-preview={command ? "true" : undefined}
+            className="mt-1 block truncate font-mono text-[11px] leading-[16px] text-[var(--muted)]"
+          >
+            {command ?? `${event.toolName} · ${JSON.stringify(event.arguments)}`}
           </span>
         )}
       </span>
     </>
   );
 
-  const className =
-    "event-card-shadow flex w-full items-start gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3.5 py-3 text-left";
+  const contentClassName =
+    "flex w-full items-start gap-3 rounded-xl px-3.5 py-3 text-left";
+  const mainContent = disclosure ? (
+    <button
+      type="button"
+      aria-expanded={disclosure.expanded}
+      aria-controls={disclosure.controlsId}
+      data-tool-call-id={event.id}
+      onClick={() => disclosure.onToggle(event.id)}
+      className={cx(contentClassName, "cursor-pointer")}
+    >
+      {content}
+    </button>
+  ) : (
+    <div className={contentClassName} tabIndex={command ? 0 : undefined}>
+      {content}
+    </div>
+  );
 
-  if (disclosure) {
-    return (
-      <button
-        type="button"
-        aria-expanded={disclosure.expanded}
-        aria-controls={disclosure.controlsId}
-        data-tool-call-id={event.id}
-        onClick={() => disclosure.onToggle(event.id)}
-        className={cx(className, "cursor-pointer")}
-      >
-        {content}
-      </button>
-    );
-  }
+  const commandTrigger = command ? (
+    <Tooltip.Root delayDuration={320}>
+      <Tooltip.Trigger asChild>{mainContent}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side="bottom"
+          align="start"
+          sideOffset={7}
+          collisionPadding={12}
+          className="app-scrollbar z-[100] max-h-56 max-w-[min(680px,calc(100vw-32px))] overflow-auto whitespace-pre-wrap break-all rounded-lg border border-[var(--border)] bg-[var(--panel-raised)] px-3 py-2 font-mono text-[11px] leading-[17px] text-[var(--text)] shadow-xl"
+        >
+          {command}
+          <Tooltip.Arrow className="fill-[var(--border)]" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  ) : (
+    mainContent
+  );
 
-  return <div className={className}>{content}</div>;
+  return (
+    <div className="event-card-shadow w-full rounded-xl border border-[var(--border-soft)] bg-[var(--panel)]">
+      {commandTrigger}
+    </div>
+  );
 }
 
 function ToolResultCard({ event }: { event: ToolResultEvent }) {
