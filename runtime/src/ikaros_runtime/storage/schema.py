@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-_SCHEMA_VERSION = 3
+SCHEMA_VERSION = 3
 _CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,7 +106,12 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             raise RuntimeError(_INCOMPATIBLE_MESSAGE)
         _create_schema(connection)
         return
-    if version != _SCHEMA_VERSION:
+    if version != SCHEMA_VERSION:
+        raise RuntimeError(_INCOMPATIBLE_MESSAGE)
+
+
+def validate_existing_schema(connection: sqlite3.Connection) -> None:
+    if int(connection.execute("PRAGMA user_version").fetchone()[0]) != SCHEMA_VERSION:
         raise RuntimeError(_INCOMPATIBLE_MESSAGE)
 
 
@@ -124,7 +129,7 @@ def _application_objects(connection: sqlite3.Connection) -> tuple[str, ...]:
 def _create_schema(connection: sqlite3.Connection) -> None:
     transaction = (
         f"BEGIN IMMEDIATE;\n{_CANONICAL_SCHEMA}\n"
-        f"PRAGMA user_version = {_SCHEMA_VERSION};\nCOMMIT;"
+        f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
     )
     try:
         connection.executescript(transaction)
@@ -134,4 +139,4 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         raise
 
 
-__all__ = ["initialize_schema"]
+__all__ = ["SCHEMA_VERSION", "initialize_schema", "validate_existing_schema"]

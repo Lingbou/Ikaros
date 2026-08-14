@@ -102,6 +102,40 @@ After stopping the owning Runtime, developers may explicitly remove
 `state.db`, `state.db-wal`, and `state.db-shm` to create the current schema on
 the next start. This reset never includes `config.yaml`.
 
+## Offline storage maintenance
+
+Stop Ikaros Desktop before running storage maintenance. Each command acquires
+the same `runtime.lock` as the server and fails immediately while another
+Runtime owns the home:
+
+```powershell
+uv run --project runtime python -m ikaros_runtime storage check
+uv run --project runtime python -m ikaros_runtime storage backup --output C:\Backups\ikaros-state.db
+uv run --project runtime python -m ikaros_runtime storage repair-projections
+```
+
+`storage check` opens an existing `state.db` read-only. It checks the SQLite
+schema and pages, foreign keys, the strict Journal Event schema and contiguous
+sequence/high-water mark, then rebuilds projections in a disposable in-memory
+database and compares them with the stored query projections.
+
+`storage backup` uses SQLite's Backup API rather than copying the main file, so
+committed WAL content is included in one verified standalone database. It
+refuses to overwrite an existing destination. Without `--output`, it creates a
+unique file below `~/.ikaros/backups/`.
+
+`storage repair-projections` first creates a pre-repair backup, then deletes and
+replays only the disposable Thread/Branch/Turn/Run/Item projection tables in
+one rollback-safe transaction. It accepts broken projection foreign keys when
+making that recovery snapshot, but the Journal must remain readable and
+canonical; the repaired database must pass all integrity checks. Journal rows,
+sequence state, `config.yaml`, and credentials are never rewritten by repair.
+`--backup-output` selects the pre-repair backup path.
+
+These commands do not implement Journal compaction, checkpoints, rollback, or
+legacy-data migration. An incompatible schema or Event payload still requires
+the explicit reset described above.
+
 The deterministic `scripted/scripted-v1` provider supports ordinary streamed
 conversation and one explicit Tool-loop smoke syntax:
 

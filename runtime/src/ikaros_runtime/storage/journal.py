@@ -96,7 +96,20 @@ def projection_events(connection: sqlite3.Connection) -> list[JournalEvent]:
         FROM events ORDER BY seq
         """
     ).fetchall()
-    return [event_from_row(row) for row in rows]
+    events = [event_from_row(row) for row in rows]
+    for expected_seq, event in enumerate(events, start=1):
+        if event.seq != expected_seq:
+            raise RuntimeError("journal event sequence is not contiguous")
+    if journal_sequence_high_water(connection) != len(events):
+        raise RuntimeError("journal event sequence high-water mark is not contiguous")
+    return events
+
+
+def journal_sequence_high_water(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def event_from_row(row: sqlite3.Row) -> JournalEvent:

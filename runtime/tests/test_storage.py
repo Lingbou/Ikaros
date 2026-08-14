@@ -45,7 +45,7 @@ def test_projection_rebuild_rejects_noncanonical_thread_payload_without_data_los
                 (json_dumps(payload, ensure_ascii=False, separators=(",", ":")), event.seq),
             )
 
-        with pytest.raises(KeyError, match="archivedAt"):
+        with pytest.raises(RuntimeError, match="payload shape is invalid"):
             store.rebuild_projections()
 
         assert store.list_thread_page(cursor=None, limit=50).threads == (expected,)
@@ -70,6 +70,72 @@ def test_future_journal_event_versions_are_rejected_by_replay_and_rebuild(
             store.replay_events(0, 100)
         with pytest.raises(UnsupportedJournalEventVersionError, match=message):
             store.rebuild_projections()
+    finally:
+        store.close()
+
+
+def test_projection_rebuild_rejects_lifecycle_event_semantics_that_disagree_with_payload(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _created = store.create_thread("Before rename")
+        renamed, rename_event = store.rename_thread(thread.id, "After rename")
+        assert rename_event is not None
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET event_type = 'thread.archived' WHERE seq = ?",
+                (rename_event.seq,),
+            )
+
+        with pytest.raises(RuntimeError, match="thread.archived payload state is invalid"):
+            store.rebuild_projections()
+
+        assert store.list_thread_page(cursor=None, limit=50).threads == (renamed,)
+    finally:
+        store.close()
+
+
+def test_projection_rebuild_rejects_completed_item_immutable_field_changes(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _created = store.create_thread("Item integrity")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="hello",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        item_id, _started = store.create_assistant_item(prepared.run_id)
+        store.append_text_delta(item_id, "world")
+        terminal_events = store.terminalize_run(prepared.run_id, "completed")
+        item_event = terminal_events[0]
+        payload = dict(item_event.payload)
+        item_payload = dict(payload["item"])
+        item_payload["kind"] = "tool_call"
+        payload["item"] = item_payload
+        projection_before = [
+            tuple(row) for row in store._connection.execute("SELECT * FROM items ORDER BY id")
+        ]
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET payload_json = ? WHERE seq = ?",
+                (
+                    json_dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    item_event.seq,
+                ),
+            )
+
+        with pytest.raises(RuntimeError, match="immutable Item fields"):
+            store.rebuild_projections()
+
+        assert [
+            tuple(row) for row in store._connection.execute("SELECT * FROM items ORDER BY id")
+        ] == projection_before
     finally:
         store.close()
 

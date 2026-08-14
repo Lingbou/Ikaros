@@ -104,6 +104,7 @@ All Runtime-owned local files live below the current user's Ikaros home:
   config.yaml          provider and model configuration, including API keys
   state.db             canonical SQLite journal and projections
   runtime.lock         process-lifetime exclusive ownership of this home
+  backups/             verified offline state snapshots, created on demand
   skills/              created when user-installed Skills are supported
   logs/                created only if persistent file logging is enabled
 ```
@@ -118,6 +119,26 @@ not removed by a conversation-state reset. Every incompatible persistence or
 Event-payload change during this pre-release phase uses this destructive reset
 policy rather than a migration or upcaster. Durable release migrations remain
 a future compatibility commitment rather than a partial framework in V1.
+
+Offline maintenance uses the same `runtime.lock` as the server and never starts
+the Runtime application or loads `config.yaml`. `storage check` and `storage
+backup` open an existing database without initializing or changing it;
+`storage repair-projections` opens it read-write only after exclusive ownership
+is established. A missing or incompatible `state.db` is reported rather than
+created by a maintenance command.
+
+Backup uses SQLite's Backup API so committed WAL frames are included in one
+consistent standalone database. A repair always publishes a verified
+pre-repair backup first, then rebuilds only disposable projections in one
+transaction. Projection foreign-key damage is allowed in that recovery
+snapshot, while SQLite page integrity and a strict, contiguous Journal remain
+mandatory. Repair must leave every Journal row and the Event sequence
+high-water mark unchanged, and its result must pass page, foreign-key, and
+replay checks. Backup destinations are never overwritten.
+
+This maintenance surface is only a safety foundation for future compaction.
+V1 does not add a checkpoint/base sequence, a compacted Event, Journal row
+deletion, or a second conversation source of truth.
 
 On Windows, `~/.ikaros` resolves below the user's profile directory in the same
 way as `~/.codex`. V1 does not create a separate credential store or encrypted
@@ -446,6 +467,15 @@ across a gap. Consequently a dropped notification or failed replay attempt
 cannot authorize the client to skip canonical history; replay is retried from
 the same cursor.
 
+Offline replay is deliberately stricter than UI decoding. Every Event must use
+the current schema version and exact payload shape; required nullable fields
+must still be present. Event-envelope IDs, nested record IDs, immutable fields,
+state transitions, and affected projection rows must agree. Unknown Event
+types, missing or extra fields, malformed values, sequence gaps, and a deleted
+tail that disagrees with SQLite's Event high-water mark all fail check/repair.
+There is no legacy fallback or default-field synthesis during projection
+rebuild.
+
 The first safe text delta in a provider Step is persisted and published
 immediately. Later safe deltas are coalesced until 256 characters accumulate or
 the 50 ms window is observed by an arriving chunk; pending text is synchronously
@@ -454,7 +484,8 @@ failure. There is no background journal writer, so commit and publication stay
 ordered. Completed Items, terminal Run state, branch/fork decisions, retry links,
 and other semantic records are appended canonically. Projections are rebuildable
 from the SQLite journal; existing history is not rewritten when a Branch, retry,
-or compaction record is added.
+or future compaction record is added. V1 does not yet define or emit such a
+compaction record.
 
 ## Scheduling and Agent loop
 

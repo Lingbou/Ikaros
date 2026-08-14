@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from ..domain import (
     ContextItem,
@@ -22,11 +22,18 @@ from .journal import (
     append_event,
     event_from_row,
     latest_sequence,
-    projection_events,
     replay_events,
 )
+from .maintenance import (
+    ProjectionRepairReport,
+    StateBackupReport,
+    StateCheckReport,
+    check_state,
+    create_state_backup,
+    rebuild_projection_tables,
+    repair_state_projections,
+)
 from .projections import (
-    apply_event,
     contains_protected_projection_values,
     context_items,
     context_messages,
@@ -40,7 +47,7 @@ from .projections import (
     workspace_from_json,
     workspace_to_json,
 )
-from .schema import initialize_schema
+from .schema import initialize_schema, validate_existing_schema
 from .thread_catalog import ThreadCatalogPage, list_thread_page
 from .thread_history import (
     ThreadMetadata,
@@ -66,6 +73,23 @@ class SqliteRuntimeStore:
         except BaseException:
             self._connection.close()
             raise
+
+    @classmethod
+    def open_existing(cls, database_path: Path, *, read_only: bool) -> Self:
+        resolved_path = database_path.resolve()
+        mode = "ro" if read_only else "rw"
+        connection = sqlite3.connect(f"{resolved_path.as_uri()}?mode={mode}", uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            validate_existing_schema(connection)
+        except BaseException:
+            connection.close()
+            raise
+        instance = cls.__new__(cls)
+        instance.database_path = resolved_path
+        instance._connection = connection
+        return instance
 
     def close(self) -> None:
         self._connection.close()
@@ -1057,21 +1081,24 @@ class SqliteRuntimeStore:
     def latest_sequence(self) -> int:
         return latest_sequence(self._connection)
 
+    def check_state(self) -> StateCheckReport:
+        return check_state(self._connection, self.database_path)
+
+    def create_state_backup(self, destination: Path | None = None) -> StateBackupReport:
+        return create_state_backup(self._connection, self.database_path, destination)
+
+    def repair_state_projections(
+        self,
+        backup_destination: Path | None = None,
+    ) -> ProjectionRepairReport:
+        return repair_state_projections(
+            self._connection,
+            self.database_path,
+            backup_destination,
+        )
+
     def rebuild_projections(self) -> None:
-        events = projection_events(self._connection)
-        with self._connection:
-            self._connection.execute("DELETE FROM items")
-            self._connection.execute("DELETE FROM runs")
-            self._connection.execute("DELETE FROM turns")
-            self._connection.execute("DELETE FROM branches")
-            self._connection.execute("DELETE FROM threads")
-            for event in events:
-                apply_event(
-                    self._connection,
-                    event.type,
-                    event.payload,
-                    timestamp=event.timestamp,
-                )
+        rebuild_projection_tables(self._connection)
 
     def _append_event(
         self,
