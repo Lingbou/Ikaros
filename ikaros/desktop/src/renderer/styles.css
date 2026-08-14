@@ -452,6 +452,14 @@ html[data-translucent-sidebar="true"] .sidebar-gradient {
   padding-left: 1.5rem;
 }
 
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
 .markdown-body li {
   margin: 0.3em 0;
 }

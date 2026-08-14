@@ -296,6 +296,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
             adapter,
             request(
                 messages=[
+                    ProviderMessage(role="system", content="Use restrained formatting."),
                     ProviderMessage(role="user", content="Run it"),
                     ProviderMessage(
                         role="assistant",
@@ -323,7 +324,11 @@ async def test_request_lowering_headers_and_text_stream() -> None:
     lowered = cast(dict[str, Any], captured["body"])
     assert lowered["model"] == "model"
     assert lowered["stream"] is True
-    assert lowered["messages"][1] == {
+    assert lowered["messages"][0] == {
+        "role": "system",
+        "content": "Use restrained formatting.",
+    }
+    assert lowered["messages"][2] == {
         "role": "assistant",
         "content": "I will run it now.",
         "tool_calls": [
@@ -338,7 +343,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
         ],
         "reasoning_content": "private reasoning replay",
     }
-    assert lowered["messages"][2] == {
+    assert lowered["messages"][3] == {
         "role": "tool",
         "tool_call_id": "call_1",
         "content": '{"ok":true}',

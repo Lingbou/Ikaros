@@ -33,6 +33,15 @@ _MAX_REASONING_CHARACTERS = 1_000_000
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
 _TEXT_DELTA_FLUSH_CHARACTERS = 256
 _TEXT_DELTA_FLUSH_SECONDS = 0.05
+_OUTPUT_STYLE_SYSTEM_MESSAGE = ProviderMessage(
+    role="system",
+    content=(
+        "Use a restrained, professional response style. Do not use emoji or decorative "
+        "Unicode symbols unless the user explicitly asks for them. Never use them for "
+        "decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) "
+        "for ordinary unordered lists; the client will render them as simple round bullets."
+    ),
+)
 
 
 class _TextDeltaBatch:
@@ -114,7 +123,7 @@ class AgentLoop:
                 )
                 request = ProviderRequest(
                     model_id=run.model_id,
-                    messages=messages,
+                    messages=(_OUTPUT_STYLE_SYSTEM_MESSAGE, *messages),
                     tools=(
                         self._tool_executor.definitions if self._tool_executor is not None else ()
                     ),

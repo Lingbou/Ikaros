@@ -662,18 +662,24 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
         assert [call.id for call in tool.calls] == ["call-1"]
         assert tool.default_cwds == [None]
         assert len(provider.requests) == 2
+        for request in provider.requests:
+            assert request.messages[0].role == "system"
+            assert [message.role for message in request.messages].count("system") == 1
+            assert "Markdown hyphen bullets (`- item`)" in request.messages[0].content
+            assert "unless the user explicitly asks for them" in request.messages[0].content
         second_messages = provider.requests[1].messages
         assert [message.role for message in second_messages] == [
+            "system",
             "user",
             "assistant",
             "tool",
         ]
-        assert second_messages[1].tool_calls == (
+        assert second_messages[2].tool_calls == (
             ToolCall("call-1", "process_run", {"command": "test-command"}),
         )
-        assert second_messages[1].reasoning_content == "tool reasoning"
-        assert second_messages[2].tool_call_id == "call-1"
-        tool_content = json.loads(second_messages[2].content)
+        assert second_messages[2].reasoning_content == "tool reasoning"
+        assert second_messages[3].tool_call_id == "call-1"
+        tool_content = json.loads(second_messages[3].content)
         assert tool_content["toolCallId"] == "call-1"
         assert tool_content["stdout"] == "tool-output\n"
 
@@ -753,12 +759,13 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
         assert len(provider.requests) == 2
         second_messages = provider.requests[1].messages
         assert [message.role for message in second_messages] == [
+            "system",
             "user",
             "assistant",
             "tool",
         ]
-        assert second_messages[1].content == "Let me demonstrate:"
-        assert second_messages[1].tool_calls == (
+        assert second_messages[2].content == "Let me demonstrate:"
+        assert second_messages[2].tool_calls == (
             ToolCall("call-narrated", "process_run", {"command": "test-command"}),
         )
         narrated_deltas = [

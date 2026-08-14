@@ -405,6 +405,8 @@ def provider_request_headers(
 
 
 def _message_to_openai(message: ProviderMessage) -> dict[str, object]:
+    if message.role == "system":
+        return {"role": "system", "content": message.content}
     if message.role == "user":
         return {"role": "user", "content": message.content}
     if message.role == "assistant" and message.tool_calls:
