@@ -15,6 +15,7 @@ RPC_METHODS = frozenset(
     {
         "runtime.shutdown",
         "thread.create",
+        "thread.get",
         "thread.list",
         "provider.list",
         "provider.configure",
@@ -24,6 +25,7 @@ RPC_METHODS = frozenset(
         "model.list",
         "model.set_enabled",
         "turn.start",
+        "turn.list",
         "run.cancel",
         "event.replay",
     }
@@ -71,6 +73,8 @@ class RuntimeRouter:
             elif method == "thread.create":
                 outcome = self._threads.create(params)
                 result = outcome.result
+            elif method == "thread.get":
+                result = self._threads.get(params)
             elif method == "thread.list":
                 result = self._threads.list(params)
             elif method == "provider.list":
@@ -90,6 +94,8 @@ class RuntimeRouter:
             elif method == "turn.start":
                 outcome = self._turns.start_turn(params)
                 result = outcome.result
+            elif method == "turn.list":
+                result = self._turns.list(params)
             elif method == "run.cancel":
                 outcome = self._turns.cancel_run(params)
                 result = outcome.result

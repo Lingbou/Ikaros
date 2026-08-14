@@ -110,7 +110,7 @@ All Runtime-owned local files live below the current user's Ikaros home:
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 1. A non-empty unversioned database or any different `user_version`
+version 2. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml` is independent and is
@@ -307,6 +307,41 @@ not a cross-request MVCC snapshot: another page may return a larger waterline
 when a Run is active or a Thread changes between requests. Clients must not
 require equality across pages or claim that one cursor freezes the whole
 catalog.
+
+### Thread metadata and history reads
+
+The detail read surface is intentionally separate from the catalog:
+
+```text
+thread.get({ threadId })
+  -> { thread, snapshotSeq }
+
+turn.list({ threadId, branchId, cursor?, limit? })
+  -> { turns, nextCursor, hasMore, snapshotSeq }
+```
+
+`thread.get` returns the canonical Thread projection, including its default
+Branch and optional Workspace. `turn.list` requires an explicit Branch so a
+future multi-Branch Thread cannot silently mix histories. Both methods are pure
+projection reads: they do not append Events, update recency, or rebuild history
+from Journal payloads.
+
+The first `turn.list` page selects the newest Turns. Its wire array is then
+returned in chronological `ordinal ASC` order, allowing the Desktop to prepend
+older pages without reversing individual Items. The default page size is 50 and
+the maximum is 100. The canonical URL-safe cursor is versioned, bound to the
+requested Thread and Branch, and carries the oldest immutable Branch ordinal in
+the page. A later page seeks to `ordinal < cursor.ordinal`; a cursor from another
+Thread or Branch is invalid.
+
+Pagination selects Turn rows before hydrating child records. Every Run for each
+selected Turn is returned, and every Run contains its complete materialized
+Item sequence, including messages, Tool Calls, Tool Results, partial/failed
+states, and structured `data`. This deliberately does not use provider-context
+queries, which filter records for a different purpose. Turn selection, Run and
+Item hydration, and `snapshotSeq` all share one SQLite read transaction. The
+`runs_turn_history_idx` index keeps child hydration proportional to the selected
+page rather than all historical Runs.
 
 ### ACK, cancellation, recovery, and replay semantics
 
@@ -724,9 +759,9 @@ current operating-system user's authority. Once Skill scripts are integrated
 through the same executor, they will inherit that authority as well. This is an
 explicit development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 1. Thread
+The current reset-only SQLite database schema is canonical version 2. Thread
 projections include optional `workspace_json` and the indexed Thread Catalog
-ordering key. Each Run snapshots
+ordering key; Run history hydration is indexed by `turn_id`. Each Run snapshots
 `execution_policy = full_access`, and each Item has structured `data_json` for
 Tool Call arguments and normalized results. Rebuilding projections from the
 journal restores these records and the provider context. A bounded Agent loop
@@ -776,6 +811,11 @@ existing aggregate `{ threads }` shape. Increasing page waterlines are valid.
 Direct renderer pagination and removal of full cold-start Event replay belong
 to a later gate; this bridge does not pretend multiple page requests share an
 MVCC snapshot.
+
+`thread.get` and `turn.list` are implemented at the Runtime protocol boundary,
+but the current Desktop still reconstructs selected histories from its existing
+Event replay path. Catalog/detail caches, lazy history loading, and removal of
+the cold-start global replay belong to the next implementation gate.
 
 Desktop projects `process_run` as `process.run` and projects `read`, `write`,
 and `edit` with file-specific icons, translated fixed labels, and bounded

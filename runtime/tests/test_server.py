@@ -3065,6 +3065,44 @@ async def test_thread_list_defaults_to_fifty_and_returns_next_page(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("thread.get", {}),
+        ("thread.get", {"threadId": ""}),
+        ("thread.get", {"threadId": "thread", "extra": True}),
+        ("turn.list", {}),
+        ("turn.list", {"threadId": "thread"}),
+        ("turn.list", {"threadId": "thread", "branchId": ""}),
+        ("turn.list", {"threadId": "thread", "branchId": "branch", "cursor": None}),
+        ("turn.list", {"threadId": "thread", "branchId": "branch", "limit": True}),
+        ("turn.list", {"threadId": "thread", "branchId": "branch", "limit": 101}),
+        (
+            "turn.list",
+            {"threadId": "thread", "branchId": "branch", "unsupported": True},
+        ),
+    ],
+)
+async def test_thread_history_reads_reject_invalid_params(
+    tmp_path: Path,
+    method: str,
+    params: dict[str, object],
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event)
+    try:
+        routed = await kernel.router.dispatch(1, method, params)
+
+        error = routed.response.get("error")
+        assert isinstance(error, dict)
+        assert error["code"] == -32602
+        assert store.latest_sequence() == 0
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_thread_workspace_cannot_contain_configured_credentials(tmp_path: Path) -> None:
     protected = "workspace-configured-credential"
     config = ConfigStore(tmp_path)
@@ -3263,6 +3301,102 @@ async def test_scripted_provider_streams_two_contextual_turns_and_settles_once(
         )
         assert sum(event["type"] == "run.settled" for event in second_events) == 1
         await _shutdown(connection, process, 5)
+    finally:
+        await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_thread_get_and_turn_list_read_the_complete_runtime_history(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_urlsafe(32)
+    process, ready = await _start_runtime(token, tmp_path)
+    try:
+        connection = await _initialize(f"ws://{ready['host']}:{ready['port']}", token)
+        created = await _rpc(connection, 2, "thread.create", {"title": "Readable history"})
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            3,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "remember this turn",
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        run_id = started["result"]["runId"]
+        await _collect_run_events(connection, run_id)
+        before = await _rpc(
+            connection,
+            4,
+            "event.replay",
+            {"afterSeq": 0, "limit": 1000},
+            [],
+        )
+
+        metadata = await _rpc(
+            connection,
+            5,
+            "thread.get",
+            {"threadId": thread["id"]},
+            [],
+        )
+        history = await _rpc(
+            connection,
+            6,
+            "turn.list",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "limit": 10,
+            },
+            [],
+        )
+        after = await _rpc(
+            connection,
+            7,
+            "event.replay",
+            {"afterSeq": 0, "limit": 1000},
+            [],
+        )
+
+        metadata_thread = metadata["result"]["thread"]
+        assert {
+            key: metadata_thread[key]
+            for key in ("id", "title", "defaultBranchId", "workspace", "createdAt")
+        } == {
+            key: thread[key]
+            for key in ("id", "title", "defaultBranchId", "workspace", "createdAt")
+        }
+        assert metadata_thread["updatedAt"] >= thread["updatedAt"]
+        assert metadata["result"]["snapshotSeq"] == before["result"]["latestSeq"]
+        assert history["result"]["snapshotSeq"] == before["result"]["latestSeq"]
+        assert history["result"]["hasMore"] is False
+        assert history["result"]["nextCursor"] is None
+        turns = history["result"]["turns"]
+        assert len(turns) == 1
+        assert turns[0]["ordinal"] == 1
+        assert [run["id"] for run in turns[0]["runs"]] == [run_id]
+        items = turns[0]["runs"][0]["items"]
+        assert [(item["role"], item["content"]) for item in items] == [
+            ("user", "remember this turn"),
+            ("assistant", "Scripted response to: remember this turn"),
+        ]
+        assert after["result"]["latestSeq"] == before["result"]["latestSeq"]
+        assert after["result"]["events"] == before["result"]["events"]
+
+        missing_branch = await _rpc(
+            connection,
+            8,
+            "turn.list",
+            {"threadId": thread["id"], "branchId": "branch_missing"},
+            [],
+        )
+        assert missing_branch["error"]["code"] == -32602
+        await _shutdown(connection, process, 9)
     finally:
         await _stop_failed_process(process)
 

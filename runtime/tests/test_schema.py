@@ -38,7 +38,7 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             ).fetchall()
         }
 
-        assert version == 1
+        assert version == 2
         assert {"events", "threads", "branches", "turns", "runs", "items"} <= tables
         assert {"turn_id", "run_id", "item_id", "schema_version"} <= event_columns
         assert {"client_request_id", "workspace_json"} <= thread_columns
@@ -52,6 +52,7 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             "threads_catalog_order_idx",
             "branches_default_thread_idx",
             "runs_client_request_id_idx",
+            "runs_turn_history_idx",
         } <= indexes
     finally:
         store.close()
@@ -70,12 +71,12 @@ def test_current_database_reopens_without_rewriting_state(tmp_path: Path) -> Non
         page = reopened.list_thread_page(cursor=None, limit=50)
         assert page.threads == (expected[0],)
         assert page.snapshot_seq == expected[1].seq
-        assert int(reopened._connection.execute("PRAGMA user_version").fetchone()[0]) == 1
+        assert int(reopened._connection.execute("PRAGMA user_version").fetchone()[0]) == 2
     finally:
         reopened.close()
 
 
-@pytest.mark.parametrize("version", [2, 7, 8, 999])
+@pytest.mark.parametrize("version", [1, 7, 8, 999])
 def test_non_current_schema_version_requires_explicit_reset(
     tmp_path: Path,
     version: int,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +74,8 @@ CREATE TABLE runs (
 
 CREATE UNIQUE INDEX runs_client_request_id_idx
 ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
+CREATE INDEX runs_turn_history_idx
+ON runs(turn_id, created_at ASC, id ASC);
 
 CREATE TABLE items (
     id TEXT PRIMARY KEY,

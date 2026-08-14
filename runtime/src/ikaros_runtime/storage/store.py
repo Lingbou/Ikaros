@@ -42,6 +42,12 @@ from .projections import (
 )
 from .schema import initialize_schema
 from .thread_catalog import ThreadCatalogPage, list_thread_page
+from .thread_history import (
+    ThreadMetadata,
+    TurnHistoryPage,
+    get_thread_metadata,
+    list_turn_history_page,
+)
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
@@ -202,6 +208,25 @@ class SqliteRuntimeStore:
 
     def list_thread_page(self, *, cursor: str | None, limit: int) -> ThreadCatalogPage:
         return list_thread_page(self._connection, cursor=cursor, limit=limit)
+
+    def get_thread(self, thread_id: str) -> ThreadMetadata:
+        return get_thread_metadata(self._connection, thread_id=thread_id)
+
+    def list_turn_page(
+        self,
+        *,
+        thread_id: str,
+        branch_id: str,
+        cursor: str | None,
+        limit: int,
+    ) -> TurnHistoryPage:
+        return list_turn_history_page(
+            self._connection,
+            thread_id=thread_id,
+            branch_id=branch_id,
+            cursor=cursor,
+            limit=limit,
+        )
 
     def find_turn_by_client_request_id(
         self,

@@ -8,7 +8,8 @@ from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
 from ..providers.scripted import ScriptedProvider
 from ..storage import SqliteRuntimeStore
-from .threads import RequestSafetyCheck, client_request_id_from
+from ..storage.thread_history import TURN_HISTORY_DEFAULT_LIMIT, TURN_HISTORY_MAX_LIMIT
+from .threads import RequestSafetyCheck, client_request_id_from, record_id_from
 
 
 class TurnService:
@@ -125,6 +126,37 @@ class TurnService:
             "nextAfterSeq": next_after_seq,
             "hasMore": next_after_seq < latest_seq,
         }
+
+    def list(self, params: dict[str, Any]) -> dict[str, Any]:
+        required = {"threadId", "branchId"}
+        allowed = required | {"cursor", "limit"}
+        if not required <= set(params) or not set(params) <= allowed:
+            raise InvalidParamsError("turn.list fields do not match the required schema")
+        thread_id = record_id_from(params["threadId"], name="threadId")
+        branch_id = record_id_from(params["branchId"], name="branchId")
+        cursor: str | None = None
+        if "cursor" in params:
+            raw_cursor = params["cursor"]
+            if not isinstance(raw_cursor, str) or not raw_cursor:
+                raise InvalidParamsError("turn.list cursor must be a non-empty string")
+            cursor = raw_cursor
+        limit = params.get("limit", TURN_HISTORY_DEFAULT_LIMIT)
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise InvalidParamsError("turn.list limit must be an integer")
+        if limit < 1 or limit > TURN_HISTORY_MAX_LIMIT:
+            raise InvalidParamsError(
+                f"turn.list limit must be between 1 and {TURN_HISTORY_MAX_LIMIT}"
+            )
+        self._assert_request_safe((thread_id, branch_id, cursor))
+        try:
+            return self._store.list_turn_page(
+                thread_id=thread_id,
+                branch_id=branch_id,
+                cursor=cursor,
+                limit=limit,
+            ).to_wire()
+        except (LookupError, ValueError) as error:
+            raise InvalidParamsError(str(error)) from error
 
 
 __all__ = ["TurnService"]

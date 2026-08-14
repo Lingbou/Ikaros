@@ -77,6 +77,16 @@ class ThreadService:
         except ValueError as error:
             raise InvalidParamsError(str(error)) from error
 
+    def get(self, params: dict[str, Any]) -> dict[str, Any]:
+        if set(params) != {"threadId"}:
+            raise InvalidParamsError("thread.get requires exactly one threadId")
+        thread_id = record_id_from(params["threadId"], name="threadId")
+        self._assert_request_safe(thread_id)
+        try:
+            return self._store.get_thread(thread_id).to_wire()
+        except LookupError as error:
+            raise InvalidParamsError(str(error)) from error
+
 
 def client_request_id_from(params: dict[str, Any]) -> str | None:
     value = params.get("clientRequestId")
@@ -86,6 +96,18 @@ def client_request_id_from(params: dict[str, Any]) -> str | None:
         raise InvalidParamsError(
             "clientRequestId must be a non-empty string of at most 200 characters"
         )
+    return value
+
+
+def record_id_from(value: object, *, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 200
+        or value != value.strip()
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        raise InvalidParamsError(f"{name} must be a non-empty valid identifier")
     return value
 
 
