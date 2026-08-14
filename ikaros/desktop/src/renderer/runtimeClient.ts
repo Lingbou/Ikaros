@@ -16,7 +16,10 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
+  RuntimeThreadGetResult,
   RuntimeThreadSummary,
+  RuntimeTurnListPage,
+  RuntimeTurnListParams,
   RuntimeTurnStartParams,
   RuntimeTurnStartResult
 } from "../shared/runtime";
@@ -96,8 +99,16 @@ async function unwrapRuntimeInvocation<TResult>(
 export class RuntimeClient implements IkarosRuntimeApi {
   constructor(private readonly api: IkarosRuntimeBridgeApi) {}
 
-  listThreads(): Promise<{ threads: RuntimeThreadSummary[] }> {
+  listThreads(): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
     return unwrapRuntimeInvocation(this.api.listThreads());
+  }
+
+  getThread(threadId: string): Promise<RuntimeThreadGetResult> {
+    return unwrapRuntimeInvocation(this.api.getThread(threadId));
+  }
+
+  listTurns(params: RuntimeTurnListParams): Promise<RuntimeTurnListPage> {
+    return unwrapRuntimeInvocation(this.api.listTurns(params));
   }
 
   createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult> {

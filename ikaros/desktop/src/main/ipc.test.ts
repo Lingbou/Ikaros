@@ -206,7 +206,10 @@ describe("desktop window controls", () => {
     const handler = electron.handlers.get("ikaros:runtime:thread-list");
     const result = await handler?.({ sender: {} });
 
-    expect(result).toEqual({ ok: true, value: { threads: [first, second] } });
+    expect(result).toEqual({
+      ok: true,
+      value: { threads: [first, second], snapshotSeq: 1 },
+    });
     expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 100 });
     expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(2, "thread.list", {
       limit: 100,
@@ -215,6 +218,13 @@ describe("desktop window controls", () => {
   });
 
   it.each([
+    ["ikaros:runtime:thread-get", ["thread-1"], "thread.get", { threadId: "thread-1" }],
+    [
+      "ikaros:runtime:turn-list",
+      [{ threadId: "thread-1", branchId: "branch-1", cursor: "older", limit: 25 }],
+      "turn.list",
+      { threadId: "thread-1", branchId: "branch-1", cursor: "older", limit: 25 },
+    ],
     ["ikaros:runtime:provider-list", [], "provider.list", undefined],
     [
       "ikaros:runtime:provider-configure",

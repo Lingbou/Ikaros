@@ -72,7 +72,8 @@ React renderer
 
 The Runtime currently owns:
 
-- `thread.list` and `thread.create`, including optional workspace snapshots;
+- paginated `thread.list`, `thread.get`, paginated `turn.list`, and
+  `thread.create`, including optional workspace snapshots;
 - `turn.start`, streamed Item events, multi-Turn context, and settled Run state;
 - `run.cancel`, event replay, sequence-based reconnect catch-up, and SQLite
   recovery across Runtime restarts;
@@ -94,6 +95,14 @@ into the conversation UI. File cards expose bounded metadata such as path, line
 range, bytes written, and replacement count without displaying the full write
 or replacement arguments. It does not use `MockAgentClient` when the Electron
 Runtime bridge is available.
+
+Conversation-history cold startup reads only the Thread catalog and its
+sequence waterline; it does not replay the full Journal from sequence zero.
+Selecting a Thread then loads and caches that Thread's materialized
+Turn/Run/Item history through `thread.get` and `turn.list`. Independent
+metadata/page waterlines and a loading-time event buffer merge concurrent live
+deltas exactly once, while per-Thread, per-Run activity keeps background
+execution and Stop independent from navigation.
 
 Projects are not separate Runtime resources and there is no Project API. A
 Project is a Desktop grouping derived from a Thread's optional workspace.

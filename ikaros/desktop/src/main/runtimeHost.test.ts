@@ -10,13 +10,18 @@ import { describe, expect, it, vi } from "vitest";
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   type RuntimeJournalEvent,
-  type RuntimeReplayResult
+  type RuntimeReplayResult,
+  type RuntimeThreadGetResult,
+  type RuntimeTurnListPage,
+  type RuntimeTurnHistory
 } from "../shared/runtime";
 import {
+  parseRuntimeThreadGetResult,
   parseRuntimeJournalEvent,
   parseRuntimeJsonRpcResponse,
   parseRuntimeReplayResult,
   parseRuntimeThreadListPage,
+  parseRuntimeTurnListPage,
   listAllRuntimeThreads,
   RuntimeHost,
   RuntimeRpcError,
@@ -51,6 +56,7 @@ interface RuntimeHostInternals {
   restartFailureCount: number;
   restartCircuitOpen: boolean;
   options: { pythonExecutable?: string };
+  synchronizeEventStream: (...args: unknown[]) => Promise<void>;
 }
 
 function journalEvent(seq: number): RuntimeJournalEvent {
@@ -79,6 +85,47 @@ function catalogThread(id: string) {
   };
 }
 
+function historyTurn(ordinal: number): RuntimeTurnHistory {
+  const turnId = `turn-${ordinal}`;
+  const runId = `run-${ordinal}`;
+  return {
+    id: turnId,
+    threadId: "thread-1",
+    branchId: "branch-1",
+    ordinal,
+    status: "completed",
+    createdAt: "2026-08-14T00:00:00.000Z",
+    updatedAt: "2026-08-14T00:00:01.000Z",
+    runs: [
+      {
+        id: runId,
+        turnId,
+        providerId: "scripted",
+        modelId: "scripted-v1",
+        executionPolicy: "full_access",
+        status: "completed",
+        createdAt: "2026-08-14T00:00:00.000Z",
+        settledAt: "2026-08-14T00:00:01.000Z",
+        items: [
+          {
+            id: `item-${ordinal}`,
+            turnId,
+            runId,
+            ordinal: 1,
+            kind: "message",
+            role: "user",
+            status: "completed",
+            content: "hello",
+            data: {},
+            createdAt: "2026-08-14T00:00:00.000Z",
+            updatedAt: "2026-08-14T00:00:00.000Z"
+          }
+        ]
+      }
+    ]
+  };
+}
+
 describe("RuntimeHost integration", () => {
   it("aggregates paginated Thread catalog pages while watermarks advance", async () => {
     const request = vi
@@ -97,7 +144,8 @@ describe("RuntimeHost integration", () => {
       });
 
     await expect(listAllRuntimeThreads({ request })).resolves.toEqual({
-      threads: [catalogThread("thread-1"), catalogThread("thread-2")]
+      threads: [catalogThread("thread-1"), catalogThread("thread-2")],
+      snapshotSeq: 10
     });
     expect(request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 100 });
     expect(request).toHaveBeenNthCalledWith(2, "thread.list", {
@@ -201,6 +249,109 @@ describe("RuntimeHost integration", () => {
       "thread catalog exceeded the page limit"
     );
     expect(request).toHaveBeenCalledTimes(10_000);
+  });
+
+  it("validates Thread metadata and nested Turn history at the Runtime boundary", () => {
+    const metadata = { thread: catalogThread("thread-1"), snapshotSeq: 7 };
+    expect(parseRuntimeThreadGetResult(metadata, "thread-1")).toEqual(metadata);
+    for (const invalid of [
+      { ...metadata, snapshotSeq: -1 },
+      { ...metadata, thread: { ...metadata.thread, id: "" } },
+      { ...metadata, thread: { ...metadata.thread, workspace: [] } }
+    ]) {
+      expect(() => parseRuntimeThreadGetResult(invalid, "thread-1")).toThrow(
+        "Runtime returned invalid Thread metadata."
+      );
+    }
+    expect(() => parseRuntimeThreadGetResult(metadata, "thread-other")).toThrow(
+      "Runtime returned invalid Thread metadata."
+    );
+
+    const turn = historyTurn(1);
+    const run = turn.runs[0] as NonNullable<(typeof turn.runs)[number]>;
+    const item = run.items[0] as NonNullable<(typeof run.items)[number]>;
+    const page = {
+      turns: [turn],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 8
+    };
+    const scope = { threadId: "thread-1", branchId: "branch-1" };
+    expect(parseRuntimeTurnListPage(page, scope)).toEqual(page);
+    for (const invalid of [
+      { ...page, snapshotSeq: -1 },
+      { ...page, nextCursor: "older", hasMore: false },
+      { ...page, turns: [{ ...turn, branchId: "branch-other" }] },
+      { ...page, turns: [{ ...turn, ordinal: 0 }] },
+      { ...page, turns: [{ ...turn, runs: [{ ...run, turnId: "turn-other" }] }] },
+      {
+        ...page,
+        turns: [{ ...turn, runs: [{ ...run, settledAt: null }] }]
+      },
+      {
+        ...page,
+        turns: [
+          {
+            ...turn,
+            runs: [{ ...run, items: [{ ...item, runId: "run-other" }] }]
+          }
+        ]
+      },
+      {
+        ...page,
+        turns: [
+          {
+            ...turn,
+            runs: [{ ...run, items: [{ ...item, data: [] }] }]
+          }
+        ]
+      },
+      {
+        ...page,
+        turns: [
+          {
+            ...turn,
+            runs: [{ ...run, items: [{ ...item, role: "tool" }] }]
+          }
+        ]
+      }
+    ]) {
+      expect(() => parseRuntimeTurnListPage(invalid, scope)).toThrow(
+        "Runtime returned an invalid Turn history page."
+      );
+    }
+  });
+
+  it("uses a catalog waterline for cold start and incremental replay for reconnect", async () => {
+    const host = new RuntimeHost({ runtimeRoot });
+    const internals = host as unknown as RuntimeHostInternals;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threads: [],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 42
+      })
+      .mockResolvedValueOnce({
+        events: [],
+        latestSeq: 42,
+        nextAfterSeq: 42,
+        hasMore: false
+      });
+    const connection = { request };
+
+    await internals.synchronizeEventStream(connection, true);
+    expect(internals.lastEventSeq).toBe(42);
+    expect(request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 1 }, 15_000);
+
+    await internals.synchronizeEventStream(connection, false);
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "event.replay",
+      { afterSeq: 42, limit: 1000 },
+      15_000
+    );
   });
 
   it("accepts the current journal schema and rejects missing or future versions", () => {
@@ -332,6 +483,50 @@ describe("RuntimeHost integration", () => {
         expect(
           (firstAssistant?.payload.item as { content?: string } | undefined)?.content
         ).toBe("Scripted response to: desktop alpha");
+
+        const metadata = await firstHost.request<RuntimeThreadGetResult>("thread.get", {
+          threadId: created.thread.id
+        });
+        const history = await firstHost.request<RuntimeTurnListPage>("turn.list", {
+          threadId: created.thread.id,
+          branchId: created.thread.defaultBranchId,
+          limit: 10
+        });
+        expect(metadata.thread).toEqual(
+          expect.objectContaining({
+            id: created.thread.id,
+            title: created.thread.title,
+            defaultBranchId: created.thread.defaultBranchId,
+            workspace: null,
+            createdAt: created.thread.createdAt
+          })
+        );
+        expect(metadata.thread.updatedAt >= created.thread.updatedAt).toBe(true);
+        expect(metadata.snapshotSeq).toBeGreaterThan(0);
+        expect(history).toEqual(
+          expect.objectContaining({
+            turns: [
+              expect.objectContaining({
+                threadId: created.thread.id,
+                branchId: created.thread.defaultBranchId,
+                runs: [
+                  expect.objectContaining({
+                    id: firstTurn.runId,
+                    items: expect.arrayContaining([
+                      expect.objectContaining({ role: "user", content: "desktop alpha" }),
+                      expect.objectContaining({
+                        role: "assistant",
+                        content: "Scripted response to: desktop alpha"
+                      })
+                    ])
+                  })
+                ]
+              })
+            ],
+            hasMore: false,
+            nextCursor: null
+          })
+        );
       } finally {
         removeNotification();
         await firstHost.stop();

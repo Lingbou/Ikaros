@@ -802,20 +802,43 @@ when renderer navigation changes. Desktop uses stable request IDs for
 selects from `model.list`, sends the explicit Provider/model reference with
 each Turn, and drives Stop through `run.cancel`.
 
-The Runtime wire method `thread.list` is already keyset-paginated. As a
-transitional aggregation bridge before direct renderer pagination, Electron
-main currently traverses its pages with a limit of 100, rejects malformed
-pages, duplicate/repeating cursors, backward
-waterlines, and unbounded pagination, then continues to expose the renderer's
-existing aggregate `{ threads }` shape. Increasing page waterlines are valid.
-Direct renderer pagination and removal of full cold-start Event replay belong
-to a later gate; this bridge does not pretend multiple page requests share an
-MVCC snapshot.
+The Runtime wire method `thread.list` is keyset-paginated. Electron main
+currently traverses its pages with a limit of 100, rejects malformed pages,
+duplicate/repeating cursors, backward waterlines, and unbounded pagination,
+then exposes the aggregate catalog plus the first page's `snapshotSeq` to the
+renderer. Increasing page waterlines are valid. The first waterline is retained
+as the conservative catch-up baseline; the bridge does not pretend multiple
+page requests share an MVCC snapshot. If an existing Thread moves across a
+keyset boundary after that baseline and is omitted from the aggregate scan, its
+post-baseline event triggers a single-flight `thread.get` that restores the
+catalog stub without eagerly loading its history.
 
-`thread.get` and `turn.list` are implemented at the Runtime protocol boundary,
-but the current Desktop still reconstructs selected histories from its existing
-Event replay path. Catalog/detail caches, lazy history loading, and removal of
-the cold-start global replay belong to the next implementation gate.
+Cold Desktop startup subscribes to live events before reading the catalog,
+installs that catalog at its known waterline, and performs incremental catch-up
+from a non-zero known `snapshotSeq`. It does not rebuild every Thread with
+`event.replay(0)`. RuntimeHost likewise initializes its ordered notification
+cursor from `thread.list({ limit: 1 })`; only WebSocket reconnect uses
+`event.replay`, beginning at the last established sequence.
+
+Selecting a Thread calls typed `thread.get` and paginated `turn.list`, exhausts
+the selected history pages, validates their nested Thread/Turn/Run/Item scope,
+and installs the materialized UI projection in a per-Thread detail cache.
+Selecting the same cached Thread does not fetch it again, and loading one
+Thread never cancels a Run in another. A per-Thread, per-Run activity
+projection keeps every queued/running Run identity and status independently of
+the selected-history cache, so a newer queued Run can settle without hiding an
+older Run that is still active.
+
+Detail hydration registers an event buffer before issuing either read. The
+`thread.get` metadata and every returned Turn retain their own query
+`snapshotSeq`; multiple page requests are never treated as one MVCC snapshot.
+An event at or below its Turn page's waterline is not projected onto already
+materialized text a second time, while metadata changes after the independent
+`thread.get` waterline still update catalog recency. Newer events are
+deduplicated by `seq` and applied after the relevant snapshot. All events still
+pass through submission, cancellation, activity, and gap-control handling.
+This prevents both lost live updates and duplicate streaming deltas even when
+later history pages observe a newer Journal tail.
 
 Desktop projects `process_run` as `process.run` and projects `read`, `write`,
 and `edit` with file-specific icons, translated fixed labels, and bounded

@@ -1,7 +1,9 @@
-import type {
-  RuntimeJournalEvent,
-  RuntimeThreadSummary,
-  RuntimeWorkspaceSummary,
+import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeJournalEvent,
+  type RuntimeThreadSummary,
+  type RuntimeTurnHistory,
+  type RuntimeWorkspaceSummary,
 } from "../shared/runtime";
 import type {
   AgentEvent,
@@ -40,6 +42,60 @@ export function projectRuntimeThread(summary: RuntimeThreadSummary): Thread {
 
 export function projectRuntimeThreads(summaries: RuntimeThreadSummary[]): Thread[] {
   return summaries.map(projectRuntimeThread);
+}
+
+function materializedItemEventType(status: string): "item.started" | "item.completed" {
+  return status === "queued" || status === "running" || status === "streaming"
+    ? "item.started"
+    : "item.completed";
+}
+
+export function projectRuntimeThreadHistory(
+  summary: RuntimeThreadSummary,
+  turns: readonly RuntimeTurnHistory[],
+): Thread {
+  let projected = projectRuntimeThread(summary);
+  for (const turn of [...turns].sort((left, right) => left.ordinal - right.ordinal)) {
+    for (const run of turn.runs) {
+      for (const item of run.items) {
+        [projected] = applyRuntimeEvent([projected], {
+          seq: 0,
+          schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+          type: materializedItemEventType(item.status),
+          threadId: turn.threadId,
+          branchId: turn.branchId,
+          turnId: turn.id,
+          runId: run.id,
+          itemId: item.id,
+          timestamp: item.updatedAt,
+          payload: { item },
+        });
+      }
+      [projected] = applyRuntimeEvent([projected], {
+        seq: 0,
+        schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+        type:
+          run.status === "completed" ||
+          run.status === "failed" ||
+          run.status === "cancelled"
+            ? "run.settled"
+            : "run.state_changed",
+        threadId: turn.threadId,
+        branchId: turn.branchId,
+        turnId: turn.id,
+        runId: run.id,
+        itemId: null,
+        timestamp: run.settledAt ?? turn.updatedAt,
+        payload: { status: run.status },
+      });
+    }
+  }
+  const updatedAt = turns.reduce(
+    (latest, turn) =>
+      turn.updatedAt.localeCompare(latest) > 0 ? turn.updatedAt : latest,
+    summary.updatedAt,
+  );
+  return { ...projected, updatedAt };
 }
 
 export function projectRuntimeProjects(
@@ -267,6 +323,29 @@ function projectThreadCreated(
   return exists
     ? threads.map((thread) => (thread.id === projected.id ? { ...projected, branches: thread.branches } : thread))
     : [projected, ...threads];
+}
+
+export function applyRuntimeCatalogEvent(
+  threads: Thread[],
+  event: RuntimeJournalEvent,
+): Thread[] {
+  if (event.type === "thread.created") {
+    return projectThreadCreated(threads, event) ?? threads;
+  }
+  if (!event.threadId) {
+    return threads;
+  }
+  return threads.map((thread) =>
+    thread.id === event.threadId
+      ? {
+          ...thread,
+          updatedAt:
+            event.timestamp.localeCompare(thread.updatedAt) > 0
+              ? event.timestamp
+              : thread.updatedAt,
+        }
+      : thread,
+  );
 }
 
 export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent): Thread[] {

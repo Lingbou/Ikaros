@@ -22,7 +22,10 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
+  RuntimeThreadGetResult,
   RuntimeThreadSummary,
+  RuntimeTurnListPage,
+  RuntimeTurnListParams,
   RuntimeTurnStartParams,
   RuntimeTurnStartResult
 } from "../shared/runtime";
@@ -37,8 +40,18 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
   runtime: Object.freeze({
     listThreads: () =>
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList) as Promise<
-        RuntimeInvocationResult<{ threads: RuntimeThreadSummary[] }>
+        RuntimeInvocationResult<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>
       >,
+    getThread: (threadId: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.threadGet,
+        threadId
+      ) as Promise<RuntimeInvocationResult<RuntimeThreadGetResult>>,
+    listTurns: (params: RuntimeTurnListParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.turnList,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeTurnListPage>>,
     createThread: (params: RuntimeThreadCreateParams) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.threadCreate,

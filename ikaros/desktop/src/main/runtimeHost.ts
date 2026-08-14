@@ -8,10 +8,16 @@ import WebSocket, { type RawData } from "ws";
 
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeItemHistory,
   type RuntimeJournalEvent,
   type RuntimeReplayResult,
+  type RuntimeRunHistory,
+  type RuntimeThreadGetResult,
   type RuntimeThreadListPage,
-  type RuntimeThreadSummary
+  type RuntimeThreadSummary,
+  type RuntimeTurnHistory,
+  type RuntimeTurnListPage,
+  type RuntimeTurnListParams
 } from "../shared/runtime";
 
 const PROTOCOL_VERSION = 1;
@@ -19,6 +25,25 @@ const SOCKET_RECONNECT_DELAYS_MS = [50, 100, 200, 400, 800] as const;
 const RUNTIME_RESTART_DELAYS_MS = [100, 200, 400] as const;
 const THREAD_CATALOG_PAGE_LIMIT = 100;
 const MAX_THREAD_CATALOG_PAGES = 10_000;
+const TURN_HISTORY_PAGE_LIMIT = 100;
+const TURN_HISTORY_CURSOR_MAX_LENGTH = 2048;
+const MAX_WIRE_IDENTIFIER_LENGTH = 200;
+
+const TURN_AND_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled"
+]);
+const ITEM_STATUSES = new Set([
+  "streaming",
+  "running",
+  "completed",
+  "failed",
+  "cancelled"
+]);
+const ITEM_KINDS = new Set(["message", "tool_call", "tool_result"]);
 
 function wait(delayMs: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
@@ -136,31 +161,254 @@ export function parseRuntimeReplayResult(value: unknown): RuntimeReplayResult {
   };
 }
 
-function parseRuntimeThreadSummary(value: unknown): RuntimeThreadSummary {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid thread catalog page.");
+function isWireObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isWireIdentifier(value: unknown): value is string {
+  return isNonEmptyString(value) && value.length <= MAX_WIRE_IDENTIFIER_LENGTH;
+}
+
+function isSafeNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function parseRuntimeThreadSummary(
+  value: unknown,
+  invalidMessage = "Runtime returned an invalid thread catalog page."
+): RuntimeThreadSummary {
+  if (!isWireObject(value)) {
+    throw new Error(invalidMessage);
   }
   const thread = value as Partial<RuntimeThreadSummary>;
   const workspace = thread.workspace;
   const validWorkspace =
     workspace === null ||
-    (typeof workspace === "object" &&
-      workspace !== null &&
-      typeof workspace.id === "string" &&
-      typeof workspace.name === "string" &&
-      (workspace.rootUri === null || typeof workspace.rootUri === "string"));
+    (isWireObject(workspace) &&
+      isWireIdentifier(workspace.id) &&
+      isNonEmptyString(workspace.name) &&
+      (workspace.rootUri === null || isNonEmptyString(workspace.rootUri)));
   if (
-    typeof thread.id !== "string" ||
-    !thread.id ||
+    !isWireIdentifier(thread.id) ||
     (thread.title !== null && typeof thread.title !== "string") ||
-    typeof thread.defaultBranchId !== "string" ||
+    !isWireIdentifier(thread.defaultBranchId) ||
     !validWorkspace ||
-    typeof thread.createdAt !== "string" ||
-    typeof thread.updatedAt !== "string"
+    !isNonEmptyString(thread.createdAt) ||
+    !isNonEmptyString(thread.updatedAt)
   ) {
-    throw new Error("Runtime returned an invalid thread catalog page.");
+    throw new Error(invalidMessage);
   }
-  return thread as RuntimeThreadSummary;
+  return {
+    id: thread.id,
+    title: thread.title as string | null,
+    defaultBranchId: thread.defaultBranchId,
+    workspace: workspace as RuntimeThreadSummary["workspace"],
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt
+  };
+}
+
+export function parseRuntimeThreadGetResult(
+  value: unknown,
+  expectedThreadId?: string
+): RuntimeThreadGetResult {
+  const invalidMessage = "Runtime returned invalid Thread metadata.";
+  if (!isWireObject(value) || !isSafeNonNegativeInteger(value.snapshotSeq)) {
+    throw new Error(invalidMessage);
+  }
+  const thread = parseRuntimeThreadSummary(value.thread, invalidMessage);
+  if (expectedThreadId !== undefined && thread.id !== expectedThreadId) {
+    throw new Error(invalidMessage);
+  }
+  return { thread, snapshotSeq: value.snapshotSeq };
+}
+
+function invalidTurnHistory(): Error {
+  return new Error("Runtime returned an invalid Turn history page.");
+}
+
+function parseRuntimeItemHistory(
+  value: unknown,
+  turnId: string,
+  runId: string
+): RuntimeItemHistory {
+  if (!isWireObject(value)) {
+    throw invalidTurnHistory();
+  }
+  const item = value as Partial<RuntimeItemHistory>;
+  const roleMatchesKind =
+    (item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
+    (item.kind === "tool_call" && item.role === "assistant") ||
+    (item.kind === "tool_result" && item.role === "tool");
+  if (
+    !isWireIdentifier(item.id) ||
+    item.turnId !== turnId ||
+    item.runId !== runId ||
+    !isSafePositiveInteger(item.ordinal) ||
+    !ITEM_KINDS.has(item.kind as string) ||
+    !roleMatchesKind ||
+    !ITEM_STATUSES.has(item.status as string) ||
+    typeof item.content !== "string" ||
+    !isWireObject(item.data) ||
+    !isNonEmptyString(item.createdAt) ||
+    !isNonEmptyString(item.updatedAt)
+  ) {
+    throw invalidTurnHistory();
+  }
+  return {
+    id: item.id,
+    turnId,
+    runId,
+    ordinal: item.ordinal,
+    kind: item.kind as RuntimeItemHistory["kind"],
+    role: item.role as RuntimeItemHistory["role"],
+    status: item.status as RuntimeItemHistory["status"],
+    content: item.content,
+    data: item.data,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+}
+
+function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHistory {
+  if (!isWireObject(value)) {
+    throw invalidTurnHistory();
+  }
+  const run = value as Partial<RuntimeRunHistory>;
+  const terminal =
+    run.status === "completed" || run.status === "failed" || run.status === "cancelled";
+  if (
+    !isWireIdentifier(run.id) ||
+    run.turnId !== turnId ||
+    !isNonEmptyString(run.providerId) ||
+    !isNonEmptyString(run.modelId) ||
+    run.executionPolicy !== "full_access" ||
+    !TURN_AND_RUN_STATUSES.has(run.status as string) ||
+    !isNonEmptyString(run.createdAt) ||
+    (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
+    !Array.isArray(run.items)
+  ) {
+    throw invalidTurnHistory();
+  }
+
+  const itemIds = new Set<string>();
+  let previousOrdinal = 0;
+  const items = run.items.map((candidate) => {
+    const item = parseRuntimeItemHistory(candidate, turnId, run.id as string);
+    if (itemIds.has(item.id) || item.ordinal <= previousOrdinal) {
+      throw invalidTurnHistory();
+    }
+    itemIds.add(item.id);
+    previousOrdinal = item.ordinal;
+    return item;
+  });
+  return {
+    id: run.id,
+    turnId,
+    providerId: run.providerId,
+    modelId: run.modelId,
+    executionPolicy: "full_access",
+    status: run.status as RuntimeRunHistory["status"],
+    createdAt: run.createdAt,
+    settledAt: run.settledAt as string | null,
+    items
+  };
+}
+
+function parseRuntimeTurnHistory(
+  value: unknown,
+  expectedScope?: Pick<RuntimeTurnListParams, "threadId" | "branchId">
+): RuntimeTurnHistory {
+  if (!isWireObject(value)) {
+    throw invalidTurnHistory();
+  }
+  const turn = value as Partial<RuntimeTurnHistory>;
+  if (
+    !isWireIdentifier(turn.id) ||
+    !isWireIdentifier(turn.threadId) ||
+    !isWireIdentifier(turn.branchId) ||
+    (expectedScope !== undefined &&
+      (turn.threadId !== expectedScope.threadId || turn.branchId !== expectedScope.branchId)) ||
+    !isSafePositiveInteger(turn.ordinal) ||
+    !TURN_AND_RUN_STATUSES.has(turn.status as string) ||
+    !isNonEmptyString(turn.createdAt) ||
+    !isNonEmptyString(turn.updatedAt) ||
+    !Array.isArray(turn.runs)
+  ) {
+    throw invalidTurnHistory();
+  }
+
+  const runIds = new Set<string>();
+  const runs = turn.runs.map((candidate) => {
+    const run = parseRuntimeRunHistory(candidate, turn.id as string);
+    if (runIds.has(run.id)) {
+      throw invalidTurnHistory();
+    }
+    runIds.add(run.id);
+    return run;
+  });
+  return {
+    id: turn.id,
+    threadId: turn.threadId,
+    branchId: turn.branchId,
+    ordinal: turn.ordinal,
+    status: turn.status as RuntimeTurnHistory["status"],
+    createdAt: turn.createdAt,
+    updatedAt: turn.updatedAt,
+    runs
+  };
+}
+
+export function parseRuntimeTurnListPage(
+  value: unknown,
+  expectedScope?: Pick<RuntimeTurnListParams, "threadId" | "branchId">
+): RuntimeTurnListPage {
+  if (!isWireObject(value)) {
+    throw invalidTurnHistory();
+  }
+  const page = value as Partial<RuntimeTurnListPage>;
+  const validCursor =
+    page.nextCursor === null ||
+    (isNonEmptyString(page.nextCursor) &&
+      page.nextCursor.length <= TURN_HISTORY_CURSOR_MAX_LENGTH &&
+      /^[A-Za-z0-9_-]+$/.test(page.nextCursor));
+  if (
+    !Array.isArray(page.turns) ||
+    page.turns.length > TURN_HISTORY_PAGE_LIMIT ||
+    typeof page.hasMore !== "boolean" ||
+    !isSafeNonNegativeInteger(page.snapshotSeq) ||
+    !validCursor ||
+    (page.hasMore && (page.nextCursor === null || page.turns.length === 0)) ||
+    (!page.hasMore && page.nextCursor !== null)
+  ) {
+    throw invalidTurnHistory();
+  }
+
+  const turnIds = new Set<string>();
+  let previousOrdinal = 0;
+  const turns = page.turns.map((candidate) => {
+    const turn = parseRuntimeTurnHistory(candidate, expectedScope);
+    if (turnIds.has(turn.id) || turn.ordinal <= previousOrdinal) {
+      throw invalidTurnHistory();
+    }
+    turnIds.add(turn.id);
+    previousOrdinal = turn.ordinal;
+    return turn;
+  });
+  return {
+    turns,
+    nextCursor: page.nextCursor as string | null,
+    hasMore: page.hasMore,
+    snapshotSeq: page.snapshotSeq
+  };
 }
 
 export function parseRuntimeThreadListPage(value: unknown): RuntimeThreadListPage {
@@ -187,7 +435,7 @@ export function parseRuntimeThreadListPage(value: unknown): RuntimeThreadListPag
     throw new Error("Runtime returned an invalid thread catalog page.");
   }
   return {
-    threads: page.threads.map(parseRuntimeThreadSummary),
+    threads: page.threads.map((thread) => parseRuntimeThreadSummary(thread)),
     nextCursor: page.nextCursor as string | null,
     hasMore: page.hasMore,
     snapshotSeq: page.snapshotSeq as number
@@ -200,11 +448,12 @@ interface RuntimeThreadCatalogRequester {
 
 export async function listAllRuntimeThreads(
   requester: RuntimeThreadCatalogRequester
-): Promise<{ threads: RuntimeThreadSummary[] }> {
+): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
   const threads: RuntimeThreadSummary[] = [];
   const threadIds = new Set<string>();
   const cursors = new Set<string>();
   let cursor: string | undefined;
+  let firstSnapshotSeq: number | undefined;
   let previousSnapshotSeq = -1;
   for (let pageNumber = 0; pageNumber < MAX_THREAD_CATALOG_PAGES; pageNumber += 1) {
     const params: Record<string, unknown> = { limit: THREAD_CATALOG_PAGE_LIMIT };
@@ -214,6 +463,7 @@ export async function listAllRuntimeThreads(
     const page = parseRuntimeThreadListPage(
       await requester.request("thread.list", params)
     );
+    firstSnapshotSeq ??= page.snapshotSeq;
     if (page.snapshotSeq < previousSnapshotSeq) {
       throw new Error("Runtime thread catalog watermark moved backwards.");
     }
@@ -226,7 +476,7 @@ export async function listAllRuntimeThreads(
       threads.push(thread);
     }
     if (!page.hasMore) {
-      return { threads };
+      return { threads, snapshotSeq: firstSnapshotSeq };
     }
     const nextCursor = page.nextCursor as string;
     if (nextCursor === cursor || cursors.has(nextCursor)) {
@@ -686,6 +936,22 @@ export class RuntimeHost {
     if (method === "event.replay") {
       return parseRuntimeReplayResult(result) as TResult;
     }
+    if (method === "thread.list") {
+      return parseRuntimeThreadListPage(result) as TResult;
+    }
+    if (method === "thread.get") {
+      return parseRuntimeThreadGetResult(
+        result,
+        typeof params.threadId === "string" ? params.threadId : undefined
+      ) as TResult;
+    }
+    if (method === "turn.list") {
+      const expectedScope =
+        typeof params.threadId === "string" && typeof params.branchId === "string"
+          ? { threadId: params.threadId, branchId: params.branchId }
+          : undefined;
+      return parseRuntimeTurnListPage(result, expectedScope) as TResult;
+    }
     return result as TResult;
   }
 
@@ -890,14 +1156,14 @@ export class RuntimeHost {
     initialConnection: boolean
   ): Promise<void> {
     if (initialConnection) {
-      const snapshot = parseRuntimeReplayResult(
+      const snapshot = parseRuntimeThreadListPage(
         await connection.request<unknown>(
-          "event.replay",
-          { afterSeq: 0, limit: 1 },
+          "thread.list",
+          { limit: 1 },
           this.options.startTimeoutMs
         )
       );
-      this.lastEventSeq = snapshot.latestSeq;
+      this.lastEventSeq = snapshot.snapshotSeq;
       for (const seq of this.pendingEventNotifications.keys()) {
         if (seq <= this.lastEventSeq) {
           this.pendingEventNotifications.delete(seq);

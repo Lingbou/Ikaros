@@ -74,6 +74,34 @@ describe("preload Runtime bridge", () => {
     );
   });
 
+  it("exposes Thread metadata and paginated Turn history through narrow channels", async () => {
+    const metadata = {
+      ok: true as const,
+      value: { thread: { id: "thread-1" }, snapshotSeq: 10 },
+    };
+    const history = {
+      ok: true as const,
+      value: { turns: [], nextCursor: null, hasMore: false, snapshotSeq: 10 },
+    };
+    electron.ipcRenderer.invoke
+      .mockResolvedValueOnce(metadata)
+      .mockResolvedValueOnce(history);
+    await import("./index");
+
+    const runtime = electron.exposedApi()?.runtime;
+    const params = { threadId: "thread-1", branchId: "branch-1", limit: 50 };
+    await expect(runtime?.getThread("thread-1")).resolves.toEqual(metadata);
+    await expect(runtime?.listTurns(params)).resolves.toEqual(history);
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:thread-get",
+      "thread-1",
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:turn-list",
+      params,
+    );
+  });
+
   it("exposes the native workspace directory picker through one narrow channel", async () => {
     const workspace = {
       id: "workspace-ikaros",

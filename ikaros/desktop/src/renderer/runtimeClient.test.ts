@@ -8,6 +8,8 @@ function bridgeWithListThreads(
 ): IkarosRuntimeBridgeApi {
   return {
     listThreads,
+    getThread: vi.fn(),
+    listTurns: vi.fn(),
     createThread: vi.fn(),
     startTurn: vi.fn(),
     cancelRun: vi.fn(),
@@ -25,7 +27,7 @@ function bridgeWithListThreads(
 
 describe("RuntimeClient", () => {
   it("unwraps successful Electron bridge results", async () => {
-    const threads = { threads: [] };
+    const threads = { threads: [], snapshotSeq: 0 };
     const client = new RuntimeClient(
       bridgeWithListThreads(vi.fn(async () => ({ ok: true as const, value: threads })))
     );
@@ -35,7 +37,7 @@ describe("RuntimeClient", () => {
 
   it("forwards the Thread workspace snapshot without flattening it", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [] } })),
+      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } })),
     );
     const value = { thread: { id: "thread-1" }, event: { seq: 1 } };
     bridge.createThread = vi.fn(async () => ({ ok: true as const, value })) as never;
@@ -48,6 +50,31 @@ describe("RuntimeClient", () => {
 
     await expect(client.createThread(params)).resolves.toEqual(value);
     expect(bridge.createThread).toHaveBeenCalledWith(params);
+  });
+
+  it("forwards Thread metadata and paginated Turn history reads", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 5 } })),
+    );
+    const thread = {
+      id: "thread-1",
+      title: "History",
+      defaultBranchId: "branch-1",
+      workspace: null,
+      createdAt: "2026-08-14T00:00:00.000Z",
+      updatedAt: "2026-08-14T00:00:00.000Z",
+    };
+    const metadata = { thread, snapshotSeq: 5 };
+    const history = { turns: [], nextCursor: null, hasMore: false, snapshotSeq: 5 };
+    bridge.getThread = vi.fn(async () => ({ ok: true as const, value: metadata }));
+    bridge.listTurns = vi.fn(async () => ({ ok: true as const, value: history }));
+    const client = new RuntimeClient(bridge);
+    const params = { threadId: thread.id, branchId: thread.defaultBranchId, limit: 50 };
+
+    await expect(client.getThread(thread.id)).resolves.toEqual(metadata);
+    await expect(client.listTurns(params)).resolves.toEqual(history);
+    expect(bridge.getThread).toHaveBeenCalledWith(thread.id);
+    expect(bridge.listTurns).toHaveBeenCalledWith(params);
   });
 
   it("reconstructs definitive RPC errors without reclassifying transport errors", async () => {
@@ -81,7 +108,7 @@ describe("RuntimeClient", () => {
 
   it("forwards write-only provider configuration and unwraps the redacted result", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [] } }))
+      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } }))
     );
     const provider = {
       id: "deepseek",
@@ -111,7 +138,7 @@ describe("RuntimeClient", () => {
 
   it("forwards write-only discovery credentials and unwraps only discovered models", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [] } }))
+      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } }))
     );
     const models = [
       { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },

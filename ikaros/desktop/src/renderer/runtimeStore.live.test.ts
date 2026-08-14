@@ -20,6 +20,8 @@ import type {
   RuntimeProviderRemoveResult,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
+  RuntimeThreadGetResult,
+  RuntimeTurnListPage,
   RuntimeTurnStartResult,
 } from "../shared/runtime";
 import { activeBranch, type AgentEvent, type Thread, type Turn } from "./domain";
@@ -49,6 +51,14 @@ function runtimeBridge(
 ): IkarosRuntimeBridgeApi {
   return {
     listThreads: () => bridgeInvocation(() => listAllRuntimeThreads(host)),
+    getThread: (threadId) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeThreadGetResult>("thread.get", { threadId }),
+      ),
+    listTurns: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeTurnListPage>("turn.list", { ...params }),
+      ),
     createThread: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeThreadCreateResult>("thread.create", { ...params }),
@@ -271,6 +281,59 @@ afterEach(() => {
   vi.useRealTimers();
   vi.resetModules();
   Reflect.deleteProperty(window, "ikarosDesktop");
+});
+
+describe("Scripted Runtime store history vertical slice", () => {
+  it(
+    "loads only the catalog at startup and hydrates persisted history on selection",
+    { timeout: 60_000 },
+    async () => {
+      const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-scripted-history-"));
+      const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+      try {
+        await host.start();
+        const created = await host.request<RuntimeThreadCreateResult>("thread.create", {
+          title: "Persisted Scripted history",
+        });
+        const started = await host.request<RuntimeTurnStartResult>("turn.start", {
+          threadId: created.thread.id,
+          branchId: created.thread.defaultBranchId,
+          content: "history hydration proof",
+          providerId: "scripted",
+          modelId: "scripted-v1",
+        });
+        await waitFor("the Scripted Run to settle", async () => {
+          const events = await replayAll(host);
+          return events.find(
+            (event) => event.type === "run.settled" && event.runId === started.runId,
+          );
+        });
+
+        installDesktopBridge(runtimeBridge(host, []));
+        vi.resetModules();
+        const { useAppStore } = await import("./store");
+        await useAppStore.getState().initializeRuntime();
+
+        const catalogThread = useAppStore
+          .getState()
+          .threads.find((thread) => thread.id === created.thread.id);
+        expect(catalogThread).toBeDefined();
+        expect(activeBranch(catalogThread)?.turns).toEqual([]);
+
+        await useAppStore.getState().selectThread(created.thread.id);
+        const hydrated = selectedThread(useAppStore.getState());
+        const turn = latestTurn(hydrated);
+        expect(turn.runId).toBe(started.runId);
+        expect(assistantMessage(turn)).toMatchObject({
+          content: "Scripted response to: history hydration proof",
+          status: "complete",
+        });
+      } finally {
+        await host.stop();
+        await rm(runtimeHome, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () => {

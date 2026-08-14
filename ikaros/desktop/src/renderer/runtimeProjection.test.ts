@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   type RuntimeJournalEvent,
-  type RuntimeThreadSummary
+  type RuntimeThreadSummary,
+  type RuntimeTurnHistory,
 } from "../shared/runtime";
 import {
   projectRuntimeProjects,
+  projectRuntimeThreadHistory,
   projectRuntimeThreads,
   replayRuntimeEvents,
 } from "./runtimeProjection";
@@ -45,6 +47,72 @@ describe("Runtime workspace projection", () => {
         color: "var(--muted-strong)",
         rootUri: workspace.rootUri,
       },
+    ]);
+  });
+
+  it("projects a materialized Thread history without requiring Journal replay", () => {
+    const turns: RuntimeTurnHistory[] = [
+      {
+        id: "turn-history",
+        threadId: summary.id,
+        branchId: summary.defaultBranchId,
+        ordinal: 1,
+        status: "completed",
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        runs: [
+          {
+            id: "run-history",
+            turnId: "turn-history",
+            providerId: "scripted",
+            modelId: "scripted-v1",
+            executionPolicy: "full_access",
+            status: "completed",
+            createdAt: summary.createdAt,
+            settledAt: summary.updatedAt,
+            items: [
+              {
+                id: "user-history",
+                turnId: "turn-history",
+                runId: "run-history",
+                ordinal: 1,
+                kind: "message",
+                role: "user",
+                status: "completed",
+                content: "hello",
+                data: {},
+                createdAt: summary.createdAt,
+                updatedAt: summary.updatedAt,
+              },
+              {
+                id: "assistant-history",
+                turnId: "turn-history",
+                runId: "run-history",
+                ordinal: 2,
+                kind: "message",
+                role: "assistant",
+                status: "completed",
+                content: "world",
+                data: {},
+                createdAt: summary.createdAt,
+                updatedAt: summary.updatedAt,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    expect(projectRuntimeThreadHistory(summary, turns).branches[0]?.turns).toEqual([
+      expect.objectContaining({
+        id: "turn-history",
+        runId: "run-history",
+        status: "completed",
+        events: [
+          expect.objectContaining({ id: "user-history", content: "hello" }),
+          expect.objectContaining({ id: "assistant-history", content: "world" }),
+        ],
+      }),
     ]);
   });
 });

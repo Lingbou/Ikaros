@@ -6,9 +6,12 @@ import {
   type IkarosRuntimeApi,
   type RuntimeInvocationResult,
   type RuntimeJournalEvent,
+  type RuntimeItemHistory,
   type RuntimeModelSummary,
   type RuntimeProviderSummary,
   type RuntimeThreadCreateParams,
+  type RuntimeThreadSummary,
+  type RuntimeTurnListPage,
 } from "../shared/runtime";
 
 const createdAt = "2026-08-11T12:00:00.000Z";
@@ -51,6 +54,8 @@ async function bridgeInvocation<TResult>(
 function installRuntimeBridge(api: unknown): void {
   const desktop = api as { runtime: IkarosRuntimeApi };
   const runtime = desktop.runtime;
+  let listedThreads: RuntimeThreadSummary[] = [];
+  let catalogSnapshotSeq = 0;
   const providerCatalog = {
     providers: [
       {
@@ -76,7 +81,34 @@ function installRuntimeBridge(api: unknown): void {
   const bridged = {
     ...(api as object),
     runtime: {
-      listThreads: () => bridgeInvocation(() => runtime.listThreads()),
+      listThreads: () =>
+        bridgeInvocation(async () => {
+          const listed = await runtime.listThreads();
+          listedThreads = listed.threads;
+          catalogSnapshotSeq =
+            typeof listed.snapshotSeq === "number" ? listed.snapshotSeq : 0;
+          return { threads: listed.threads, snapshotSeq: catalogSnapshotSeq };
+        }),
+      getThread: (threadId: string) =>
+        bridgeInvocation(async () => {
+          if (typeof runtime.getThread === "function") {
+            return runtime.getThread(threadId);
+          }
+          const thread = listedThreads.find((candidate) => candidate.id === threadId);
+          if (!thread) throw new Error("thread was not found");
+          return { thread, snapshotSeq: catalogSnapshotSeq };
+        }),
+      listTurns: (params: Parameters<IkarosRuntimeApi["listTurns"]>[0]) =>
+        bridgeInvocation(() =>
+          typeof runtime.listTurns === "function"
+            ? runtime.listTurns(params)
+            : Promise.resolve({
+                turns: [],
+                nextCursor: null,
+                hasMore: false,
+                snapshotSeq: catalogSnapshotSeq,
+              }),
+        ),
       createThread: (params: Parameters<IkarosRuntimeApi["createThread"]>[0]) =>
         bridgeInvocation(() => runtime.createThread(params)),
       startTurn: (params: Parameters<IkarosRuntimeApi["startTurn"]>[0]) =>
@@ -156,6 +188,66 @@ function messageItem(
     content,
     createdAt,
     updatedAt: createdAt
+  };
+}
+
+function historyMessageItem(
+  id: string,
+  role: "user" | "assistant",
+  content: string,
+  status: "streaming" | "completed" | "failed" | "cancelled",
+  ordinal: number,
+): RuntimeItemHistory {
+  return {
+    ...messageItem(id, role, content, status),
+    ordinal,
+    kind: "message",
+    role,
+    status,
+    data: {},
+  };
+}
+
+function singleTurnHistoryPage(
+  thread: Pick<RuntimeThreadSummary, "id" | "defaultBranchId">,
+  items: RuntimeItemHistory[],
+  status: "queued" | "running" | "completed" | "failed" | "cancelled",
+  snapshotSeq: number,
+  identity: { turnId?: string; runId?: string } = {},
+): RuntimeTurnListPage {
+  const turnId = identity.turnId ?? "turn-runtime";
+  const runId = identity.runId ?? "run-runtime";
+  return {
+    turns: [
+      {
+        id: turnId,
+        threadId: thread.id,
+        branchId: thread.defaultBranchId,
+        ordinal: 1,
+        status,
+        createdAt,
+        updatedAt: createdAt,
+        runs: [
+          {
+            id: runId,
+            turnId,
+            providerId: "scripted",
+            modelId: "scripted-v1",
+            executionPolicy: "full_access",
+            status,
+            createdAt,
+            settledAt:
+              status === "completed" || status === "failed" || status === "cancelled"
+                ? createdAt
+                : null,
+            items: items.map((item) => ({ ...item, turnId, runId })),
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+    hasMore: false,
+    snapshotSeq,
   };
 }
 
@@ -805,7 +897,41 @@ describe("Runtime-backed renderer store", () => {
     });
   });
 
-  it("replays persisted process tool Items into the production store projection", async () => {
+  it("starts an empty database from its catalog snapshot without replaying sequence zero", async () => {
+    const replayEvents = vi.fn();
+    const getThread = vi.fn();
+    const listTurns = vi.fn();
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [], snapshotSeq: 0 })),
+        getThread,
+        listTurns,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents,
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeReady: true,
+      runtimeSeq: 0,
+      threads: [],
+    });
+    expect(replayEvents).not.toHaveBeenCalled();
+    expect(getThread).not.toHaveBeenCalled();
+    expect(listTurns).not.toHaveBeenCalled();
+  });
+
+  it("loads persisted process tool Items only after selecting their Thread", async () => {
     const thread = {
       id: "thread-runtime",
       title: "Tool replay",
@@ -831,27 +957,24 @@ describe("Runtime-backed renderer store", () => {
       createdAt,
       updatedAt: createdAt
     };
-    const events = [
-      runtimeEvent(1, "item.completed", "user-runtime", {
-        item: messageItem(
+    const history = singleTurnHistoryPage(
+      thread,
+      [
+        historyMessageItem(
           "user-runtime",
           "user",
           "/process.run Write-Output runtime-tool",
-          "completed"
-        )
-      }),
-      runtimeEvent(2, "run.state_changed", null, { status: "queued" }),
-      runtimeEvent(3, "run.state_changed", null, { status: "running" }),
-      runtimeEvent(4, "item.started", toolCall.id, { item: toolCall }),
-      runtimeEvent(5, "item.completed", toolCall.id, {
-        item: {
+          "completed",
+          1,
+        ),
+        {
           ...toolCall,
+          kind: "tool_call",
+          role: "assistant",
           status: "completed",
-          data: { ...toolCall.data, outcome: "completed", durationMs: 14 }
-        }
-      }),
-      runtimeEvent(6, "item.completed", "tool-result-runtime", {
-        item: {
+          data: { ...toolCall.data, outcome: "completed", durationMs: 14 },
+        },
+        {
           id: "tool-result-runtime",
           turnId: "turn-runtime",
           runId: "run-runtime",
@@ -872,38 +995,40 @@ describe("Runtime-backed renderer store", () => {
               stderr: "",
               exitCode: 0,
               timedOut: false,
-              truncated: false
-            }
+              truncated: false,
+            },
           },
           createdAt,
-          updatedAt: createdAt
-        }
-      }),
-      runtimeEvent(7, "item.started", "assistant-runtime", {
-        item: messageItem("assistant-runtime", "assistant", "", "streaming")
-      }),
-      runtimeEvent(8, "item.completed", "assistant-runtime", {
-        item: messageItem(
+          updatedAt: createdAt,
+        },
+        historyMessageItem(
           "assistant-runtime",
           "assistant",
           "Command exited with code 0.",
-          "completed"
-        )
-      }),
-      runtimeEvent(9, "run.settled", null, { status: "completed" })
-    ];
+          "completed",
+          4,
+        ),
+      ],
+      "completed",
+      9,
+    );
+    const getThread = vi.fn(async () => ({ thread, snapshotSeq: 9 }));
+    const listTurns = vi.fn(async () => history);
+    const replayEvents = vi.fn(async (afterSeq: number) => ({
+      events: [],
+      latestSeq: 9,
+      nextAfterSeq: afterSeq,
+      hasMore: false,
+    }));
     const api = {
       runtime: {
-        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 9 })),
+        getThread,
+        listTurns,
         createThread: vi.fn(),
         startTurn: vi.fn(),
         cancelRun: vi.fn(),
-        replayEvents: vi.fn(async () => ({
-          events,
-          latestSeq: 9,
-          nextAfterSeq: 9,
-          hasMore: false
-        })),
+        replayEvents,
         onEvent: vi.fn(() => () => undefined)
       },
       preferences: {},
@@ -914,6 +1039,13 @@ describe("Runtime-backed renderer store", () => {
     const { useAppStore } = await import("./store");
 
     await useAppStore.getState().initializeRuntime();
+    expect(getThread).not.toHaveBeenCalled();
+    expect(listTurns).not.toHaveBeenCalled();
+    expect(useAppStore.getState().threads[0]?.branches[0]?.turns).toEqual([]);
+    expect(replayEvents).toHaveBeenCalledWith(9, 500);
+    expect(replayEvents.mock.calls.some(([afterSeq]) => afterSeq === 0)).toBe(false);
+
+    await useAppStore.getState().selectThread(thread.id);
     await useAppStore.getState().selectThread(thread.id);
 
     const state = useAppStore.getState();
@@ -939,6 +1071,162 @@ describe("Runtime-backed renderer store", () => {
       { type: "message", role: "assistant", status: "complete" }
     ]);
     expect(projected?.events.some((event) => event.type === "permission_request")).toBe(false);
+    expect(getThread).toHaveBeenCalledOnce();
+    expect(listTurns).toHaveBeenCalledOnce();
+  });
+
+  it("merges a live delta received during lazy hydration exactly once", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Hydration race",
+      defaultBranchId: "branch-runtime",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const history = singleTurnHistoryPage(
+      thread,
+      [historyMessageItem("assistant-runtime", "assistant", "A", "streaming", 1)],
+      "running",
+      10,
+    );
+    const delta = runtimeEvent(11, "item.delta", "assistant-runtime", { delta: "B" });
+    const listTurns = vi.fn(async () => {
+      for (const listener of listeners) listener(delta);
+      return history;
+    });
+    const replayEvents = vi
+      .fn()
+      .mockResolvedValueOnce({
+        events: [],
+        latestSeq: 10,
+        nextAfterSeq: 10,
+        hasMore: false,
+      })
+      .mockResolvedValue({
+        events: [delta],
+        latestSeq: 11,
+        nextAfterSeq: 11,
+        hasMore: false,
+      });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 10 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 10 })),
+        listTurns,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents,
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    const assistant = useAppStore
+      .getState()
+      .threads[0]?.branches[0]?.turns[0]?.events[0];
+    expect(assistant).toMatchObject({
+      id: "assistant-runtime",
+      content: "AB",
+      status: "streaming",
+    });
+    expect(useAppStore.getState().runtimeSeq).toBe(11);
+    expect(useAppStore.getState().runtimeThreadDetails[thread.id]).toMatchObject({
+      status: "ready",
+      snapshotSeq: 11,
+      error: null,
+    });
+    expect(listTurns).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the newer selection when an older Thread hydration finishes late", async () => {
+    const firstThread = {
+      id: "thread-first",
+      title: "First",
+      defaultBranchId: "branch-first",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const secondThread = {
+      id: "thread-second",
+      title: "Second",
+      defaultBranchId: "branch-second",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    let resolveFirst!: (page: RuntimeTurnListPage) => void;
+    const firstPage = new Promise<RuntimeTurnListPage>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const getThread = vi.fn(async (threadId: string) => ({
+      thread: threadId === firstThread.id ? firstThread : secondThread,
+      snapshotSeq: 0,
+    }));
+    const listTurns = vi.fn(async (params: { threadId: string }) =>
+      params.threadId === firstThread.id
+        ? firstPage
+        : {
+            turns: [],
+            nextCursor: null,
+            hasMore: false,
+            snapshotSeq: 0,
+          },
+    );
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({
+          threads: [firstThread, secondThread],
+          snapshotSeq: 0,
+        })),
+        getThread,
+        listTurns,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    const selectingFirst = useAppStore.getState().selectThread(firstThread.id);
+    await vi.waitFor(() => expect(listTurns).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: firstThread.id }),
+    ));
+    await useAppStore.getState().selectThread(secondThread.id);
+    resolveFirst(
+      singleTurnHistoryPage(
+        firstThread,
+        [historyMessageItem("first-message", "assistant", "late", "completed", 1)],
+        "completed",
+        0,
+        { turnId: "turn-first", runId: "run-first" },
+      ),
+    );
+    await selectingFirst;
+
+    expect(useAppStore.getState().selectedThreadId).toBe(secondThread.id);
+    expect(useAppStore.getState().runtimeThreadDetails[firstThread.id]?.status).toBe("ready");
+    expect(useAppStore.getState().runtimeThreadDetails[secondThread.id]?.status).toBe("ready");
   });
 
   it("keeps a canonical running Turn when turn.start is accepted but its ACK is lost", async () => {
@@ -1123,10 +1411,8 @@ describe("Runtime-backed renderer store", () => {
       turnId: "turn-created-after-ack-loss",
       runId: "run-created-after-ack-loss"
     }));
-    let replayCalls = 0;
     const replayEvents = vi.fn(async () => {
-      replayCalls += 1;
-      if (replayCalls === 1 || !createdEvent) {
+      if (!createdEvent) {
         return { events: [], latestSeq: 0, nextAfterSeq: 0, hasMore: false };
       }
       for (const listener of listeners) listener(createdEvent);
@@ -1387,7 +1673,7 @@ describe("Runtime-backed renderer store", () => {
     expect(
       new Set(createThread.mock.calls.map((call) => call[0].clientRequestId)).size,
     ).toBe(1);
-    expect(replayEvents).toHaveBeenCalledTimes(2);
+    expect(replayEvents).toHaveBeenCalledOnce();
     expect(startTurn).toHaveBeenCalledOnce();
     expect(useAppStore.getState().selectedThreadId).toBe(thread.id);
     expect(useAppStore.getState().draft).toBe("");
@@ -1448,7 +1734,7 @@ describe("Runtime-backed renderer store", () => {
 
     expect(startTurn).toHaveBeenCalledTimes(2);
     expect(new Set(startTurn.mock.calls.map((call) => call[0].clientRequestId)).size).toBe(1);
-    expect(replayEvents).toHaveBeenCalledTimes(2);
+    expect(replayEvents).toHaveBeenCalledOnce();
     expect(useAppStore.getState().runStatus).toBe("queued");
     expect(useAppStore.getState().draft).toBe("");
     expect(useAppStore.getState().runtimeError).toBeNull();
@@ -2292,12 +2578,6 @@ describe("Runtime-backed renderer store", () => {
     const running = runtimeEvent(4, "run.state_changed", null, { status: "running" });
     const replayEvents = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [],
-        latestSeq: 0,
-        nextAfterSeq: 0,
-        hasMore: false
-      })
       .mockRejectedValueOnce(new Error("transient replay disconnect"))
       .mockResolvedValueOnce({
         events: [started],
@@ -2335,6 +2615,7 @@ describe("Runtime-backed renderer store", () => {
     vi.resetModules();
     const { useAppStore } = await import("./store");
     await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
 
     for (const listener of listeners) {
       listener(running);
@@ -2343,7 +2624,7 @@ describe("Runtime-backed renderer store", () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    expect(replayEvents).toHaveBeenCalledTimes(2);
+    expect(replayEvents).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(useAppStore.getState().runtimeSeq).toBe(4);
@@ -2356,10 +2637,10 @@ describe("Runtime-backed renderer store", () => {
       status: "streaming"
     });
     expect(useAppStore.getState().runtimeError).toBeNull();
-    expect(replayEvents).toHaveBeenCalledTimes(4);
+    expect(replayEvents).toHaveBeenCalledTimes(3);
   });
 
-  it("recovers a completed Run when Stop races with a retained-prefix replay", async () => {
+  it("recovers a completed Run when Stop races with events after a history snapshot", async () => {
     const listeners = new Set<(event: RuntimeJournalEvent) => void>();
     const thread = {
       id: "thread-runtime",
@@ -2368,16 +2649,15 @@ describe("Runtime-backed renderer store", () => {
       createdAt,
       updatedAt: createdAt
     };
-    const initialEvents = [
-      runtimeEvent(227, "item.completed", "user-runtime", {
-        item: messageItem("user-runtime", "user", "hello", "completed")
-      }),
-      runtimeEvent(228, "run.state_changed", null, { status: "running" }),
-      runtimeEvent(229, "item.started", "assistant-runtime", {
-        item: messageItem("assistant-runtime", "assistant", "", "streaming")
-      }),
-      runtimeEvent(230, "item.delta", "assistant-runtime", { delta: "Hi" })
-    ];
+    const history = singleTurnHistoryPage(
+      thread,
+      [
+        historyMessageItem("user-runtime", "user", "hello", "completed", 1),
+        historyMessageItem("assistant-runtime", "assistant", "Hi", "streaming", 2),
+      ],
+      "running",
+      230,
+    );
     const completedEvents = [
       runtimeEvent(231, "item.completed", "assistant-runtime", {
         item: messageItem("assistant-runtime", "assistant", "Hi", "completed")
@@ -2392,10 +2672,16 @@ describe("Runtime-backed renderer store", () => {
     const replayEvents = vi
       .fn()
       .mockResolvedValueOnce({
-        events: initialEvents,
+        events: [],
         latestSeq: 230,
         nextAfterSeq: 230,
-        hasMore: false
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        events: [],
+        latestSeq: 230,
+        nextAfterSeq: 230,
+        hasMore: false,
       })
       .mockResolvedValueOnce({
         events: completedEvents,
@@ -2405,7 +2691,9 @@ describe("Runtime-backed renderer store", () => {
       });
     const api = {
       runtime: {
-        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 230 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 230 })),
+        listTurns: vi.fn(async () => history),
         createThread: vi.fn(),
         startTurn: vi.fn(),
         cancelRun,
@@ -2439,7 +2727,7 @@ describe("Runtime-backed renderer store", () => {
 
     expect(cancelRun).toHaveBeenCalledOnce();
     expect(cancelRun).toHaveBeenCalledWith("run-runtime");
-    expect(replayEvents).toHaveBeenNthCalledWith(2, 230, 500);
+    expect(replayEvents).toHaveBeenNthCalledWith(3, 230, 500);
     expect(useAppStore.getState().runtimeSeq).toBe(232);
     expect(
       useAppStore.getState().threads[0]?.branches[0]?.turns[0]
@@ -2462,12 +2750,12 @@ describe("Runtime-backed renderer store", () => {
       createdAt,
       updatedAt: createdAt
     };
-    const initialEvents = [
-      runtimeEvent(1, "item.completed", "user-runtime", {
-        item: messageItem("user-runtime", "user", "stop me", "completed")
-      }),
-      runtimeEvent(2, "run.state_changed", null, { status: "running" })
-    ];
+    const history = singleTurnHistoryPage(
+      thread,
+      [historyMessageItem("user-runtime", "user", "stop me", "completed", 1)],
+      "running",
+      2,
+    );
     const cancelRun = vi.fn(async () => ({
       accepted: true,
       runId: "run-runtime",
@@ -2475,12 +2763,14 @@ describe("Runtime-backed renderer store", () => {
     }));
     const api = {
       runtime: {
-        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 2 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 2 })),
+        listTurns: vi.fn(async () => history),
         createThread: vi.fn(),
         startTurn: vi.fn(),
         cancelRun,
         replayEvents: vi.fn(async () => ({
-          events: initialEvents,
+          events: [],
           latestSeq: 2,
           nextAfterSeq: 2,
           hasMore: false
@@ -2529,12 +2819,12 @@ describe("Runtime-backed renderer store", () => {
       createdAt,
       updatedAt: createdAt
     };
-    const initialEvents = [
-      runtimeEvent(1, "item.completed", "user-runtime", {
-        item: messageItem("user-runtime", "user", "finish first", "completed")
-      }),
-      runtimeEvent(2, "run.state_changed", null, { status: "running" })
-    ];
+    const history = singleTurnHistoryPage(
+      thread,
+      [historyMessageItem("user-runtime", "user", "finish first", "completed", 1)],
+      "running",
+      2,
+    );
     const completedItem = runtimeEvent(3, "item.completed", "assistant-runtime", {
       item: messageItem("assistant-runtime", "assistant", "finished", "completed")
     });
@@ -2542,10 +2832,16 @@ describe("Runtime-backed renderer store", () => {
     const replayEvents = vi
       .fn()
       .mockResolvedValueOnce({
-        events: initialEvents,
+        events: [],
         latestSeq: 2,
         nextAfterSeq: 2,
         hasMore: false
+      })
+      .mockResolvedValueOnce({
+        events: [],
+        latestSeq: 2,
+        nextAfterSeq: 2,
+        hasMore: false,
       })
       .mockResolvedValueOnce({
         events: [completedItem],
@@ -2566,7 +2862,9 @@ describe("Runtime-backed renderer store", () => {
     }));
     const api = {
       runtime: {
-        listThreads: vi.fn(async () => ({ threads: [thread] })),
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 2 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 2 })),
+        listTurns: vi.fn(async () => history),
         createThread: vi.fn(),
         startTurn: vi.fn(),
         cancelRun,
@@ -2586,9 +2884,9 @@ describe("Runtime-backed renderer store", () => {
     await vi.waitFor(() => expect(useAppStore.getState().runStatus).toBe("completed"));
 
     expect(cancelRun).toHaveBeenCalledOnce();
-    expect(replayEvents).toHaveBeenCalledTimes(3);
-    expect(replayEvents).toHaveBeenNthCalledWith(2, 2, 500);
-    expect(replayEvents).toHaveBeenNthCalledWith(3, 3, 500);
+    expect(replayEvents).toHaveBeenCalledTimes(4);
+    expect(replayEvents).toHaveBeenNthCalledWith(3, 2, 500);
+    expect(replayEvents).toHaveBeenNthCalledWith(4, 3, 500);
     expect(
       useAppStore.getState().threads[0]?.branches[0]?.turns[0]
     ).toMatchObject({
@@ -2619,20 +2917,13 @@ describe("Runtime-backed renderer store", () => {
       turnId: "turn-other",
       runId: "run-other"
     };
-    const initialEvents = [
-      runtimeEvent(1, "item.completed", "user-runtime", {
-        item: messageItem("user-runtime", "user", "first", "completed")
-      }),
-      runtimeEvent(2, "run.state_changed", null, { status: "running" }),
-      runtimeEvent(
-        3,
-        "item.completed",
-        "user-other",
-        { item: messageItem("user-other", "user", "second", "completed") },
-        secondIdentity
-      ),
-      runtimeEvent(4, "run.state_changed", null, { status: "queued" }, secondIdentity)
-    ];
+    const secondHistory = singleTurnHistoryPage(
+      secondThread,
+      [historyMessageItem("user-other", "user", "second", "completed", 1)],
+      "queued",
+      4,
+      { turnId: secondIdentity.turnId, runId: secondIdentity.runId },
+    );
     const cancelRun = vi.fn(async (runId: string) => ({
       accepted: true,
       runId,
@@ -2640,12 +2931,17 @@ describe("Runtime-backed renderer store", () => {
     }));
     const api = {
       runtime: {
-        listThreads: vi.fn(async () => ({ threads: [firstThread, secondThread] })),
+        listThreads: vi.fn(async () => ({
+          threads: [firstThread, secondThread],
+          snapshotSeq: 4,
+        })),
+        getThread: vi.fn(async () => ({ thread: secondThread, snapshotSeq: 4 })),
+        listTurns: vi.fn(async () => secondHistory),
         createThread: vi.fn(),
         startTurn: vi.fn(),
         cancelRun,
         replayEvents: vi.fn(async () => ({
-          events: initialEvents,
+          events: [],
           latestSeq: 4,
           nextAfterSeq: 4,
           hasMore: false
@@ -2666,5 +2962,455 @@ describe("Runtime-backed renderer store", () => {
     expect(cancelRun).toHaveBeenCalledOnce();
     expect(cancelRun).toHaveBeenCalledWith("run-other");
     expect(cancelRun).not.toHaveBeenCalledWith("run-runtime");
+  });
+
+  it("keeps Thread recency from a newer Turn page when metadata uses an older snapshot", async () => {
+    const historyUpdatedAt = "2026-08-11T12:01:00.000Z";
+    const thread = {
+      id: "thread-runtime",
+      title: "Split snapshots",
+      defaultBranchId: "branch-runtime",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const history = singleTurnHistoryPage(thread, [], "completed", 11);
+    history.turns[0] = {
+      ...history.turns[0]!,
+      updatedAt: historyUpdatedAt,
+    };
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 10 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 10 })),
+        listTurns: vi.fn(async () => history),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: 11,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    expect(useAppStore.getState().threads[0]?.updatedAt).toBe(historyUpdatedAt);
+    expect(useAppStore.getState().runtimeThreadDetails[thread.id]?.snapshotSeq).toBe(11);
+  });
+
+  it("uses each Turn page watermark when deltas arrive during later pagination", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Page watermarks",
+      defaultBranchId: "branch-runtime",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const newerPage = singleTurnHistoryPage(
+      thread,
+      [historyMessageItem("assistant-newer", "assistant", "A", "streaming", 1)],
+      "running",
+      10,
+      { turnId: "turn-newer", runId: "run-newer" },
+    );
+    newerPage.turns[0] = { ...newerPage.turns[0]!, ordinal: 2 };
+    newerPage.nextCursor = "older-page";
+    newerPage.hasMore = true;
+    const olderPage = singleTurnHistoryPage(
+      thread,
+      [historyMessageItem("assistant-older", "assistant", "AB", "streaming", 1)],
+      "running",
+      12,
+      { turnId: "turn-older", runId: "run-older" },
+    );
+    const newerDelta = runtimeEvent(11, "item.delta", "assistant-newer", { delta: "B" }, {
+      turnId: "turn-newer",
+      runId: "run-newer",
+    });
+    const olderDelta = runtimeEvent(12, "item.delta", "assistant-older", { delta: "B" }, {
+      turnId: "turn-older",
+      runId: "run-older",
+    });
+    let deltasEmitted = false;
+    const listTurns = vi
+      .fn<IkarosRuntimeApi["listTurns"]>()
+      .mockResolvedValueOnce(newerPage)
+      .mockImplementationOnce(async () => {
+        deltasEmitted = true;
+        for (const listener of listeners) {
+          listener(newerDelta);
+          listener(olderDelta);
+        }
+        return olderPage;
+      });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 10 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 10 })),
+        listTurns,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: deltasEmitted && afterSeq < 12 ? [newerDelta, olderDelta] : [],
+          latestSeq: deltasEmitted ? 12 : 10,
+          nextAfterSeq: deltasEmitted ? 12 : afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    const turns = useAppStore.getState().threads[0]?.branches[0]?.turns ?? [];
+    const newer = turns
+      .find((turn) => turn.id === "turn-newer")
+      ?.events.find((event) => event.id === "assistant-newer");
+    const older = turns
+      .find((turn) => turn.id === "turn-older")
+      ?.events.find((event) => event.id === "assistant-older");
+    expect(newer).toMatchObject({ content: "AB", status: "streaming" });
+    expect(older).toMatchObject({ content: "AB", status: "streaming" });
+    expect(useAppStore.getState().runtimeSeq).toBe(12);
+  });
+
+  it("keeps a live settled Run completed when a later history page has a newer watermark", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Settled during pagination",
+      defaultBranchId: "branch-runtime",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const newerPage = singleTurnHistoryPage(thread, [], "running", 10, {
+      turnId: "turn-newer",
+      runId: "run-newer",
+    });
+    newerPage.turns[0] = { ...newerPage.turns[0]!, ordinal: 2 };
+    newerPage.nextCursor = "older-page";
+    newerPage.hasMore = true;
+    const olderPage = singleTurnHistoryPage(thread, [], "completed", 12, {
+      turnId: "turn-older",
+      runId: "run-older",
+    });
+    const settled = runtimeEvent(11, "run.settled", null, { status: "completed" }, {
+      turnId: "turn-newer",
+      runId: "run-newer",
+    });
+    let settledEmitted = false;
+    const listTurns = vi
+      .fn<IkarosRuntimeApi["listTurns"]>()
+      .mockResolvedValueOnce(newerPage)
+      .mockImplementationOnce(async () => {
+        settledEmitted = true;
+        for (const listener of listeners) {
+          listener(settled);
+        }
+        return olderPage;
+      });
+    const cancelRun = vi.fn();
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 10 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 10 })),
+        listTurns,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun,
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: settledEmitted && afterSeq < 11 ? [settled] : [],
+          latestSeq: settledEmitted ? 12 : 10,
+          nextAfterSeq: settledEmitted ? 12 : afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    expect(useAppStore.getState().runtimeThreadActivity[thread.id]?.["run-newer"]).toMatchObject({
+      seq: 11,
+      status: "completed",
+      turnOrdinal: 2,
+    });
+    expect(useAppStore.getState().runStatus).toBe("completed");
+    useAppStore.getState().stopRun();
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("stops the newest active Run then falls back to an older active Run in the same Thread", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Concurrent runs",
+      defaultBranchId: "branch-runtime",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const cancelRun = vi.fn(async (runId: string) => ({
+      accepted: true,
+      runId,
+      status: "running" as const,
+    }));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 0 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 0 })),
+        listTurns: vi.fn(async () => ({
+          turns: [],
+          nextCursor: null,
+          hasMore: false,
+          snapshotSeq: 0,
+        })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun,
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    for (const listener of listeners) {
+      listener(runtimeEvent(1, "run.state_changed", null, { status: "running" }, {
+        turnId: "turn-a",
+        runId: "run-a",
+      }));
+      listener(runtimeEvent(2, "run.state_changed", null, { status: "queued" }, {
+        turnId: "turn-b",
+        runId: "run-b",
+      }));
+    }
+    expect(useAppStore.getState().runStatus).toBe("queued");
+    useAppStore.getState().stopRun();
+    expect(cancelRun).toHaveBeenNthCalledWith(1, "run-b");
+
+    for (const listener of listeners) {
+      listener(runtimeEvent(3, "run.settled", null, { status: "cancelled" }, {
+        turnId: "turn-b",
+        runId: "run-b",
+      }));
+    }
+    expect(useAppStore.getState().runStatus).toBe("running");
+    useAppStore.getState().stopRun();
+    expect(cancelRun).toHaveBeenNthCalledWith(2, "run-a");
+  });
+
+  it("orders restored active Runs by Turn ordinal instead of page read watermarks", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Restored concurrent runs",
+      defaultBranchId: "branch-runtime",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const newerPage = singleTurnHistoryPage(thread, [], "queued", 10, {
+      turnId: "turn-newer",
+      runId: "run-newer",
+    });
+    newerPage.turns[0] = { ...newerPage.turns[0]!, ordinal: 2 };
+    newerPage.nextCursor = "older-page";
+    newerPage.hasMore = true;
+    const olderPage = singleTurnHistoryPage(thread, [], "running", 12, {
+      turnId: "turn-older",
+      runId: "run-older",
+    });
+    const cancelRun = vi.fn(async (runId: string) => ({
+      accepted: true,
+      runId,
+      status: "running" as const,
+    }));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 12 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 10 })),
+        listTurns: vi
+          .fn<IkarosRuntimeApi["listTurns"]>()
+          .mockResolvedValueOnce(newerPage)
+          .mockResolvedValueOnce(olderPage),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun,
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: 12,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    expect(useAppStore.getState().runStatus).toBe("queued");
+    useAppStore.getState().stopRun();
+    expect(cancelRun).toHaveBeenNthCalledWith(1, "run-newer");
+
+    for (const listener of listeners) {
+      listener(runtimeEvent(13, "run.settled", null, { status: "cancelled" }, {
+        turnId: "turn-newer",
+        runId: "run-newer",
+      }));
+    }
+    expect(useAppStore.getState().runStatus).toBe("running");
+    useAppStore.getState().stopRun();
+    expect(cancelRun).toHaveBeenNthCalledWith(2, "run-older");
+  });
+
+  it("recovers one catalog stub when a post-snapshot event references an omitted Thread", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const omittedThread = {
+      id: "thread-omitted",
+      title: "Recovered catalog entry",
+      defaultBranchId: "branch-omitted",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    let resolveMetadata!: (value: { thread: RuntimeThreadSummary; snapshotSeq: number }) => void;
+    const metadata = new Promise<{ thread: RuntimeThreadSummary; snapshotSeq: number }>(
+      (resolve) => {
+        resolveMetadata = resolve;
+      },
+    );
+    const getThread = vi.fn(async () => metadata);
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [], snapshotSeq: 10 })),
+        getThread,
+        listTurns: vi.fn(),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: 10,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    const started = {
+      ...runtimeEvent(11, "item.started", "assistant-omitted", {
+        item: messageItem("assistant-omitted", "assistant", "", "streaming"),
+      }, {
+        threadId: omittedThread.id,
+        branchId: omittedThread.defaultBranchId,
+        turnId: "turn-omitted",
+        runId: "run-omitted",
+      }),
+      timestamp: "2026-08-11T12:01:00.000Z",
+    };
+    const running = {
+      ...runtimeEvent(12, "run.state_changed", null, { status: "running" }, {
+        threadId: omittedThread.id,
+        branchId: omittedThread.defaultBranchId,
+        turnId: "turn-omitted",
+        runId: "run-omitted",
+      }),
+      timestamp: "2026-08-11T12:02:00.000Z",
+    };
+    for (const listener of listeners) {
+      listener(started);
+      listener(running);
+    }
+    expect(getThread).toHaveBeenCalledOnce();
+    resolveMetadata({ thread: omittedThread, snapshotSeq: 10 });
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().threads.some((thread) => thread.id === omittedThread.id)).toBe(
+        true,
+      );
+    });
+    const recovered = useAppStore
+      .getState()
+      .threads.find((thread) => thread.id === omittedThread.id);
+    expect(recovered).toMatchObject({
+      title: omittedThread.title,
+      updatedAt: running.timestamp,
+    });
+    expect(recovered?.branches[0]?.turns).toEqual([]);
+    expect(useAppStore.getState().runtimeThreadDetails[omittedThread.id]).toMatchObject({
+      status: "idle",
+      snapshotSeq: 12,
+      error: null,
+    });
+    expect(useAppStore.getState().runtimeThreadActivity[omittedThread.id]?.["run-omitted"]).toMatchObject({
+      status: "running",
+      seq: 12,
+    });
+    expect(getThread).toHaveBeenCalledOnce();
   });
 });

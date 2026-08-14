@@ -22,12 +22,15 @@ import { DEFAULT_SIDEBAR_WIDTH } from "../shared/platform";
 import { LOCAL_PROFILE } from "./localProfile";
 import { createRuntimeClient, isRuntimeRpcError } from "./runtimeClient";
 import {
+  applyRuntimeCatalogEvent,
   applyRuntimeEvent as projectRuntimeEvent,
   projectRuntimeProjects,
   projectRuntimeThread,
+  projectRuntimeThreadHistory,
   projectRuntimeThreads,
   runtimeThreadWorkspaceFromEvent,
 } from "./runtimeProjection";
+import { loadRuntimeThreadHistory } from "./runtimeHistory";
 import type {
   RuntimeDiscoveredModel,
   RuntimeJournalEvent,
@@ -68,6 +71,22 @@ type PendingRuntimeSubmission = {
 };
 type RuntimeModelSelection = { providerId: string; modelId: string };
 type ProviderCatalogStatus = "idle" | "loading" | "ready" | "error";
+type RuntimeThreadDetailStatus = "idle" | "loading" | "ready" | "error";
+type RuntimeThreadDetailState = {
+  status: RuntimeThreadDetailStatus;
+  snapshotSeq: number;
+  error: string | null;
+};
+type RuntimeRunActivityState = {
+  seq: number;
+  branchId: string;
+  turnId: string;
+  runId: string;
+  status: RunStatus;
+  turnOrdinal: number | null;
+  runOrdinal: number | null;
+};
+type RuntimeThreadActivityState = Record<string, RuntimeRunActivityState>;
 
 interface AppState {
   runtimeMode: boolean;
@@ -80,6 +99,8 @@ interface AppState {
   selectedModel: RuntimeModelSelection | null;
   projects: Project[];
   threads: Thread[];
+  runtimeThreadDetails: Record<string, RuntimeThreadDetailState>;
+  runtimeThreadActivity: Record<string, RuntimeThreadActivityState>;
   selectedThreadId: string | null;
   runStatus: RunStatus;
   draft: string;
@@ -143,6 +164,10 @@ let providerCatalogRevision = 0;
 let removeRuntimeSubscription: (() => void) | undefined;
 let bufferedRuntimeEvents: RuntimeJournalEvent[] = [];
 const pendingRuntimeEvents = new Map<number, RuntimeJournalEvent>();
+const runtimeThreadLoadEvents = new Map<string, Map<number, RuntimeJournalEvent>>();
+const runtimeThreadLoads = new Map<string, Promise<void>>();
+const runtimeCatalogRecoveryEvents = new Map<string, Map<number, RuntimeJournalEvent>>();
+const runtimeCatalogRecoveries = new Map<string, Promise<void>>();
 const cancellingRuntimeRuns = new Set<string>();
 const runtimeTurnContinuations = new Map<string, Promise<void>>();
 const canonicalRuntimeTurnStarts = new Map<string, RuntimeTurnStartResult>();
@@ -264,6 +289,69 @@ function storedRunStatusForRun(thread: Thread | undefined, runId: string): RunSt
   return undefined;
 }
 
+function runtimeActivityStatus(value: unknown): RunStatus | undefined {
+  if (
+    value === "queued" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed"
+  ) {
+    return value;
+  }
+  return value === "cancelled" ? "interrupted" : undefined;
+}
+
+function latestRuntimeActivity(
+  activities: RuntimeThreadActivityState | undefined,
+  activeOnly: boolean,
+): RuntimeRunActivityState | undefined {
+  let latest: RuntimeRunActivityState | undefined;
+  for (const activity of Object.values(activities ?? {})) {
+    if (activeOnly && !isRunActive(activity.status)) continue;
+    if (!latest || compareRuntimeActivityOrder(activity, latest) >= 0) {
+      latest = activity;
+    }
+  }
+  return latest;
+}
+
+function compareRuntimeActivityOrder(
+  left: RuntimeRunActivityState,
+  right: RuntimeRunActivityState,
+): number {
+  if (left.turnOrdinal !== null && right.turnOrdinal !== null) {
+    if (left.turnOrdinal !== right.turnOrdinal) {
+      return left.turnOrdinal - right.turnOrdinal;
+    }
+    if (left.runOrdinal !== null && right.runOrdinal !== null) {
+      if (left.runOrdinal !== right.runOrdinal) {
+        return left.runOrdinal - right.runOrdinal;
+      }
+    }
+  } else if (left.turnOrdinal === null && right.turnOrdinal !== null) {
+    // A Run absent from the installed snapshot was created after that snapshot.
+    return 1;
+  } else if (left.turnOrdinal !== null && right.turnOrdinal === null) {
+    return -1;
+  }
+  return left.seq - right.seq;
+}
+
+function runtimeActivityForThread(
+  state: Pick<AppState, "runtimeThreadActivity">,
+  threadId: string,
+): RuntimeRunActivityState | undefined {
+  const activities = state.runtimeThreadActivity[threadId];
+  return latestRuntimeActivity(activities, true) ?? latestRuntimeActivity(activities, false);
+}
+
+function activeRuntimeActivityForThread(
+  state: Pick<AppState, "runtimeThreadActivity">,
+  threadId: string,
+): RuntimeRunActivityState | undefined {
+  return latestRuntimeActivity(state.runtimeThreadActivity[threadId], true);
+}
+
 function hasPendingRuntimeSubmission(state: AppState, threadId: string | null): boolean {
   return threadId === null
     ? state.pendingRuntimeNewThread !== null
@@ -332,7 +420,8 @@ function runtimeRunStatusForSelection(
   if (selectedThreadId === null) {
     return state.pendingRuntimeNewThread ? "queued" : "idle";
   }
-  const stored = storedRunStatus(findThread(threads, selectedThreadId));
+  const activity = runtimeActivityForThread(state, selectedThreadId);
+  const stored = activity?.status ?? storedRunStatus(findThread(threads, selectedThreadId));
   if (state.pendingRuntimeSubmissions[selectedThreadId] && !isRunActive(stored)) {
     return "queued";
   }
@@ -444,6 +533,18 @@ function currentRunContext(state: AppState): RunContext | null {
   const thread = findThread(state.threads, state.selectedThreadId);
   const branch = activeBranch(thread);
   if (state.runtimeMode) {
+    const activity = state.selectedThreadId
+      ? activeRuntimeActivityForThread(state, state.selectedThreadId)
+      : undefined;
+    if (thread && activity && isRunActive(activity.status)) {
+      return {
+        threadId: thread.id,
+        branchId: activity.branchId,
+        turnId: activity.turnId,
+        runId: activity.runId,
+        epoch: state.runEpoch,
+      };
+    }
     const turn = [...(branch?.turns ?? [])]
       .reverse()
       .find((candidate) => isRunActive(candidate.status) && candidate.runId);
@@ -656,7 +757,53 @@ function runtimeThreadCreateResultFromEvent(
 }
 
 function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
-  const threads = projectRuntimeEvent(state.threads, event);
+  const detail = event.threadId ? state.runtimeThreadDetails[event.threadId] : undefined;
+  const coveredByInstalledSnapshot =
+    detail?.status === "ready" && event.seq <= detail.snapshotSeq;
+  const threads = coveredByInstalledSnapshot
+    ? state.threads
+    : detail?.status === "ready"
+      ? projectRuntimeEvent(state.threads, event)
+      : applyRuntimeCatalogEvent(state.threads, event);
+  const runtimeThreadDetails =
+    event.threadId && detail?.status === "ready" && event.seq > detail.snapshotSeq
+      ? {
+          ...state.runtimeThreadDetails,
+          [event.threadId]: { ...detail, snapshotSeq: event.seq },
+        }
+      : state.runtimeThreadDetails;
+  const activityStatus =
+    event.type === "run.state_changed" || event.type === "run.settled"
+      ? runtimeActivityStatus(event.payload.status)
+      : undefined;
+  const threadActivities = event.threadId
+    ? state.runtimeThreadActivity[event.threadId]
+    : undefined;
+  const existingActivity = event.runId ? threadActivities?.[event.runId] : undefined;
+  const runtimeThreadActivity =
+    event.threadId &&
+    event.branchId &&
+    event.turnId &&
+    event.runId &&
+    activityStatus &&
+    event.seq > (existingActivity?.seq ?? -1)
+      ? {
+          ...state.runtimeThreadActivity,
+          [event.threadId]: {
+            ...threadActivities,
+            [event.runId]: {
+              ...existingActivity,
+              seq: event.seq,
+              branchId: event.branchId,
+              turnId: event.turnId,
+              runId: event.runId,
+              status: activityStatus,
+              turnOrdinal: existingActivity?.turnOrdinal ?? null,
+              runOrdinal: existingActivity?.runOrdinal ?? null,
+            },
+          },
+        }
+      : state.runtimeThreadActivity;
   const createdWorkspace = runtimeThreadWorkspaceFromEvent(event);
   const projects = createdWorkspace
     ? mergeWorkspaceProjects(state.projects, [createdWorkspace])
@@ -739,6 +886,8 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
   const projectedState = {
     ...state,
     threads,
+    runtimeThreadDetails,
+    runtimeThreadActivity,
     pendingRuntimeSubmissions,
     pendingRuntimeNewThread,
     selectedThreadId,
@@ -746,6 +895,8 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
   return {
     threads,
     projects,
+    runtimeThreadDetails,
+    runtimeThreadActivity,
     runtimeSeq: event.seq,
     runStatus: runtimeRunStatusForSelection(
       projectedState,
@@ -781,8 +932,11 @@ function drainRuntimeEventQueue(set: StoreSet, get: StoreGet): void {
   }
   if (changed) {
     set({
+      projects: state.projects,
       threads: state.threads,
       runtimeSeq: state.runtimeSeq,
+      runtimeThreadDetails: state.runtimeThreadDetails,
+      runtimeThreadActivity: state.runtimeThreadActivity,
       runStatus: state.runStatus,
       activeRun: state.activeRun,
       pendingRuntimeSubmissions: state.pendingRuntimeSubmissions,
@@ -809,6 +963,170 @@ function waitForRuntimeRetry(delayMs: number): Promise<void> {
   });
 }
 
+function recordRuntimeThreadLoadEvent(event: RuntimeJournalEvent): void {
+  if (!event.threadId) return;
+  runtimeThreadLoadEvents.get(event.threadId)?.set(event.seq, event);
+}
+
+function mergeRecoveredRuntimeCatalogThread(existing: Thread, recovered: Thread): Thread {
+  return {
+    ...recovered,
+    activeBranchId: existing.activeBranchId,
+    branches: existing.branches,
+    updatedAt:
+      existing.updatedAt.localeCompare(recovered.updatedAt) > 0
+        ? existing.updatedAt
+        : recovered.updatedAt,
+  };
+}
+
+function recordRuntimeCatalogRecoveryEvent(
+  set: StoreSet,
+  get: StoreGet,
+  event: RuntimeJournalEvent,
+): void {
+  const threadId = event.threadId;
+  if (!runtimeClient || !threadId) return;
+
+  const observedEvents = runtimeCatalogRecoveryEvents.get(threadId);
+  observedEvents?.set(event.seq, event);
+  if (findThread(get().threads, threadId) || event.type === "thread.created") {
+    return;
+  }
+
+  const recoveryEvents = observedEvents ?? new Map<number, RuntimeJournalEvent>();
+  recoveryEvents.set(event.seq, event);
+  runtimeCatalogRecoveryEvents.set(threadId, recoveryEvents);
+  void recoverRuntimeCatalogThread(set, get, threadId, recoveryEvents);
+}
+
+async function recoverRuntimeCatalogThread(
+  set: StoreSet,
+  get: StoreGet,
+  threadId: string,
+  observedEvents: Map<number, RuntimeJournalEvent>,
+): Promise<void> {
+  if (!runtimeClient) return;
+  const existing = runtimeCatalogRecoveries.get(threadId);
+  if (existing) {
+    return existing;
+  }
+
+  const recovery = (async () => {
+    try {
+      const metadata = await runtimeClient.getThread(threadId);
+      let recovered = projectRuntimeThread(metadata.thread);
+      const events = [...observedEvents.values()]
+        .filter((event) => event.threadId === threadId && event.seq > metadata.snapshotSeq)
+        .sort((left, right) => left.seq - right.seq);
+      for (const event of events) {
+        recovered = applyRuntimeCatalogEvent([recovered], event)[0] ?? recovered;
+      }
+      const recoveredSnapshotSeq = Math.max(
+        metadata.snapshotSeq,
+        events.at(-1)?.seq ?? 0,
+      );
+
+      set((state) => {
+        const current = findThread(state.threads, threadId);
+        const installed = current
+          ? mergeRecoveredRuntimeCatalogThread(current, recovered)
+          : recovered;
+        const threads = current
+          ? state.threads.map((thread) => (thread.id === threadId ? installed : thread))
+          : [installed, ...state.threads];
+        const currentDetail = state.runtimeThreadDetails[threadId];
+        const runtimeThreadDetails =
+          currentDetail?.status === "ready" || currentDetail?.status === "loading"
+            ? state.runtimeThreadDetails
+            : {
+                ...state.runtimeThreadDetails,
+                [threadId]: {
+                  status: "idle" as const,
+                  snapshotSeq: Math.max(
+                    currentDetail?.snapshotSeq ?? 0,
+                    recoveredSnapshotSeq,
+                  ),
+                  error: null,
+                },
+              };
+        return {
+          projects: mergeRuntimeProjects(state.projects, [metadata.thread]),
+          threads,
+          runtimeThreadDetails,
+          runStatus: runtimeRunStatusForSelection(
+            { ...state, threads, runtimeThreadDetails },
+            state.selectedThreadId,
+            threads,
+          ),
+        };
+      });
+    } catch (error: unknown) {
+      if (!findThread(get().threads, threadId)) {
+        set({
+          runtimeError:
+            error instanceof Error ? error.message : "Runtime Thread catalog recovery failed",
+        });
+      }
+    } finally {
+      if (runtimeCatalogRecoveryEvents.get(threadId) === observedEvents) {
+        runtimeCatalogRecoveryEvents.delete(threadId);
+      }
+      runtimeCatalogRecoveries.delete(threadId);
+    }
+  })();
+  runtimeCatalogRecoveries.set(threadId, recovery);
+  return recovery;
+}
+
+function projectLoadedRuntimeThread(
+  loaded: Awaited<ReturnType<typeof loadRuntimeThreadHistory>>,
+  events: readonly RuntimeJournalEvent[],
+): Thread {
+  const turnCoverage = new Map(
+    loaded.turns.map(({ turn, snapshotSeq }) => [turn.id, snapshotSeq]),
+  );
+  let projected = projectRuntimeThreadHistory(
+    loaded.thread,
+    loaded.turns.map(({ turn }) => turn),
+  );
+  for (const event of events) {
+    const detailCoverage = event.turnId
+      ? (turnCoverage.get(event.turnId) ?? loaded.historySnapshotSeq)
+      : loaded.historySnapshotSeq;
+    const detailCovered = event.seq <= detailCoverage;
+    const metadataCovered = event.seq <= loaded.metadataSnapshotSeq;
+    if (!detailCovered) {
+      projected = projectRuntimeEvent([projected], event)[0] ?? projected;
+    } else if (!metadataCovered) {
+      projected = applyRuntimeCatalogEvent([projected], event)[0] ?? projected;
+    }
+  }
+  return projected;
+}
+
+function snapshotRuntimeThreadActivities(
+  loaded: Awaited<ReturnType<typeof loadRuntimeThreadHistory>>,
+): RuntimeThreadActivityState {
+  const activities: RuntimeThreadActivityState = {};
+  for (const { turn, snapshotSeq } of loaded.turns) {
+    for (const [runIndex, run] of turn.runs.entries()) {
+      const status = runtimeActivityStatus(run.status);
+      if (!status) continue;
+      activities[run.id] = {
+        seq: snapshotSeq,
+        branchId: turn.branchId,
+        turnId: turn.id,
+        runId: run.id,
+        status,
+        turnOrdinal: turn.ordinal,
+        runOrdinal: runIndex + 1,
+      };
+    }
+  }
+  return activities;
+}
+
 async function replayRuntimeEventsIntoQueue(
   set: StoreSet,
   get: StoreGet,
@@ -822,6 +1140,8 @@ async function replayRuntimeEventsIntoQueue(
   while (true) {
     const replay = await runtimeClient.replayEvents(cursor);
     for (const event of replay.events) {
+      recordRuntimeThreadLoadEvent(event);
+      recordRuntimeCatalogRecoveryEvent(set, get, event);
       if (event.seq > get().runtimeSeq) {
         pendingRuntimeEvents.set(event.seq, event);
       }
@@ -898,6 +1218,8 @@ function enqueueRuntimeEvent(
   get: StoreGet,
   event: RuntimeJournalEvent,
 ): void {
+  recordRuntimeThreadLoadEvent(event);
+  recordRuntimeCatalogRecoveryEvent(set, get, event);
   if (event.type === "run.settled" && event.runId) {
     cancellingRuntimeRuns.delete(event.runId);
   }
@@ -907,6 +1229,121 @@ function enqueueRuntimeEvent(
   pendingRuntimeEvents.set(event.seq, event);
   drainRuntimeEventQueue(set, get);
   recoverRuntimeEventGap(set, get);
+}
+
+async function loadRuntimeThreadIntoStore(
+  set: StoreSet,
+  get: StoreGet,
+  threadId: string,
+): Promise<void> {
+  if (!runtimeClient || get().runtimeThreadDetails[threadId]?.status === "ready") {
+    return;
+  }
+  const existing = runtimeThreadLoads.get(threadId);
+  if (existing) {
+    return existing;
+  }
+
+  const observedEvents = new Map<number, RuntimeJournalEvent>();
+  runtimeThreadLoadEvents.set(threadId, observedEvents);
+  set((state) => ({
+    runtimeThreadDetails: {
+      ...state.runtimeThreadDetails,
+      [threadId]: {
+        status: "loading",
+        snapshotSeq: state.runtimeThreadDetails[threadId]?.snapshotSeq ?? 0,
+        error: null,
+      },
+    },
+  }));
+
+  const loading = (async () => {
+    try {
+      const loaded = await loadRuntimeThreadHistory(runtimeClient, threadId);
+      const replayAfterSeq = Math.min(
+        loaded.metadataSnapshotSeq,
+        loaded.historySnapshotSeq,
+      );
+      if (replayAfterSeq > 0) {
+        await replayRuntimeEventsIntoQueue(set, get, replayAfterSeq);
+      }
+      const events = [...observedEvents.values()]
+        .filter((event) => event.threadId === threadId)
+        .sort((left, right) => left.seq - right.seq);
+      const projected = projectLoadedRuntimeThread(loaded, events);
+      const latestSnapshotSeq = Math.max(
+        loaded.latestSnapshotSeq,
+        events.at(-1)?.seq ?? 0,
+      );
+      const snapshotActivities = snapshotRuntimeThreadActivities(loaded);
+
+      set((state) => {
+        const existingIndex = state.threads.findIndex((thread) => thread.id === threadId);
+        const threads =
+          existingIndex === -1
+            ? [projected, ...state.threads]
+            : state.threads.map((thread) => (thread.id === threadId ? projected : thread));
+        const currentActivities = state.runtimeThreadActivity[threadId] ?? {};
+        const mergedActivities = { ...snapshotActivities };
+        for (const [runId, activity] of Object.entries(currentActivities)) {
+          const snapshotActivity = mergedActivities[runId];
+          if (!snapshotActivity) {
+            mergedActivities[runId] = activity;
+          } else if (activity.seq > snapshotActivity.seq) {
+            mergedActivities[runId] = {
+              ...activity,
+              turnOrdinal: snapshotActivity.turnOrdinal,
+              runOrdinal: snapshotActivity.runOrdinal,
+            };
+          }
+        }
+        const runtimeThreadActivity = {
+          ...state.runtimeThreadActivity,
+          [threadId]: mergedActivities,
+        };
+        return {
+          projects: mergeRuntimeProjects(state.projects, [loaded.thread]),
+          threads,
+          runtimeThreadDetails: {
+            ...state.runtimeThreadDetails,
+            [threadId]: {
+              status: "ready",
+              snapshotSeq: latestSnapshotSeq,
+              error: null,
+            },
+          },
+          runtimeThreadActivity,
+          ...(state.selectedThreadId === threadId ? { runtimeError: null } : {}),
+          runStatus: runtimeRunStatusForSelection(
+            { ...state, runtimeThreadActivity },
+            state.selectedThreadId,
+            threads,
+          ),
+        };
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Runtime Thread history loading failed";
+      set((state) => ({
+        runtimeError: state.selectedThreadId === threadId ? message : state.runtimeError,
+        runtimeThreadDetails: {
+          ...state.runtimeThreadDetails,
+          [threadId]: {
+            status: "error",
+            snapshotSeq: state.runtimeThreadDetails[threadId]?.snapshotSeq ?? 0,
+            error: message,
+          },
+        },
+      }));
+    } finally {
+      if (runtimeThreadLoadEvents.get(threadId) === observedEvents) {
+        runtimeThreadLoadEvents.delete(threadId);
+      }
+      runtimeThreadLoads.delete(threadId);
+    }
+  })();
+  runtimeThreadLoads.set(threadId, loading);
+  return loading;
 }
 
 async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<void> {
@@ -933,40 +1370,32 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
       runtimeClient.listProviders(),
       runtimeClient.listModels(),
     ]);
-    const replayedEvents = new Map<number, RuntimeJournalEvent>();
-    let cursor = 0;
-    while (true) {
-      const replay = await runtimeClient.replayEvents(cursor);
-      for (const event of replay.events) {
-        replayedEvents.set(event.seq, event);
-      }
-      cursor = replay.nextAfterSeq;
-      if (!replay.hasMore) {
-        break;
-      }
-    }
-    for (const event of bufferedRuntimeEvents) {
-      replayedEvents.set(event.seq, event);
-    }
-    bufferedRuntimeEvents = [];
-
-    // SQLite AUTOINCREMENT sequences do not restart when an older journal prefix is
-    // removed. Bootstrap from the first retained event while keeping strict
-    // contiguous-sequence checks for every event received after initialization.
-    const replayBaselineSeq =
-      replayedEvents.size > 0 ? Math.min(...replayedEvents.keys()) - 1 : 0;
-
     pendingRuntimeEvents.clear();
     set((state) => ({
       projects: mergeRuntimeProjects(state.projects, listed.threads),
       threads: projectRuntimeThreads(listed.threads),
-      runtimeSeq: replayBaselineSeq,
+      runtimeThreadDetails: Object.fromEntries(
+        listed.threads.map((thread) => [
+          thread.id,
+          { status: "idle", snapshotSeq: listed.snapshotSeq, error: null },
+        ]),
+      ),
+      runtimeThreadActivity: {},
+      runtimeSeq: listed.snapshotSeq,
       runStatus: "idle",
       activeRun: null,
     }));
-    for (const event of replayedEvents.values()) {
-      pendingRuntimeEvents.set(event.seq, event);
+
+    if (listed.snapshotSeq > 0) {
+      await replayRuntimeEventsIntoQueue(set, get, listed.snapshotSeq);
     }
+    for (const event of bufferedRuntimeEvents) {
+      recordRuntimeCatalogRecoveryEvent(set, get, event);
+      if (event.seq > get().runtimeSeq) {
+        pendingRuntimeEvents.set(event.seq, event);
+      }
+    }
+    bufferedRuntimeEvents = [];
     drainRuntimeEventQueue(set, get);
 
     const threads = get().threads;
@@ -1138,6 +1567,14 @@ function adoptRuntimeCreatedThread(
     return {
       projects: mergeRuntimeProjects(state.projects, [created.thread]),
       threads,
+      runtimeThreadDetails: {
+        ...state.runtimeThreadDetails,
+        [threadId]: {
+          status: "ready",
+          snapshotSeq: created.event.seq,
+          error: null,
+        },
+      },
       pendingRuntimeSubmissions: {
         ...state.pendingRuntimeSubmissions,
         [threadId]: {
@@ -1436,6 +1873,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectedModel: null,
   projects: runtimeClient ? [] : createInitialProjects(),
   threads: runtimeClient ? [] : createInitialThreads(),
+  runtimeThreadDetails: {},
+  runtimeThreadActivity: {},
   selectedThreadId: null,
   runStatus: "idle",
   draft: "",
@@ -1658,6 +2097,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         settingsOpen: false,
         runtimeForegroundGeneration: current.runtimeForegroundGeneration + 1,
       }));
+      await loadRuntimeThreadIntoStore(set, get, threadId);
       return;
     }
 

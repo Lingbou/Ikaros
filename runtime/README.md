@@ -15,7 +15,8 @@ stdio.
 The current Desktop/Runtime path provides:
 
 - canonical Threads in SQLite, including an optional per-Thread workspace,
-  event replay, restart recovery, and idempotent Thread/Turn creation;
+  paginated catalog and history reads plus Thread detail reads, incremental event replay, restart
+  recovery, and idempotent Thread/Turn creation;
 - streamed, multi-Turn conversation through the deterministic
   `scripted/scripted-v1` provider or a configured DeepSeek/Custom
   OpenAI-compatible provider;
@@ -83,6 +84,13 @@ Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
 `IKAROS_HOME`; normal Desktop launches do not override it. The Runtime creates
 `state.db` on startup, while `config.yaml` remains absent until the user saves a
 real provider/model configuration.
+
+During pre-release development, conversation storage is intentionally
+reset-only. Incompatible `state.db` schema versions fail with `reset required`;
+the Runtime does not carry old-schema migrations or silently delete data.
+After stopping the owning Runtime, developers may explicitly remove
+`state.db`, `state.db-wal`, and `state.db-shm` to create the current schema on
+the next start. This reset never includes `config.yaml`.
 
 The deterministic `scripted/scripted-v1` provider supports ordinary streamed
 conversation and one explicit Tool-loop smoke syntax:

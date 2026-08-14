@@ -45,6 +45,62 @@ export interface RuntimeThreadListPage {
   snapshotSeq: number;
 }
 
+export interface RuntimeThreadGetResult {
+  thread: RuntimeThreadSummary;
+  snapshotSeq: number;
+}
+
+export interface RuntimeTurnListParams {
+  threadId: string;
+  branchId: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface RuntimeItemHistory {
+  id: string;
+  turnId: string;
+  runId: string;
+  ordinal: number;
+  kind: "message" | "tool_call" | "tool_result";
+  role: "user" | "assistant" | "tool" | null;
+  status: "streaming" | "running" | "completed" | "failed" | "cancelled";
+  content: string;
+  data: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeRunHistory {
+  id: string;
+  turnId: string;
+  providerId: string;
+  modelId: string;
+  executionPolicy: "full_access";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  createdAt: string;
+  settledAt: string | null;
+  items: RuntimeItemHistory[];
+}
+
+export interface RuntimeTurnHistory {
+  id: string;
+  threadId: string;
+  branchId: string;
+  ordinal: number;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  createdAt: string;
+  updatedAt: string;
+  runs: RuntimeRunHistory[];
+}
+
+export interface RuntimeTurnListPage {
+  turns: RuntimeTurnHistory[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotSeq: number;
+}
+
 export interface RuntimeThreadCreateParams {
   title: string | null;
   workspace: RuntimeWorkspaceSummary | null;
@@ -158,7 +214,9 @@ export type RuntimeInvocationResult<TResult> =
   | { ok: false; error: RuntimeRpcFailure };
 
 export interface IkarosRuntimeApi {
-  listThreads(): Promise<{ threads: RuntimeThreadSummary[] }>;
+  listThreads(): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>;
+  getThread(threadId: string): Promise<RuntimeThreadGetResult>;
+  listTurns(params: RuntimeTurnListParams): Promise<RuntimeTurnListPage>;
   createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult>;
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
   cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
@@ -180,7 +238,13 @@ export interface IkarosRuntimeApi {
 }
 
 export interface IkarosRuntimeBridgeApi {
-  listThreads(): Promise<RuntimeInvocationResult<{ threads: RuntimeThreadSummary[] }>>;
+  listThreads(): Promise<
+    RuntimeInvocationResult<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>
+  >;
+  getThread(threadId: string): Promise<RuntimeInvocationResult<RuntimeThreadGetResult>>;
+  listTurns(
+    params: RuntimeTurnListParams
+  ): Promise<RuntimeInvocationResult<RuntimeTurnListPage>>;
   createThread(
     params: RuntimeThreadCreateParams
   ): Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>;

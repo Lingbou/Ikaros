@@ -20,6 +20,9 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
+  RuntimeThreadGetResult,
+  RuntimeTurnListPage,
+  RuntimeTurnListParams,
   RuntimeTurnStartParams,
   RuntimeTurnStartResult,
   RuntimeWorkspaceSummary
@@ -118,7 +121,9 @@ export function registerDesktopIpc(
 ): RemoveIpcHandlers {
   const handledChannels = [
     DESKTOP_IPC_CHANNELS.runtime.threadCreate,
+    DESKTOP_IPC_CHANNELS.runtime.threadGet,
     DESKTOP_IPC_CHANNELS.runtime.threadList,
+    DESKTOP_IPC_CHANNELS.runtime.turnList,
     DESKTOP_IPC_CHANNELS.runtime.turnStart,
     DESKTOP_IPC_CHANNELS.runtime.runCancel,
     DESKTOP_IPC_CHANNELS.runtime.eventReplay,
@@ -151,6 +156,26 @@ export function registerDesktopIpc(
     trustPolicy.assertTrustedIpc(event);
     return invokeRuntime(() => listAllRuntimeThreads(runtimeHost));
   });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.threadGet,
+    async (event, threadId: string) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeThreadGetResult>("thread.get", { threadId })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.turnList,
+    async (event, params: RuntimeTurnListParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeTurnListPage>("turn.list", { ...params })
+      );
+    }
+  );
 
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.threadCreate,
