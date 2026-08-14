@@ -15,6 +15,9 @@ RPC_METHODS = frozenset(
     {
         "runtime.shutdown",
         "thread.create",
+        "thread.rename",
+        "thread.archive",
+        "thread.unarchive",
         "thread.get",
         "thread.list",
         "provider.list",
@@ -72,6 +75,15 @@ class RuntimeRouter:
                 result = {"accepted": True}
             elif method == "thread.create":
                 outcome = self._threads.create(params)
+                result = outcome.result
+            elif method == "thread.rename":
+                outcome = self._threads.rename(params)
+                result = outcome.result
+            elif method == "thread.archive":
+                outcome = self._threads.archive(params)
+                result = outcome.result
+            elif method == "thread.unarchive":
+                outcome = self._threads.unarchive(params)
                 result = outcome.result
             elif method == "thread.get":
                 result = self._threads.get(params)

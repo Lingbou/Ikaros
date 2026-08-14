@@ -11,6 +11,7 @@ export interface RuntimeThreadSummary {
   workspace: RuntimeWorkspaceSummary | null;
   createdAt: string;
   updatedAt: string;
+  archivedAt: string | null;
 }
 
 export const RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION = 1 as const;
@@ -36,6 +37,11 @@ export interface RuntimeThreadCreateResult {
 export interface RuntimeThreadListParams {
   cursor?: string;
   limit?: number;
+  archived?: boolean;
+}
+
+export interface RuntimeThreadCatalogParams {
+  archived?: boolean;
 }
 
 export interface RuntimeThreadListPage {
@@ -105,6 +111,17 @@ export interface RuntimeThreadCreateParams {
   title: string | null;
   workspace: RuntimeWorkspaceSummary | null;
   clientRequestId?: string;
+}
+
+export interface RuntimeThreadRenameParams {
+  threadId: string;
+  title: string | null;
+}
+
+export interface RuntimeThreadMutationResult {
+  thread: RuntimeThreadSummary;
+  changed: boolean;
+  event: RuntimeJournalEvent | null;
 }
 
 export interface RuntimeTurnStartParams {
@@ -214,10 +231,15 @@ export type RuntimeInvocationResult<TResult> =
   | { ok: false; error: RuntimeRpcFailure };
 
 export interface IkarosRuntimeApi {
-  listThreads(): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>;
+  listThreads(
+    params?: RuntimeThreadCatalogParams
+  ): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>;
   getThread(threadId: string): Promise<RuntimeThreadGetResult>;
   listTurns(params: RuntimeTurnListParams): Promise<RuntimeTurnListPage>;
   createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult>;
+  renameThread(params: RuntimeThreadRenameParams): Promise<RuntimeThreadMutationResult>;
+  archiveThread(threadId: string): Promise<RuntimeThreadMutationResult>;
+  unarchiveThread(threadId: string): Promise<RuntimeThreadMutationResult>;
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
   cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
   replayEvents(afterSeq: number, limit?: number): Promise<RuntimeReplayResult>;
@@ -238,7 +260,7 @@ export interface IkarosRuntimeApi {
 }
 
 export interface IkarosRuntimeBridgeApi {
-  listThreads(): Promise<
+  listThreads(params?: RuntimeThreadCatalogParams): Promise<
     RuntimeInvocationResult<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>
   >;
   getThread(threadId: string): Promise<RuntimeInvocationResult<RuntimeThreadGetResult>>;
@@ -248,6 +270,15 @@ export interface IkarosRuntimeBridgeApi {
   createThread(
     params: RuntimeThreadCreateParams
   ): Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>;
+  renameThread(
+    params: RuntimeThreadRenameParams
+  ): Promise<RuntimeInvocationResult<RuntimeThreadMutationResult>>;
+  archiveThread(
+    threadId: string
+  ): Promise<RuntimeInvocationResult<RuntimeThreadMutationResult>>;
+  unarchiveThread(
+    threadId: string
+  ): Promise<RuntimeInvocationResult<RuntimeThreadMutationResult>>;
   startTurn(
     params: RuntimeTurnStartParams
   ): Promise<RuntimeInvocationResult<RuntimeTurnStartResult>>;

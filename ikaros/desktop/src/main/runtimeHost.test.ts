@@ -17,6 +17,7 @@ import {
 } from "../shared/runtime";
 import {
   parseRuntimeThreadGetResult,
+  parseRuntimeThreadMutationResult,
   parseRuntimeJournalEvent,
   parseRuntimeJsonRpcResponse,
   parseRuntimeReplayResult,
@@ -81,7 +82,8 @@ function catalogThread(id: string) {
     defaultBranchId: `branch-${id}`,
     workspace: null,
     createdAt: "2026-08-14T00:00:00.000Z",
-    updatedAt: "2026-08-14T00:00:00.000Z"
+    updatedAt: "2026-08-14T00:00:00.000Z",
+    archivedAt: null
   };
 }
 
@@ -127,6 +129,98 @@ function historyTurn(ordinal: number): RuntimeTurnHistory {
 }
 
 describe("RuntimeHost integration", () => {
+  it("requests archived Thread catalog pages with a filter on every page", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-1")],
+        nextCursor: "next",
+        hasMore: true,
+        snapshotSeq: 5,
+      })
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-2")],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 5,
+      });
+
+    await expect(listAllRuntimeThreads({ request }, { archived: true })).resolves.toMatchObject({
+      snapshotSeq: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(1, "thread.list", {
+      limit: 100,
+      archived: true,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "thread.list", {
+      limit: 100,
+      archived: true,
+      cursor: "next",
+    });
+  });
+
+  it("validates changed and no-op Thread mutation results", () => {
+    const archivedThread = {
+      ...catalogThread("thread-1"),
+      archivedAt: "2026-08-14T01:00:00.000Z",
+    };
+    const event = {
+      ...journalEvent(2),
+      type: "thread.archived",
+      threadId: archivedThread.id,
+      branchId: archivedThread.defaultBranchId,
+      timestamp: archivedThread.updatedAt,
+      payload: { thread: archivedThread },
+    };
+
+    expect(
+      parseRuntimeThreadMutationResult(
+        { thread: archivedThread, changed: true, event },
+        archivedThread.id,
+        "thread.archived",
+      ),
+    ).toEqual({ thread: archivedThread, changed: true, event });
+    expect(
+      parseRuntimeThreadMutationResult(
+        { thread: archivedThread, changed: false, event: null },
+        archivedThread.id,
+        "thread.archived",
+      ),
+    ).toEqual({ thread: archivedThread, changed: false, event: null });
+    expect(() =>
+      parseRuntimeThreadMutationResult({
+        thread: archivedThread,
+        changed: false,
+        event,
+      }),
+    ).toThrow("invalid Thread mutation result");
+    expect(() =>
+      parseRuntimeThreadMutationResult(
+        {
+          thread: archivedThread,
+          changed: true,
+          event: { ...event, type: "thread.unarchived" },
+        },
+        archivedThread.id,
+        "thread.archived",
+      ),
+    ).toThrow("invalid Thread mutation result");
+    expect(() =>
+      parseRuntimeThreadMutationResult(
+        {
+          thread: archivedThread,
+          changed: true,
+          event: {
+            ...event,
+            payload: { thread: { ...archivedThread, title: "Different snapshot" } },
+          },
+        },
+        archivedThread.id,
+        "thread.archived",
+      ),
+    ).toThrow("invalid Thread mutation result");
+  });
+
   it("aggregates paginated Thread catalog pages while watermarks advance", async () => {
     const request = vi
       .fn()

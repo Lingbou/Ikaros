@@ -16,7 +16,7 @@ from .projections import workspace_from_json
 THREAD_CATALOG_DEFAULT_LIMIT = 50
 THREAD_CATALOG_MAX_LIMIT = 100
 
-_CURSOR_VERSION = 1
+_CURSOR_VERSION = 2
 _MAX_CURSOR_LENGTH = 1024
 _MAX_THREAD_ID_LENGTH = 200
 _CURSOR_CHARACTERS = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -30,6 +30,7 @@ _INVALID_CURSOR_MESSAGE = "thread.list cursor is invalid"
 class ThreadCatalogCursor:
     updated_at: str
     thread_id: str
+    archived: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ def list_thread_page(
     *,
     cursor: str | None,
     limit: int,
+    archived: bool = False,
 ) -> ThreadCatalogPage:
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ValueError("thread.list limit must be an integer")
@@ -62,6 +64,8 @@ def list_thread_page(
         )
 
     boundary = decode_thread_catalog_cursor(cursor) if cursor is not None else None
+    if boundary is not None and boundary.archived is not archived:
+        raise ValueError(_INVALID_CURSOR_MESSAGE)
     if connection.in_transaction:
         raise RuntimeError("thread catalog reads require an idle SQLite connection")
     connection.execute("BEGIN")
@@ -70,22 +74,26 @@ def list_thread_page(
         if boundary is None:
             rows = connection.execute(
                 """
-                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
+                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
+                       archived_at
                 FROM threads
+                WHERE archived_at IS {archive_filter}
                 ORDER BY updated_at DESC, id ASC
                 LIMIT ?
-                """,
+                """.format(archive_filter="NOT NULL" if archived else "NULL"),
                 (limit + 1,),
             ).fetchall()
         else:
             rows = connection.execute(
                 """
-                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
+                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
+                       archived_at
                 FROM threads
-                WHERE updated_at <= ? AND (updated_at < ? OR id > ?)
+                WHERE archived_at IS {archive_filter}
+                  AND updated_at <= ? AND (updated_at < ? OR id > ?)
                 ORDER BY updated_at DESC, id ASC
                 LIMIT ?
-                """,
+                """.format(archive_filter="NOT NULL" if archived else "NULL"),
                 (
                     boundary.updated_at,
                     boundary.updated_at,
@@ -108,6 +116,7 @@ def list_thread_page(
             ThreadCatalogCursor(
                 updated_at=str(last_row["updated_at"]),
                 thread_id=str(last_row["id"]),
+                archived=archived,
             )
         )
     return ThreadCatalogPage(
@@ -121,7 +130,12 @@ def list_thread_page(
 def encode_thread_catalog_cursor(cursor: ThreadCatalogCursor) -> str:
     _validate_cursor_boundary(cursor.updated_at, cursor.thread_id)
     payload = json_dumps(
-        {"v": _CURSOR_VERSION, "updatedAt": cursor.updated_at, "id": cursor.thread_id},
+        {
+            "v": _CURSOR_VERSION,
+            "updatedAt": cursor.updated_at,
+            "id": cursor.thread_id,
+            "archived": cursor.archived,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -145,16 +159,30 @@ def decode_thread_catalog_cursor(value: str) -> ThreadCatalogCursor:
         payload = json_loads(decoded)
     except (UnicodeDecodeError, ValueError, binascii.Error):
         raise ValueError(_INVALID_CURSOR_MESSAGE) from None
-    if not isinstance(payload, dict) or set(payload) != {"v", "updatedAt", "id"}:
+    if not isinstance(payload, dict) or set(payload) != {
+        "v",
+        "updatedAt",
+        "id",
+        "archived",
+    }:
         raise ValueError(_INVALID_CURSOR_MESSAGE)
     version = payload["v"]
     updated_at = payload["updatedAt"]
     thread_id = payload["id"]
+    archived = payload["archived"]
     if isinstance(version, bool) or not isinstance(version, int) or version != _CURSOR_VERSION:
         raise ValueError(_INVALID_CURSOR_MESSAGE)
-    if not isinstance(updated_at, str) or not isinstance(thread_id, str):
+    if (
+        not isinstance(updated_at, str)
+        or not isinstance(thread_id, str)
+        or not isinstance(archived, bool)
+    ):
         raise ValueError(_INVALID_CURSOR_MESSAGE)
-    cursor = ThreadCatalogCursor(updated_at=updated_at, thread_id=thread_id)
+    cursor = ThreadCatalogCursor(
+        updated_at=updated_at,
+        thread_id=thread_id,
+        archived=archived,
+    )
     try:
         _validate_cursor_boundary(cursor.updated_at, cursor.thread_id)
     except ValueError:
@@ -188,6 +216,7 @@ def _thread_from_row(row: sqlite3.Row) -> ThreadSummary:
         workspace=workspace_from_json(row["workspace_json"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        archived_at=row["archived_at"],
     )
 
 

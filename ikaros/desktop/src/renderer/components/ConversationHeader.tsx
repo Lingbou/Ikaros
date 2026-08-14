@@ -1,5 +1,6 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, GitBranch } from "lucide-react";
+import { Archive, Check, ChevronDown, GitBranch, Pencil } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   findThread,
   type Branch,
@@ -71,17 +72,101 @@ export function ConversationHeader() {
   const { t } = useTranslation();
   const thread = useAppStore(selectHeaderThread);
   const switchBranch = useAppStore((state) => state.switchBranch);
+  const renameThread = useAppStore((state) => state.renameThread);
+  const archiveThread = useAppStore((state) => state.archiveThread);
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const cancelRenameRef = useRef(false);
   const branch = thread?.branches.find((candidate) => candidate.id === thread.activeBranchId);
+
+  useEffect(() => {
+    if (!renaming) return;
+    titleInputRef.current?.focus();
+    titleInputRef.current?.select();
+  }, [renaming]);
 
   if (!thread) {
     return <div className="h-10 shrink-0" />;
   }
 
+  const commitRename = (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (cancelRenameRef.current) {
+      cancelRenameRef.current = false;
+      return;
+    }
+    if (!renaming) return;
+    setRenaming(false);
+    const normalized = titleDraft.trim();
+    void renameThread(thread.id, normalized || null).catch(() => undefined);
+  };
+
   return (
     <div className="flex h-10 shrink-0 select-none items-center gap-3 border-b border-[var(--border-soft)] px-4 sm:px-5">
-      <h1 className="min-w-0 flex-1 truncate text-[13px] leading-5 tracking-[-0.005em] text-[var(--text)]">
-        {thread.title || t("sidebar.newChat")}
-      </h1>
+      {renaming ? (
+        <form onSubmit={commitRename} className="min-w-0 flex-1">
+          <input
+            ref={titleInputRef}
+            value={titleDraft}
+            maxLength={200}
+            aria-label={t("thread.renamePlaceholder")}
+            onChange={(event) => setTitleDraft(event.currentTarget.value)}
+            onBlur={() => commitRename()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRenameRef.current = true;
+                setRenaming(false);
+              }
+            }}
+            className="h-7 w-full select-text rounded-md border border-[var(--border)] bg-[var(--panel)] px-2 text-[13px] leading-5 text-[var(--text)] outline-none focus:border-[var(--muted-strong)]"
+          />
+        </form>
+      ) : (
+        <h1
+          aria-label={thread.title || t("sidebar.newChat")}
+          className="min-w-0 flex-1 text-[13px] leading-5 tracking-[-0.005em]"
+        >
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                title={t("thread.actions")}
+                className="w-full truncate rounded-md px-1.5 py-1 text-left text-[13px] leading-5 tracking-[-0.005em] text-[var(--text)] outline-none transition-colors hover:bg-[var(--surface-hover)] data-[state=open]:bg-[var(--surface-hover)]"
+              >
+                {thread.title || t("sidebar.newChat")}
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                align="start"
+                sideOffset={5}
+                className="glass-menu z-[90] min-w-[170px] rounded-lg p-1"
+              >
+                <DropdownMenu.Item
+                  onSelect={() => {
+                    cancelRenameRef.current = false;
+                    setTitleDraft(thread.title);
+                    setRenaming(true);
+                  }}
+                  className="flex h-8 cursor-default items-center gap-2 rounded-md px-2 text-[12px] leading-[18px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                >
+                  <Pencil size={12} aria-hidden="true" className="text-[var(--muted-strong)]" />
+                  {t("thread.rename")}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  onSelect={() => void archiveThread(thread.id).catch(() => undefined)}
+                  className="flex h-8 cursor-default items-center gap-2 rounded-md px-2 text-[12px] leading-[18px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                >
+                  <Archive size={12} aria-hidden="true" className="text-[var(--muted-strong)]" />
+                  {t("thread.archive")}
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </h1>
+      )}
 
       {thread.branches.length > 1 && branch ? (
         <DropdownMenu.Root>

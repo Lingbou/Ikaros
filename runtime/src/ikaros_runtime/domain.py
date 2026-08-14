@@ -34,6 +34,7 @@ class ThreadSummary:
     workspace: WorkspaceSummary | None
     created_at: str
     updated_at: str
+    archived_at: str | None
 
     def to_wire(self) -> JsonObject:
         return {
@@ -43,6 +44,7 @@ class ThreadSummary:
             "workspace": self.workspace.to_wire() if self.workspace is not None else None,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
+            "archivedAt": self.archived_at,
         }
 
 

@@ -110,12 +110,14 @@ All Runtime-owned local files live below the current user's Ikaros home:
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 2. A non-empty unversioned database or any different `user_version`
+version 3. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml` is independent and is
-not removed by a conversation-state reset. Durable release migrations remain a
-future compatibility commitment rather than a partial framework in V1.
+not removed by a conversation-state reset. Every incompatible persistence or
+Event-payload change during this pre-release phase uses this destructive reset
+policy rather than a migration or upcaster. Durable release migrations remain
+a future compatibility commitment rather than a partial framework in V1.
 
 On Windows, `~/.ikaros` resolves below the user's profile directory in the same
 way as `~/.codex`. V1 does not create a separate credential store or encrypted
@@ -228,6 +230,7 @@ records into convenient UI shapes, but those shapes are not the wire protocol.
 
 ```text
 Thread                   one conversation, optionally carrying workspace metadata
+                         and nullable archivedAt lifecycle state
   -> Branch              one immutable conversation path; V1 creates the default only
     -> Turn              one user request and all work caused by it
       -> Run             one execution attempt
@@ -264,6 +267,9 @@ item.delta                      bounded message streaming delta
 item.completed                  message, tool-call, or tool-result terminal snapshot
 run.state_changed
 run.settled
+thread.renamed
+thread.archived
+thread.unarchived
 ```
 
 V1 represents Tool lifecycle records as typed Items instead of maintaining a
@@ -280,9 +286,11 @@ state such as completed, failed, or cancelled.
 
 ### Thread Catalog pagination
 
-`thread.list` is the Runtime-owned query surface for the sidebar catalog. It
-accepts only optional `cursor` and `limit` fields. The default page size is 50,
-the maximum is 100, and the response is always:
+`thread.list` is the Runtime-owned query surface for the sidebar catalogs. It
+accepts optional `cursor`, `limit`, and `archived` fields. `archived` defaults
+to `false`, so ordinary calls read only active Threads; `archived: true` reads
+only archived Threads. The default page size is 50, the maximum is 100, and the
+response is always:
 
 ```text
 threads
@@ -291,9 +299,11 @@ hasMore
 snapshotSeq
 ```
 
-Rows are ordered by `updated_at DESC, id ASC` using the matching SQLite index.
+Rows inside each active/archived scope are ordered by `updated_at DESC, id ASC`
+using the matching SQLite index.
 The opaque URL-safe cursor is a canonical, versioned encoding of the final
-returned row's `(updatedAt, id)` key. The next page uses the equivalent
+returned row's `(updatedAt, id)` key and the archived scope. A cursor from the
+other scope is invalid. The next page uses the equivalent
 range-seek predicate `updated_at <= cursor.updatedAt AND
 (updated_at < cursor.updatedAt OR id > cursor.id)` and reads `limit + 1` rows,
 so equal timestamps neither duplicate
@@ -307,6 +317,31 @@ not a cross-request MVCC snapshot: another page may return a larger waterline
 when a Run is active or a Thread changes between requests. Clients must not
 require equality across pages or claim that one cursor freezes the whole
 catalog.
+
+### Thread lifecycle
+
+The canonical Thread summary always carries `archivedAt`, which is `null` for
+an active Thread and the archive timestamp for an archived Thread. Lifecycle
+mutations are explicit Runtime commands:
+
+```text
+thread.rename({ threadId, title })
+thread.archive({ threadId })
+thread.unarchive({ threadId })
+  -> { thread, changed, event }
+```
+
+Each real state change updates the Thread projection and appends exactly one
+`thread.renamed`, `thread.archived`, or `thread.unarchived` Event in the same
+SQLite transaction. Repeating the current title or archive state returns
+`changed: false` and `event: null` without appending a duplicate Event.
+
+Archiving is rejected while any Run owned by the Thread is `queued` or
+`running`, preventing active work from disappearing from the Desktop catalog.
+An archived Thread remains readable through `thread.get` and `turn.list`, but
+cannot accept a new Turn until it is unarchived. Projection rebuild applies the
+same lifecycle Events, so the active and archived catalogs are derivable from
+the Journal.
 
 ### Thread metadata and history reads
 
@@ -759,9 +794,10 @@ current operating-system user's authority. Once Skill scripts are integrated
 through the same executor, they will inherit that authority as well. This is an
 explicit development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 2. Thread
-projections include optional `workspace_json` and the indexed Thread Catalog
-ordering key; Run history hydration is indexed by `turn_id`. Each Run snapshots
+The current reset-only SQLite database schema is canonical version 3. Thread
+projections include optional `workspace_json`, nullable `archived_at`, and an
+indexed active/archived Thread Catalog ordering key; Run history hydration is
+indexed by `turn_id`. Each Run snapshots
 `execution_policy = full_access`, and each Item has structured `data_json` for
 Tool Call arguments and normalized results. Rebuilding projections from the
 journal restores these records and the provider context. A bounded Agent loop
@@ -777,6 +813,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | Desktop concept | Runtime source |
 | --- | --- |
 | project and ordinary conversation lists | Thread projections; Desktop groups non-null `Thread.workspace` values as Projects |
+| rename/archive/unarchive | Runtime Thread lifecycle commands and sequenced lifecycle Events; archived Threads use a separate settings catalog |
 | streaming response | message Item lifecycle events |
 | Stop | Run cancellation command and terminal event |
 | tool card | `process_run`, `read`, `write`, and `edit` Item lifecycle events |
@@ -802,8 +839,9 @@ when renderer navigation changes. Desktop uses stable request IDs for
 selects from `model.list`, sends the explicit Provider/model reference with
 each Turn, and drives Stop through `run.cancel`.
 
-The Runtime wire method `thread.list` is keyset-paginated. Electron main
-currently traverses its pages with a limit of 100, rejects malformed pages,
+The Runtime wire method `thread.list` is keyset-paginated and scope-bound.
+Electron main traverses either the active or archived pages with a limit of
+100, rejects malformed pages,
 duplicate/repeating cursors, backward waterlines, and unbounded pagination,
 then exposes the aggregate catalog plus the first page's `snapshotSeq` to the
 renderer. Increasing page waterlines are valid. The first waterline is retained
@@ -812,6 +850,14 @@ page requests share an MVCC snapshot. If an existing Thread moves across a
 keyset boundary after that baseline and is omitted from the aggregate scan, its
 post-baseline event triggers a single-flight `thread.get` that restores the
 catalog stub without eagerly loading its history.
+
+Cold startup loads only the active catalog. The archived catalog is fetched on
+demand by the General-settings management dialog. Desktop calls
+`thread.rename`, `thread.archive`, and `thread.unarchive` through the same typed
+preload/IPC/RuntimeClient boundary, projects their sequenced Events into the
+correct catalog, clears an archived active selection, and buffers lifecycle
+Events that race an archived-catalog read so stale pages cannot resurrect a
+Thread in the wrong scope.
 
 Cold Desktop startup subscribes to live events before reading the catalog,
 installs that catalog at its known waterline, and performs incremental catch-up

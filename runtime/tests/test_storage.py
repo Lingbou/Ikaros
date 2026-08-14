@@ -7,6 +7,7 @@ import pytest
 
 from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, WorkspaceSummary
 from ikaros_runtime.errors import UnsupportedJournalEventVersionError
+from ikaros_runtime.json_codec import dumps as json_dumps
 from ikaros_runtime.storage import SqliteRuntimeStore
 
 
@@ -24,6 +25,30 @@ def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> No
         assert replayed[0].schema_version == JOURNAL_EVENT_SCHEMA_VERSION
         assert replayed[0].to_wire()["schemaVersion"] == JOURNAL_EVENT_SCHEMA_VERSION
         assert latest_seq == 1
+    finally:
+        store.close()
+
+
+def test_projection_rebuild_rejects_noncanonical_thread_payload_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        expected, event = store.create_thread("Canonical payload")
+        payload = dict(event.payload)
+        thread_payload = dict(payload["thread"])
+        del thread_payload["archivedAt"]
+        payload["thread"] = thread_payload
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET payload_json = ? WHERE seq = ?",
+                (json_dumps(payload, ensure_ascii=False, separators=(",", ":")), event.seq),
+            )
+
+        with pytest.raises(KeyError, match="archivedAt"):
+            store.rebuild_projections()
+
+        assert store.list_thread_page(cursor=None, limit=50).threads == (expected,)
     finally:
         store.close()
 
@@ -94,6 +119,82 @@ def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: 
             )
     finally:
         reloaded.close()
+
+
+def test_thread_rename_archive_and_unarchive_survive_projection_rebuild(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        created, _created_event = store.create_thread("Original")
+
+        renamed, renamed_event = store.rename_thread(created.id, "Renamed")
+        assert renamed.title == "Renamed"
+        assert renamed.archived_at is None
+        assert renamed_event is not None
+        assert renamed_event.type == "thread.renamed"
+        assert renamed_event.payload["thread"] == renamed.to_wire()
+
+        archived, archived_event = store.set_thread_archived(created.id, archived=True)
+        assert archived.archived_at is not None
+        assert archived_event is not None
+        assert archived_event.type == "thread.archived"
+        assert store.list_thread_page(cursor=None, limit=50).threads == ()
+        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == (
+            archived,
+        )
+
+        sequence_before_noop = store.latest_sequence()
+        repeated, repeated_event = store.set_thread_archived(created.id, archived=True)
+        assert repeated == archived
+        assert repeated_event is None
+        assert store.latest_sequence() == sequence_before_noop
+
+        store.rebuild_projections()
+        assert store.get_thread(created.id).thread == archived
+        assert store.list_thread_page(cursor=None, limit=50).threads == ()
+        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == (
+            archived,
+        )
+
+        restored, restored_event = store.set_thread_archived(created.id, archived=False)
+        assert restored.archived_at is None
+        assert restored_event is not None
+        assert restored_event.type == "thread.unarchived"
+        assert store.list_thread_page(cursor=None, limit=50).threads == (restored,)
+        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == ()
+    finally:
+        store.close()
+
+
+def test_archived_threads_cannot_start_turns_and_active_threads_cannot_be_archived(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _created_event = store.create_thread("Lifecycle")
+        store.set_thread_archived(thread.id, archived=True)
+        with pytest.raises(LookupError, match="thread is archived"):
+            store.prepare_turn(
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                content="must not run",
+                provider_id="scripted",
+                model_id="scripted-v1",
+            )
+
+        restored, _restored_event = store.set_thread_archived(thread.id, archived=False)
+        store.prepare_turn(
+            thread_id=restored.id,
+            branch_id=restored.default_branch_id,
+            content="now run",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        with pytest.raises(LookupError, match="active run cannot be archived"):
+            store.set_thread_archived(thread.id, archived=True)
+    finally:
+        store.close()
 
 
 def test_run_descriptor_inherits_its_thread_workspace(tmp_path: Path) -> None:

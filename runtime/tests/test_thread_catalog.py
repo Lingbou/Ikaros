@@ -95,6 +95,46 @@ def test_thread_catalog_exact_limit_and_empty_page_have_no_cursor(tmp_path: Path
         store.close()
 
 
+def test_thread_catalog_separates_active_and_archived_pages_and_cursors(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        active, _event = store.create_thread("Active")
+        first_archived, _event = store.create_thread("Archived one")
+        second_archived, _event = store.create_thread("Archived two")
+        store.set_thread_archived(first_archived.id, archived=True)
+        store.set_thread_archived(second_archived.id, archived=True)
+
+        active_page = store.list_thread_page(cursor=None, limit=50)
+        assert [thread.id for thread in active_page.threads] == [active.id]
+        assert active_page.threads[0].archived_at is None
+
+        archived_first_page = store.list_thread_page(
+            cursor=None,
+            limit=1,
+            archived=True,
+        )
+        assert len(archived_first_page.threads) == 1
+        assert archived_first_page.threads[0].archived_at is not None
+        assert archived_first_page.next_cursor is not None
+        archived_second_page = store.list_thread_page(
+            cursor=archived_first_page.next_cursor,
+            limit=1,
+            archived=True,
+        )
+        assert len(archived_second_page.threads) == 1
+        assert archived_second_page.threads[0].id != archived_first_page.threads[0].id
+        with pytest.raises(ValueError, match="thread.list cursor is invalid"):
+            store.list_thread_page(
+                cursor=archived_first_page.next_cursor,
+                limit=1,
+                archived=False,
+            )
+    finally:
+        store.close()
+
+
 def test_thread_catalog_snapshot_seq_is_each_page_query_watermark(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
@@ -177,26 +217,43 @@ def test_thread_catalog_page_and_watermark_share_one_sqlite_snapshot(
         store.close()
 
 
-def test_thread_catalog_query_uses_catalog_order_index(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("archived_filter", "index_name"),
+    [
+        ("IS NULL", "threads_active_catalog_order_idx"),
+        ("IS NOT NULL", "threads_archived_catalog_order_idx"),
+    ],
+)
+def test_thread_catalog_query_uses_scope_order_index(
+    tmp_path: Path,
+    archived_filter: str,
+    index_name: str,
+) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         plan = store._connection.execute(
-            """
+            f"""
             EXPLAIN QUERY PLAN
-            SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
+            SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
+                   archived_at
             FROM threads
+            WHERE archived_at {archived_filter}
             ORDER BY updated_at DESC, id ASC
             LIMIT 51
             """
         ).fetchall()
 
-        assert any("threads_catalog_order_idx" in str(row["detail"]) for row in plan)
+        details = [str(row["detail"]) for row in plan]
+        assert any(index_name in detail for detail in details)
+        assert all("USE TEMP B-TREE" not in detail for detail in details)
         keyset_plan = store._connection.execute(
-            """
+            f"""
             EXPLAIN QUERY PLAN
-            SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
+            SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
+                   archived_at
             FROM threads
-            WHERE updated_at <= ? AND (updated_at < ? OR id > ?)
+            WHERE archived_at {archived_filter}
+              AND updated_at <= ? AND (updated_at < ? OR id > ?)
             ORDER BY updated_at DESC, id ASC
             LIMIT 51
             """,
@@ -208,9 +265,10 @@ def test_thread_catalog_query_uses_catalog_order_index(tmp_path: Path) -> None:
         ).fetchall()
         keyset_details = [str(row["detail"]) for row in keyset_plan]
         assert any(
-            "SEARCH" in detail and "threads_catalog_order_idx" in detail
+            "SEARCH" in detail and index_name in detail
             for detail in keyset_details
         )
+        assert all("USE TEMP B-TREE" not in detail for detail in keyset_details)
     finally:
         store.close()
 

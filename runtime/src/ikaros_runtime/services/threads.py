@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..domain import CommandOutcome, WorkspaceSummary
+from ..domain import CommandOutcome, JournalEvent, JsonObject, WorkspaceSummary
 from ..errors import InvalidParamsError
 from ..storage import SqliteRuntimeStore
 from ..storage.thread_catalog import THREAD_CATALOG_DEFAULT_LIMIT, THREAD_CATALOG_MAX_LIMIT
@@ -24,15 +24,7 @@ class ThreadService:
         unknown = set(params) - {"title", "workspace", "clientRequestId"}
         if unknown:
             raise InvalidParamsError("thread.create contains unsupported parameters")
-        title = params.get("title")
-        if title is not None:
-            if not isinstance(title, str):
-                raise InvalidParamsError("title must be a string or null")
-            title = title.strip()
-            if not title:
-                title = None
-            elif len(title) > 200:
-                raise InvalidParamsError("title must not exceed 200 characters")
+        title = title_from(params.get("title"))
         client_request_id = client_request_id_from(params)
         workspace = workspace_from_wire(params.get("workspace"))
         self._assert_request_safe(
@@ -56,7 +48,7 @@ class ThreadService:
         )
 
     def list(self, params: dict[str, Any]) -> dict[str, Any]:
-        unknown = set(params) - {"cursor", "limit"}
+        unknown = set(params) - {"cursor", "limit", "archived"}
         if unknown:
             raise InvalidParamsError("thread.list contains unsupported parameters")
         cursor: str | None = None
@@ -72,8 +64,15 @@ class ThreadService:
             raise InvalidParamsError(
                 f"thread.list limit must be between 1 and {THREAD_CATALOG_MAX_LIMIT}"
             )
+        archived = params.get("archived", False)
+        if not isinstance(archived, bool):
+            raise InvalidParamsError("thread.list archived must be a boolean")
         try:
-            return self._store.list_thread_page(cursor=cursor, limit=limit).to_wire()
+            return self._store.list_thread_page(
+                cursor=cursor,
+                limit=limit,
+                archived=archived,
+            ).to_wire()
         except ValueError as error:
             raise InvalidParamsError(str(error)) from error
 
@@ -86,6 +85,60 @@ class ThreadService:
             return self._store.get_thread(thread_id).to_wire()
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
+
+    def rename(self, params: dict[str, Any]) -> CommandOutcome:
+        if set(params) != {"threadId", "title"}:
+            raise InvalidParamsError("thread.rename requires exactly threadId and title")
+        thread_id = record_id_from(params["threadId"], name="threadId")
+        title = title_from(params["title"])
+        self._assert_request_safe((thread_id, title))
+        try:
+            thread, event = self._store.rename_thread(thread_id, title)
+        except LookupError as error:
+            raise InvalidParamsError(str(error)) from error
+        return _mutation_outcome(thread.to_wire(), event)
+
+    def archive(self, params: dict[str, Any]) -> CommandOutcome:
+        return self._set_archived(params, archived=True)
+
+    def unarchive(self, params: dict[str, Any]) -> CommandOutcome:
+        return self._set_archived(params, archived=False)
+
+    def _set_archived(self, params: dict[str, Any], *, archived: bool) -> CommandOutcome:
+        method = "thread.archive" if archived else "thread.unarchive"
+        if set(params) != {"threadId"}:
+            raise InvalidParamsError(f"{method} requires exactly one threadId")
+        thread_id = record_id_from(params["threadId"], name="threadId")
+        self._assert_request_safe(thread_id)
+        try:
+            thread, event = self._store.set_thread_archived(thread_id, archived=archived)
+        except LookupError as error:
+            raise InvalidParamsError(str(error)) from error
+        return _mutation_outcome(thread.to_wire(), event)
+
+
+def _mutation_outcome(thread: JsonObject, event: JournalEvent | None) -> CommandOutcome:
+    return CommandOutcome(
+        result={
+            "thread": thread,
+            "changed": event is not None,
+            "event": event.to_wire() if event is not None else None,
+        },
+        events_after_ack=(event,) if event is not None else (),
+    )
+
+
+def title_from(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidParamsError("title must be a string or null")
+    title = value.strip()
+    if not title:
+        return None
+    if len(title) > 200:
+        raise InvalidParamsError("title must not exceed 200 characters")
+    return title
 
 
 def client_request_id_from(params: dict[str, Any]) -> str | None:

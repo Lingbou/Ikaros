@@ -81,9 +81,9 @@ function installRuntimeBridge(api: unknown): void {
   const bridged = {
     ...(api as object),
     runtime: {
-      listThreads: () =>
+      listThreads: (params) =>
         bridgeInvocation(async () => {
-          const listed = await runtime.listThreads();
+          const listed = await runtime.listThreads(params);
           listedThreads = listed.threads;
           catalogSnapshotSeq =
             typeof listed.snapshotSeq === "number" ? listed.snapshotSeq : 0;
@@ -111,6 +111,12 @@ function installRuntimeBridge(api: unknown): void {
         ),
       createThread: (params: Parameters<IkarosRuntimeApi["createThread"]>[0]) =>
         bridgeInvocation(() => runtime.createThread(params)),
+      renameThread: (params: Parameters<IkarosRuntimeApi["renameThread"]>[0]) =>
+        bridgeInvocation(() => runtime.renameThread(params)),
+      archiveThread: (threadId: string) =>
+        bridgeInvocation(() => runtime.archiveThread(threadId)),
+      unarchiveThread: (threadId: string) =>
+        bridgeInvocation(() => runtime.unarchiveThread(threadId)),
       startTurn: (params: Parameters<IkarosRuntimeApi["startTurn"]>[0]) =>
         bridgeInvocation(() => runtime.startTurn(params)),
       cancelRun: (runId: string) => bridgeInvocation(() => runtime.cancelRun(runId)),
@@ -258,6 +264,186 @@ afterEach(() => {
 });
 
 describe("Runtime-backed renderer store", () => {
+  it("renames, archives, and restores a Thread through Runtime mutation events", async () => {
+    const thread: RuntimeThreadSummary = {
+      id: "thread-lifecycle",
+      title: "Original",
+      defaultBranchId: "branch-lifecycle",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+      archivedAt: null,
+    };
+    const renamed = {
+      ...thread,
+      title: "Renamed",
+      updatedAt: "2026-08-11T12:01:00.000Z",
+    };
+    const archived = {
+      ...renamed,
+      updatedAt: "2026-08-11T12:02:00.000Z",
+      archivedAt: "2026-08-11T12:02:00.000Z",
+    };
+    const restored = {
+      ...archived,
+      updatedAt: "2026-08-11T12:03:00.000Z",
+      archivedAt: null,
+    };
+    const mutation = (
+      seq: number,
+      type: "thread.renamed" | "thread.archived" | "thread.unarchived",
+      summary: RuntimeThreadSummary,
+    ) => ({
+      thread: summary,
+      changed: true,
+      event: runtimeEvent(seq, type, null, { thread: summary }, {
+        threadId: summary.id,
+        branchId: summary.defaultBranchId,
+        turnId: null,
+        runId: null,
+      }),
+    });
+    const renameThread = vi.fn(async () => mutation(2, "thread.renamed", renamed));
+    const archiveThread = vi.fn(async () => mutation(3, "thread.archived", archived));
+    const unarchiveThread = vi.fn(async () => mutation(4, "thread.unarchived", restored));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 1 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 1 })),
+        listTurns: vi.fn(async () => ({
+          turns: [],
+          nextCursor: null,
+          hasMore: false,
+          snapshotSeq: 1,
+        })),
+        createThread: vi.fn(),
+        renameThread,
+        archiveThread,
+        unarchiveThread,
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: afterSeq,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+    await useAppStore.getState().renameThread(thread.id, "Renamed");
+    expect(useAppStore.getState().threads[0]?.title).toBe("Renamed");
+    expect(renameThread).toHaveBeenCalledWith({ threadId: thread.id, title: "Renamed" });
+
+    await useAppStore.getState().archiveThread(thread.id);
+    expect(useAppStore.getState().threads).toEqual([]);
+    expect(useAppStore.getState().selectedThreadId).toBeNull();
+    expect(useAppStore.getState().archivedThreads).toEqual([archived]);
+
+    await useAppStore.getState().unarchiveThread(thread.id);
+    expect(useAppStore.getState().threads[0]).toMatchObject({
+      id: thread.id,
+      title: "Renamed",
+    });
+    expect(useAppStore.getState().archivedThreads).toEqual([]);
+    expect(useAppStore.getState().runtimeSeq).toBe(4);
+  });
+
+  it("does not restore a live-unarchived Thread from an older archived catalog response", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const archived: RuntimeThreadSummary = {
+      id: "thread-archived-race",
+      title: "Archived before refresh",
+      defaultBranchId: "branch-archived-race",
+      workspace: null,
+      createdAt,
+      updatedAt: "2026-08-11T12:01:00.000Z",
+      archivedAt: "2026-08-11T12:01:00.000Z",
+    };
+    const restored: RuntimeThreadSummary = {
+      ...archived,
+      updatedAt: "2026-08-11T12:02:00.000Z",
+      archivedAt: null,
+    };
+    let resolveArchivedCatalog!: (value: {
+      threads: RuntimeThreadSummary[];
+      snapshotSeq: number;
+    }) => void;
+    const archivedCatalog = new Promise<{
+      threads: RuntimeThreadSummary[];
+      snapshotSeq: number;
+    }>((resolve) => {
+      resolveArchivedCatalog = resolve;
+    });
+    const listThreads = vi
+      .fn<IkarosRuntimeApi["listThreads"]>()
+      .mockImplementation((params) =>
+        params?.archived
+          ? archivedCatalog
+          : Promise.resolve({ threads: [], snapshotSeq: 10 }),
+      );
+    const api = {
+      runtime: {
+        listThreads,
+        getThread: vi.fn(async () => ({ thread: restored, snapshotSeq: 11 })),
+        listTurns: vi.fn(),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: 10,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    const loading = useAppStore.getState().loadArchivedThreads();
+    await vi.waitFor(() => expect(listThreads).toHaveBeenCalledTimes(2));
+    for (const listener of listeners) {
+      listener(
+        runtimeEvent(11, "thread.unarchived", null, { thread: restored }, {
+          threadId: restored.id,
+          branchId: restored.defaultBranchId,
+          turnId: null,
+          runId: null,
+        }),
+      );
+    }
+    resolveArchivedCatalog({ threads: [archived], snapshotSeq: 10 });
+    await loading;
+
+    expect(useAppStore.getState()).toMatchObject({
+      archivedThreads: [],
+      archivedCatalogStatus: "ready",
+      runtimeSeq: 11,
+    });
+    expect(useAppStore.getState().threads).toHaveLength(1);
+    expect(useAppStore.getState().threads[0]).toMatchObject({
+      id: restored.id,
+      title: restored.title,
+    });
+  });
+
   it("creates project and ordinary chats through the same Thread flow with distinct workspace snapshots", async () => {
     const pickedWorkspace = {
       id: "workspace-ikaros",
@@ -1084,6 +1270,7 @@ describe("Runtime-backed renderer store", () => {
       workspace: null,
       createdAt,
       updatedAt: createdAt,
+      archivedAt: null,
     };
     const history = singleTurnHistoryPage(
       thread,
@@ -1376,8 +1563,10 @@ describe("Runtime-backed renderer store", () => {
       id: "thread-created-after-ack-loss",
       title: "first message",
       defaultBranchId: "branch-created-after-ack-loss",
+      workspace: null,
       createdAt,
-      updatedAt: createdAt
+      updatedAt: createdAt,
+      archivedAt: null,
     };
     let createdEvent: RuntimeJournalEvent | undefined;
     const createThread = vi.fn(async (params: RuntimeThreadCreateParams) => {
@@ -3327,6 +3516,7 @@ describe("Runtime-backed renderer store", () => {
       workspace: null,
       createdAt,
       updatedAt: createdAt,
+      archivedAt: null,
     };
     let resolveMetadata!: (value: { thread: RuntimeThreadSummary; snapshotSeq: number }) => void;
     const metadata = new Promise<{ thread: RuntimeThreadSummary; snapshotSeq: number }>(
@@ -3412,5 +3602,89 @@ describe("Runtime-backed renderer store", () => {
       seq: 12,
     });
     expect(getThread).toHaveBeenCalledOnce();
+  });
+
+  it("does not resurrect an omitted Thread when a newer archive event wins recovery", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const activeThread: RuntimeThreadSummary = {
+      id: "thread-archive-recovery-race",
+      title: "Active metadata snapshot",
+      defaultBranchId: "branch-archive-recovery-race",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+      archivedAt: null,
+    };
+    const archivedThread: RuntimeThreadSummary = {
+      ...activeThread,
+      updatedAt: "2026-08-11T12:02:00.000Z",
+      archivedAt: "2026-08-11T12:02:00.000Z",
+    };
+    let resolveMetadata!: (value: { thread: RuntimeThreadSummary; snapshotSeq: number }) => void;
+    const metadata = new Promise<{ thread: RuntimeThreadSummary; snapshotSeq: number }>(
+      (resolve) => {
+        resolveMetadata = resolve;
+      },
+    );
+    const getThread = vi.fn(async () => metadata);
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [], snapshotSeq: 10 })),
+        getThread,
+        listTurns: vi.fn(),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: 10,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    for (const listener of listeners) {
+      listener(
+        runtimeEvent(11, "item.started", "assistant-recovery-race", {
+          item: messageItem("assistant-recovery-race", "assistant", "", "streaming"),
+        }, {
+          threadId: activeThread.id,
+          branchId: activeThread.defaultBranchId,
+          turnId: "turn-recovery-race",
+          runId: "run-recovery-race",
+        }),
+      );
+    }
+    expect(getThread).toHaveBeenCalledOnce();
+
+    for (const listener of listeners) {
+      listener(
+        runtimeEvent(12, "thread.archived", null, { thread: archivedThread }, {
+          threadId: activeThread.id,
+          branchId: activeThread.defaultBranchId,
+          turnId: null,
+          runId: null,
+        }),
+      );
+    }
+    resolveMetadata({ thread: activeThread, snapshotSeq: 10 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useAppStore.getState().threads.some((thread) => thread.id === activeThread.id)).toBe(
+      false,
+    );
+    expect(useAppStore.getState().archivedThreads).toEqual([archivedThread]);
+    expect(useAppStore.getState().runtimeSeq).toBe(12);
   });
 });

@@ -74,6 +74,35 @@ describe("preload Runtime bridge", () => {
     );
   });
 
+  it("exposes archived catalog and Thread lifecycle mutations through narrow channels", async () => {
+    const expected = { ok: true as const, value: { changed: true } };
+    electron.ipcRenderer.invoke.mockResolvedValue(expected);
+    await import("./index");
+
+    const runtime = electron.exposedApi()?.runtime;
+    await runtime?.listThreads({ archived: true });
+    await runtime?.renameThread({ threadId: "thread-1", title: "Renamed" });
+    await runtime?.archiveThread("thread-1");
+    await runtime?.unarchiveThread("thread-1");
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:thread-list",
+      { archived: true },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:thread-rename",
+      { threadId: "thread-1", title: "Renamed" },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:thread-archive",
+      "thread-1",
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:thread-unarchive",
+      "thread-1",
+    );
+  });
+
   it("exposes Thread metadata and paginated Turn history through narrow channels", async () => {
     const metadata = {
       ok: true as const,

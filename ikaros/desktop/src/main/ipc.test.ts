@@ -186,6 +186,7 @@ describe("desktop window controls", () => {
       workspace: null,
       createdAt: "2026-08-14T00:00:00.000Z",
       updatedAt: "2026-08-14T00:00:00.000Z",
+      archivedAt: null,
     };
     const second = { ...first, id: "thread-2", title: "Second", defaultBranchId: "branch-2" };
     electron.runtimeHost.request
@@ -217,8 +218,43 @@ describe("desktop window controls", () => {
     });
   });
 
+  it("forwards the archived Thread catalog filter", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    electron.runtimeHost.request.mockResolvedValueOnce({
+      threads: [],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 7,
+    });
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+
+    const handler = electron.handlers.get("ikaros:runtime:thread-list");
+    await handler?.({ sender: {} }, { archived: true });
+
+    expect(electron.runtimeHost.request).toHaveBeenCalledWith("thread.list", {
+      limit: 100,
+      archived: true,
+    });
+  });
+
   it.each([
     ["ikaros:runtime:thread-get", ["thread-1"], "thread.get", { threadId: "thread-1" }],
+    [
+      "ikaros:runtime:thread-rename",
+      [{ threadId: "thread-1", title: "Renamed" }],
+      "thread.rename",
+      { threadId: "thread-1", title: "Renamed" },
+    ],
+    ["ikaros:runtime:thread-archive", ["thread-1"], "thread.archive", { threadId: "thread-1" }],
+    [
+      "ikaros:runtime:thread-unarchive",
+      ["thread-1"],
+      "thread.unarchive",
+      { threadId: "thread-1" },
+    ],
     [
       "ikaros:runtime:turn-list",
       [{ threadId: "thread-1", branchId: "branch-1", cursor: "older", limit: 25 }],

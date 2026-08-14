@@ -21,6 +21,7 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
   RuntimeThreadGetResult,
+  RuntimeThreadMutationResult,
   RuntimeTurnListPage,
   RuntimeTurnStartResult,
 } from "../shared/runtime";
@@ -62,6 +63,18 @@ function runtimeBridge(
     createThread: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeThreadCreateResult>("thread.create", { ...params }),
+      ),
+    renameThread: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeThreadMutationResult>("thread.rename", { ...params }),
+      ),
+    archiveThread: (threadId) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeThreadMutationResult>("thread.archive", { threadId }),
+      ),
+    unarchiveThread: (threadId) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeThreadMutationResult>("thread.unarchive", { threadId }),
       ),
     startTurn: (params) =>
       bridgeInvocation(() => host.request<RuntimeTurnStartResult>("turn.start", { ...params })),

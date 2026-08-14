@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { Profiler, type ProfilerOnRenderCallback } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findThread,
@@ -90,6 +90,41 @@ describe("ConversationHeader branch localization", () => {
 
     act(() => setUiLanguage("en"));
     expect(screen.getByText("feature/login")).toBeInTheDocument();
+  });
+
+  it("renames and archives from the flat title menu without an ellipsis control", async () => {
+    const renameThread = vi.fn(async () => undefined);
+    const archiveThread = vi.fn(async () => undefined);
+    useAppStore.setState({
+      projects: [],
+      threads: [threadWithActiveBranch("branch-main")],
+      selectedThreadId: "thread-localization",
+      runStatus: "idle",
+      renameThread,
+      archiveThread,
+    });
+
+    render(<ConversationHeader />);
+    const titleButton = screen.getByRole("button", { name: "Localization boundary" });
+    expect(titleButton.querySelector("svg")).toBeNull();
+
+    fireEvent.pointerDown(titleButton);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Conversation title" });
+    fireEvent.change(input, { target: { value: "Renamed conversation" } });
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+    await waitFor(() => {
+      expect(renameThread).toHaveBeenCalledWith(
+        "thread-localization",
+        "Renamed conversation",
+      );
+    });
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Localization boundary" }),
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+    await waitFor(() => expect(archiveThread).toHaveBeenCalledWith("thread-localization"));
   });
 });
 

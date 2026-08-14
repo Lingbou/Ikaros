@@ -49,6 +49,15 @@ function desktopApiWithPreferences(
         createThread: async () => {
           throw new Error("not used in settings tests");
         },
+        renameThread: async () => {
+          throw new Error("not used in settings tests");
+        },
+        archiveThread: async () => {
+          throw new Error("not used in settings tests");
+        },
+        unarchiveThread: async () => {
+          throw new Error("not used in settings tests");
+        },
         startTurn: async () => {
           throw new Error("not used in settings tests");
         },
@@ -149,6 +158,37 @@ afterEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("manages archived conversations from General settings", async () => {
+    const loadArchivedThreads = vi.fn(async () => undefined);
+    const unarchiveThread = vi.fn(async () => undefined);
+    useAppStore.setState({
+      archivedCatalogStatus: "ready",
+      archivedThreads: [
+        {
+          id: "thread-archived",
+          title: "Archived research",
+          defaultBranchId: "branch-archived",
+          workspace: { id: "workspace-research", name: "Research", rootUri: null },
+          createdAt: "2026-08-14T00:00:00.000Z",
+          updatedAt: "2026-08-14T01:00:00.000Z",
+          archivedAt: "2026-08-14T01:00:00.000Z",
+        },
+      ],
+      loadArchivedThreads,
+      unarchiveThread,
+    });
+
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage" }));
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Archived research")).toBeTruthy();
+    expect(screen.getByText("Research")).toBeTruthy();
+    expect(loadArchivedThreads).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+    await waitFor(() => expect(unarchiveThread).toHaveBeenCalledWith("thread-archived"));
+  });
+
   it("keeps General and adds local Profile and Appearance sections", () => {
     render(<SettingsPage />);
 

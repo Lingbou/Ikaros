@@ -20,6 +20,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+const THREAD_SNAPSHOT_EVENTS = new Set([
+  "thread.created",
+  "thread.renamed",
+  "thread.archived",
+  "thread.unarchived",
+]);
+
+export function runtimeThreadSummaryFromEvent(
+  event: RuntimeJournalEvent,
+): RuntimeThreadSummary | undefined {
+  if (!THREAD_SNAPSHOT_EVENTS.has(event.type) || !isRecord(event.payload.thread)) {
+    return undefined;
+  }
+  const value = event.payload.thread;
+  const workspace = value.workspace;
+  if (
+    typeof value.id !== "string" ||
+    (value.title !== null && typeof value.title !== "string") ||
+    typeof value.defaultBranchId !== "string" ||
+    (workspace !== null &&
+      (!isRecord(workspace) ||
+        typeof workspace.id !== "string" ||
+        typeof workspace.name !== "string" ||
+        (workspace.rootUri !== null && typeof workspace.rootUri !== "string"))) ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string" ||
+    (value.archivedAt !== null && typeof value.archivedAt !== "string")
+  ) {
+    return undefined;
+  }
+  return value as unknown as RuntimeThreadSummary;
+}
+
 export function projectRuntimeThread(summary: RuntimeThreadSummary): Thread {
   const workspace = summary.workspace ?? null;
   return {
@@ -119,10 +152,9 @@ export function projectRuntimeProjects(
 export function runtimeThreadWorkspaceFromEvent(
   event: RuntimeJournalEvent,
 ): RuntimeWorkspaceSummary | null | undefined {
-  if (event.type !== "thread.created" || !isRecord(event.payload.thread)) {
-    return undefined;
-  }
-  const workspace = event.payload.thread.workspace;
+  const thread = runtimeThreadSummaryFromEvent(event);
+  if (!thread) return undefined;
+  const workspace = thread.workspace;
   if (workspace === null) return null;
   if (
     !isRecord(workspace) ||
@@ -301,24 +333,16 @@ function safeFileResultOutput(value: unknown, status: ToolResultEvent["status"])
   return value.slice(0, 2_000);
 }
 
-function projectThreadCreated(
+function projectThreadSnapshot(
   threads: Thread[],
   event: RuntimeJournalEvent
 ): Thread[] | undefined {
-  if (!isRecord(event.payload.thread)) {
-    return undefined;
+  const summary = runtimeThreadSummaryFromEvent(event);
+  if (!summary) return undefined;
+  if (summary.archivedAt !== null) {
+    return threads.filter((thread) => thread.id !== summary.id);
   }
-  const value = event.payload.thread;
-  if (
-    typeof value.id !== "string" ||
-    typeof value.defaultBranchId !== "string" ||
-    typeof value.createdAt !== "string" ||
-    typeof value.updatedAt !== "string" ||
-    (value.title !== null && typeof value.title !== "string")
-  ) {
-    return undefined;
-  }
-  const projected = projectRuntimeThread(value as unknown as RuntimeThreadSummary);
+  const projected = projectRuntimeThread(summary);
   const exists = threads.some((thread) => thread.id === projected.id);
   return exists
     ? threads.map((thread) => (thread.id === projected.id ? { ...projected, branches: thread.branches } : thread))
@@ -329,8 +353,8 @@ export function applyRuntimeCatalogEvent(
   threads: Thread[],
   event: RuntimeJournalEvent,
 ): Thread[] {
-  if (event.type === "thread.created") {
-    return projectThreadCreated(threads, event) ?? threads;
+  if (THREAD_SNAPSHOT_EVENTS.has(event.type)) {
+    return projectThreadSnapshot(threads, event) ?? threads;
   }
   if (!event.threadId) {
     return threads;
@@ -349,8 +373,8 @@ export function applyRuntimeCatalogEvent(
 }
 
 export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent): Thread[] {
-  if (event.type === "thread.created") {
-    return projectThreadCreated(threads, event) ?? threads;
+  if (THREAD_SNAPSHOT_EVENTS.has(event.type)) {
+    return projectThreadSnapshot(threads, event) ?? threads;
   }
   if (!event.threadId || !event.branchId || !event.turnId) {
     return threads;

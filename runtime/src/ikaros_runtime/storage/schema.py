@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,14 +30,17 @@ CREATE TABLE threads (
     default_branch_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    archived_at TEXT,
     client_request_id TEXT,
     workspace_json TEXT
 );
 
 CREATE UNIQUE INDEX threads_client_request_id_idx
 ON threads(client_request_id) WHERE client_request_id IS NOT NULL;
-CREATE INDEX threads_catalog_order_idx
-ON threads(updated_at DESC, id ASC);
+CREATE INDEX threads_active_catalog_order_idx
+ON threads(updated_at DESC, id ASC) WHERE archived_at IS NULL;
+CREATE INDEX threads_archived_catalog_order_idx
+ON threads(updated_at DESC, id ASC) WHERE archived_at IS NOT NULL;
 
 CREATE TABLE branches (
     id TEXT PRIMARY KEY,

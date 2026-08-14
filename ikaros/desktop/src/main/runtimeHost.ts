@@ -13,7 +13,9 @@ import {
   type RuntimeReplayResult,
   type RuntimeRunHistory,
   type RuntimeThreadGetResult,
+  type RuntimeThreadCatalogParams,
   type RuntimeThreadListPage,
+  type RuntimeThreadMutationResult,
   type RuntimeThreadSummary,
   type RuntimeTurnHistory,
   type RuntimeTurnListPage,
@@ -202,7 +204,8 @@ function parseRuntimeThreadSummary(
     !isWireIdentifier(thread.defaultBranchId) ||
     !validWorkspace ||
     !isNonEmptyString(thread.createdAt) ||
-    !isNonEmptyString(thread.updatedAt)
+    !isNonEmptyString(thread.updatedAt) ||
+    (thread.archivedAt !== null && !isNonEmptyString(thread.archivedAt))
   ) {
     throw new Error(invalidMessage);
   }
@@ -212,8 +215,73 @@ function parseRuntimeThreadSummary(
     defaultBranchId: thread.defaultBranchId,
     workspace: workspace as RuntimeThreadSummary["workspace"],
     createdAt: thread.createdAt,
-    updatedAt: thread.updatedAt
+    updatedAt: thread.updatedAt,
+    archivedAt: thread.archivedAt as string | null
   };
+}
+
+export function parseRuntimeThreadMutationResult(
+  value: unknown,
+  expectedThreadId?: string,
+  expectedEventType?: "thread.renamed" | "thread.archived" | "thread.unarchived"
+): RuntimeThreadMutationResult {
+  const invalidMessage = "Runtime returned an invalid Thread mutation result.";
+  if (!isWireObject(value) || typeof value.changed !== "boolean") {
+    throw new Error(invalidMessage);
+  }
+  const thread = parseRuntimeThreadSummary(value.thread, invalidMessage);
+  if (expectedThreadId !== undefined && thread.id !== expectedThreadId) {
+    throw new Error(invalidMessage);
+  }
+  if (
+    (expectedEventType === "thread.archived" && thread.archivedAt === null) ||
+    (expectedEventType === "thread.unarchived" && thread.archivedAt !== null)
+  ) {
+    throw new Error(invalidMessage);
+  }
+  const event = value.event;
+  if (event === null) {
+    if (value.changed) throw new Error(invalidMessage);
+    return { thread, changed: false, event: null };
+  }
+  if (!value.changed) throw new Error(invalidMessage);
+  const parsedEvent = parseRuntimeJournalEvent(event);
+  const eventThread = parseRuntimeThreadSummary(parsedEvent.payload.thread, invalidMessage);
+  if (
+    parsedEvent.threadId !== thread.id ||
+    parsedEvent.branchId !== thread.defaultBranchId ||
+    parsedEvent.timestamp !== thread.updatedAt ||
+    !sameRuntimeThreadSummary(eventThread, thread) ||
+    (expectedEventType !== undefined && parsedEvent.type !== expectedEventType) ||
+    !["thread.renamed", "thread.archived", "thread.unarchived"].includes(
+      parsedEvent.type
+    )
+  ) {
+    throw new Error(invalidMessage);
+  }
+  return { thread, changed: true, event: parsedEvent };
+}
+
+function sameRuntimeThreadSummary(
+  left: RuntimeThreadSummary,
+  right: RuntimeThreadSummary
+): boolean {
+  const sameWorkspace =
+    left.workspace === null
+      ? right.workspace === null
+      : right.workspace !== null &&
+        left.workspace.id === right.workspace.id &&
+        left.workspace.name === right.workspace.name &&
+        left.workspace.rootUri === right.workspace.rootUri;
+  return (
+    left.id === right.id &&
+    left.title === right.title &&
+    left.defaultBranchId === right.defaultBranchId &&
+    sameWorkspace &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt &&
+    left.archivedAt === right.archivedAt
+  );
 }
 
 export function parseRuntimeThreadGetResult(
@@ -447,7 +515,8 @@ interface RuntimeThreadCatalogRequester {
 }
 
 export async function listAllRuntimeThreads(
-  requester: RuntimeThreadCatalogRequester
+  requester: RuntimeThreadCatalogRequester,
+  options: RuntimeThreadCatalogParams = {}
 ): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
   const threads: RuntimeThreadSummary[] = [];
   const threadIds = new Set<string>();
@@ -457,6 +526,9 @@ export async function listAllRuntimeThreads(
   let previousSnapshotSeq = -1;
   for (let pageNumber = 0; pageNumber < MAX_THREAD_CATALOG_PAGES; pageNumber += 1) {
     const params: Record<string, unknown> = { limit: THREAD_CATALOG_PAGE_LIMIT };
+    if (options.archived === true) {
+      params.archived = true;
+    }
     if (cursor !== undefined) {
       params.cursor = cursor;
     }
@@ -943,6 +1015,23 @@ export class RuntimeHost {
       return parseRuntimeThreadGetResult(
         result,
         typeof params.threadId === "string" ? params.threadId : undefined
+      ) as TResult;
+    }
+    if (
+      method === "thread.rename" ||
+      method === "thread.archive" ||
+      method === "thread.unarchive"
+    ) {
+      const expectedEventType =
+        method === "thread.rename"
+          ? "thread.renamed"
+          : method === "thread.archive"
+            ? "thread.archived"
+            : "thread.unarchived";
+      return parseRuntimeThreadMutationResult(
+        result,
+        typeof params.threadId === "string" ? params.threadId : undefined,
+        expectedEventType
       ) as TResult;
     }
     if (method === "turn.list") {

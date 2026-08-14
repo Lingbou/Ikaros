@@ -11,6 +11,9 @@ function bridgeWithListThreads(
     getThread: vi.fn(),
     listTurns: vi.fn(),
     createThread: vi.fn(),
+    renameThread: vi.fn(),
+    archiveThread: vi.fn(),
+    unarchiveThread: vi.fn(),
     startTurn: vi.fn(),
     cancelRun: vi.fn(),
     replayEvents: vi.fn(),
@@ -33,6 +36,40 @@ describe("RuntimeClient", () => {
     );
 
     await expect(client.listThreads()).resolves.toEqual(threads);
+  });
+
+  it("forwards archived catalog and Thread lifecycle mutations", async () => {
+    const listThreads = vi.fn(async () => ({
+      ok: true as const,
+      value: { threads: [], snapshotSeq: 4 },
+    }));
+    const bridge = bridgeWithListThreads(listThreads);
+    const mutation = {
+      thread: { id: "thread-1" },
+      changed: true,
+      event: { seq: 4 },
+    };
+    bridge.renameThread = vi.fn(async () => ({ ok: true as const, value: mutation })) as never;
+    bridge.archiveThread = vi.fn(async () => ({ ok: true as const, value: mutation })) as never;
+    bridge.unarchiveThread = vi.fn(async () => ({ ok: true as const, value: mutation })) as never;
+    const client = new RuntimeClient(bridge);
+
+    await expect(client.listThreads({ archived: true })).resolves.toEqual({
+      threads: [],
+      snapshotSeq: 4,
+    });
+    await expect(
+      client.renameThread({ threadId: "thread-1", title: "Renamed" }),
+    ).resolves.toEqual(mutation);
+    await expect(client.archiveThread("thread-1")).resolves.toEqual(mutation);
+    await expect(client.unarchiveThread("thread-1")).resolves.toEqual(mutation);
+    expect(listThreads).toHaveBeenCalledWith({ archived: true });
+    expect(bridge.renameThread).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      title: "Renamed",
+    });
+    expect(bridge.archiveThread).toHaveBeenCalledWith("thread-1");
+    expect(bridge.unarchiveThread).toHaveBeenCalledWith("thread-1");
   });
 
   it("forwards the Thread workspace snapshot without flattening it", async () => {
@@ -63,6 +100,7 @@ describe("RuntimeClient", () => {
       workspace: null,
       createdAt: "2026-08-14T00:00:00.000Z",
       updatedAt: "2026-08-14T00:00:00.000Z",
+      archivedAt: null,
     };
     const metadata = { thread, snapshotSeq: 5 };
     const history = { turns: [], nextCursor: null, hasMore: false, snapshotSeq: 5 };

@@ -14,9 +14,11 @@ stdio.
 
 The current Desktop/Runtime path provides:
 
-- canonical Threads in SQLite, including an optional per-Thread workspace,
-  paginated catalog and history reads plus Thread detail reads, incremental event replay, restart
-  recovery, and idempotent Thread/Turn creation;
+- canonical Threads in SQLite, including an optional per-Thread workspace and
+  nullable `archivedAt`, separately paginated active/archived catalogs, paginated
+  history and Thread detail reads, rename/archive/unarchive lifecycle commands,
+  incremental event replay, restart recovery, and idempotent Thread/Turn
+  creation;
 - streamed, multi-Turn conversation through the deterministic
   `scripted/scripted-v1` provider or a configured DeepSeek/Custom
   OpenAI-compatible provider;
@@ -39,6 +41,13 @@ workspace stored on each Thread; project and ordinary conversations otherwise
 use the same Thread, Turn, Run, and Item path. A workspace directory becomes
 the default working directory for `process_run` when the Tool Call does not
 supply `cwd`, and the base for relative `read`, `write`, and `edit` paths.
+
+`thread.list` returns active Threads by default; passing `archived: true` reads
+the separate archived catalog. Renaming and archive-state changes are
+append-only Journal transitions projected in the same SQLite transaction. An
+archive request is rejected while that Thread has a queued or running Run, and
+an archived Thread cannot accept a new Turn. Repeating the current title or
+archive state is a no-op and does not append a duplicate Event.
 
 ## Current limits
 
@@ -85,9 +94,10 @@ Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
 `state.db` on startup, while `config.yaml` remains absent until the user saves a
 real provider/model configuration.
 
-During pre-release development, conversation storage is intentionally
-reset-only. Incompatible `state.db` schema versions fail with `reset required`;
-the Runtime does not carry old-schema migrations or silently delete data.
+During pre-release development, conversation storage uses canonical SQLite
+schema version 3 and is intentionally reset-only. Incompatible `state.db`
+schema versions fail with `reset required`; the Runtime does not carry
+old-schema migrations or silently delete data.
 After stopping the owning Runtime, developers may explicitly remove
 `state.db`, `state.db-wal`, and `state.db-shm` to create the current schema on
 the next start. This reset never includes `config.yaml`.

@@ -22,7 +22,10 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
+  RuntimeThreadCatalogParams,
   RuntimeThreadGetResult,
+  RuntimeThreadMutationResult,
+  RuntimeThreadRenameParams,
   RuntimeThreadSummary,
   RuntimeTurnListPage,
   RuntimeTurnListParams,
@@ -38,8 +41,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 
 const desktopApi: IkarosDesktopApi = Object.freeze({
   runtime: Object.freeze({
-    listThreads: () =>
-      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList) as Promise<
+    listThreads: (params: RuntimeThreadCatalogParams = {}) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList, params) as Promise<
         RuntimeInvocationResult<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>
       >,
     getThread: (threadId: string) =>
@@ -57,6 +60,21 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.threadCreate,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeThreadCreateResult>>,
+    renameThread: (params: RuntimeThreadRenameParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.threadRename,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeThreadMutationResult>>,
+    archiveThread: (threadId: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.threadArchive,
+        threadId
+      ) as Promise<RuntimeInvocationResult<RuntimeThreadMutationResult>>,
+    unarchiveThread: (threadId: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.threadUnarchive,
+        threadId
+      ) as Promise<RuntimeInvocationResult<RuntimeThreadMutationResult>>,
     startTurn: (params: RuntimeTurnStartParams) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.turnStart,

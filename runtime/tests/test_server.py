@@ -1182,6 +1182,11 @@ async def test_protocol_constant_shaped_credentials_do_not_block_turn_events(
         "lf",
         "crlf",
         "item.delta",
+        "thread.renamed",
+        "thread.archived",
+        "thread.unarchived",
+        "archivedAt",
+        "changed",
         "assistant",
         "message",
     )
@@ -1204,9 +1209,33 @@ async def test_protocol_constant_shaped_credentials_do_not_block_turn_events(
     try:
         created = await _rpc(connection, 2, "thread.create", {"title": "Fixed values"})
         thread = created["result"]["thread"]
-        started = await _rpc(
+        renamed = await _rpc(
             connection,
             3,
+            "thread.rename",
+            {"threadId": thread["id"], "title": "Renamed fixed values"},
+            [],
+        )
+        assert renamed["result"]["event"]["type"] == "thread.renamed"
+        archived = await _rpc(
+            connection,
+            4,
+            "thread.archive",
+            {"threadId": thread["id"]},
+            [],
+        )
+        assert archived["result"]["event"]["type"] == "thread.archived"
+        restored = await _rpc(
+            connection,
+            5,
+            "thread.unarchive",
+            {"threadId": thread["id"]},
+            [],
+        )
+        assert restored["result"]["event"]["type"] == "thread.unarchived"
+        started = await _rpc(
+            connection,
+            6,
             "turn.start",
             {
                 "threadId": thread["id"],
@@ -1220,12 +1249,12 @@ async def test_protocol_constant_shaped_credentials_do_not_block_turn_events(
         settled = next(event for event in events if event["type"] == "run.settled")
         assert settled["payload"]["status"] == "completed"
 
-        replay = await _rpc(connection, 4, "event.replay", {"afterSeq": 0, "limit": 1000})
+        replay = await _rpc(connection, 7, "event.replay", {"afterSeq": 0, "limit": 1000})
         assert any(
             event["payload"].get("run", {}).get("executionPolicy") == "full_access"
             for event in replay["result"]["events"]
         )
-        await _shutdown(connection, process, 5)
+        await _shutdown(connection, process, 8)
     finally:
         if process.returncode is None:
             await _stop_failed_process(process)
@@ -3021,6 +3050,8 @@ async def test_thread_create_rejects_invalid_workspace(
         {"limit": 0},
         {"limit": 101},
         {"limit": 1.5},
+        {"archived": None},
+        {"archived": "true"},
     ],
 )
 async def test_thread_list_rejects_invalid_pagination_params(
@@ -3071,6 +3102,11 @@ async def test_thread_list_defaults_to_fifty_and_returns_next_page(tmp_path: Pat
         ("thread.get", {}),
         ("thread.get", {"threadId": ""}),
         ("thread.get", {"threadId": "thread", "extra": True}),
+        ("thread.rename", {}),
+        ("thread.rename", {"threadId": "thread", "title": 7}),
+        ("thread.archive", {}),
+        ("thread.archive", {"threadId": "thread", "extra": True}),
+        ("thread.unarchive", {"threadId": ""}),
         ("turn.list", {}),
         ("turn.list", {"threadId": "thread"}),
         ("turn.list", {"threadId": "thread", "branchId": ""}),
@@ -3220,6 +3256,98 @@ async def test_client_request_ids_make_mutating_commands_exactly_once(tmp_path: 
         listed = await _rpc(connection, 100, "thread.list", {}, [])
         assert len(listed["result"]["threads"]) == 1
         await _shutdown(connection, process, 101)
+    finally:
+        await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_thread_lifecycle_mutations_flow_through_rpc_journal_and_catalog(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_urlsafe(32)
+    process, ready = await _start_runtime(token, tmp_path)
+    try:
+        connection = await _initialize(f"ws://{ready['host']}:{ready['port']}", token)
+        created = await _rpc(connection, 2, "thread.create", {"title": "Original"})
+        thread = created["result"]["thread"]
+        assert thread["archivedAt"] is None
+
+        renamed = await _rpc(
+            connection,
+            3,
+            "thread.rename",
+            {"threadId": thread["id"], "title": "  Renamed  "},
+        )
+        assert renamed["result"]["changed"] is True
+        assert renamed["result"]["thread"]["title"] == "Renamed"
+        assert renamed["result"]["event"]["type"] == "thread.renamed"
+
+        archived = await _rpc(
+            connection,
+            4,
+            "thread.archive",
+            {"threadId": thread["id"]},
+        )
+        assert archived["result"]["changed"] is True
+        assert archived["result"]["thread"]["archivedAt"] is not None
+        assert archived["result"]["event"]["type"] == "thread.archived"
+
+        active_page = await _rpc(connection, 5, "thread.list", {}, [])
+        assert active_page["result"]["threads"] == []
+        archived_page = await _rpc(
+            connection,
+            6,
+            "thread.list",
+            {"archived": True},
+            [],
+        )
+        assert archived_page["result"]["threads"] == [archived["result"]["thread"]]
+        metadata = await _rpc(
+            connection,
+            7,
+            "thread.get",
+            {"threadId": thread["id"]},
+            [],
+        )
+        assert metadata["result"]["thread"] == archived["result"]["thread"]
+
+        repeated = await _rpc(
+            connection,
+            8,
+            "thread.archive",
+            {"threadId": thread["id"]},
+            [],
+        )
+        assert repeated["result"] == {
+            "thread": archived["result"]["thread"],
+            "changed": False,
+            "event": None,
+        }
+
+        restored = await _rpc(
+            connection,
+            9,
+            "thread.unarchive",
+            {"threadId": thread["id"]},
+            [],
+        )
+        assert restored["result"]["thread"]["archivedAt"] is None
+        assert restored["result"]["event"]["type"] == "thread.unarchived"
+
+        replayed = await _rpc(
+            connection,
+            10,
+            "event.replay",
+            {"afterSeq": 0, "limit": 100},
+            [],
+        )
+        assert [event["type"] for event in replayed["result"]["events"]] == [
+            "thread.created",
+            "thread.renamed",
+            "thread.archived",
+            "thread.unarchived",
+        ]
+        await _shutdown(connection, process, 11)
     finally:
         await _stop_failed_process(process)
 

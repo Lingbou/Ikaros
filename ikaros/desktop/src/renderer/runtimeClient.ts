@@ -16,7 +16,10 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
+  RuntimeThreadCatalogParams,
   RuntimeThreadGetResult,
+  RuntimeThreadMutationResult,
+  RuntimeThreadRenameParams,
   RuntimeThreadSummary,
   RuntimeTurnListPage,
   RuntimeTurnListParams,
@@ -99,8 +102,10 @@ async function unwrapRuntimeInvocation<TResult>(
 export class RuntimeClient implements IkarosRuntimeApi {
   constructor(private readonly api: IkarosRuntimeBridgeApi) {}
 
-  listThreads(): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
-    return unwrapRuntimeInvocation(this.api.listThreads());
+  listThreads(
+    params: RuntimeThreadCatalogParams = {}
+  ): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
+    return unwrapRuntimeInvocation(this.api.listThreads(params));
   }
 
   getThread(threadId: string): Promise<RuntimeThreadGetResult> {
@@ -113,6 +118,18 @@ export class RuntimeClient implements IkarosRuntimeApi {
 
   createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult> {
     return unwrapRuntimeInvocation(this.api.createThread(params));
+  }
+
+  renameThread(params: RuntimeThreadRenameParams): Promise<RuntimeThreadMutationResult> {
+    return unwrapRuntimeInvocation(this.api.renameThread(params));
+  }
+
+  archiveThread(threadId: string): Promise<RuntimeThreadMutationResult> {
+    return unwrapRuntimeInvocation(this.api.archiveThread(threadId));
+  }
+
+  unarchiveThread(threadId: string): Promise<RuntimeThreadMutationResult> {
+    return unwrapRuntimeInvocation(this.api.unarchiveThread(threadId));
   }
 
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult> {

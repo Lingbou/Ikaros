@@ -1,6 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowLeft,
+  Archive,
   Cable,
   Check,
   ChevronDown,
@@ -33,6 +34,7 @@ import {
 import { useTranslation } from "../i18n";
 import { useAppStore } from "../store";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { ArchivedThreadsDialog } from "./ArchivedThreadsDialog";
 import { ProfileSettings } from "./ProfileSettings";
 import {
   ModelsSettings,
@@ -51,6 +53,7 @@ function GeneralSettings({
   onLanguageChange(value: UiLanguagePreference): void;
 }) {
   const { t } = useTranslation();
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const languageLabel = (value: UiLanguagePreference) =>
     value === "en" ? t("settings.english") : t("settings.simplifiedChinese");
 
@@ -123,8 +126,29 @@ function GeneralSettings({
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
+          <div className="flex min-h-[68px] items-center gap-5 border-t border-[var(--border-soft)] py-3">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-[10px] bg-[var(--panel-raised)] text-[var(--muted-strong)]">
+              <Archive size={14} aria-hidden="true" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold leading-5 text-[var(--text)]">
+                {t("settings.archivedChats")}
+              </div>
+              <div className="mt-0.5 text-[11px] leading-4 text-[var(--muted)]">
+                {t("settings.archivedChatsDescription")}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setArchivedOpen(true)}
+              className="h-8 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--panel-raised)] px-3 text-[12px] font-medium leading-[18px] text-[var(--text)] outline-none transition-colors hover:bg-[var(--panel-hover)]"
+            >
+              {t("settings.manage")}
+            </button>
+          </div>
         </div>
       </section>
+      <ArchivedThreadsDialog open={archivedOpen} onOpenChange={setArchivedOpen} />
     </div>
   );
 }

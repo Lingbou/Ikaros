@@ -72,8 +72,11 @@ React renderer
 
 The Runtime currently owns:
 
-- paginated `thread.list`, `thread.get`, paginated `turn.list`, and
-  `thread.create`, including optional workspace snapshots;
+- paginated active/archived `thread.list`, `thread.get`, paginated `turn.list`,
+  and `thread.create`, including optional workspace snapshots and the canonical
+  nullable `archivedAt` field;
+- `thread.rename`, `thread.archive`, and `thread.unarchive`, with sequenced
+  lifecycle events persisted and projected through SQLite;
 - `turn.start`, streamed Item events, multi-Turn context, and settled Run state;
 - `run.cancel`, event replay, sequence-based reconnect catch-up, and SQLite
   recovery across Runtime restarts;
@@ -96,13 +99,21 @@ range, bytes written, and replacement count without displaying the full write
 or replacement arguments. It does not use `MockAgentClient` when the Electron
 Runtime bridge is available.
 
-Conversation-history cold startup reads only the Thread catalog and its
+Conversation-history cold startup reads only the active Thread catalog and its
 sequence waterline; it does not replay the full Journal from sequence zero.
 Selecting a Thread then loads and caches that Thread's materialized
 Turn/Run/Item history through `thread.get` and `turn.list`. Independent
 metadata/page waterlines and a loading-time event buffer merge concurrent live
 deltas exactly once, while per-Thread, per-Run activity keeps background
 execution and Stop independent from navigation.
+
+The conversation title menu renames or archives the current Thread through the
+Runtime. Archived Threads leave the active sidebar catalog and are loaded from
+the separate archived catalog only when General settings opens its management
+dialog; that dialog can unarchive them. Lifecycle events reconcile concurrent
+catalog reads, so a Thread moved between active and archived scopes is not
+reintroduced by an older page response. A queued or running Run prevents
+archive, and an archived Thread cannot start another Turn.
 
 Projects are not separate Runtime resources and there is no Project API. A
 Project is a Desktop grouping derived from a Thread's optional workspace.
@@ -157,3 +168,11 @@ supervision, authentication, reconnect, and the narrow IPC bridge. Runtime
 wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
+
+Conversation persistence uses canonical SQLite schema version 3 and is
+intentionally reset-only during pre-release development. An incompatible
+`~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
+or Event upcaster is provided. After stopping the Runtime, an explicitly
+authorized development reset removes only `state.db` plus its WAL/SHM files.
+Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
+conversation history and must be preserved.

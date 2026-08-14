@@ -7,6 +7,7 @@ import {
   type RuntimeTurnHistory,
 } from "../shared/runtime";
 import {
+  applyRuntimeCatalogEvent,
   projectRuntimeProjects,
   projectRuntimeThreadHistory,
   projectRuntimeThreads,
@@ -19,8 +20,73 @@ const summary: RuntimeThreadSummary = {
   defaultBranchId: "branch-1",
   workspace: null,
   createdAt: "2026-08-11T12:00:00.000Z",
-  updatedAt: "2026-08-11T12:00:00.000Z"
+  updatedAt: "2026-08-11T12:00:00.000Z",
+  archivedAt: null
 };
+
+function threadSnapshotEvent(
+  seq: number,
+  type: "thread.renamed" | "thread.archived" | "thread.unarchived",
+  thread: RuntimeThreadSummary,
+): RuntimeJournalEvent {
+  return {
+    seq,
+    schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+    type,
+    threadId: thread.id,
+    branchId: thread.defaultBranchId,
+    turnId: null,
+    runId: null,
+    itemId: null,
+    timestamp: thread.updatedAt,
+    payload: { thread },
+  };
+}
+
+describe("Runtime Thread lifecycle projection", () => {
+  it("renames in place, removes archived Threads, and restores unarchived Threads", () => {
+    const initial = projectRuntimeThreads([summary]);
+    initial[0]?.branches[0]?.turns.push({
+      id: "turn-preserved",
+      branchId: summary.defaultBranchId,
+      runId: "run-preserved",
+      status: "completed",
+      events: [],
+    });
+    const renamed = {
+      ...summary,
+      title: "Renamed",
+      updatedAt: "2026-08-11T12:01:00.000Z",
+    };
+    const afterRename = applyRuntimeCatalogEvent(
+      initial,
+      threadSnapshotEvent(2, "thread.renamed", renamed),
+    );
+    expect(afterRename[0]).toMatchObject({ title: "Renamed" });
+    expect(afterRename[0]?.branches[0]?.turns).toHaveLength(1);
+
+    const archived = {
+      ...renamed,
+      archivedAt: "2026-08-11T12:02:00.000Z",
+      updatedAt: "2026-08-11T12:02:00.000Z",
+    };
+    expect(
+      applyRuntimeCatalogEvent(
+        afterRename,
+        threadSnapshotEvent(3, "thread.archived", archived),
+      ),
+    ).toEqual([]);
+
+    const restored = {
+      ...archived,
+      archivedAt: null,
+      updatedAt: "2026-08-11T12:03:00.000Z",
+    };
+    expect(
+      applyRuntimeCatalogEvent([], threadSnapshotEvent(4, "thread.unarchived", restored)),
+    ).toMatchObject([{ id: summary.id, title: "Renamed" }]);
+  });
+});
 
 describe("Runtime workspace projection", () => {
   it("groups workspace Threads once and leaves ordinary Threads standalone", () => {

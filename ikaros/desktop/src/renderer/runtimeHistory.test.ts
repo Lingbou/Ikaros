@@ -10,6 +10,7 @@ const thread = {
   workspace: null,
   createdAt: "2026-08-14T00:00:00.000Z",
   updatedAt: "2026-08-14T00:00:00.000Z",
+  archivedAt: null,
 };
 
 function turn(ordinal: number): RuntimeTurnHistory {

@@ -149,7 +149,8 @@ def get_thread_metadata(
         snapshot_seq = latest_sequence(connection)
         row = connection.execute(
             """
-            SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
+            SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
+                   archived_at
             FROM threads
             WHERE id = ?
             """,
@@ -447,6 +448,7 @@ def _thread_from_row(row: sqlite3.Row) -> ThreadSummary:
         workspace=workspace_from_json(row["workspace_json"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        archived_at=row["archived_at"],
     )
 
 

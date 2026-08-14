@@ -112,7 +112,8 @@ class SqliteRuntimeStore:
         if client_request_id is not None:
             existing = self._connection.execute(
                 """
-                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
+                SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
+                       archived_at
                 FROM threads WHERE client_request_id = ?
                 """,
                 (client_request_id,),
@@ -145,6 +146,7 @@ class SqliteRuntimeStore:
                         workspace=existing_workspace,
                         created_at=str(existing["created_at"]),
                         updated_at=str(existing["updated_at"]),
+                        archived_at=existing["archived_at"],
                     ),
                     event_from_row(event_row),
                     False,
@@ -160,6 +162,7 @@ class SqliteRuntimeStore:
             workspace=workspace,
             created_at=timestamp,
             updated_at=timestamp,
+            archived_at=None,
         )
         payload: dict[str, Any] = {
             "thread": thread.to_wire(),
@@ -206,11 +209,101 @@ class SqliteRuntimeStore:
             )
         return thread, event, True
 
-    def list_thread_page(self, *, cursor: str | None, limit: int) -> ThreadCatalogPage:
-        return list_thread_page(self._connection, cursor=cursor, limit=limit)
+    def list_thread_page(
+        self,
+        *,
+        cursor: str | None,
+        limit: int,
+        archived: bool = False,
+    ) -> ThreadCatalogPage:
+        return list_thread_page(
+            self._connection,
+            cursor=cursor,
+            limit=limit,
+            archived=archived,
+        )
 
     def get_thread(self, thread_id: str) -> ThreadMetadata:
         return get_thread_metadata(self._connection, thread_id=thread_id)
+
+    def rename_thread(
+        self,
+        thread_id: str,
+        title: str | None,
+    ) -> tuple[ThreadSummary, JournalEvent | None]:
+        current = self.get_thread(thread_id).thread
+        if current.title == title:
+            return current, None
+        timestamp = utc_now()
+        updated = ThreadSummary(
+            id=current.id,
+            title=title,
+            default_branch_id=current.default_branch_id,
+            workspace=current.workspace,
+            created_at=current.created_at,
+            updated_at=timestamp,
+            archived_at=current.archived_at,
+        )
+        with self._connection:
+            self._connection.execute(
+                "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
+                (title, timestamp, thread_id),
+            )
+            event = self._append_event(
+                event_type="thread.renamed",
+                thread_id=thread_id,
+                branch_id=current.default_branch_id,
+                timestamp=timestamp,
+                payload={"thread": updated.to_wire()},
+            )
+        return updated, event
+
+    def set_thread_archived(
+        self,
+        thread_id: str,
+        *,
+        archived: bool,
+    ) -> tuple[ThreadSummary, JournalEvent | None]:
+        current = self.get_thread(thread_id).thread
+        if (current.archived_at is not None) is archived:
+            return current, None
+        timestamp = utc_now()
+        if archived:
+            active = self._connection.execute(
+                """
+                SELECT 1
+                FROM runs r
+                JOIN turns t ON t.id = r.turn_id
+                WHERE t.thread_id = ? AND r.status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (thread_id,),
+            ).fetchone()
+            if active is not None:
+                raise LookupError("thread with an active run cannot be archived")
+        updated = ThreadSummary(
+            id=current.id,
+            title=current.title,
+            default_branch_id=current.default_branch_id,
+            workspace=current.workspace,
+            created_at=current.created_at,
+            updated_at=timestamp,
+            archived_at=timestamp if archived else None,
+        )
+        event_type = "thread.archived" if archived else "thread.unarchived"
+        with self._connection:
+            self._connection.execute(
+                "UPDATE threads SET archived_at = ?, updated_at = ? WHERE id = ?",
+                (updated.archived_at, timestamp, thread_id),
+            )
+            event = self._append_event(
+                event_type=event_type,
+                thread_id=thread_id,
+                branch_id=current.default_branch_id,
+                timestamp=timestamp,
+                payload={"thread": updated.to_wire()},
+            )
+        return updated, event
 
     def list_turn_page(
         self,
@@ -271,11 +364,18 @@ class SqliteRuntimeStore:
                 return existing
 
         owner = self._connection.execute(
-            "SELECT 1 FROM branches WHERE id = ? AND thread_id = ?",
+            """
+            SELECT t.archived_at
+            FROM branches b
+            JOIN threads t ON t.id = b.thread_id
+            WHERE b.id = ? AND b.thread_id = ?
+            """,
             (branch_id, thread_id),
         ).fetchone()
         if owner is None:
             raise LookupError("thread or branch was not found")
+        if owner["archived_at"] is not None:
+            raise LookupError("thread is archived")
 
         ordinal = int(
             self._connection.execute(

@@ -20,7 +20,10 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
+  RuntimeThreadCatalogParams,
   RuntimeThreadGetResult,
+  RuntimeThreadMutationResult,
+  RuntimeThreadRenameParams,
   RuntimeTurnListPage,
   RuntimeTurnListParams,
   RuntimeTurnStartParams,
@@ -121,6 +124,9 @@ export function registerDesktopIpc(
 ): RemoveIpcHandlers {
   const handledChannels = [
     DESKTOP_IPC_CHANNELS.runtime.threadCreate,
+    DESKTOP_IPC_CHANNELS.runtime.threadRename,
+    DESKTOP_IPC_CHANNELS.runtime.threadArchive,
+    DESKTOP_IPC_CHANNELS.runtime.threadUnarchive,
     DESKTOP_IPC_CHANNELS.runtime.threadGet,
     DESKTOP_IPC_CHANNELS.runtime.threadList,
     DESKTOP_IPC_CHANNELS.runtime.turnList,
@@ -152,10 +158,13 @@ export function registerDesktopIpc(
     }
   });
 
-  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.threadList, async (event) => {
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.threadList,
+    async (event, params: RuntimeThreadCatalogParams = {}) => {
     trustPolicy.assertTrustedIpc(event);
-    return invokeRuntime(() => listAllRuntimeThreads(runtimeHost));
-  });
+      return invokeRuntime(() => listAllRuntimeThreads(runtimeHost, params));
+    }
+  );
 
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.threadGet,
@@ -183,6 +192,36 @@ export function registerDesktopIpc(
       trustPolicy.assertTrustedIpc(event);
       return invokeRuntime(() =>
         runtimeHost.request<RuntimeThreadCreateResult>("thread.create", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.threadRename,
+    async (event, params: RuntimeThreadRenameParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeThreadMutationResult>("thread.rename", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.threadArchive,
+    async (event, threadId: string) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeThreadMutationResult>("thread.archive", { threadId })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.threadUnarchive,
+    async (event, threadId: string) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeThreadMutationResult>("thread.unarchive", { threadId })
       );
     }
   );

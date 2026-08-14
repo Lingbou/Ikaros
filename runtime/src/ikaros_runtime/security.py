@@ -159,6 +159,9 @@ def rpc_request_values_contain_protected_value(
 _FIXED_EVENT_TYPES = frozenset(
     {
         "thread.created",
+        "thread.renamed",
+        "thread.archived",
+        "thread.unarchived",
         "run.state_changed",
         "item.started",
         "item.delta",
@@ -179,15 +182,19 @@ _GENERATED_ID_PREFIXES = {
     "toolCallItemId": "item_",
     "turnId": "turn_",
 }
-_TIMESTAMP_KEYS = frozenset({"createdAt", "settledAt", "timestamp", "updatedAt"})
+_TIMESTAMP_KEYS = frozenset(
+    {"archivedAt", "createdAt", "settledAt", "timestamp", "updatedAt"}
+)
 _FIXED_RESPONSE_KEYS = frozenset(
     {
         "accepted",
+        "archivedAt",
         "arguments",
         "branchId",
         "branch",
         "callId",
         "cancelled",
+        "changed",
         "bom",
         "bytesRead",
         "bytesWritten",

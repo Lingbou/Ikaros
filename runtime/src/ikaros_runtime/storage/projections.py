@@ -268,8 +268,8 @@ def apply_event(
             """
             INSERT INTO threads(
                 id, title, default_branch_id, workspace_json,
-                created_at, updated_at, client_request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, archived_at, client_request_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 thread["id"],
@@ -278,6 +278,7 @@ def apply_event(
                 workspace_to_json(workspace_from_wire(thread.get("workspace"))),
                 thread["createdAt"],
                 thread["updatedAt"],
+                thread["archivedAt"],
                 payload.get("clientRequestId"),
             ),
         )
@@ -288,6 +289,21 @@ def apply_event(
                 branch["threadId"],
                 branch["createdAt"],
                 int(branch["isDefault"]),
+            ),
+        )
+    elif event_type in {"thread.renamed", "thread.archived", "thread.unarchived"}:
+        thread = payload["thread"]
+        connection.execute(
+            """
+            UPDATE threads
+            SET title = ?, updated_at = ?, archived_at = ?
+            WHERE id = ?
+            """,
+            (
+                thread["title"],
+                thread["updatedAt"],
+                thread["archivedAt"],
+                thread["id"],
             ),
         )
     elif event_type == "item.completed" and "turn" in payload:

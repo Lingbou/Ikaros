@@ -28,6 +28,7 @@ import {
   projectRuntimeThread,
   projectRuntimeThreadHistory,
   projectRuntimeThreads,
+  runtimeThreadSummaryFromEvent,
   runtimeThreadWorkspaceFromEvent,
 } from "./runtimeProjection";
 import { loadRuntimeThreadHistory } from "./runtimeHistory";
@@ -39,6 +40,7 @@ import type {
   RuntimeProviderConfigureParams,
   RuntimeProviderSummary,
   RuntimeThreadCreateResult,
+  RuntimeThreadMutationResult,
   RuntimeThreadSummary,
   RuntimeTurnStartResult,
   RuntimeWorkspaceSummary,
@@ -72,6 +74,7 @@ type PendingRuntimeSubmission = {
 type RuntimeModelSelection = { providerId: string; modelId: string };
 type ProviderCatalogStatus = "idle" | "loading" | "ready" | "error";
 type RuntimeThreadDetailStatus = "idle" | "loading" | "ready" | "error";
+type RuntimeArchivedCatalogStatus = "idle" | "loading" | "ready" | "error";
 type RuntimeThreadDetailState = {
   status: RuntimeThreadDetailStatus;
   snapshotSeq: number;
@@ -99,6 +102,8 @@ interface AppState {
   selectedModel: RuntimeModelSelection | null;
   projects: Project[];
   threads: Thread[];
+  archivedThreads: RuntimeThreadSummary[];
+  archivedCatalogStatus: RuntimeArchivedCatalogStatus;
   runtimeThreadDetails: Record<string, RuntimeThreadDetailState>;
   runtimeThreadActivity: Record<string, RuntimeThreadActivityState>;
   selectedThreadId: string | null;
@@ -122,6 +127,10 @@ interface AppState {
 
   initializeRuntime: () => Promise<void>;
   applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
+  loadArchivedThreads: () => Promise<void>;
+  renameThread: (threadId: string, title: string | null) => Promise<void>;
+  archiveThread: (threadId: string) => Promise<void>;
+  unarchiveThread: (threadId: string) => Promise<void>;
   loadProviderCatalog: () => Promise<void>;
   discoverDeepSeekModels: (apiKey: string) => Promise<RuntimeDiscoveredModel[]>;
   configureProvider: (params: RuntimeProviderConfigureParams) => Promise<void>;
@@ -171,6 +180,8 @@ const runtimeCatalogRecoveries = new Map<string, Promise<void>>();
 const cancellingRuntimeRuns = new Set<string>();
 const runtimeTurnContinuations = new Map<string, Promise<void>>();
 const canonicalRuntimeTurnStarts = new Map<string, RuntimeTurnStartResult>();
+let runtimeArchivedCatalogLoadEvents: Map<number, RuntimeJournalEvent> | undefined;
+let runtimeArchivedCatalogLoad: Promise<void> | undefined;
 let runtimeGapRecovery: Promise<void> | undefined;
 const RUNTIME_GAP_RETRY_DELAYS_MS = [25, 75, 200] as const;
 const RUNTIME_COMMAND_RETRY_DELAYS_MS = [50, 150, 400, 800] as const;
@@ -733,7 +744,9 @@ function runtimeThreadCreateResultFromEvent(
     !("createdAt" in value) ||
     typeof value.createdAt !== "string" ||
     !("updatedAt" in value) ||
-    typeof value.updatedAt !== "string"
+    typeof value.updatedAt !== "string" ||
+    !("archivedAt" in value) ||
+    value.archivedAt !== null
   ) {
     return undefined;
   }
@@ -756,7 +769,22 @@ function runtimeThreadCreateResultFromEvent(
   };
 }
 
+function reconcileArchivedThreadSummary(
+  archivedThreads: readonly RuntimeThreadSummary[],
+  summary: RuntimeThreadSummary,
+): RuntimeThreadSummary[] {
+  const withoutCurrent = archivedThreads.filter((thread) => thread.id !== summary.id);
+  if (summary.archivedAt === null) {
+    return withoutCurrent;
+  }
+  return [...withoutCurrent, summary].sort(
+    (left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
+  );
+}
+
 function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
+  const threadSummary = runtimeThreadSummaryFromEvent(event);
   const detail = event.threadId ? state.runtimeThreadDetails[event.threadId] : undefined;
   const coveredByInstalledSnapshot =
     detail?.status === "ready" && event.seq <= detail.snapshotSeq;
@@ -813,7 +841,13 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
   let pendingRuntimeSubmissions = state.pendingRuntimeSubmissions;
   let pendingRuntimeNewThread = state.pendingRuntimeNewThread;
   const pendingWorkspace = pendingRuntimeNewThread?.workspace;
-  let selectedThreadId = state.selectedThreadId;
+  let selectedThreadId =
+    threadSummary?.archivedAt !== null && threadSummary?.id === state.selectedThreadId
+      ? null
+      : state.selectedThreadId;
+  const archivedThreads = threadSummary
+    ? reconcileArchivedThreadSummary(state.archivedThreads, threadSummary)
+    : state.archivedThreads;
   const pendingCreateRequestId = pendingRuntimeNewThread?.createRequestId;
   if (
     pendingRuntimeNewThread &&
@@ -886,6 +920,7 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
   const projectedState = {
     ...state,
     threads,
+    archivedThreads,
     runtimeThreadDetails,
     runtimeThreadActivity,
     pendingRuntimeSubmissions,
@@ -894,6 +929,7 @@ function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Part
   };
   return {
     threads,
+    archivedThreads,
     projects,
     runtimeThreadDetails,
     runtimeThreadActivity,
@@ -934,6 +970,7 @@ function drainRuntimeEventQueue(set: StoreSet, get: StoreGet): void {
     set({
       projects: state.projects,
       threads: state.threads,
+      archivedThreads: state.archivedThreads,
       runtimeSeq: state.runtimeSeq,
       runtimeThreadDetails: state.runtimeThreadDetails,
       runtimeThreadActivity: state.runtimeThreadActivity,
@@ -990,6 +1027,10 @@ function recordRuntimeCatalogRecoveryEvent(
 
   const observedEvents = runtimeCatalogRecoveryEvents.get(threadId);
   observedEvents?.set(event.seq, event);
+  const threadSummary = runtimeThreadSummaryFromEvent(event);
+  if (threadSummary?.archivedAt !== null && threadSummary?.archivedAt !== undefined) {
+    return;
+  }
   if (findThread(get().threads, threadId) || event.type === "thread.created") {
     return;
   }
@@ -1015,13 +1056,18 @@ async function recoverRuntimeCatalogThread(
   const recovery = (async () => {
     try {
       const metadata = await runtimeClient.getThread(threadId);
-      let recovered = projectRuntimeThread(metadata.thread);
+      if (metadata.thread.archivedAt !== null) {
+        return;
+      }
+      let recoveredThreads = [projectRuntimeThread(metadata.thread)];
       const events = [...observedEvents.values()]
         .filter((event) => event.threadId === threadId && event.seq > metadata.snapshotSeq)
         .sort((left, right) => left.seq - right.seq);
       for (const event of events) {
-        recovered = applyRuntimeCatalogEvent([recovered], event)[0] ?? recovered;
+        recoveredThreads = applyRuntimeCatalogEvent(recoveredThreads, event);
       }
+      const recovered = findThread(recoveredThreads, threadId);
+      if (!recovered) return;
       const recoveredSnapshotSeq = Math.max(
         metadata.snapshotSeq,
         events.at(-1)?.seq ?? 0,
@@ -1218,6 +1264,7 @@ function enqueueRuntimeEvent(
   get: StoreGet,
   event: RuntimeJournalEvent,
 ): void {
+  runtimeArchivedCatalogLoadEvents?.set(event.seq, event);
   recordRuntimeThreadLoadEvent(event);
   recordRuntimeCatalogRecoveryEvent(set, get, event);
   if (event.type === "run.settled" && event.runId) {
@@ -1229,6 +1276,129 @@ function enqueueRuntimeEvent(
   pendingRuntimeEvents.set(event.seq, event);
   drainRuntimeEventQueue(set, get);
   recoverRuntimeEventGap(set, get);
+}
+
+async function loadArchivedThreadsIntoStore(
+  set: StoreSet,
+  get: StoreGet,
+): Promise<void> {
+  if (!runtimeClient) {
+    set({ archivedCatalogStatus: "ready" });
+    return;
+  }
+  if (runtimeArchivedCatalogLoad) return runtimeArchivedCatalogLoad;
+
+  const observedEvents = new Map<number, RuntimeJournalEvent>();
+  runtimeArchivedCatalogLoadEvents = observedEvents;
+  set({ archivedCatalogStatus: "loading", runtimeError: null });
+  const loading = (async () => {
+    try {
+      const listed = await runtimeClient.listThreads({ archived: true });
+      let archivedThreads = [...listed.threads];
+      for (const event of [...observedEvents.values()].sort(
+        (left, right) => left.seq - right.seq,
+      )) {
+        if (event.seq <= listed.snapshotSeq) continue;
+        const summary = runtimeThreadSummaryFromEvent(event);
+        if (summary) {
+          archivedThreads = reconcileArchivedThreadSummary(archivedThreads, summary);
+        }
+      }
+      set({ archivedThreads, archivedCatalogStatus: "ready", runtimeError: null });
+    } catch (error: unknown) {
+      set({
+        archivedCatalogStatus: "error",
+        runtimeError:
+          error instanceof Error ? error.message : "Archived Thread catalog loading failed",
+      });
+      throw error;
+    } finally {
+      if (runtimeArchivedCatalogLoadEvents === observedEvents) {
+        runtimeArchivedCatalogLoadEvents = undefined;
+      }
+      runtimeArchivedCatalogLoad = undefined;
+    }
+  })();
+  runtimeArchivedCatalogLoad = loading;
+  return loading;
+}
+
+function reconcileRuntimeThreadMutation(
+  state: AppState,
+  summary: RuntimeThreadSummary,
+): Partial<AppState> {
+  const existing = findThread(state.threads, summary.id);
+  const threads =
+    summary.archivedAt !== null
+      ? state.threads.filter((thread) => thread.id !== summary.id)
+      : existing
+        ? state.threads.map((thread) =>
+            thread.id === summary.id
+              ? {
+                  ...thread,
+                  projectId: summary.workspace?.id ?? null,
+                  title: summary.title ?? "",
+                  updatedAt: summary.updatedAt,
+                }
+              : thread,
+          )
+        : [projectRuntimeThread(summary), ...state.threads];
+  const selectedThreadId =
+    summary.archivedAt !== null && state.selectedThreadId === summary.id
+      ? null
+      : state.selectedThreadId;
+  return {
+    threads,
+    archivedThreads: reconcileArchivedThreadSummary(state.archivedThreads, summary),
+    projects: mergeRuntimeProjects(state.projects, [summary]),
+    selectedThreadId,
+    runStatus: runtimeRunStatusForSelection(state, selectedThreadId, threads),
+    runtimeError: null,
+  };
+}
+
+function localThreadSummary(
+  state: AppState,
+  thread: Thread,
+  archivedAt: string | null,
+): RuntimeThreadSummary {
+  const project = thread.projectId
+    ? state.projects.find((candidate) => candidate.id === thread.projectId)
+    : undefined;
+  const timestamp = new Date().toISOString();
+  return {
+    id: thread.id,
+    title: thread.title || null,
+    defaultBranchId: thread.activeBranchId,
+    workspace: project
+      ? {
+          id: project.id,
+          name: project.name,
+          rootUri: project.rootUri ?? null,
+        }
+      : null,
+    createdAt: thread.branches[0]?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+    archivedAt,
+  };
+}
+
+async function mutateRuntimeThread(
+  set: StoreSet,
+  get: StoreGet,
+  invoke: () => Promise<RuntimeThreadMutationResult>,
+): Promise<void> {
+  if (!runtimeClient) return;
+  try {
+    const result = await invoke();
+    set((state) => reconcileRuntimeThreadMutation(state, result.thread));
+    if (result.event) {
+      get().applyRuntimeEvent(result.event);
+    }
+  } catch (error: unknown) {
+    set({ runtimeError: error instanceof Error ? error.message : "Thread update failed" });
+    throw error;
+  }
 }
 
 async function loadRuntimeThreadIntoStore(
@@ -1873,6 +2043,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectedModel: null,
   projects: runtimeClient ? [] : createInitialProjects(),
   threads: runtimeClient ? [] : createInitialThreads(),
+  archivedThreads: [],
+  archivedCatalogStatus: "idle",
   runtimeThreadDetails: {},
   runtimeThreadActivity: {},
   selectedThreadId: null,
@@ -1899,6 +2071,57 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   initializeRuntime: () => initializeRuntimeInStore(set, get),
   applyRuntimeEvent: (event) => enqueueRuntimeEvent(set, get, event),
+  loadArchivedThreads: () => loadArchivedThreadsIntoStore(set, get),
+  renameThread: async (threadId, title) => {
+    if (runtimeClient) {
+      await mutateRuntimeThread(set, get, () =>
+        runtimeClient.renameThread({ threadId, title }),
+      );
+      return;
+    }
+    set((state) => ({
+      threads: state.threads.map((thread) =>
+        thread.id === threadId ? { ...thread, title: title ?? "" } : thread,
+      ),
+      archivedThreads: state.archivedThreads.map((thread) =>
+        thread.id === threadId ? { ...thread, title } : thread,
+      ),
+    }));
+  },
+  archiveThread: async (threadId) => {
+    if (runtimeClient) {
+      await mutateRuntimeThread(set, get, () => runtimeClient.archiveThread(threadId));
+      return;
+    }
+    set((state) => {
+      const thread = findThread(state.threads, threadId);
+      if (!thread) return state;
+      const summary = localThreadSummary(state, thread, new Date().toISOString());
+      const threads = state.threads.filter((candidate) => candidate.id !== threadId);
+      const selectedThreadId = state.selectedThreadId === threadId ? null : state.selectedThreadId;
+      return {
+        threads,
+        archivedThreads: reconcileArchivedThreadSummary(state.archivedThreads, summary),
+        selectedThreadId,
+        runStatus: runtimeRunStatusForSelection(state, selectedThreadId, threads),
+      };
+    });
+  },
+  unarchiveThread: async (threadId) => {
+    if (runtimeClient) {
+      await mutateRuntimeThread(set, get, () => runtimeClient.unarchiveThread(threadId));
+      return;
+    }
+    set((state) => {
+      const summary = state.archivedThreads.find((thread) => thread.id === threadId);
+      if (!summary) return state;
+      const restored = { ...summary, archivedAt: null, updatedAt: new Date().toISOString() };
+      return {
+        threads: [projectRuntimeThread(restored), ...state.threads],
+        archivedThreads: state.archivedThreads.filter((thread) => thread.id !== threadId),
+      };
+    });
+  },
   loadProviderCatalog: () => refreshRuntimeProviderCatalog(set),
   discoverDeepSeekModels: async (apiKey) => {
     if (!runtimeClient) {
