@@ -112,6 +112,54 @@ class RecoveryPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelUsage:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cached_input_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DailyUsageBucket:
+    start_date: str
+    tokens: int
+
+    def to_wire(self) -> JsonObject:
+        return {"startDate": self.start_date, "tokens": self.tokens}
+
+
+@dataclass(frozen=True, slots=True)
+class UsageSummary:
+    lifetime_tokens: int | None
+    peak_daily_tokens: int | None
+    longest_running_turn_sec: int | None
+    current_streak_days: int
+    longest_streak_days: int
+
+    def to_wire(self) -> JsonObject:
+        return {
+            "lifetimeTokens": self.lifetime_tokens,
+            "peakDailyTokens": self.peak_daily_tokens,
+            "longestRunningTurnSec": self.longest_running_turn_sec,
+            "currentStreakDays": self.current_streak_days,
+            "longestStreakDays": self.longest_streak_days,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UsageSnapshot:
+    summary: UsageSummary
+    daily_usage_buckets: tuple[DailyUsageBucket, ...]
+
+    def to_wire(self) -> JsonObject:
+        return {
+            "summary": self.summary.to_wire(),
+            "dailyUsageBuckets": [bucket.to_wire() for bucket in self.daily_usage_buckets],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CommandOutcome:
     result: JsonObject
     events_after_ack: tuple[JournalEvent, ...] = ()

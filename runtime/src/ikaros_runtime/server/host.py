@@ -20,7 +20,7 @@ from typing import Any, BinaryIO, Self, cast
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.http11 import Request, Response
 
-from ..errors import RuntimeHomeLockError
+from ..errors import RuntimeHomeLockError as RuntimeHomeLockError
 from ..json_codec import dumps as json_dumps
 from ..protocol.jsonrpc import PROTOCOL_VERSION
 

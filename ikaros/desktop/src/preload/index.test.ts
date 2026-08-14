@@ -33,6 +33,27 @@ describe("preload Runtime bridge", () => {
     electron.reset();
   });
 
+  it("exposes aggregate token usage through its narrow IPC channel", async () => {
+    const expected = {
+      ok: true as const,
+      value: {
+        summary: {
+          lifetimeTokens: 1_250,
+          peakDailyTokens: 750,
+          longestRunningTurnSec: 90,
+          currentStreakDays: 2,
+          longestStreakDays: 4
+        },
+        dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: 750 }]
+      }
+    };
+    electron.ipcRenderer.invoke.mockResolvedValueOnce(expected);
+    await import("./index");
+
+    await expect(electron.exposedApi()?.runtime.readUsage()).resolves.toEqual(expected);
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith("ikaros:runtime:usage-read");
+  });
+
   it("exposes DeepSeek model discovery through its narrow IPC channel", async () => {
     const expected = {
       ok: true as const,

@@ -30,7 +30,8 @@ import type {
   RuntimeTurnListPage,
   RuntimeTurnListParams,
   RuntimeTurnStartParams,
-  RuntimeTurnStartResult
+  RuntimeTurnStartResult,
+  RuntimeUsageReadResult
 } from "../shared/runtime";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
@@ -124,6 +125,10 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>,
+    readUsage: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.usageRead) as Promise<
+        RuntimeInvocationResult<RuntimeUsageReadResult>
+      >,
     onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
       subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener)
   }),

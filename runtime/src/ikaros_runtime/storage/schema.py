@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +70,9 @@ CREATE TABLE runs (
     model_id TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    started_at TEXT,
     settled_at TEXT,
+    reason_code TEXT,
     client_request_id TEXT,
     execution_policy TEXT NOT NULL DEFAULT 'full_access'
 );
@@ -79,6 +81,28 @@ CREATE UNIQUE INDEX runs_client_request_id_idx
 ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
 CREATE INDEX runs_turn_history_idx
 ON runs(turn_id, created_at ASC, id ASC);
+
+CREATE TABLE model_usages (
+    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_ordinal INTEGER NOT NULL CHECK (step_ordinal >= 1),
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+    cached_input_tokens INTEGER CHECK (cached_input_tokens >= 0),
+    output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+    reasoning_output_tokens INTEGER CHECK (reasoning_output_tokens >= 0),
+    total_tokens INTEGER NOT NULL CHECK (total_tokens >= 0),
+    activity_date TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, step_ordinal)
+);
+
+CREATE INDEX model_usages_completed_at_idx
+ON model_usages(completed_at ASC, run_id ASC, step_ordinal ASC);
+CREATE INDEX model_usages_activity_date_idx
+ON model_usages(activity_date ASC, run_id ASC, step_ordinal ASC);
 
 CREATE TABLE items (
     id TEXT PRIMARY KEY,

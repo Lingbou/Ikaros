@@ -28,6 +28,10 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
         run_columns = {
             row["name"] for row in store._connection.execute("PRAGMA table_info(runs)")
         }
+        usage_columns = {
+            row["name"]
+            for row in store._connection.execute("PRAGMA table_info(model_usages)")
+        }
         item_columns = {
             row["name"] for row in store._connection.execute("PRAGMA table_info(items)")
         }
@@ -38,11 +42,35 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             ).fetchall()
         }
 
-        assert version == 3
-        assert {"events", "threads", "branches", "turns", "runs", "items"} <= tables
+        assert version == 4
+        assert {
+            "events",
+            "threads",
+            "branches",
+            "turns",
+            "runs",
+            "items",
+            "model_usages",
+        } <= tables
         assert {"turn_id", "run_id", "item_id", "schema_version"} <= event_columns
         assert {"client_request_id", "workspace_json", "archived_at"} <= thread_columns
-        assert {"client_request_id", "execution_policy"} <= run_columns
+        assert {
+            "client_request_id",
+            "execution_policy",
+            "started_at",
+            "reason_code",
+        } <= run_columns
+        assert {
+            "thread_id",
+            "turn_id",
+            "run_id",
+            "step_ordinal",
+            "provider_id",
+            "model_id",
+            "activity_date",
+            "completed_at",
+            "total_tokens",
+        } <= usage_columns
         assert "data_json" in item_columns
         assert {
             "events_thread_seq_idx",
@@ -54,6 +82,8 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             "branches_default_thread_idx",
             "runs_client_request_id_idx",
             "runs_turn_history_idx",
+            "model_usages_completed_at_idx",
+            "model_usages_activity_date_idx",
         } <= indexes
     finally:
         store.close()
@@ -72,12 +102,12 @@ def test_current_database_reopens_without_rewriting_state(tmp_path: Path) -> Non
         page = reopened.list_thread_page(cursor=None, limit=50)
         assert page.threads == (expected[0],)
         assert page.snapshot_seq == expected[1].seq
-        assert int(reopened._connection.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert int(reopened._connection.execute("PRAGMA user_version").fetchone()[0]) == 4
     finally:
         reopened.close()
 
 
-@pytest.mark.parametrize("version", [1, 2, 7, 8, 999])
+@pytest.mark.parametrize("version", [1, 2, 3, 7, 8, 999])
 def test_non_current_schema_version_requires_explicit_reset(
     tmp_path: Path,
     version: int,

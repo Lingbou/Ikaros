@@ -40,6 +40,7 @@ def initialize_result() -> dict[str, object]:
             "runCancellation": True,
             "providers": True,
             "models": True,
+            "usage": True,
         },
     }
 

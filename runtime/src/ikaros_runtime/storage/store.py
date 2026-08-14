@@ -9,10 +9,12 @@ from typing import Any, Self
 from ..domain import (
     ContextItem,
     JournalEvent,
+    ModelUsage,
     PreparedTurn,
     RecoveryPlan,
     RunDescriptor,
     ThreadSummary,
+    UsageSnapshot,
     WorkspaceSummary,
     utc_now,
 )
@@ -55,8 +57,10 @@ from .thread_history import (
     get_thread_metadata,
     list_turn_history_page,
 )
+from .usage import local_activity_date, read_usage
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 
 class SqliteRuntimeStore:
@@ -547,8 +551,11 @@ class SqliteRuntimeStore:
         timestamp = utc_now()
         with self._connection:
             updated = self._connection.execute(
-                "UPDATE runs SET status = 'running' WHERE id = ? AND status = 'queued'",
-                (run_id,),
+                """
+                UPDATE runs SET status = 'running', started_at = ?
+                WHERE id = ? AND status = 'queued' AND started_at IS NULL
+                """,
+                (timestamp, run_id),
             )
             if updated.rowcount != 1:
                 raise RuntimeError("run cannot transition to running")
@@ -565,6 +572,81 @@ class SqliteRuntimeStore:
                 timestamp=timestamp,
                 payload={"status": "running"},
             )
+
+    def record_model_usage(
+        self,
+        run_id: str,
+        *,
+        step_ordinal: int,
+        usage: ModelUsage,
+    ) -> JournalEvent:
+        _validate_model_usage(step_ordinal, usage)
+        run = self.get_run(run_id)
+        timestamp = utc_now()
+        activity_date = local_activity_date(timestamp)
+        usage_payload = {
+            "inputTokens": usage.input_tokens,
+            "cachedInputTokens": usage.cached_input_tokens,
+            "outputTokens": usage.output_tokens,
+            "reasoningOutputTokens": usage.reasoning_output_tokens,
+            "totalTokens": usage.total_tokens,
+        }
+        with self._connection:
+            status = self._connection.execute(
+                "SELECT status FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if status is None or status["status"] != "running":
+                raise RuntimeError("model usage requires a running Run")
+            duplicate = self._connection.execute(
+                "SELECT 1 FROM model_usages WHERE run_id = ? AND step_ordinal = ?",
+                (run_id, step_ordinal),
+            ).fetchone()
+            if duplicate is not None:
+                raise RuntimeError("model usage was already recorded for this Step")
+            self._connection.execute(
+                """
+                INSERT INTO model_usages(
+                    thread_id, turn_id, run_id, step_ordinal, provider_id, model_id,
+                    input_tokens, cached_input_tokens, output_tokens,
+                    reasoning_output_tokens, total_tokens, activity_date, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.thread_id,
+                    run.turn_id,
+                    run.id,
+                    step_ordinal,
+                    run.provider_id,
+                    run.model_id,
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    usage.output_tokens,
+                    usage.reasoning_output_tokens,
+                    usage.total_tokens,
+                    activity_date,
+                    timestamp,
+                ),
+            )
+            return self._append_event(
+                event_type="model.usage_recorded",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run.id,
+                timestamp=timestamp,
+                payload={
+                    "stepOrdinal": step_ordinal,
+                    "providerId": run.provider_id,
+                    "modelId": run.model_id,
+                    "activityDate": activity_date,
+                    "completedAt": timestamp,
+                    "usage": usage_payload,
+                },
+            )
+
+    def read_usage(self) -> UsageSnapshot:
+        return read_usage(self._connection)
 
     def create_assistant_item(self, run_id: str) -> tuple[str, JournalEvent]:
         run = self.get_run(run_id)
@@ -1026,8 +1108,8 @@ class SqliteRuntimeStore:
                         )
                     )
             self._connection.execute(
-                "UPDATE runs SET status = ?, settled_at = ? WHERE id = ?",
-                (status, timestamp, run_id),
+                "UPDATE runs SET status = ?, settled_at = ?, reason_code = ? WHERE id = ?",
+                (status, timestamp, reason_code, run_id),
             )
             self._connection.execute(
                 "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
@@ -1175,3 +1257,37 @@ class SqliteRuntimeStore:
             created_at=str(row["created_at"]),
             updated_at=updated_at if updated_at is not None else str(row["updated_at"]),
         )
+
+
+def _validate_model_usage(step_ordinal: int, usage: ModelUsage) -> None:
+    if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
+        raise ValueError("model usage Step ordinal must be a positive integer")
+    for label, required_value in (
+        ("input", usage.input_tokens),
+        ("output", usage.output_tokens),
+        ("total", usage.total_tokens),
+    ):
+        _validate_token_count(label, required_value)
+    for label, optional_value in (
+        ("cached input", usage.cached_input_tokens),
+        ("reasoning output", usage.reasoning_output_tokens),
+    ):
+        if optional_value is not None:
+            _validate_token_count(label, optional_value)
+    if usage.cached_input_tokens is not None and usage.cached_input_tokens > usage.input_tokens:
+        raise ValueError("cached input tokens cannot exceed input tokens")
+    if (
+        usage.reasoning_output_tokens is not None
+        and usage.reasoning_output_tokens > usage.output_tokens
+    ):
+        raise ValueError("reasoning output tokens cannot exceed output tokens")
+
+
+def _validate_token_count(label: str, value: object) -> None:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        or value > _SQLITE_MAX_INTEGER
+    ):
+        raise ValueError(f"model usage {label} tokens are invalid")

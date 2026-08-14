@@ -220,6 +220,24 @@ export interface RuntimeModelSetEnabledResult {
   model: RuntimeModelSummary;
 }
 
+export interface RuntimeUsageSummary {
+  lifetimeTokens: number | null;
+  peakDailyTokens: number | null;
+  longestRunningTurnSec: number | null;
+  currentStreakDays: number;
+  longestStreakDays: number;
+}
+
+export interface RuntimeUsageDailyBucket {
+  startDate: string;
+  tokens: number;
+}
+
+export interface RuntimeUsageReadResult {
+  summary: RuntimeUsageSummary;
+  dailyUsageBuckets: RuntimeUsageDailyBucket[];
+}
+
 export interface RuntimeRpcFailure {
   kind: "json_rpc";
   code: number;
@@ -256,6 +274,7 @@ export interface IkarosRuntimeApi {
   setModelEnabled(
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeModelSetEnabledResult>;
+  readUsage(): Promise<RuntimeUsageReadResult>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
 }
 
@@ -306,5 +325,6 @@ export interface IkarosRuntimeBridgeApi {
   setModelEnabled(
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>;
+  readUsage(): Promise<RuntimeInvocationResult<RuntimeUsageReadResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
 }

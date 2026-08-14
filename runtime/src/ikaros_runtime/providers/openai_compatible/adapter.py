@@ -10,7 +10,8 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from ...cancellation import CancellationToken, RunCancelled
-from ...errors import ProviderFailure, ProviderFailureCategory
+from ...errors import ProviderFailure as ProviderFailure
+from ...errors import ProviderFailureCategory
 from ...json_codec import dumps as json_dumps
 from ...json_codec import loads as json_loads
 from ...security import ProtectedStreamGuard, ProtectedValueError
@@ -101,6 +102,7 @@ class OpenAICompatibleAdapter:
             follow_redirects=False,
         )
         self._closed = False
+        self._usage_stream_options_supported: dict[str, bool] = {}
 
     async def aclose(self) -> None:
         if self._closed:
@@ -172,10 +174,22 @@ class OpenAICompatibleAdapter:
     ) -> AsyncIterator[ProviderEvent]:
         if self._closed:
             raise ProviderFailure("unknown", "provider transport is closed")
-        body = self._request_body(request)
         headers = self._request_headers()
         url = f"{self._provider.base_url.rstrip('/')}/chat/completions"
-        for attempt in range(self._max_retries + 1):
+        upstream_model_id = self._model(request.model_id).id
+        cached_usage_support = self._usage_stream_options_supported.get(upstream_model_id)
+        include_usage = (
+            self._provider.origin == "builtin" or cached_usage_support is not False
+        )
+        fallback_without_usage = (
+            self._provider.origin == "custom"
+            and cached_usage_support is None
+            and include_usage
+        )
+        fallback_attempt = False
+        attempt = 0
+        while True:
+            body = self._request_body(request, include_usage=include_usage)
             try:
                 async for event in self._attempt(
                     url,
@@ -184,17 +198,27 @@ class OpenAICompatibleAdapter:
                     cancellation=cancellation,
                 ):
                     yield event
+                if self._provider.origin == "custom":
+                    if include_usage:
+                        self._usage_stream_options_supported[upstream_model_id] = True
+                    elif fallback_attempt:
+                        self._usage_stream_options_supported[upstream_model_id] = False
                 return
             except RunCancelled:
                 raise
             except ProviderFailure as error:
+                if fallback_without_usage and error.status_code in {400, 422}:
+                    include_usage = False
+                    fallback_without_usage = False
+                    fallback_attempt = True
+                    continue
                 if attempt >= self._max_retries or not error.retryable:
                     raise
                 delay = error.retry_after
                 if delay is None:
                     delay = min(0.25 * (2**attempt), _MAX_RETRY_DELAY_SECONDS)
                 await cancellation.sleep(min(delay, _MAX_RETRY_DELAY_SECONDS))
-        raise ProviderFailure("unknown", "provider request failed")
+                attempt += 1
 
     async def _attempt(
         self,
@@ -306,13 +330,20 @@ class OpenAICompatibleAdapter:
             with suppress(Exception):
                 await response.aclose()
 
-    def _request_body(self, request: ProviderRequest) -> dict[str, object]:
+    def _request_body(
+        self,
+        request: ProviderRequest,
+        *,
+        include_usage: bool,
+    ) -> dict[str, object]:
         model = self._model(request.model_id)
         body: dict[str, object] = {
             "model": model.id,
             "messages": [_message_to_openai(message) for message in request.messages],
             "stream": True,
         }
+        if include_usage:
+            body["stream_options"] = {"include_usage": True}
         if model.supports_tools and request.tools:
             body["tools"] = [_tool_to_openai(tool) for tool in request.tools]
         return body

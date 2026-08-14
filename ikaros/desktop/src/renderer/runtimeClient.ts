@@ -24,7 +24,8 @@ import type {
   RuntimeTurnListPage,
   RuntimeTurnListParams,
   RuntimeTurnStartParams,
-  RuntimeTurnStartResult
+  RuntimeTurnStartResult,
+  RuntimeUsageReadResult
 } from "../shared/runtime";
 
 export class RuntimeRpcError extends Error {
@@ -176,6 +177,10 @@ export class RuntimeClient implements IkarosRuntimeApi {
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeModelSetEnabledResult> {
     return unwrapRuntimeInvocation(this.api.setModelEnabled(params));
+  }
+
+  readUsage(): Promise<RuntimeUsageReadResult> {
+    return unwrapRuntimeInvocation(this.api.readUsage());
   }
 
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void {

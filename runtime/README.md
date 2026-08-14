@@ -24,6 +24,9 @@ The current Desktop/Runtime path provides:
   OpenAI-compatible provider;
 - Runtime-owned Provider and model configuration, DeepSeek model discovery,
   model enablement, DeepSeek disconnect, and Custom Provider removal;
+- exact Provider-reported model usage captured per Agent Step, persisted in the
+  append-only Journal and a rebuildable SQLite projection, and aggregated by
+  `usage.read` for the Desktop Profile metrics and 52-week activity chart;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under
   V1's fixed `full_access` policy. Command execution has bounded output,
   timeout, cancellation, and child-process-tree cleanup; the file Tools provide
@@ -58,11 +61,15 @@ discover or inject Skills, provide
 web-search, browser, or attachment Tools, generate first-class
 Artifact/file-change records, fork Branches, retry or resume Runs, or implement
 interactive permission approval. Desktop's fixed scenario fixtures,
-slash-command examples, profile activity/Skill statistics, and
-permission/recovery/Artifact demonstrations therefore remain mock-only UI
+slash-command examples, and permission/recovery/Artifact demonstrations
+therefore remain mock-only UI
 surfaces rather than Runtime-backed capabilities. Provider health remains
 `unknown`, and automatic model discovery is DeepSeek-only; Custom
 OpenAI-compatible Provider models are entered manually.
+
+Providers that do not report stream usage remain usable, but their calls are
+not estimated or added to Token totals. Profile activity insights and Skills
+statistics are not exposed until those capabilities have real Runtime data.
 
 `FullAccessPolicy` automatically permits registered Tools; it is not a sandbox
 or a security guarantee. The Runtime is tied to the Desktop application
@@ -95,7 +102,7 @@ Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
 real provider/model configuration.
 
 During pre-release development, conversation storage uses canonical SQLite
-schema version 3 and is intentionally reset-only. Incompatible `state.db`
+schema version 4 and is intentionally reset-only. Incompatible `state.db`
 schema versions fail with `reset required`; the Runtime does not carry
 old-schema migrations or silently delete data.
 After stopping the owning Runtime, developers may explicitly remove
@@ -125,8 +132,8 @@ refuses to overwrite an existing destination. Without `--output`, it creates a
 unique file below `~/.ikaros/backups/`.
 
 `storage repair-projections` first creates a pre-repair backup, then deletes and
-replays only the disposable Thread/Branch/Turn/Run/Item projection tables in
-one rollback-safe transaction. It accepts broken projection foreign keys when
+replays only the disposable Thread/Branch/Turn/Run/Item/model-usage projection
+tables in one rollback-safe transaction. It accepts broken projection foreign keys when
 making that recovery snapshot, but the Journal must remain readable and
 canonical; the repaired database must pass all integrity checks. Journal rows,
 sequence state, `config.yaml`, and credentials are never rewritten by repair.

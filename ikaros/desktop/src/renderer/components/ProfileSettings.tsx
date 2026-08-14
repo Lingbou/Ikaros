@@ -1,126 +1,35 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import {
-  ChartNoAxesCombined,
-  FilePenLine,
-  GitBranch,
-  Globe2,
-  Pencil,
-  ScanSearch,
-  type LucideIcon
-} from "lucide-react";
-import { useState, type KeyboardEvent } from "react";
+import { Pencil } from "lucide-react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 
-import { useTranslation, type TranslationKey, type UiLanguage } from "../i18n";
+import type { RuntimeUsageReadResult } from "../../shared/runtime";
+import { useTranslation, type TranslationKey } from "../i18n";
 import { profileInitials } from "../localProfile";
+import {
+  buildTokenActivityChart,
+  formatCompactTokens,
+  formatDurationSeconds,
+  formatStreakDays,
+  localCalendarDate,
+  tokenActivityMonthLabels,
+  TOKEN_ACTIVITY_WEEK_COUNT,
+  type TokenActivityView
+} from "../profileUsage";
+import { createRuntimeClient } from "../runtimeClient";
 import { useAppStore } from "../store";
-
-type ActivityView = "daily" | "weekly" | "cumulative";
 
 interface ProfileMetric {
   label: TranslationKey;
-  value: Record<UiLanguage, string>;
+  value: string;
 }
 
-interface ProfileInsight {
-  label: TranslationKey;
-  value: Record<UiLanguage, string>;
-}
+type UsageLoadStatus = "loading" | "ready" | "error";
 
-interface MockSkill {
-  name: string;
-  runs: number;
-  Icon: LucideIcon;
-}
-
-const PROFILE_METRICS: readonly ProfileMetric[] = [
-  {
-    label: "settings.profileLifetimeTokens",
-    value: { en: "761.1M", "zh-CN": "7.6亿" }
-  },
-  {
-    label: "settings.profilePeakTokens",
-    value: { en: "73.1M", "zh-CN": "7313.3万" }
-  },
-  {
-    label: "settings.profileLongestChat",
-    value: { en: "16h 17m", "zh-CN": "16 小时 17 分" }
-  },
-  {
-    label: "settings.profileCurrentStreak",
-    value: { en: "0 days", "zh-CN": "0 天" }
-  },
-  {
-    label: "settings.profileLongestStreak",
-    value: { en: "5 days", "zh-CN": "5 天" }
-  }
-];
-
-const PROFILE_INSIGHTS: readonly ProfileInsight[] = [
-  {
-    label: "settings.profileFastMode",
-    value: { en: "86%", "zh-CN": "86%" }
-  },
-  {
-    label: "settings.profileMostUsedReasoning",
-    value: { en: "Extra High · 80%", "zh-CN": "极高 · 80%" }
-  },
-  {
-    label: "settings.profileSkillsExplored",
-    value: { en: "50", "zh-CN": "50" }
-  },
-  {
-    label: "settings.profileTotalSkillsUsed",
-    value: { en: "1,305", "zh-CN": "1,305" }
-  },
-  {
-    label: "settings.profileTotalChats",
-    value: { en: "97", "zh-CN": "97" }
-  }
-];
-
-const MOCK_SKILLS: readonly MockSkill[] = [
-  { name: "web-research", runs: 474, Icon: Globe2 },
-  { name: "git-workflow", runs: 282, Icon: GitBranch },
-  { name: "browser-control", runs: 53, Icon: ScanSearch },
-  { name: "document-drafting", runs: 46, Icon: FilePenLine },
-  { name: "data-analysis", runs: 44, Icon: ChartNoAxesCombined }
-];
-
-const ACTIVITY_VIEWS: readonly { id: ActivityView; label: TranslationKey }[] = [
+const ACTIVITY_VIEWS: readonly { id: TokenActivityView; label: TranslationKey }[] = [
   { id: "daily", label: "settings.profileDaily" },
   { id: "weekly", label: "settings.profileWeekly" },
   { id: "cumulative", label: "settings.profileCumulative" }
 ];
-
-const ENGLISH_MONTHS = [
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug"
-] as const;
-
-const CHINESE_MONTHS = [
-  "9月",
-  "10月",
-  "11月",
-  "12月",
-  "1月",
-  "2月",
-  "3月",
-  "4月",
-  "5月",
-  "6月",
-  "7月",
-  "8月"
-] as const;
 
 const ACTIVITY_COLORS = [
   "color-mix(in srgb, var(--text) 4%, var(--canvas))",
@@ -130,62 +39,6 @@ const ACTIVITY_COLORS = [
   "color-mix(in srgb, var(--accent) 62%, var(--text))"
 ] as const;
 
-const DAILY_CLUSTER = [
-  [0, 0, 0, 0, 0, 1, 0],
-  [0, 0, 1, 3, 2, 0, 1],
-  [0, 2, 4, 4, 4, 2, 0],
-  [1, 3, 4, 3, 2, 1, 0],
-  [0, 2, 3, 4, 4, 2, 1],
-  [1, 3, 4, 3, 2, 1, 0],
-  [0, 1, 3, 4, 3, 1, 0],
-  [0, 0, 2, 3, 1, 0, 0],
-  [0, 0, 0, 1, 0, 0, 0]
-] as const;
-
-function createActivityPattern(view: ActivityView): number[][] {
-  const pattern = Array.from({ length: 52 }, () => Array.from({ length: 7 }, () => 0));
-
-  if (view === "daily") {
-    DAILY_CLUSTER.forEach((days, offset) => {
-      pattern[31 + offset] = [...days];
-    });
-    pattern[29][6] = 2;
-    pattern[40][0] = 2;
-    pattern[47][3] = 1;
-    return pattern;
-  }
-
-  if (view === "weekly") {
-    for (let week = 9; week < 49; week += 1) {
-      for (let day = 0; day < 7; day += 1) {
-        const cadence = (week * 3 + day * 5) % 17;
-        const inActiveSeason = (week >= 28 && week <= 41) || (week >= 13 && week <= 20);
-        pattern[week][day] = cadence < (inActiveSeason ? 7 : 2)
-          ? Math.min(4, 1 + ((week + day) % (inActiveSeason ? 4 : 2)))
-          : 0;
-      }
-    }
-    return pattern;
-  }
-
-  for (let week = 5; week < 52; week += 1) {
-    for (let day = 0; day < 7; day += 1) {
-      const threshold = Math.min(11, 2 + Math.floor(week / 6));
-      const cadence = (week * 7 + day * 11) % 19;
-      pattern[week][day] = cadence < threshold
-        ? Math.min(4, 1 + Math.floor(week / 15) + ((week + day) % 2))
-        : 0;
-    }
-  }
-  return pattern;
-}
-
-const ACTIVITY_PATTERNS: Record<ActivityView, number[][]> = {
-  daily: createActivityPattern("daily"),
-  weekly: createActivityPattern("weekly"),
-  cumulative: createActivityPattern("cumulative")
-};
-
 export function ProfileSettings() {
   const { language, t } = useTranslation();
   const profileUsername = useAppStore((state) => state.profileUsername);
@@ -194,9 +47,103 @@ export function ProfileSettings() {
   const [usernameDraft, setUsernameDraft] = useState(profileUsername);
   const [savingUsername, setSavingUsername] = useState(false);
   const [usernameSaveFailed, setUsernameSaveFailed] = useState(false);
-  const [activityView, setActivityView] = useState<ActivityView>("daily");
+  const [usage, setUsage] = useState<RuntimeUsageReadResult | null>(null);
+  const [usageStatus, setUsageStatus] = useState<UsageLoadStatus>("loading");
+  const [activityView, setActivityView] = useState<TokenActivityView>("daily");
+  const [todayDate, setTodayDate] = useState(localCalendarDate);
   const trimmedUsername = usernameDraft.trim();
-  const monthLabels = language === "zh-CN" ? CHINESE_MONTHS : ENGLISH_MONTHS;
+
+  useEffect(() => {
+    let disposed = false;
+    let requestGeneration = 0;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const runtime = createRuntimeClient();
+    if (!runtime) {
+      setUsageStatus("error");
+      return () => {
+        disposed = true;
+      };
+    }
+
+    const readUsage = (generation: number) => {
+      void runtime
+        .readUsage()
+        .then((result) => {
+          if (disposed || generation !== requestGeneration) return;
+          setUsage(result);
+          setTodayDate(localCalendarDate());
+          setUsageStatus("ready");
+        })
+        .catch(() => {
+          if (disposed || generation !== requestGeneration) return;
+          setUsage(null);
+          setUsageStatus("error");
+        });
+    };
+    const scheduleRefresh = () => {
+      if (refreshTimer !== undefined) return;
+      const generation = ++requestGeneration;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        readUsage(generation);
+      }, 100);
+    };
+    const unsubscribe = runtime.onEvent((event) => {
+      if (event.type === "model.usage_recorded" || event.type === "run.settled") {
+        scheduleRefresh();
+      }
+    });
+    readUsage(++requestGeneration);
+
+    return () => {
+      disposed = true;
+      requestGeneration += 1;
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+      unsubscribe();
+    };
+  }, []);
+
+  const profileMetrics = useMemo<readonly ProfileMetric[]>(() => {
+    const summary = usage?.summary;
+    return [
+      {
+        label: "settings.profileLifetimeTokens",
+        value: formatCompactTokens(summary?.lifetimeTokens ?? null, language)
+      },
+      {
+        label: "settings.profilePeakTokens",
+        value: formatCompactTokens(summary?.peakDailyTokens ?? null, language)
+      },
+      {
+        label: "settings.profileLongestTask",
+        value: formatDurationSeconds(summary?.longestRunningTurnSec ?? null, language)
+      },
+      {
+        label: "settings.profileCurrentStreak",
+        value: formatStreakDays(summary?.currentStreakDays ?? null, language)
+      },
+      {
+        label: "settings.profileLongestStreak",
+        value: formatStreakDays(summary?.longestStreakDays ?? null, language)
+      }
+    ];
+  }, [language, usage]);
+  const activityChart = useMemo(
+    () => buildTokenActivityChart(usage?.dailyUsageBuckets ?? [], activityView, todayDate),
+    [activityView, todayDate, usage]
+  );
+  const monthLabels = useMemo(
+    () => tokenActivityMonthLabels(todayDate, language),
+    [language, todayDate]
+  );
+  const activityMessage =
+    usageStatus === "loading"
+      ? t("settings.profileUsageLoading")
+      : usageStatus === "error"
+        ? t("settings.profileUsageUnavailable")
+        : activityChart.totalTokens === 0
+          ? t("settings.profileNoTokenActivity")
+          : "";
 
   const setDialogOpen = (open: boolean) => {
     if (!open && savingUsername) return;
@@ -224,7 +171,7 @@ export function ProfileSettings() {
       .finally(() => setSavingUsername(false));
   };
 
-  const selectActivityView = (view: ActivityView) => {
+  const selectActivityView = (view: TokenActivityView) => {
     setActivityView(view);
     window.requestAnimationFrame(() => {
       document.getElementById(`profile-activity-tab-${view}`)?.focus();
@@ -360,12 +307,15 @@ export function ProfileSettings() {
         </div>
       </section>
 
-      <dl className="mx-auto mt-[clamp(48px,7vh,76px)] grid h-[62px] w-full max-w-[732px] grid-cols-5 overflow-hidden rounded-2xl border border-[color-mix(in_srgb,var(--text)_4%,var(--canvas))] bg-transparent">
-        {PROFILE_METRICS.map((metric, index) => (
+      <dl
+        aria-busy={usageStatus === "loading"}
+        className="mx-auto mt-[clamp(48px,7vh,76px)] grid h-[62px] w-full max-w-[732px] grid-cols-5 overflow-hidden rounded-2xl border border-[color-mix(in_srgb,var(--text)_4%,var(--canvas))] bg-transparent"
+      >
+        {profileMetrics.map((metric, index) => (
           <div
             key={metric.label}
             className={
-              index < PROFILE_METRICS.length - 1
+              index < profileMetrics.length - 1
                 ? "relative flex min-w-0 flex-col items-center justify-center px-2 text-center after:absolute after:right-0 after:top-1/2 after:h-9 after:w-px after:-translate-y-1/2 after:bg-[color-mix(in_srgb,var(--text)_4%,var(--canvas))]"
                 : "flex min-w-0 flex-col items-center justify-center px-2 text-center"
             }
@@ -374,7 +324,7 @@ export function ProfileSettings() {
               {t(metric.label)}
             </dt>
             <dd className="order-1 truncate text-[13px] font-medium leading-5 text-[var(--text)]">
-              {metric.value[language]}
+              {metric.value}
             </dd>
           </div>
         ))}
@@ -382,7 +332,8 @@ export function ProfileSettings() {
 
       <section
         aria-labelledby="profile-token-activity"
-        className="mx-auto mt-[clamp(32px,4vh,40px)] w-full max-w-[732px]"
+        aria-busy={usageStatus === "loading"}
+        className="mx-auto mt-[clamp(32px,4vh,40px)] w-full max-w-[732px] pb-8"
       >
         <div className="flex items-center justify-between gap-4">
           <h2
@@ -433,84 +384,57 @@ export function ProfileSettings() {
             )}`}
             className="flex w-full gap-[3px]"
           >
-            {ACTIVITY_PATTERNS[activityView].map((week, weekIndex) => (
+            {activityChart.levels.map((week, weekIndex) => (
               <div key={weekIndex} aria-hidden="true" className="flex min-w-0 flex-1 flex-col gap-[3px]">
-                {week.map((level, dayIndex) => (
-                  <span
-                    key={dayIndex}
-                    data-level={level}
-                    className="aspect-square w-full rounded-[3px] transition-colors duration-200"
-                    style={{ backgroundColor: ACTIVITY_COLORS[level] }}
-                  />
-                ))}
+                {week.map((level, dayIndex) => {
+                  const future =
+                    activityView === "daily" && activityChart.future[weekIndex][dayIndex];
+                  return (
+                    <span
+                      key={dayIndex}
+                      data-date={activityChart.dates[weekIndex][dayIndex]}
+                      data-level={level}
+                      data-tokens={
+                        activityView === "daily"
+                          ? activityChart.dailyTokens[weekIndex][dayIndex]
+                          : activityChart.columnValues[weekIndex]
+                      }
+                      data-future={future ? "true" : undefined}
+                      className="aspect-square w-full rounded-[3px] transition-colors duration-200"
+                      style={{
+                        backgroundColor: future ? "transparent" : ACTIVITY_COLORS[level]
+                      }}
+                    />
+                  );
+                })}
               </div>
             ))}
           </div>
           <div
             aria-hidden="true"
-            className="mt-2 grid grid-cols-12 gap-1 text-[10px] leading-4 text-[var(--muted)]"
+            className="mt-2 grid overflow-hidden text-[10px] leading-4 text-[var(--muted)]"
+            style={{
+              gridTemplateColumns: `repeat(${TOKEN_ACTIVITY_WEEK_COUNT}, minmax(0, 1fr))`
+            }}
           >
-            {monthLabels.map((month) => (
-              <span key={month} className="text-left last:text-right">
-                {month}
+            {monthLabels.map(({ column, label }) => (
+              <span
+                key={`${column}-${label}`}
+                className="col-span-4 whitespace-nowrap text-left"
+                style={{ gridColumnStart: column + 1 }}
+              >
+                {label}
               </span>
             ))}
           </div>
+          <p
+            aria-live="polite"
+            className="mt-2 min-h-4 text-[10px] leading-4 text-[var(--muted)]"
+          >
+            {activityMessage}
+          </p>
         </div>
       </section>
-
-      <div className="mx-auto mt-[clamp(32px,4vh,40px)] grid w-full max-w-[732px] grid-cols-1 gap-8 pb-6 md:grid-cols-2 md:gap-10">
-        <section aria-labelledby="profile-activity-insights">
-          <h2
-            id="profile-activity-insights"
-            className="text-[13px] font-semibold leading-5 text-[var(--text)]"
-          >
-            {t("settings.profileActivityInsights")}
-          </h2>
-          <dl className="mt-2.5 space-y-2.5">
-            {PROFILE_INSIGHTS.map((insight) => (
-              <div key={insight.label} className="flex min-w-0 items-baseline justify-between gap-4 py-0.5">
-                <dt className="min-w-0 truncate text-[12px] leading-[18px] text-[var(--muted-strong)]">
-                  {t(insight.label)}
-                </dt>
-                <dd className="shrink-0 text-right text-[12px] font-medium leading-[18px] text-[var(--text)]">
-                  {insight.value[language]}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-
-        <section aria-labelledby="profile-most-used-skills">
-          <h2
-            id="profile-most-used-skills"
-            className="text-[13px] font-semibold leading-5 text-[var(--text)]"
-          >
-            {t("settings.profileMostUsedSkills")}
-          </h2>
-          <ol className="mt-2 space-y-1">
-            {MOCK_SKILLS.map(({ name, runs, Icon }) => (
-              <li
-                key={name}
-                className="group flex min-h-7 min-w-0 items-center gap-2 rounded-lg px-1 py-0.5 transition-colors hover:bg-[var(--surface-hover)]"
-              >
-                <span
-                  aria-hidden="true"
-                  className="flex size-5 shrink-0 items-center justify-center rounded-md border border-[var(--border-soft)] bg-[var(--panel)] text-[var(--muted-strong)]"
-                >
-                  <Icon size={12} strokeWidth={1.8} />
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-[18px] text-[var(--text)]">
-                  {name}
-                </span>
-                <span className="shrink-0 text-[11px] leading-4 text-[var(--muted)]">
-                  {t("settings.profileSkillRuns", { count: runs })}
-                </span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      </div>
     </div>
   );
 }

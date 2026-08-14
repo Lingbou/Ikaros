@@ -13,7 +13,8 @@ import {
   type RuntimeReplayResult,
   type RuntimeThreadGetResult,
   type RuntimeTurnListPage,
-  type RuntimeTurnHistory
+  type RuntimeTurnHistory,
+  type RuntimeUsageReadResult
 } from "../shared/runtime";
 import {
   parseRuntimeThreadGetResult,
@@ -23,6 +24,7 @@ import {
   parseRuntimeReplayResult,
   parseRuntimeThreadListPage,
   parseRuntimeTurnListPage,
+  parseRuntimeUsageReadResult,
   listAllRuntimeThreads,
   RuntimeHost,
   RuntimeRpcError,
@@ -416,6 +418,55 @@ describe("RuntimeHost integration", () => {
     }
   });
 
+  it("strictly validates aggregate token usage at the Runtime boundary", () => {
+    const valid: RuntimeUsageReadResult = {
+      summary: {
+        lifetimeTokens: 2_400,
+        peakDailyTokens: 1_500,
+        longestRunningTurnSec: null,
+        currentStreakDays: 2,
+        longestStreakDays: 4
+      },
+      dailyUsageBuckets: [
+        { startDate: "2024-02-29", tokens: 900 },
+        { startDate: "2026-08-15", tokens: 1_500 }
+      ]
+    };
+    expect(parseRuntimeUsageReadResult(valid)).toEqual(valid);
+
+    for (const invalid of [
+      null,
+      { ...valid, extra: true },
+      { summary: valid.summary },
+      { ...valid, summary: { ...valid.summary, extra: true } },
+      { ...valid, summary: { ...valid.summary, lifetimeTokens: -1 } },
+      { ...valid, summary: { ...valid.summary, peakDailyTokens: 1.5 } },
+      {
+        ...valid,
+        summary: { ...valid.summary, longestRunningTurnSec: Number.MAX_SAFE_INTEGER + 1 }
+      },
+      { ...valid, summary: { ...valid.summary, currentStreakDays: null } },
+      { ...valid, summary: { ...valid.summary, longestStreakDays: -1 } },
+      { ...valid, dailyUsageBuckets: null },
+      { ...valid, dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: 1, extra: true }] },
+      { ...valid, dailyUsageBuckets: [{ startDate: "2026-8-15", tokens: 1 }] },
+      { ...valid, dailyUsageBuckets: [{ startDate: "2026-02-29", tokens: 1 }] },
+      { ...valid, dailyUsageBuckets: [{ startDate: "0000-01-01", tokens: 1 }] },
+      { ...valid, dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: -1 }] },
+      { ...valid, dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: 1.5 }] },
+      {
+        ...valid,
+        dailyUsageBuckets: [
+          { startDate: "2026-08-15", tokens: Number.MAX_SAFE_INTEGER + 1 }
+        ]
+      }
+    ]) {
+      expect(() => parseRuntimeUsageReadResult(invalid)).toThrow(
+        "Runtime returned an invalid usage result."
+      );
+    }
+  });
+
   it("uses a catalog waterline for cold start and incremental replay for reconnect", async () => {
     const host = new RuntimeHost({ runtimeRoot });
     const internals = host as unknown as RuntimeHostInternals;
@@ -621,6 +672,17 @@ describe("RuntimeHost integration", () => {
             nextCursor: null
           })
         );
+        const usage = await firstHost.request<RuntimeUsageReadResult>("usage.read");
+        expect(usage).toEqual({
+          summary: {
+            lifetimeTokens: null,
+            peakDailyTokens: null,
+            longestRunningTurnSec: expect.any(Number),
+            currentStreakDays: 0,
+            longestStreakDays: 0
+          },
+          dailyUsageBuckets: []
+        });
       } finally {
         removeNotification();
         await firstHost.stop();

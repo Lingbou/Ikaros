@@ -2,8 +2,9 @@
 
 The original process-Tool vertical slice was validated on 2026-08-12
 (Asia/Shanghai) on Windows, starting from Gate 6 commit `48b8cd5`. The most
-recently recorded extension of the same end-to-end smoke with the file Tools
-passed on 2026-08-13. This document records that run; later code revisions
+recently recorded extension of the same end-to-end smoke with Provider-reported
+Token usage and the file Tools passed on 2026-08-15. This document records that
+run; later code revisions
 require a fresh opt-in run before they can be described as live-validated.
 
 ## Live path
@@ -19,6 +20,7 @@ Renderer store
   -> Python Runtime
   -> DeepSeek OpenAI-compatible SSE
   -> write -> read -> edit -> read
+  -> model.usage_recorded -> usage.read
   -> Runtime events
   -> Renderer projection
 ```
@@ -36,6 +38,9 @@ The most recently recorded file-Tool live run used the explicitly configured
 - the prior-Turn marker and final edited token returned by the model in its
   final answer after the last Tool Result;
 - completed Run, Item, and renderer projections;
+- exact Provider-reported usage persisted for the live model Steps, with
+  positive lifetime and peak totals, a non-null longest-task duration, active
+  streaks, and daily buckets whose sum exactly matched the lifetime total;
 - Desktop projections for successful `write`, `read`, and `edit` Tool activity;
 - Stop issued through the renderer store against a real `process_run` execution
   requested by the deterministic ScriptedProvider; and

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, utc_now
+from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, ModelUsage, utc_now
 from ikaros_runtime.errors import RuntimeHomeLockError
 from ikaros_runtime.maintenance import check_runtime_state
 from ikaros_runtime.server.host import RuntimeHomeLock
@@ -140,6 +140,45 @@ def test_check_detects_projection_drift_and_repair_restores_it_without_touching_
         assert original.execute("SELECT title FROM threads").fetchone()[0] == "projection drift"
     finally:
         original.close()
+
+
+def test_repair_restores_model_usage_projection_from_the_journal(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    backup_path = tmp_path / "usage-drift.db"
+    store = SqliteRuntimeStore(state_path)
+    try:
+        thread, _event = store.create_thread("Usage repair")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="measure",
+            provider_id="deepseek",
+            model_id="deepseek-chat",
+        )
+        store.mark_run_running(prepared.run_id)
+        store.record_model_usage(
+            prepared.run_id,
+            step_ordinal=1,
+            usage=ModelUsage(input_tokens=7, output_tokens=3, total_tokens=10),
+        )
+        with store._connection:
+            store._connection.execute(
+                "UPDATE model_usages SET total_tokens = 999 WHERE run_id = ?",
+                (prepared.run_id,),
+            )
+
+        with pytest.raises(RuntimeError, match="projections do not match"):
+            store.check_state()
+
+        store.repair_state_projections(backup_path)
+
+        assert store.read_usage().summary.lifetime_tokens == 10
+        assert store._connection.execute(
+            "SELECT total_tokens FROM model_usages WHERE run_id = ?",
+            (prepared.run_id,),
+        ).fetchone()[0] == 10
+    finally:
+        store.close()
 
 
 def test_repair_rolls_back_on_an_unknown_event_and_preserves_its_automatic_backup(
@@ -404,7 +443,7 @@ def _journal_rows(connection: sqlite3.Connection) -> list[tuple[object, ...]]:
 def _projection_rows(connection: sqlite3.Connection) -> dict[str, list[tuple[object, ...]]]:
     return {
         table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1")]
-        for table in ("threads", "branches", "turns", "runs", "items")
+        for table in ("threads", "branches", "turns", "runs", "model_usages", "items")
     }
 
 

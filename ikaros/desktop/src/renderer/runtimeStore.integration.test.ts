@@ -145,6 +145,21 @@ function installRuntimeBridge(api: unknown): void {
         ),
       setModelEnabled: (params: Parameters<IkarosRuntimeApi["setModelEnabled"]>[0]) =>
         bridgeInvocation(() => runtime.setModelEnabled(params)),
+      readUsage: () =>
+        bridgeInvocation(() =>
+          typeof runtime.readUsage === "function"
+            ? runtime.readUsage()
+            : Promise.resolve({
+                summary: {
+                  lifetimeTokens: null,
+                  peakDailyTokens: null,
+                  longestRunningTurnSec: null,
+                  currentStreakDays: 0,
+                  longestStreakDays: 0,
+                },
+                dailyUsageBuckets: [],
+              }),
+        ),
       onEvent: runtime.onEvent,
     },
   } as IkarosDesktopApi;

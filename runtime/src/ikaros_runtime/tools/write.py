@@ -10,7 +10,6 @@ from ..domain import JsonObject
 from .core import ToolCall, ToolDefinition, ToolResult, require_exact_arguments
 from .file_common import (
     FileToolError,
-    atomic_write_bytes,
     detect_line_ending,
     encode_text,
     inspect_existing_text_format,
@@ -19,6 +18,7 @@ from .file_common import (
     run_mutation_thread,
     validate_file_path,
 )
+from .file_common import atomic_write_bytes as atomic_write_bytes
 
 
 class WriteTool:

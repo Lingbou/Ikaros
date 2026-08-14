@@ -11,7 +11,7 @@ import ikaros_runtime.agent.loop as agent_loop_module
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
-from ikaros_runtime.domain import JournalEvent, WorkspaceSummary
+from ikaros_runtime.domain import JournalEvent, ModelUsage, WorkspaceSummary
 from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderRequest,
@@ -234,6 +234,19 @@ class StaleResultTool(RecordingTool):
         )
 
 
+class ExplodingTool(RecordingTool):
+    async def execute(
+        self,
+        call: ToolCall,
+        *,
+        cancellation: CancellationToken,
+        default_cwd: str | None = None,
+    ) -> ToolResult:
+        cancellation.raise_if_cancelled()
+        del call, default_cwd
+        raise RuntimeError("expected tool failure")
+
+
 class ToolLoopProvider:
     def __init__(
         self,
@@ -308,6 +321,68 @@ class TextAfterToolProvider:
         )
         yield TextDelta("late narration")
         yield ResponseCompleted()
+
+
+class UsageToolLoopProvider(ToolLoopProvider):
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        cancellation.raise_if_cancelled()
+        self.requests.append(request)
+        ordinal = len(self.requests)
+        has_tool_result = any(message.role == "tool" for message in request.messages)
+        if not has_tool_result:
+            yield ToolCallCompleted(
+                ToolCall(
+                    id="call-with-usage",
+                    name="process_run",
+                    arguments={"command": "test-command"},
+                )
+            )
+        else:
+            yield TextDelta("final answer")
+        yield ResponseCompleted(
+            ModelUsage(
+                input_tokens=ordinal * 10,
+                output_tokens=ordinal,
+                total_tokens=ordinal * 11,
+            )
+        )
+
+
+class InvalidCompletedUsageProvider:
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        yield TextDelta("partial")
+        yield ResponseCompleted(ModelUsage(input_tokens=3, output_tokens=1, total_tokens=4))
+        yield TextDelta("event after completion")
+
+
+class UsageThenProtectedValuesChangeProvider:
+    def __init__(self, protected_values: list[str], newly_protected: str) -> None:
+        self.protected_values = protected_values
+        self.newly_protected = newly_protected
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        yield TextDelta("safe response")
+        yield ResponseCompleted(ModelUsage(input_tokens=3, output_tokens=1, total_tokens=4))
+        self.protected_values.append(self.newly_protected)
 
 
 @pytest.mark.asyncio
@@ -721,6 +796,183 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
             )
             == before_rebuild
         )
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_records_provider_usage_once_for_each_completed_model_step(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Usage tool loop")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run the tool",
+            provider_id="usage-tool-loop",
+            model_id="usage-model",
+        )
+        provider = UsageToolLoopProvider()
+        loop = AgentLoop(
+            store,
+            {"usage-tool-loop": provider},
+            publish,
+            ToolExecutor(ToolRegistry([RecordingTool()]), FullAccessPolicy()),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        usage_events = [event for event in events if event.type == "model.usage_recorded"]
+        assert [event.payload["stepOrdinal"] for event in usage_events] == [1, 2]
+        assert [event.payload["usage"]["totalTokens"] for event in usage_events] == [11, 22]
+        rows = store._connection.execute(
+            """
+            SELECT step_ordinal, provider_id, model_id, input_tokens, output_tokens,
+                   total_tokens
+            FROM model_usages
+            WHERE run_id = ?
+            ORDER BY step_ordinal
+            """,
+            (prepared.run_id,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            (1, "usage-tool-loop", "usage-model", 10, 1, 11),
+            (2, "usage-tool-loop", "usage-model", 20, 2, 22),
+        ]
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["status"] == "completed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_keeps_completed_step_usage_when_the_following_tool_crashes(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Usage before tool failure")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run the failing tool",
+            provider_id="usage-tool-loop",
+            model_id="usage-model",
+        )
+        loop = AgentLoop(
+            store,
+            {"usage-tool-loop": UsageToolLoopProvider()},
+            publish,
+            ToolExecutor(ToolRegistry([ExplodingTool()]), FullAccessPolicy()),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        usage_events = [event for event in events if event.type == "model.usage_recorded"]
+        assert len(usage_events) == 1
+        assert usage_events[0].payload["stepOrdinal"] == 1
+        assert usage_events[0].payload["usage"]["totalTokens"] == 11
+        assert store.read_usage().summary.lifetime_tokens == 11
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["status"] == "failed"
+        assert events[-1].payload["reasonCode"] == "agent_error"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_record_usage_until_the_full_stream_is_validated(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Invalid completed stream")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="reject malformed provider output",
+            provider_id="invalid-completed",
+            model_id="invalid-completed-v1",
+        )
+        loop = AgentLoop(
+            store,
+            {"invalid-completed": InvalidCompletedUsageProvider()},
+            publish,
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert not any(event.type == "model.usage_recorded" for event in events)
+        assert (
+            store._connection.execute(
+                "SELECT COUNT(*) FROM model_usages WHERE run_id = ?",
+                (prepared.run_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        settled = [event for event in events if event.type == "run.settled"]
+        assert len(settled) == 1
+        assert settled[0].payload["status"] == "failed"
+        assert settled[0].payload["reasonCode"] == "provider_protocol"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_record_usage_when_trailing_security_validation_fails(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+    protected_values: list[str] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Usage rejected after security validation")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="reject stale security snapshot",
+            provider_id="usage-protection-change",
+            model_id="usage-model",
+        )
+        provider = UsageThenProtectedValuesChangeProvider(
+            protected_values,
+            "newly-protected-sentinel",
+        )
+        loop = AgentLoop(
+            store,
+            {"usage-protection-change": provider},
+            publish,
+            protected_values=lambda: tuple(protected_values),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert not any(event.type == "model.usage_recorded" for event in events)
+        assert store.read_usage().summary.lifetime_tokens is None
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["status"] == "failed"
+        assert events[-1].payload["reasonCode"] == "agent_error"
     finally:
         store.close()
 

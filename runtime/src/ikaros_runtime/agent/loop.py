@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
-from ..domain import ContextItem, JournalEvent
+from ..domain import ContextItem, JournalEvent, ModelUsage
 from ..errors import ProtectedValueError, ProviderFailure
 from ..providers.base import (
     ProviderAdapter,
@@ -113,7 +113,7 @@ class AgentLoop:
                 raise RuntimeError("run execution policy is not available")
 
             await self._publish(self._store.mark_run_running(run_id))
-            for _ in range(self._max_steps):
+            for step_ordinal in range(1, self._max_steps + 1):
                 cancellation.raise_if_cancelled()
                 messages = self._provider_messages(
                     self._store.context_items(
@@ -134,6 +134,7 @@ class AgentLoop:
                         provider,
                         request,
                         cancellation,
+                        step_ordinal=step_ordinal,
                     )
                 )
                 if tool_calls:
@@ -180,6 +181,8 @@ class AgentLoop:
         provider: ProviderAdapter,
         request: ProviderRequest,
         cancellation: CancellationToken,
+        *,
+        step_ordinal: int,
     ) -> tuple[str | None, tuple[ToolCall, ...], str | None, str | None]:
         assistant_item_id: str | None = None
         tool_calls: list[ToolCall] = []
@@ -192,6 +195,7 @@ class AgentLoop:
         reasoning_guard = ProtectedStreamGuard(protected_values)
         text_batch = _TextDeltaBatch()
         completed = False
+        response_usage: ModelUsage | None = None
         try:
             async for event in provider.stream(request, cancellation=cancellation):
                 cancellation.raise_if_cancelled()
@@ -239,6 +243,7 @@ class AgentLoop:
                     tool_calls.append(call)
                 elif isinstance(event, ResponseCompleted):
                     await self._publish_text_delta(assistant_item_id, text_batch.flush())
+                    response_usage = event.usage
                     completed = True
                 else:
                     raise RuntimeError("provider emitted an unknown event")
@@ -268,6 +273,14 @@ class AgentLoop:
         if trailing_reasoning:
             reasoning_parts.append(trailing_reasoning)
         reasoning_content = "".join(reasoning_parts) if reasoning_seen else None
+        if response_usage is not None:
+            await self._publish(
+                self._store.record_model_usage(
+                    run_id,
+                    step_ordinal=step_ordinal,
+                    usage=response_usage,
+                )
+            )
         step_id = f"step_{uuid.uuid4().hex}" if tool_calls and assistant_item_id else None
         return assistant_item_id, tuple(tool_calls), reasoning_content, step_id
 

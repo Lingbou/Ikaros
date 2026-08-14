@@ -129,7 +129,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     providerDisconnect: "ikaros:runtime:provider-disconnect",
     providerRemove: "ikaros:runtime:provider-remove",
     modelList: "ikaros:runtime:model-list",
-    modelSetEnabled: "ikaros:runtime:model-set-enabled"
+    modelSetEnabled: "ikaros:runtime:model-set-enabled",
+    usageRead: "ikaros:runtime:usage-read"
   },
   workspace: {
     chooseDirectory: "ikaros:workspace:choose-directory"

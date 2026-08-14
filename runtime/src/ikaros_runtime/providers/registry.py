@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
-from ..errors import ConfigError
+from ..errors import ConfigError as ConfigError
 from ..security import contains_protected_value
 from .base import (
     ModelConfig,

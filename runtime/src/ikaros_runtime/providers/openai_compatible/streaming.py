@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from ...cancellation import CancellationToken, RunCancelled
+from ...domain import ModelUsage
 from ...errors import ProviderFailure
 from ...json_codec import loads as json_loads
 from ...security import contains_protected_value, json_contains_protected_value
@@ -24,6 +25,7 @@ from ..base import (
 MAX_SSE_EVENT_CHARACTERS = 1_000_000
 MAX_TOOL_ARGUMENT_CHARACTERS = 1_000_000
 PROTECTED_RESPONSE_MESSAGE = "provider response contained protected configuration data"
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 
 @dataclass(slots=True)
@@ -38,12 +40,19 @@ class ResponseAssembler:
     def __init__(self, secrets: Sequence[str]) -> None:
         self._tools: dict[int, ResponseToolAccumulator] = {}
         self._finish_reason: str | None = None
+        self._usage: ModelUsage | None = None
         self._secrets = tuple(secrets)
         self.saw_output = False
 
     def consume(self, value: Any) -> tuple[ProviderEvent, ...]:
         if not isinstance(value, dict):
             raise protocol_failure()
+        if "usage" in value and value["usage"] is not None:
+            usage = _parse_usage(value["usage"])
+            if self._usage is not None and self._usage != usage:
+                raise protocol_failure()
+            self._usage = usage
+            self.saw_output = True
         choices = value.get("choices")
         if not isinstance(choices, list):
             raise protocol_failure()
@@ -133,7 +142,7 @@ class ResponseAssembler:
                         )
                     )
                 )
-        events.append(ResponseCompleted())
+        events.append(ResponseCompleted(self._usage))
         return tuple(events)
 
     def _consume_tool_fragment(self, value: Any) -> None:
@@ -173,6 +182,80 @@ class ResponseAssembler:
                 if accumulator.argument_characters > MAX_TOOL_ARGUMENT_CHARACTERS:
                     raise protocol_failure()
                 self.saw_output = True
+
+
+def _parse_usage(value: Any) -> ModelUsage:
+    if not isinstance(value, dict):
+        raise protocol_failure()
+    input_tokens = _required_token_count(value, "prompt_tokens")
+    output_tokens = _required_token_count(value, "completion_tokens")
+    total_tokens = _required_token_count(value, "total_tokens")
+
+    cached_input_tokens = _optional_token_count(value, "prompt_cache_hit_tokens")
+    prompt_details = value.get("prompt_tokens_details")
+    if prompt_details is not None:
+        if not isinstance(prompt_details, dict):
+            raise protocol_failure()
+        nested_cached = _optional_token_count(prompt_details, "cached_tokens")
+        if (
+            cached_input_tokens is not None
+            and nested_cached is not None
+            and cached_input_tokens != nested_cached
+        ):
+            raise protocol_failure()
+        if cached_input_tokens is None:
+            cached_input_tokens = nested_cached
+
+    reasoning_output_tokens: int | None = None
+    completion_details = value.get("completion_tokens_details")
+    if completion_details is not None:
+        if not isinstance(completion_details, dict):
+            raise protocol_failure()
+        reasoning_output_tokens = _optional_token_count(
+            completion_details,
+            "reasoning_tokens",
+        )
+
+    if cached_input_tokens is not None and cached_input_tokens > input_tokens:
+        raise protocol_failure()
+    if reasoning_output_tokens is not None and reasoning_output_tokens > output_tokens:
+        raise protocol_failure()
+
+    return ModelUsage(
+        input_tokens=input_tokens,
+        cached_input_tokens=cached_input_tokens,
+        output_tokens=output_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
+        total_tokens=total_tokens,
+    )
+
+
+def _required_token_count(value: dict[str, Any], key: str) -> int:
+    if key not in value:
+        raise protocol_failure()
+    count = value[key]
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or count < 0
+        or count > _SQLITE_MAX_INTEGER
+    ):
+        raise protocol_failure()
+    return count
+
+
+def _optional_token_count(value: dict[str, Any], key: str) -> int | None:
+    if key not in value or value[key] is None:
+        return None
+    count = value[key]
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or count < 0
+        or count > _SQLITE_MAX_INTEGER
+    ):
+        raise protocol_failure()
+    return count
 
 
 async def sse_payloads(

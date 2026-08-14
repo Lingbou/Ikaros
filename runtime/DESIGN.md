@@ -853,6 +853,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | retry or recovery | mock-only UI; no Runtime retry/resume command yet |
 | artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
+| Profile Token metrics and activity | `usage.read` over exact Provider-reported per-Step usage; no text-based estimation |
 | theme, language, username | client-only UI state |
 
 The runtime sends stable semantics and original content, never pretranslated
@@ -933,7 +934,7 @@ removes the corresponding saved model rows.
 
 The renderer's `AgentEvent` and `RunStatus` types remain UI projections rather
 than wire schema. `ScenarioId`, seeded conversations, fixed timestamps,
-`playScenario`, mock slash commands, profile statistics, permission/recovery
+`playScenario`, mock slash commands, permission/recovery
 cards, and Artifact/file-change fixtures remain outside the Runtime contract.
 The `MockAgentClient` is used only when the typed Desktop Runtime bridge is
 absent and by deterministic UI tests; it does not drive the packaged Desktop's

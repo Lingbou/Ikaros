@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import hashlib
-import os
+import os as os
 import secrets
 import stat
 import tempfile

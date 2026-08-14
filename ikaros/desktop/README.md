@@ -85,6 +85,8 @@ The Runtime currently owns:
   `~/.ikaros/config.yaml` persistence;
 - the ScriptedProvider used by deterministic integration tests and real
   OpenAI-compatible streaming Providers used by normal conversations; and
+- `usage.read`, which supplies exact Provider-reported Token totals, longest
+  completed task duration, streaks, and daily buckets for the Profile page;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
   V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
   command execution provides timeout, cancellation, bounded output, and
@@ -145,8 +147,6 @@ The following UI surfaces are not production Runtime capabilities yet:
   non-Electron renderer development only;
 - `/mock-1`, `/mock-2`, and `/mock-3` only insert placeholder text; Skills do
   not yet have a loader, registry, RPC surface, or execution lifecycle;
-- Profile metrics, activity history, insights, and most-used Skills are static
-  demonstration data;
 - permission cards and Ask/Safe/Full choices belong to the mock prototype;
   Runtime V1 always uses `full_access` and emits no permission requests;
 - editing a message to fork history, multiple Branches, retry/resume recovery,
@@ -169,7 +169,7 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema version 3 and is
+Conversation persistence uses canonical SQLite schema version 4 and is
 intentionally reset-only during pre-release development. An incompatible
 `~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
 or Event upcaster is provided. After stopping the Runtime, an explicitly

@@ -28,6 +28,7 @@ import type {
   RuntimeTurnListParams,
   RuntimeTurnStartParams,
   RuntimeTurnStartResult,
+  RuntimeUsageReadResult,
   RuntimeWorkspaceSummary
 } from "../shared/runtime";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
@@ -140,6 +141,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.providerRemove,
     DESKTOP_IPC_CHANNELS.runtime.modelList,
     DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
+    DESKTOP_IPC_CHANNELS.runtime.usageRead,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.preferences.get,
     DESKTOP_IPC_CHANNELS.preferences.update,
@@ -297,6 +299,11 @@ export function registerDesktopIpc(
       );
     }
   );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.usageRead, async (event) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() => runtimeHost.request<RuntimeUsageReadResult>("usage.read"));
+  });
 
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.turnStart,

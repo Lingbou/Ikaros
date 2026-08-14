@@ -291,6 +291,7 @@ describe("desktop window controls", () => {
       providerId: "local"
     }],
     ["ikaros:runtime:model-list", [], "model.list", undefined],
+    ["ikaros:runtime:usage-read", [], "usage.read", undefined],
     [
       "ikaros:runtime:model-set-enabled",
       [{ providerId: "local", modelId: "model", enabled: false }],

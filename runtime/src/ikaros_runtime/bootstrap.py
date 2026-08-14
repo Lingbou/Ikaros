@@ -23,6 +23,7 @@ from .server.host import RuntimeHomeLock, ServerSettings, run_host
 from .services.providers import ModelDiscovery, ProviderService
 from .services.threads import ThreadService
 from .services.turns import TurnService
+from .services.usage import UsageService
 from .storage import SqliteRuntimeStore
 from .tools import EditTool, ProcessRunTool, ReadTool, WriteTool
 from .tools.core import ToolExecutor, ToolRegistry
@@ -80,7 +81,8 @@ class RuntimeApplication:
             model_discovery,
             self.security.assert_credentials_safe,
         )
-        self.router = RuntimeRouter(self.threads, self.turns, self.providers)
+        self.usage = UsageService(store)
+        self.router = RuntimeRouter(self.threads, self.turns, self.providers, self.usage)
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
         self._scheduler.start(recovered_run_ids)

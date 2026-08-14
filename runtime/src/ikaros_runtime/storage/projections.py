@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from datetime import date
 from typing import Any, cast
 
 from ..domain import ContextItem, JournalEvent, PreparedTurn, RunDescriptor, WorkspaceSummary
@@ -14,6 +15,8 @@ from ..security import (
     json_contains_protected_value,
     json_values_contain_protected_value,
 )
+
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 
 def has_active_runs(connection: sqlite3.Connection) -> bool:
@@ -436,16 +439,88 @@ def apply_event(
         _require_choice("Run state", payload["status"], {"queued", "running"})
         _require_payload_scope(payload, event, item_required=False)
         _require_existing_run_scope(connection, event)
-        updated_run = connection.execute(
-            "UPDATE runs SET status = ? WHERE id = ?",
-            (payload["status"], payload["runId"]),
-        )
+        if payload["status"] == "running":
+            updated_run = connection.execute(
+                "UPDATE runs SET status = ?, started_at = ? WHERE id = ?",
+                (payload["status"], event.timestamp, payload["runId"]),
+            )
+        else:
+            updated_run = connection.execute(
+                "UPDATE runs SET status = ? WHERE id = ?",
+                (payload["status"], payload["runId"]),
+            )
         _require_one_update(updated_run, event_type)
         updated_turn = connection.execute(
             "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
             (payload["status"], event.timestamp, payload["turnId"]),
         )
         _require_one_update(updated_turn, event_type)
+    elif event_type == "model.usage_recorded":
+        _require_keys(
+            payload,
+            {
+                "stepOrdinal",
+                "providerId",
+                "modelId",
+                "activityDate",
+                "completedAt",
+                "usage",
+                "turnId",
+                "runId",
+            },
+        )
+        usage = _record(payload, "usage", _MODEL_USAGE_KEYS)
+        _validate_model_usage(payload["stepOrdinal"], usage)
+        _require_string("model usage providerId", payload["providerId"])
+        _require_string("model usage modelId", payload["modelId"])
+        _require_activity_date(payload["activityDate"])
+        _require_string("model usage completedAt", payload["completedAt"])
+        _require_equal("model usage completion time", payload["completedAt"], event.timestamp)
+        _require_payload_scope(payload, event, item_required=False)
+        _require_event_scope(
+            event,
+            thread_id=event.thread_id,
+            branch_id=event.branch_id,
+            turn_id=payload["turnId"],
+            run_id=payload["runId"],
+            item_id=None,
+        )
+        _require_existing_run_scope(connection, event)
+        run = connection.execute(
+            "SELECT provider_id, model_id, status FROM runs WHERE id = ?",
+            (event.run_id,),
+        ).fetchone()
+        if run is None or run["status"] != "running":
+            raise RuntimeError("model usage requires a running Run")
+        if (run["provider_id"], run["model_id"]) != (
+            payload["providerId"],
+            payload["modelId"],
+        ):
+            raise RuntimeError("model usage Provider or Model does not match its Run")
+        connection.execute(
+            """
+            INSERT INTO model_usages(
+                thread_id, turn_id, run_id, step_ordinal, provider_id, model_id,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, activity_date, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.thread_id,
+                event.turn_id,
+                event.run_id,
+                payload["stepOrdinal"],
+                payload["providerId"],
+                payload["modelId"],
+                usage["inputTokens"],
+                usage["cachedInputTokens"],
+                usage["outputTokens"],
+                usage["reasoningOutputTokens"],
+                usage["totalTokens"],
+                payload["activityDate"],
+                payload["completedAt"],
+            ),
+        )
     elif event_type == "item.started":
         _require_keys(payload, {"item", "turnId", "runId", "itemId"})
         item = _record(payload, "item", _ITEM_KEYS)
@@ -533,8 +608,13 @@ def apply_event(
         _require_payload_scope(payload, event, item_required=False)
         _require_existing_run_scope(connection, event)
         updated_run = connection.execute(
-            "UPDATE runs SET status = ?, settled_at = ? WHERE id = ?",
-            (payload["status"], payload["settledAt"], payload["runId"]),
+            "UPDATE runs SET status = ?, settled_at = ?, reason_code = ? WHERE id = ?",
+            (
+                payload["status"],
+                payload["settledAt"],
+                payload.get("reasonCode"),
+                payload["runId"],
+            ),
         )
         _require_one_update(updated_run, event_type)
         updated_turn = connection.execute(
@@ -590,6 +670,13 @@ _RUN_KEYS = {
     "status",
     "createdAt",
     "settledAt",
+}
+_MODEL_USAGE_KEYS = {
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
 }
 _ITEM_KEYS = {
     "id",
@@ -660,6 +747,30 @@ def _validate_item(item: dict[str, Any]) -> None:
     _require_choice("Item kind", item["kind"], {"message", "tool_call", "tool_result"})
     if not isinstance(item["data"], dict):
         raise RuntimeError("journal event Item data is not an object")
+
+
+def _validate_model_usage(step_ordinal: object, usage: dict[str, Any]) -> None:
+    _require_positive_integer("model usage Step ordinal", step_ordinal)
+    for label, key in (
+        ("input", "inputTokens"),
+        ("output", "outputTokens"),
+        ("total", "totalTokens"),
+    ):
+        _require_nonnegative_integer(f"model usage {label} tokens", usage[key])
+    for label, key in (
+        ("cached input", "cachedInputTokens"),
+        ("reasoning output", "reasoningOutputTokens"),
+    ):
+        value = usage[key]
+        if value is not None:
+            _require_nonnegative_integer(f"model usage {label} tokens", value)
+    if usage["cachedInputTokens"] is not None and usage["cachedInputTokens"] > usage["inputTokens"]:
+        raise RuntimeError("journal event cached input tokens exceed input tokens")
+    if (
+        usage["reasoningOutputTokens"] is not None
+        and usage["reasoningOutputTokens"] > usage["outputTokens"]
+    ):
+        raise RuntimeError("journal event reasoning output tokens exceed output tokens")
 
 
 def _validate_optional_client_request(value: dict[str, Any]) -> None:
@@ -769,6 +880,27 @@ def _require_optional_string(label: str, value: object) -> None:
 def _require_positive_integer(label: str, value: object) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise RuntimeError(f"journal event {label} is invalid")
+
+
+def _require_nonnegative_integer(label: str, value: object) -> None:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        or value > _SQLITE_MAX_INTEGER
+    ):
+        raise RuntimeError(f"journal event {label} is invalid")
+
+
+def _require_activity_date(value: object) -> None:
+    if not isinstance(value, str):
+        raise RuntimeError("journal event model usage activityDate is invalid")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise RuntimeError("journal event model usage activityDate is invalid") from None
+    if parsed.isoformat() != value:
+        raise RuntimeError("journal event model usage activityDate is invalid")
 
 
 def _require_choice(label: str, value: object, choices: set[str]) -> None:

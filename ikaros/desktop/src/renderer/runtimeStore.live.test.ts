@@ -24,6 +24,7 @@ import type {
   RuntimeThreadMutationResult,
   RuntimeTurnListPage,
   RuntimeTurnStartResult,
+  RuntimeUsageReadResult,
 } from "../shared/runtime";
 import { activeBranch, type AgentEvent, type Thread, type Turn } from "./domain";
 
@@ -131,6 +132,8 @@ function runtimeBridge(
       bridgeInvocation(() =>
         host.request<RuntimeModelSetEnabledResult>("model.set_enabled", { ...params }),
       ),
+    readUsage: () =>
+      bridgeInvocation(() => host.request<RuntimeUsageReadResult>("usage.read")),
     onEvent: (listener) =>
       host.onNotification((notification) => {
         if (notification.method === "event") {
@@ -525,6 +528,18 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
           firstTurn.runId,
           secondTurn.runId,
         ]);
+
+        const usage = await host.request<RuntimeUsageReadResult>("usage.read");
+        expect(usage.summary.lifetimeTokens).not.toBeNull();
+        expect(usage.summary.lifetimeTokens ?? 0).toBeGreaterThan(0);
+        expect(usage.summary.peakDailyTokens).not.toBeNull();
+        expect(usage.summary.peakDailyTokens ?? 0).toBeGreaterThan(0);
+        expect(usage.summary.longestRunningTurnSec).not.toBeNull();
+        expect(usage.summary.currentStreakDays).toBeGreaterThanOrEqual(1);
+        expect(usage.summary.longestStreakDays).toBeGreaterThanOrEqual(1);
+        expect(
+          usage.dailyUsageBuckets.reduce((total, bucket) => total + bucket.tokens, 0),
+        ).toBe(usage.summary.lifetimeTokens);
 
         const stopStarted = await host.request<RuntimeTurnStartResult>("turn.start", {
           threadId: projectedThread.id,

@@ -104,6 +104,19 @@ function desktopApiWithPreferences(
         setModelEnabled: async () => {
           throw new Error("not used in preference settings tests");
         },
+        readUsage: async () => ({
+          ok: true,
+          value: {
+            summary: {
+              lifetimeTokens: null,
+              peakDailyTokens: null,
+              longestRunningTurnSec: null,
+              currentStreakDays: 0,
+              longestStreakDays: 0
+            },
+            dailyUsageBuckets: []
+          }
+        }),
         onEvent: () => () => undefined
       },
       workspace: {

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, WorkspaceSummary
+import ikaros_runtime.storage.store as store_module
+from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, ModelUsage, WorkspaceSummary
 from ikaros_runtime.errors import UnsupportedJournalEventVersionError
 from ikaros_runtime.json_codec import dumps as json_dumps
 from ikaros_runtime.storage import SqliteRuntimeStore
+
+
+def _utc_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> None:
@@ -25,6 +31,240 @@ def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> No
         assert replayed[0].schema_version == JOURNAL_EVENT_SCHEMA_VERSION
         assert replayed[0].to_wire()["schemaVersion"] == JOURNAL_EVENT_SCHEMA_VERSION
         assert latest_seq == 1
+    finally:
+        store.close()
+
+
+def test_model_usage_event_projection_and_rebuild_are_lossless(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Usage projection")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="measure this step",
+            provider_id="deepseek",
+            model_id="deepseek-chat",
+        )
+        store.mark_run_running(prepared.run_id)
+        event = store.record_model_usage(
+            prepared.run_id,
+            step_ordinal=1,
+            usage=ModelUsage(
+                input_tokens=13,
+                cached_input_tokens=8,
+                output_tokens=5,
+                reasoning_output_tokens=2,
+                total_tokens=18,
+            ),
+        )
+        assert event.type == "model.usage_recorded"
+        assert event.payload["providerId"] == "deepseek"
+        assert event.payload["modelId"] == "deepseek-chat"
+        assert event.payload["usage"] == {
+            "inputTokens": 13,
+            "cachedInputTokens": 8,
+            "outputTokens": 5,
+            "reasoningOutputTokens": 2,
+            "totalTokens": 18,
+        }
+        before = tuple(
+            store._connection.execute(
+                "SELECT * FROM model_usages WHERE run_id = ?",
+                (prepared.run_id,),
+            ).fetchone()
+        )
+        journal_before, latest_seq = store.replay_events(0, 100)
+
+        store.rebuild_projections()
+
+        after = tuple(
+            store._connection.execute(
+                "SELECT * FROM model_usages WHERE run_id = ?",
+                (prepared.run_id,),
+            ).fetchone()
+        )
+        journal_after, rebuilt_latest_seq = store.replay_events(0, 100)
+        assert after == before
+        assert journal_after == journal_before
+        assert rebuilt_latest_seq == latest_seq
+    finally:
+        store.close()
+
+
+def test_projection_rebuild_rejects_usage_recorded_after_run_settlement(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Late usage")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="settle first",
+            provider_id="deepseek",
+            model_id="deepseek-chat",
+        )
+        store.mark_run_running(prepared.run_id)
+        settled_at = store.terminalize_run(prepared.run_id, "completed")[-1].timestamp
+        payload = {
+            "stepOrdinal": 1,
+            "providerId": "deepseek",
+            "modelId": "deepseek-chat",
+            "activityDate": datetime.now().astimezone().date().isoformat(),
+            "completedAt": settled_at,
+            "usage": {
+                "inputTokens": 1,
+                "cachedInputTokens": None,
+                "outputTokens": 1,
+                "reasoningOutputTokens": None,
+                "totalTokens": 2,
+            },
+            "turnId": prepared.turn_id,
+            "runId": prepared.run_id,
+        }
+        with store._connection:
+            store._connection.execute(
+                """
+                INSERT INTO events(
+                    schema_version, event_type, thread_id, branch_id, turn_id, run_id,
+                    created_at, payload_json
+                ) VALUES (?, 'model.usage_recorded', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    JOURNAL_EVENT_SCHEMA_VERSION,
+                    thread.id,
+                    thread.default_branch_id,
+                    prepared.turn_id,
+                    prepared.run_id,
+                    settled_at,
+                    json_dumps(payload, separators=(",", ":"), ensure_ascii=False),
+                ),
+            )
+
+        with pytest.raises(RuntimeError, match="model usage requires a running Run"):
+            store.rebuild_projections()
+    finally:
+        store.close()
+
+
+def test_model_usage_requires_a_running_run_and_unique_step_ordinal(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Usage lifecycle")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="measure once",
+            provider_id="deepseek",
+            model_id="deepseek-chat",
+        )
+        usage = ModelUsage(input_tokens=2, output_tokens=1, total_tokens=3)
+
+        with pytest.raises(RuntimeError, match="model usage requires a running Run"):
+            store.record_model_usage(prepared.run_id, step_ordinal=1, usage=usage)
+
+        store.mark_run_running(prepared.run_id)
+        store.record_model_usage(prepared.run_id, step_ordinal=1, usage=usage)
+        with pytest.raises(RuntimeError, match="already recorded"):
+            store.record_model_usage(prepared.run_id, step_ordinal=1, usage=usage)
+
+        store.terminalize_run(prepared.run_id, "completed")
+        with pytest.raises(RuntimeError, match="model usage requires a running Run"):
+            store.record_model_usage(prepared.run_id, step_ordinal=2, usage=usage)
+    finally:
+        store.close()
+
+
+def test_usage_aggregation_uses_local_activity_dates_and_actual_run_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    local_now = datetime.now().astimezone().replace(microsecond=0)
+    active_days = [local_now.date() - timedelta(days=offset) for offset in (2, 1, 0)]
+    timestamp = _utc_timestamp(local_now)
+    monkeypatch.setattr(store_module, "utc_now", lambda: timestamp)
+    try:
+        for index, (activity_day, token_counts) in enumerate(
+            zip(active_days, ((4,), (6,), (2, 8)), strict=True),
+        ):
+            thread, _ = store.create_thread(f"Usage day {index}")
+            prepared = store.prepare_turn(
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                content="measure",
+                provider_id="deepseek",
+                model_id="deepseek-chat",
+            )
+            started_local = datetime.combine(
+                activity_day,
+                datetime.min.time(),
+                tzinfo=local_now.tzinfo,
+            ).replace(hour=10)
+            timestamp = _utc_timestamp(started_local)
+            store.mark_run_running(prepared.run_id)
+            for step_ordinal, tokens in enumerate(token_counts, start=1):
+                timestamp = _utc_timestamp(started_local + timedelta(seconds=step_ordinal))
+                store.record_model_usage(
+                    prepared.run_id,
+                    step_ordinal=step_ordinal,
+                    usage=ModelUsage(
+                        input_tokens=tokens - 1,
+                        output_tokens=1,
+                        total_tokens=tokens,
+                    ),
+                )
+            duration = 125 if index == 0 else 30 + index
+            timestamp = _utc_timestamp(started_local + timedelta(seconds=duration))
+            store.terminalize_run(prepared.run_id, "completed")
+
+        interrupted_thread, _ = store.create_thread("Interrupted startup recovery")
+        interrupted = store.prepare_turn(
+            thread_id=interrupted_thread.id,
+            branch_id=interrupted_thread.default_branch_id,
+            content="do not count synthetic recovery time",
+            provider_id="deepseek",
+            model_id="deepseek-chat",
+        )
+        interrupted_started = local_now - timedelta(seconds=1_000)
+        timestamp = _utc_timestamp(interrupted_started)
+        store.mark_run_running(interrupted.run_id)
+        timestamp = _utc_timestamp(local_now)
+        store.terminalize_run(
+            interrupted.run_id,
+            "failed",
+            reason_code="runtime_interrupted",
+        )
+
+        snapshot = store.read_usage()
+
+        assert snapshot.summary.lifetime_tokens == 20
+        assert snapshot.summary.peak_daily_tokens == 10
+        assert snapshot.summary.longest_running_turn_sec == 125
+        assert snapshot.summary.current_streak_days == 3
+        assert snapshot.summary.longest_streak_days == 3
+        assert [(bucket.start_date, bucket.tokens) for bucket in snapshot.daily_usage_buckets] == [
+            (active_days[0].isoformat(), 4),
+            (active_days[1].isoformat(), 6),
+            (active_days[2].isoformat(), 10),
+        ]
+    finally:
+        store.close()
+
+
+def test_empty_usage_snapshot_does_not_invent_token_totals(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        snapshot = store.read_usage()
+        assert snapshot.to_wire() == {
+            "summary": {
+                "lifetimeTokens": None,
+                "peakDailyTokens": None,
+                "longestRunningTurnSec": None,
+                "currentStreakDays": 0,
+                "longestStreakDays": 0,
+            },
+            "dailyUsageBuckets": [],
+        }
     finally:
         store.close()
 

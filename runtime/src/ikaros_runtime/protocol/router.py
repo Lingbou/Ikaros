@@ -9,6 +9,7 @@ from ..errors import InvalidParamsError, ProviderFailure
 from ..services.providers import ProviderService
 from ..services.threads import ThreadService
 from ..services.turns import TurnService
+from ..services.usage import UsageService
 from .jsonrpc import JSONRPC_VERSION, jsonrpc_error
 
 RPC_METHODS = frozenset(
@@ -31,6 +32,7 @@ RPC_METHODS = frozenset(
         "turn.list",
         "run.cancel",
         "event.replay",
+        "usage.read",
     }
 )
 
@@ -58,10 +60,12 @@ class RuntimeRouter:
         threads: ThreadService,
         turns: TurnService,
         providers: ProviderService,
+        usage: UsageService,
     ) -> None:
         self._threads = threads
         self._turns = turns
         self._providers = providers
+        self._usage = usage
 
     async def dispatch(
         self,
@@ -113,6 +117,8 @@ class RuntimeRouter:
                 result = outcome.result
             elif method == "event.replay":
                 result = self._turns.replay_events(params)
+            elif method == "usage.read":
+                result = self._usage.read(params)
             else:
                 return RouteResult(jsonrpc_error(request_id, -32601, "method not found"))
         except InvalidParamsError as error:

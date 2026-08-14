@@ -10,15 +10,15 @@ from ..domain import JsonObject
 from .core import ToolCall, ToolDefinition, ToolResult, require_exact_arguments
 from .file_common import (
     FileToolError,
-    atomic_write_bytes,
     encode_text,
     normalize_line_endings,
     path_lock,
-    read_text_document,
     require_utf8_text,
     run_mutation_thread,
     validate_file_path,
 )
+from .file_common import atomic_write_bytes as atomic_write_bytes
+from .file_common import read_text_document as read_text_document
 
 
 class EditTool:

@@ -19,7 +19,8 @@ import {
   type RuntimeThreadSummary,
   type RuntimeTurnHistory,
   type RuntimeTurnListPage,
-  type RuntimeTurnListParams
+  type RuntimeTurnListParams,
+  type RuntimeUsageReadResult
 } from "../shared/runtime";
 
 const PROTOCOL_VERSION = 1;
@@ -181,6 +182,80 @@ function isSafeNonNegativeInteger(value: unknown): value is number {
 
 function isSafePositiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && keys.every((key) => hasOwn(value, key));
+}
+
+function isNullableSafeNonNegativeInteger(value: unknown): value is number | null {
+  return value === null || isSafeNonNegativeInteger(value);
+}
+
+function isCanonicalCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1) return false;
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+export function parseRuntimeUsageReadResult(value: unknown): RuntimeUsageReadResult {
+  const invalidMessage = "Runtime returned an invalid usage result.";
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, ["summary", "dailyUsageBuckets"]) ||
+    !isWireObject(value.summary) ||
+    !hasExactKeys(value.summary, [
+      "lifetimeTokens",
+      "peakDailyTokens",
+      "longestRunningTurnSec",
+      "currentStreakDays",
+      "longestStreakDays"
+    ]) ||
+    !isNullableSafeNonNegativeInteger(value.summary.lifetimeTokens) ||
+    !isNullableSafeNonNegativeInteger(value.summary.peakDailyTokens) ||
+    !isNullableSafeNonNegativeInteger(value.summary.longestRunningTurnSec) ||
+    !isSafeNonNegativeInteger(value.summary.currentStreakDays) ||
+    !isSafeNonNegativeInteger(value.summary.longestStreakDays) ||
+    !Array.isArray(value.dailyUsageBuckets)
+  ) {
+    throw new Error(invalidMessage);
+  }
+
+  const dailyUsageBuckets = value.dailyUsageBuckets.map((bucket) => {
+    if (
+      !isWireObject(bucket) ||
+      !hasExactKeys(bucket, ["startDate", "tokens"]) ||
+      !isCanonicalCalendarDate(bucket.startDate) ||
+      !isSafeNonNegativeInteger(bucket.tokens)
+    ) {
+      throw new Error(invalidMessage);
+    }
+    return { startDate: bucket.startDate, tokens: bucket.tokens };
+  });
+
+  return {
+    summary: {
+      lifetimeTokens: value.summary.lifetimeTokens,
+      peakDailyTokens: value.summary.peakDailyTokens,
+      longestRunningTurnSec: value.summary.longestRunningTurnSec,
+      currentStreakDays: value.summary.currentStreakDays,
+      longestStreakDays: value.summary.longestStreakDays
+    },
+    dailyUsageBuckets
+  };
 }
 
 function parseRuntimeThreadSummary(
@@ -1040,6 +1115,9 @@ export class RuntimeHost {
           ? { threadId: params.threadId, branchId: params.branchId }
           : undefined;
       return parseRuntimeTurnListPage(result, expectedScope) as TResult;
+    }
+    if (method === "usage.read") {
+      return parseRuntimeUsageReadResult(result) as TResult;
     }
     return result as TResult;
   }

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ..cancellation import CancellationToken
+from ..domain import ModelUsage
 from ..tools.core import ToolCall, ToolDefinition
 
 
@@ -74,6 +75,8 @@ class ToolCallCompleted:
 @dataclass(frozen=True, slots=True)
 class ResponseCompleted:
     """The provider finished one response without further stream events."""
+
+    usage: ModelUsage | None = None
 
 
 type ProviderEvent = TextDelta | ReasoningDelta | ToolCallCompleted | ResponseCompleted

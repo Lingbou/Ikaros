@@ -22,6 +22,7 @@ _PROJECTION_TABLES = (
     ("turns", "id"),
     ("runs", "id"),
     ("items", "id"),
+    ("model_usages", "run_id, step_ordinal"),
 )
 
 

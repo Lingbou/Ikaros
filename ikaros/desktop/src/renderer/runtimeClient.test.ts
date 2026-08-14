@@ -24,6 +24,7 @@ function bridgeWithListThreads(
     removeProvider: vi.fn(),
     listModels: vi.fn(),
     setModelEnabled: vi.fn(),
+    readUsage: vi.fn(),
     onEvent: vi.fn(() => () => undefined)
   };
 }
@@ -194,6 +195,27 @@ describe("RuntimeClient", () => {
     expect(JSON.stringify(await client.discoverProviderModels(params))).not.toContain(
       "write-only-discovery-secret"
     );
+  });
+
+  it("unwraps aggregate token usage without scanning loaded Thread history", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } }))
+    );
+    const usage = {
+      summary: {
+        lifetimeTokens: 2_000,
+        peakDailyTokens: 1_500,
+        longestRunningTurnSec: 125,
+        currentStreakDays: 1,
+        longestStreakDays: 3
+      },
+      dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: 1_500 }]
+    };
+    bridge.readUsage = vi.fn(async () => ({ ok: true as const, value: usage }));
+    const client = new RuntimeClient(bridge);
+
+    await expect(client.readUsage()).resolves.toEqual(usage);
+    expect(bridge.readUsage).toHaveBeenCalledOnce();
   });
 
   it.each([

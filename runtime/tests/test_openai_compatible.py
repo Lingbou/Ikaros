@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
+from ikaros_runtime.domain import ModelUsage
 from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderMessage,
@@ -74,11 +75,12 @@ def provider(
     api_key: str | None = "sk-provider-secret",
     headers: tuple[tuple[str, str], ...] = (("X-Tenant", "header-secret"),),
     supports_tools: bool = True,
+    origin: str = "custom",
 ) -> ProviderConfig:
     return ProviderConfig(
         id="custom",
         display_name="Custom",
-        origin="custom",
+        origin=origin,
         base_url="https://provider.invalid/v1",
         api_key=api_key,
         headers=headers,
@@ -324,6 +326,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
     lowered = cast(dict[str, Any], captured["body"])
     assert lowered["model"] == "model"
     assert lowered["stream"] is True
+    assert lowered["stream_options"] == {"include_usage": True}
     assert lowered["messages"][0] == {
         "role": "system",
         "content": "Use restrained formatting.",
@@ -386,7 +389,16 @@ async def test_sse_framing_comments_multiline_data_and_usage_only_chunks() -> No
         b": heartbeat\r\nevent: message\r\n",
         b'data: {"choices": [\r\n',
         b'data: {"index":0,"delta":{"content":"framed"},"finish_reason":"stop"}]}\r\n\r\n',
-        sse({"choices": [], "usage": {"total_tokens": 1}}),
+        sse(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
+            }
+        ),
         b"data: [DONE]\r\n\r\n",
     ]
 
@@ -400,7 +412,217 @@ async def test_sse_framing_comments_multiline_data_and_usage_only_chunks() -> No
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         events = await collect(OpenAICompatibleAdapter(provider(), client=client))
 
-    assert events == [TextDelta("framed"), ResponseCompleted()]
+    assert events == [
+        TextDelta("framed"),
+        ResponseCompleted(ModelUsage(input_tokens=3, output_tokens=1, total_tokens=4)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_usage_only_chunk_preserves_cached_and_reasoning_token_details() -> None:
+    chunks = [
+        sse(text_chunk("complete", finish_reason="stop")),
+        sse(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "prompt_tokens_details": {"cached_tokens": 7},
+                    "completion_tokens": 5,
+                    "completion_tokens_details": {"reasoning_tokens": 3},
+                    "total_tokens": 16,
+                },
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream(chunks),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        events = await collect(OpenAICompatibleAdapter(provider(), client=client))
+
+    assert events == [
+        TextDelta("complete"),
+        ResponseCompleted(
+            ModelUsage(
+                input_tokens=11,
+                cached_input_tokens=7,
+                output_tokens=5,
+                reasoning_output_tokens=3,
+                total_tokens=16,
+            )
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        [],
+        {"prompt_tokens": -1, "completion_tokens": 1, "total_tokens": 0},
+        {"prompt_tokens": True, "completion_tokens": 1, "total_tokens": 2},
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": "2"},
+        {"prompt_tokens": 1, "completion_tokens": 1},
+        {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 2},
+        },
+        {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+            "completion_tokens_details": {"reasoning_tokens": 2},
+        },
+    ],
+)
+async def test_invalid_usage_is_a_protocol_failure(usage: object) -> None:
+    value: dict[str, object] = {"choices": []}
+    if usage is not None:
+        value["usage"] = usage
+    else:
+        value["usage"] = "invalid"
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream([sse(value), b"data: [DONE]\n\n"]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailure) as captured:
+            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+
+    assert captured.value.category == "protocol"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected_status", [400, 422])
+async def test_custom_provider_falls_back_without_usage_options_and_caches_support(
+    rejected_status: int,
+) -> None:
+    bodies: list[dict[str, Any]] = []
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        body = cast(dict[str, Any], json.loads(incoming.content))
+        bodies.append(body)
+        if len(bodies) == 1:
+            return httpx.Response(rejected_status)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = OpenAICompatibleAdapter(provider(), client=client, max_retries=0)
+        assert await collect(adapter) == [TextDelta("ok"), ResponseCompleted()]
+        assert await collect(adapter) == [TextDelta("ok"), ResponseCompleted()]
+
+    assert bodies[0]["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in bodies[1]
+    assert "stream_options" not in bodies[2]
+
+
+@pytest.mark.asyncio
+async def test_failed_custom_fallback_does_not_cache_usage_as_unsupported() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        body = cast(dict[str, Any], json.loads(incoming.content))
+        bodies.append(body)
+        if len(bodies) <= 2:
+            return httpx.Response(400)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = OpenAICompatibleAdapter(provider(), client=client, max_retries=0)
+        with pytest.raises(ProviderFailure):
+            await collect(adapter)
+        assert await collect(adapter) == [TextDelta("ok"), ResponseCompleted()]
+
+    assert bodies[0]["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in bodies[1]
+    assert bodies[2]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_custom_usage_support_cache_is_scoped_to_the_upstream_model() -> None:
+    bodies: list[dict[str, Any]] = []
+    configured = ProviderConfig(
+        id="custom",
+        display_name="Custom",
+        origin="custom",
+        base_url="https://provider.invalid/v1",
+        api_key="sk-provider-secret",
+        headers=(),
+        models=(
+            ModelConfig("model-a", "Model A", True, True),
+            ModelConfig("model-b", "Model B", True, True),
+        ),
+    )
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        body = cast(dict[str, Any], json.loads(incoming.content))
+        bodies.append(body)
+        if body["model"] == "model-a" and "stream_options" in body:
+            return httpx.Response(400)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = OpenAICompatibleAdapter(configured, client=client, max_retries=0)
+        for model_id in ("model-a", "model-b"):
+            events = await collect(
+                adapter,
+                ProviderRequest(
+                    model_id=model_id,
+                    messages=[ProviderMessage(role="user", content="Hello")],
+                ),
+            )
+            assert events == [TextDelta("ok"), ResponseCompleted()]
+
+    assert bodies[0]["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in bodies[1]
+    assert bodies[2]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_builtin_provider_does_not_hide_usage_options_after_rejection() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        bodies.append(cast(dict[str, Any], json.loads(incoming.content)))
+        return httpx.Response(400)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = OpenAICompatibleAdapter(
+            provider(origin="builtin"),
+            client=client,
+            max_retries=0,
+        )
+        with pytest.raises(ProviderFailure):
+            await collect(adapter)
+
+    assert len(bodies) == 1
+    assert bodies[0]["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.asyncio

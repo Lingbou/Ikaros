@@ -252,6 +252,7 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "runCancellation": True,
             "providers": True,
             "models": True,
+            "usage": True,
             "tools": ["process.run", "read", "write", "edit"],
             "executionPolicy": "full_access",
         },
@@ -387,6 +388,32 @@ class FakeOpenAIEndpoint:
         if len(user_messages) == 1:
             return _fake_sse_text("First fake response.")
         return _fake_sse_text("Second fake response with context.")
+
+
+class UsageOpenAIEndpoint(FakeOpenAIEndpoint):
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        assert request["stream_options"] == {"include_usage": True}
+        return _fake_sse(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Usage recorded by fake provider."},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 5,
+                        "total_tokens": 12,
+                    },
+                },
+            ]
+        )
 
 
 class FileToolChainEndpoint(FakeOpenAIEndpoint):
@@ -1611,6 +1638,85 @@ async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
         assert "gate6-tool" in tool_followup_messages[-1]["content"]
 
         await _shutdown(connection, process, 7)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
+
+@pytest.mark.asyncio
+async def test_openai_fake_endpoint_usage_reaches_journal_and_usage_read(
+    tmp_path: Path,
+) -> None:
+    endpoint = UsageOpenAIEndpoint()
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "usage-fake",
+                "displayName": "Usage Fake Provider",
+                "baseUrl": base_url,
+                "models": [{"id": "usage-model", "displayName": "Usage Model"}],
+            },
+        )
+        assert configured["result"]["provider"]["configured"] is True
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Usage E2E", "clientRequestId": "usage-e2e-thread"},
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "record exact usage",
+                "providerId": "usage-fake",
+                "modelId": "usage-model",
+                "clientRequestId": "usage-e2e-turn",
+            },
+        )
+        events = await _collect_run_events(connection, started["result"]["runId"])
+
+        usage_events = [event for event in events if event["type"] == "model.usage_recorded"]
+        assert len(usage_events) == 1
+        assert usage_events[0]["payload"]["stepOrdinal"] == 1
+        assert usage_events[0]["payload"]["usage"] == {
+            "inputTokens": 7,
+            "cachedInputTokens": None,
+            "outputTokens": 5,
+            "reasoningOutputTokens": None,
+            "totalTokens": 12,
+        }
+        assert events.index(usage_events[0]) < len(events) - 1
+        assert events[-1]["type"] == "run.settled"
+        assert events[-1]["payload"]["status"] == "completed"
+
+        usage = await _rpc(connection, 5, "usage.read", {})
+        summary = usage["result"]["summary"]
+        assert summary["lifetimeTokens"] == 12
+        assert summary["peakDailyTokens"] == 12
+        assert isinstance(summary["longestRunningTurnSec"], int)
+        assert summary["longestRunningTurnSec"] >= 0
+        assert summary["currentStreakDays"] == 1
+        assert summary["longestStreakDays"] == 1
+        assert len(usage["result"]["dailyUsageBuckets"]) == 1
+        assert usage["result"]["dailyUsageBuckets"][0]["tokens"] == 12
+        assert len(endpoint.requests) == 1
+
+        await _shutdown(connection, process, 6)
     finally:
         if process.returncode is None:
             await _stop_failed_process(process)
@@ -3066,6 +3172,43 @@ async def test_thread_list_rejects_invalid_pagination_params(
         error = routed.response.get("error")
         assert isinstance(error, dict)
         assert error["code"] == -32602
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_usage_read_returns_exact_empty_shape_and_rejects_parameters(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event)
+    try:
+        routed = await kernel.router.dispatch(1, "usage.read", {})
+        assert routed.response == {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "summary": {
+                    "lifetimeTokens": None,
+                    "peakDailyTokens": None,
+                    "longestRunningTurnSec": None,
+                    "currentStreakDays": 0,
+                    "longestStreakDays": 0,
+                },
+                "dailyUsageBuckets": [],
+            },
+        }
+
+        rejected = await kernel.router.dispatch(2, "usage.read", {"days": 7})
+        assert rejected.response == {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {
+                "code": -32602,
+                "message": "usage.read does not accept parameters",
+            },
+        }
     finally:
         await kernel.close()
         store.close()

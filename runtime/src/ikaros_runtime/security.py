@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
-from .errors import ConfigError, InvalidParamsError, ProtectedValueError
+from .errors import ConfigError, InvalidParamsError
+from .errors import ProtectedValueError as ProtectedValueError
 
 type ProtectedValuesSource = Callable[[], Sequence[str]]
 type JournalSecretProbe = Callable[[Sequence[str]], bool]
@@ -166,6 +167,7 @@ _FIXED_EVENT_TYPES = frozenset(
         "item.started",
         "item.delta",
         "item.completed",
+        "model.usage_recorded",
         "run.settled",
     }
 )
@@ -183,16 +185,27 @@ _GENERATED_ID_PREFIXES = {
     "turnId": "turn_",
 }
 _TIMESTAMP_KEYS = frozenset(
-    {"archivedAt", "createdAt", "settledAt", "timestamp", "updatedAt"}
+    {
+        "activityDate",
+        "archivedAt",
+        "completedAt",
+        "createdAt",
+        "settledAt",
+        "startDate",
+        "timestamp",
+        "updatedAt",
+    }
 )
 _FIXED_RESPONSE_KEYS = frozenset(
     {
         "accepted",
+        "activityDate",
         "archivedAt",
         "arguments",
         "branchId",
         "branch",
         "callId",
+        "cachedInputTokens",
         "cancelled",
         "changed",
         "bom",
@@ -205,9 +218,12 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "clientRequestId",
         "createdAt",
         "created",
+        "completedAt",
         "credentialConfigured",
+        "currentStreakDays",
         "cwd",
         "data",
+        "dailyUsageBuckets",
         "defaultBranchId",
         "delta",
         "displayName",
@@ -226,6 +242,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "item",
         "items",
         "itemId",
+        "inputTokens",
         "isDefault",
         "jsonrpc",
         "kind",
@@ -233,6 +250,9 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "lineEnd",
         "lineStart",
         "lineTruncations",
+        "lifetimeTokens",
+        "longestRunningTurnSec",
+        "longestStreakDays",
         "message",
         "method",
         "model",
@@ -248,7 +268,9 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "origin",
         "outcome",
         "output",
+        "outputTokens",
         "path",
+        "peakDailyTokens",
         "params",
         "payload",
         "protocolVersion",
@@ -256,6 +278,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "providerId",
         "providers",
         "reasonCode",
+        "reasoningOutputTokens",
         "reasoningContent",
         "replacements",
         "removed",
@@ -276,10 +299,14 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "stepId",
         "streaming",
         "snapshotSeq",
+        "startDate",
+        "stepOrdinal",
+        "summary",
         "thread",
         "threadId",
         "threads",
         "timedOut",
+        "totalTokens",
         "totalLines",
         "timestamp",
         "title",
@@ -291,6 +318,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "turnId",
         "turns",
         "type",
+        "usage",
         "updatedAt",
         "version",
         "verified",
