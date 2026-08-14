@@ -108,7 +108,19 @@ function fileToolResultDetails(event: ToolResultEvent, t: Translate): string[] {
   return metadata;
 }
 
-function ToolCallCard({ event }: { event: ToolCallEvent }) {
+interface ToolDisclosure {
+  controlsId: string;
+  expanded: boolean;
+  onToggle: (toolCallId: string) => void;
+}
+
+function ToolCallCard({
+  event,
+  disclosure,
+}: {
+  event: ToolCallEvent;
+  disclosure?: ToolDisclosure;
+}) {
   const { t } = useTranslation();
   const fileDetails = isFileTool(event.toolName) ? fileToolCallDetails(event, t) : undefined;
   const status = {
@@ -134,8 +146,8 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
     },
   }[event.status];
 
-  return (
-    <div className="event-card-shadow flex w-full items-start gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3.5 py-3 text-left">
+  const content = (
+    <>
       <span className={cx("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--panel-hover)]", status.className)}>
         {toolIcon(event.toolName)}
       </span>
@@ -164,8 +176,28 @@ function ToolCallCard({ event }: { event: ToolCallEvent }) {
           </span>
         )}
       </span>
-    </div>
+    </>
   );
+
+  const className =
+    "event-card-shadow flex w-full items-start gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-3.5 py-3 text-left";
+
+  if (disclosure) {
+    return (
+      <button
+        type="button"
+        aria-expanded={disclosure.expanded}
+        aria-controls={disclosure.controlsId}
+        data-tool-call-id={event.id}
+        onClick={() => disclosure.onToggle(event.id)}
+        className={cx(className, "cursor-pointer")}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return <div className={className}>{content}</div>;
 }
 
 function ToolResultCard({ event }: { event: ToolResultEvent }) {
@@ -512,8 +544,15 @@ function AssistantMessageCard({ event }: { event: Extract<AgentEvent, { type: "m
   );
 }
 
-function EventCardView({ event }: { event: AgentEvent }) {
-  if (event.type === "tool_call") return <ToolCallCard event={event} />;
+interface EventCardProps {
+  event: AgentEvent;
+  toolDisclosure?: ToolDisclosure;
+}
+
+function EventCardView({ event, toolDisclosure }: EventCardProps) {
+  if (event.type === "tool_call") {
+    return <ToolCallCard event={event} disclosure={toolDisclosure} />;
+  }
   if (event.type === "tool_result") return <ToolResultCard event={event} />;
   if (event.type === "permission_request") return <PermissionCard event={event} />;
   if (event.type === "interrupt") return <InterruptCard event={event} />;
@@ -531,6 +570,10 @@ function EventCardView({ event }: { event: AgentEvent }) {
 
 export const EventCard = memo(
   EventCardView,
-  (previous, next) => previous.event === next.event,
+  (previous, next) =>
+    previous.event === next.event &&
+    previous.toolDisclosure?.controlsId === next.toolDisclosure?.controlsId &&
+    previous.toolDisclosure?.expanded === next.toolDisclosure?.expanded &&
+    previous.toolDisclosure?.onToggle === next.toolDisclosure?.onToggle,
 );
 EventCard.displayName = "EventCard";

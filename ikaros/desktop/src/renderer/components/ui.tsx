@@ -1,6 +1,94 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import type { ButtonHTMLAttributes, ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import {
+  Children,
+  cloneElement,
+  createElement,
+  isValidElement,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+const markdownPlugins: NonNullable<Parameters<typeof ReactMarkdown>[0]["remarkPlugins"]> = [
+  [remarkGfm, { singleTilde: false }],
+];
+const leadingHeadingEmoji = new RegExp(
+  String.raw`^(?<emoji>\p{RGI_Emoji})(?<gap>\p{White_Space}+)`,
+  "v",
+);
+const headingInlineContainers = new Set(["strong", "em", "del"]);
+
+function hideLeadingHeadingEmoji(children: ReactNode): ReactNode {
+  let inspected = false;
+
+  function visitChildren(value: ReactNode): ReactNode {
+    return Children.map(value, visitNode);
+  }
+
+  function visitNode(value: ReactNode): ReactNode {
+    if (inspected || value == null || typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      if (value.length === 0) return value;
+      inspected = true;
+      const match = leadingHeadingEmoji.exec(value);
+      if (!match) return value;
+      return (
+        <>
+          <span aria-hidden="true" className="markdown-heading-emoji">
+            {match[0]}
+          </span>
+          {value.slice(match[0].length)}
+        </>
+      );
+    }
+    if (typeof value === "number" || typeof value === "bigint") {
+      inspected = true;
+      return value;
+    }
+    if (
+      isValidElement<{ children?: ReactNode }>(value) &&
+      typeof value.type === "string" &&
+      headingInlineContainers.has(value.type)
+    ) {
+      return cloneElement(value, undefined, visitChildren(value.props.children));
+    }
+    inspected = true;
+    return value;
+  }
+
+  return visitChildren(children);
+}
+
+type MarkdownHeadingProps = HTMLAttributes<HTMLHeadingElement> & { node?: unknown };
+
+function createMarkdownHeading(tagName: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+  return function MarkdownHeading({ children, node: _node, ...props }: MarkdownHeadingProps) {
+    return createElement(tagName, props, hideLeadingHeadingEmoji(children));
+  };
+}
+
+const markdownComponents: Components = {
+  a: ({ children, node: _node, ...props }) => (
+    <a {...props} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+  h1: createMarkdownHeading("h1"),
+  h2: createMarkdownHeading("h2"),
+  h3: createMarkdownHeading("h3"),
+  h4: createMarkdownHeading("h4"),
+  h5: createMarkdownHeading("h5"),
+  h6: createMarkdownHeading("h6"),
+  table: ({ children, node: _node, ...props }) => (
+    <div className="markdown-table-scroll">
+      <table {...props}>{children}</table>
+    </div>
+  ),
+};
 
 export function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -51,7 +139,12 @@ export function IconButton({
 export function Markdown({ content, streaming = false }: { content: string; streaming?: boolean }) {
   return (
     <div className={cx("markdown-body", streaming && "stream-caret")}>
-      <ReactMarkdown>{content}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={markdownPlugins}
+        components={markdownComponents}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }

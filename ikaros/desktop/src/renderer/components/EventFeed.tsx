@@ -4,6 +4,7 @@ import { activeBranch } from "../domain";
 import { useTranslation } from "../i18n";
 import { selectCurrentThread, useAppStore } from "../store";
 import { EventCard } from "./EventCard";
+import { cx } from "./ui";
 import {
   getTurnAnchors,
   MIN_TURN_NAV_ITEMS,
@@ -37,6 +38,10 @@ function blocksTurnShortcut(target: EventTarget | null) {
   );
 }
 
+function toolResultRegionId(toolCallId: string) {
+  return `tool-result-${encodeURIComponent(toolCallId)}`;
+}
+
 export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   const { t } = useTranslation();
   const thread = useAppStore(selectCurrentThread);
@@ -46,12 +51,34 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     () => turns?.flatMap((turn) => turn.events) ?? [],
     [turns],
   );
+  const toolCallIds = useMemo(
+    () =>
+      new Set(
+        events
+          .filter((event) => event.type === "tool_call")
+          .map((event) => event.id),
+      ),
+    [events],
+  );
+  const toolCallIdsWithResults = useMemo(
+    () =>
+      new Set(
+        events
+          .filter((event) => event.type === "tool_result")
+          .map((event) => event.toolCallId),
+      ),
+    [events],
+  );
   const turnAnchors = useMemo(() => getTurnAnchors(turns ?? [], t), [t, turns]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowRef = useRef(true);
   const animatedEventIdsRef = useRef(new Set<string>());
   const animationScopeRef = useRef<string | null>(null);
   const animationScope = thread && branch ? `${thread.id}:${branch.id}` : null;
+  const [toolResultCollapse, setToolResultCollapse] = useState<{
+    scope: string | null;
+    collapsedIds: Set<string>;
+  }>({ scope: null, collapsedIds: new Set() });
   const [activeAnchorIndex, setActiveAnchorIndex] = useState(0);
   if (animationScopeRef.current !== animationScope) {
     animationScopeRef.current = animationScope;
@@ -73,6 +100,26 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     overscan: 7,
   });
   const totalSize = virtualizer.getTotalSize();
+  const isToolResultCollapsed = useCallback(
+    (toolCallId: string) =>
+      toolResultCollapse.scope === animationScope &&
+      toolResultCollapse.collapsedIds.has(toolCallId),
+    [animationScope, toolResultCollapse],
+  );
+  const toggleToolResult = useCallback(
+    (toolCallId: string) => {
+      setToolResultCollapse((current) => {
+        const collapsedIds =
+          current.scope === animationScope
+            ? new Set(current.collapsedIds)
+            : new Set<string>();
+        if (collapsedIds.has(toolCallId)) collapsedIds.delete(toolCallId);
+        else collapsedIds.add(toolCallId);
+        return { scope: animationScope, collapsedIds };
+      });
+    },
+    [animationScope],
+  );
 
   useEffect(() => {
     shouldFollowRef.current = true;
@@ -205,6 +252,18 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
         >
           {virtualizer.getVirtualItems().map((row) => {
             const event = events[row.index];
+            const isMatchedToolResult =
+              event.type === "tool_result" && toolCallIds.has(event.toolCallId);
+            const isCollapsed =
+              isMatchedToolResult && isToolResultCollapsed(event.toolCallId);
+            const toolDisclosure =
+              event.type === "tool_call" && toolCallIdsWithResults.has(event.id)
+                ? {
+                    controlsId: toolResultRegionId(event.id),
+                    expanded: !isToolResultCollapsed(event.id),
+                    onToggle: toggleToolResult,
+                  }
+                : undefined;
             const shouldAnimate = !animatedEventIdsRef.current.has(event.id);
             animatedEventIdsRef.current.add(event.id);
             return (
@@ -217,11 +276,29 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
                     : undefined
                 }
                 ref={virtualizer.measureElement}
-                className="absolute left-0 top-0 w-full py-3"
+                className={cx(
+                  "event-feed-row absolute left-0 top-0 w-full",
+                  isCollapsed && "event-feed-row--collapsed",
+                )}
                 style={{ transform: `translateY(${row.start + 18}px)` }}
               >
                 <div className={shouldAnimate ? "event-enter" : undefined}>
-                  <EventCard event={event} />
+                  {isMatchedToolResult ? (
+                    <div
+                      id={toolResultRegionId(event.toolCallId)}
+                      aria-hidden={isCollapsed}
+                      className={cx(
+                        "tool-result-disclosure",
+                        isCollapsed && "tool-result-disclosure--collapsed",
+                      )}
+                    >
+                      <div className="tool-result-disclosure__content">
+                        <EventCard event={event} />
+                      </div>
+                    </div>
+                  ) : (
+                    <EventCard event={event} toolDisclosure={toolDisclosure} />
+                  )}
                 </div>
               </div>
             );

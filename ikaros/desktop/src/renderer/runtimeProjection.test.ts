@@ -573,4 +573,94 @@ describe("Runtime event projection", () => {
     expect(JSON.stringify(projected)).not.toContain(oldString);
     expect(JSON.stringify(projected)).not.toContain(newString);
   });
+
+  it("places each tool result directly after its matching call", () => {
+    const callIds = ["call-read-one", "call-read-two", "call-read-three"];
+    const calls = callIds.map((callId, index) =>
+      event(index + 2, "item.started", "turn-paired", "run-paired", callId, {
+        item: fileToolCallItem(
+          callId,
+          "turn-paired",
+          "run-paired",
+          "read",
+          "running",
+          { filePath: `notes/${index + 1}.txt` },
+        ),
+      }),
+    );
+    const completed = callIds.flatMap((callId, index) => [
+      event(index * 2 + 5, "item.completed", "turn-paired", "run-paired", callId, {
+        item: fileToolCallItem(
+          callId,
+          "turn-paired",
+          "run-paired",
+          "read",
+          "completed",
+          { filePath: `notes/${index + 1}.txt` },
+        ),
+      }),
+      event(
+        index * 2 + 6,
+        "item.completed",
+        "turn-paired",
+        "run-paired",
+        `result-read-${index + 1}`,
+        {
+          item: fileToolResultItem(
+            `result-read-${index + 1}`,
+            "turn-paired",
+            "run-paired",
+            "read",
+            "completed",
+            callId,
+            {
+              output: `file ${index + 1}`,
+              path: `C:\\work\\notes\\${index + 1}.txt`,
+              lineStart: 1,
+              lineEnd: 1,
+              totalLines: 1,
+            },
+          ),
+        },
+      ),
+    ]);
+
+    const afterFirstResult = replayRuntimeEvents(
+      projectRuntimeThreads([summary]),
+      [...calls, ...completed.slice(0, 2)],
+    );
+    expect(
+      afterFirstResult[0]?.branches[0]?.turns[0]?.events.map((projected) => projected.id),
+    ).toEqual([
+      "call-read-one",
+      "result-read-1",
+      "call-read-two",
+      "call-read-three",
+    ]);
+
+    const once = replayRuntimeEvents(projectRuntimeThreads([summary]), [...calls, ...completed]);
+    const twice = replayRuntimeEvents(once, [...calls, ...completed]);
+    const projected = twice[0]?.branches[0]?.turns[0]?.events;
+
+    expect(projected?.map((item) => item.id)).toEqual([
+      "call-read-one",
+      "result-read-1",
+      "call-read-two",
+      "result-read-2",
+      "call-read-three",
+      "result-read-3",
+    ]);
+    expect(
+      projected?.map((item) =>
+        item.type === "tool_result" ? item.toolCallId : item.id
+      ),
+    ).toEqual([
+      "call-read-one",
+      "call-read-one",
+      "call-read-two",
+      "call-read-two",
+      "call-read-three",
+      "call-read-three",
+    ]);
+  });
 });

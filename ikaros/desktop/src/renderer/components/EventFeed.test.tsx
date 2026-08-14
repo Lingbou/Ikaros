@@ -1,8 +1,15 @@
 import "@testing-library/jest-dom/vitest";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MessageEvent, Thread } from "../domain";
+import {
+  externalEventText,
+  type AgentEvent,
+  type MessageEvent,
+  type Thread,
+  type ToolCallEvent,
+  type ToolResultEvent,
+} from "../domain";
 import { useAppStore } from "../store";
 import { EventFeed } from "./EventFeed";
 
@@ -31,7 +38,38 @@ function message(
   };
 }
 
-function threadWith(events: MessageEvent[]): Thread {
+function toolCall(id: string, label: string): ToolCallEvent {
+  return {
+    id,
+    turnId: "turn-feed-measurement",
+    createdAt: "2026-08-06T06:00:01.000Z",
+    type: "tool_call",
+    toolName: "process.run",
+    label: externalEventText(label),
+    status: "success",
+    arguments: { command: `Write-Output ${id}` },
+  };
+}
+
+function toolResult(
+  id: string,
+  toolCallId: string,
+  output: string,
+): ToolResultEvent {
+  return {
+    id,
+    toolCallId,
+    turnId: "turn-feed-measurement",
+    createdAt: "2026-08-06T06:00:02.000Z",
+    type: "tool_result",
+    toolName: "process.run",
+    status: "success",
+    summary: externalEventText(output),
+    output,
+  };
+}
+
+function threadWith(events: AgentEvent[]): Thread {
   return {
     id: "thread-feed-measurement",
     projectId: null,
@@ -224,5 +262,142 @@ describe("EventFeed dynamic row measurement", () => {
       expect(container).toHaveTextContent("BBBB");
       expect(scrollTo.mock.calls.length).toBeGreaterThan(callsBeforeUpdate);
     });
+  });
+
+  it("collapses only the result matched by toolCallId and restores it", async () => {
+    rowHeights.set(0, 92);
+    rowHeights.set(1, 180);
+    rowHeights.set(2, 92);
+    rowHeights.set(3, 180);
+    const firstCall = toolCall("call-first", "Run first command");
+    const secondCall = toolCall("call-second", "Run second command");
+    const thread = threadWith([
+      firstCall,
+      secondCall,
+      toolResult("result-second", secondCall.id, "SECOND OUTPUT"),
+      toolResult("result-first", firstCall.id, "FIRST OUTPUT"),
+    ]);
+    useAppStore.setState({
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runStatus: "completed",
+    });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+    await waitFor(() => {
+      expect(container.querySelectorAll<HTMLElement>("[data-index]")).toHaveLength(4);
+    });
+
+    const firstButton = container.querySelector<HTMLButtonElement>(
+      '[data-tool-call-id="call-first"]',
+    );
+    const secondButton = container.querySelector<HTMLButtonElement>(
+      '[data-tool-call-id="call-second"]',
+    );
+    if (!firstButton || !secondButton) throw new Error("Expected matched tool calls");
+    const firstRegion = document.getElementById(
+      firstButton.getAttribute("aria-controls") ?? "",
+    );
+    const secondRegion = document.getElementById(
+      secondButton.getAttribute("aria-controls") ?? "",
+    );
+    if (!firstRegion || !secondRegion) throw new Error("Expected controlled results");
+
+    expect(firstButton).toHaveAttribute("type", "button");
+    expect(firstButton).toHaveAttribute("aria-expanded", "true");
+    expect(firstRegion).toHaveAttribute("aria-hidden", "false");
+    expect(secondButton).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(firstButton);
+
+    expect(firstButton).toHaveAttribute("aria-expanded", "false");
+    expect(firstRegion).toHaveAttribute("aria-hidden", "true");
+    expect(firstRegion).toHaveClass("tool-result-disclosure--collapsed");
+    expect(firstRegion.closest("[data-index]")).toHaveClass(
+      "event-feed-row--collapsed",
+    );
+    expect(secondButton).toHaveAttribute("aria-expanded", "true");
+    expect(secondRegion).toHaveAttribute("aria-hidden", "false");
+
+    fireEvent.click(firstButton);
+
+    expect(firstButton).toHaveAttribute("aria-expanded", "true");
+    expect(firstRegion).toHaveAttribute("aria-hidden", "false");
+    expect(firstRegion).not.toHaveClass("tool-result-disclosure--collapsed");
+  });
+
+  it("keeps a collapsed tool result across feed rerenders", async () => {
+    rowHeights.set(0, 92);
+    rowHeights.set(1, 180);
+    rowHeights.set(2, 72);
+    const call = toolCall("call-stable", "Run stable command");
+    const thread = threadWith([
+      call,
+      toolResult("result-stable", call.id, "STABLE OUTPUT"),
+    ]);
+    useAppStore.setState({
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runStatus: "running",
+    });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+    const button = await waitFor(() => {
+      const value = container.querySelector<HTMLButtonElement>(
+        '[data-tool-call-id="call-stable"]',
+      );
+      if (!value) throw new Error("Expected matched tool call");
+      return value;
+    });
+    fireEvent.click(button);
+
+    act(() => {
+      useAppStore.getState().appendAgentEvent(
+        thread.id,
+        thread.activeBranchId,
+        message("assistant-after-tool", "turn-feed-measurement", "assistant", "Done."),
+        "completed",
+      );
+    });
+
+    await waitFor(() => expect(container).toHaveTextContent("Done."));
+    expect(
+      container.querySelector('[data-tool-call-id="call-stable"]'),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById("tool-result-call-stable")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+  });
+
+  it("does not add disclosure behavior without a matching result", async () => {
+    rowHeights.set(0, 92);
+    const thread = threadWith([toolCall("call-pending", "Run pending command")]);
+    useAppStore.setState({
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runStatus: "running",
+    });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+    await waitFor(() => {
+      expect(container.querySelectorAll<HTMLElement>("[data-index]")).toHaveLength(1);
+    });
+
+    expect(container.querySelector("[data-tool-call-id]")).toBeNull();
+    expect(container.querySelector("[aria-expanded]")).toBeNull();
+    expect(container.querySelector("[data-index] button")).toBeNull();
   });
 });

@@ -122,17 +122,29 @@ function upsertAgentEvent(
     return thread;
   }
   return updateTurn(thread, event.branchId, event.turnId, (turn) => {
-    const existing = turn?.events.some((candidate) => candidate.id === projected.id);
+    const events = turn?.events ?? [];
+    const existing = events.some((candidate) => candidate.id === projected.id);
+    let nextEvents: AgentEvent[];
+    if (existing) {
+      nextEvents = events.map((candidate) =>
+        candidate.id === projected.id ? projected : candidate
+      );
+    } else if (projected.type === "tool_result") {
+      const toolCallIndex = events.findIndex(
+        (candidate) =>
+          candidate.type === "tool_call" && candidate.id === projected.toolCallId
+      );
+      nextEvents = [...events];
+      nextEvents.splice(toolCallIndex < 0 ? events.length : toolCallIndex + 1, 0, projected);
+    } else {
+      nextEvents = [...events, projected];
+    }
     return {
       id: event.turnId as string,
       branchId: event.branchId as string,
       runId: event.runId ?? turn?.runId,
       status: turn?.status ?? "running",
-      events: existing
-        ? (turn?.events ?? []).map((candidate) =>
-            candidate.id === projected.id ? projected : candidate
-          )
-        : [...(turn?.events ?? []), projected]
+      events: nextEvents
     };
   });
 }
