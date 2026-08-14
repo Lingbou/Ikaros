@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ikaros_runtime.domain import WorkspaceSummary
+from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, WorkspaceSummary
+from ikaros_runtime.errors import UnsupportedJournalEventVersionError
 from ikaros_runtime.storage import SqliteRuntimeStore
 
 
@@ -17,13 +18,35 @@ def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> No
 
         store.rebuild_projections()
 
-        assert store.list_threads() == [expected]
+        assert store.list_thread_page(cursor=None, limit=50).threads == (expected,)
         replayed, latest_seq = store.replay_events(0, 100)
         assert replayed == [event]
+        assert replayed[0].schema_version == JOURNAL_EVENT_SCHEMA_VERSION
+        assert replayed[0].to_wire()["schemaVersion"] == JOURNAL_EVENT_SCHEMA_VERSION
         assert latest_seq == 1
     finally:
         store.close()
 
+
+def test_future_journal_event_versions_are_rejected_by_replay_and_rebuild(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        _thread, event = store.create_thread("Future event")
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET schema_version = ? WHERE seq = ?",
+                (JOURNAL_EVENT_SCHEMA_VERSION + 1, event.seq),
+            )
+
+        message = "does not match supported version"
+        with pytest.raises(UnsupportedJournalEventVersionError, match=message):
+            store.replay_events(0, 100)
+        with pytest.raises(UnsupportedJournalEventVersionError, match=message):
+            store.rebuild_projections()
+    finally:
+        store.close()
 
 def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: Path) -> None:
     database_path = tmp_path / "state.db"
@@ -45,16 +68,16 @@ def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: 
             "name": "Research",
             "rootUri": str(workspace_root.resolve()),
         }
-        assert store.list_threads() == [expected]
+        assert store.list_thread_page(cursor=None, limit=50).threads == (expected,)
 
         store.rebuild_projections()
-        assert store.list_threads() == [expected]
+        assert store.list_thread_page(cursor=None, limit=50).threads == (expected,)
     finally:
         store.close()
 
     reloaded = SqliteRuntimeStore(database_path)
     try:
-        assert reloaded.list_threads() == [expected]
+        assert reloaded.list_thread_page(cursor=None, limit=50).threads == (expected,)
         repeated, repeated_event, repeated_created = reloaded.create_thread_once(
             "Workspace thread",
             "workspace-create",

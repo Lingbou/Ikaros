@@ -18,7 +18,7 @@ from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import InvalidStatus
 
 from ikaros_runtime.bootstrap import RuntimeApplication
-from ikaros_runtime.domain import JournalEvent
+from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, JournalEvent
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
 from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
 from ikaros_runtime.security import response_values_contain_protected_value
@@ -36,6 +36,16 @@ def test_file_result_vocabulary_has_fixed_security_provenance(protected: str) ->
         "path": "notes.txt",
         "newline": "crlf",
         "verified": True,
+    }
+
+    assert response_values_contain_protected_value(result, [protected]) is False
+
+
+@pytest.mark.parametrize("protected", ["nextCursor", "snapshotSeq"])
+def test_thread_catalog_keys_have_fixed_security_provenance(protected: str) -> None:
+    result = {
+        "nextCursor": None,
+        "snapshotSeq": 0,
     }
 
     assert response_values_contain_protected_value(result, [protected]) is False
@@ -259,6 +269,7 @@ async def _shutdown(connection: ClientConnection, process: Process, request_id: 
 def _journal_event(seq: int) -> JournalEvent:
     return JournalEvent(
         seq=seq,
+        schema_version=JOURNAL_EVENT_SCHEMA_VERSION,
         type="test.event",
         thread_id=None,
         branch_id=None,
@@ -2831,7 +2842,12 @@ async def test_thread_and_event_journal_survive_runtime_restart(tmp_path: Path) 
             first_token,
         )
         empty = await _rpc(first, 2, "thread.list", {})
-        assert empty["result"] == {"threads": []}
+        assert empty["result"] == {
+            "threads": [],
+            "nextCursor": None,
+            "hasMore": False,
+            "snapshotSeq": 0,
+        }
 
         created = await _rpc(first, 3, "thread.create", {"title": "Persistent thread"})
         thread = created["result"]["thread"]
@@ -2863,7 +2879,12 @@ async def test_thread_and_event_journal_survive_runtime_restart(tmp_path: Path) 
             second_token,
         )
         listed = await _rpc(second, 2, "thread.list", {})
-        assert listed["result"] == {"threads": [thread]}
+        assert listed["result"] == {
+            "threads": [thread],
+            "nextCursor": None,
+            "hasMore": False,
+            "snapshotSeq": 1,
+        }
 
         caught_up = await _rpc(second, 3, "event.replay", {"afterSeq": 1})
         assert caught_up["result"] == {
@@ -2981,8 +3002,63 @@ async def test_thread_create_rejects_invalid_workspace(
     try:
         with pytest.raises(InvalidParamsError, match="workspace"):
             kernel.threads.create({"title": "Invalid workspace", "workspace": workspace})
-        assert store.list_threads() == []
+        assert store.list_thread_page(cursor=None, limit=50).threads == ()
         assert store.latest_sequence() == 0
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"unknown": True},
+        {"cursor": None},
+        {"cursor": ""},
+        {"cursor": "not*base64url"},
+        {"limit": True},
+        {"limit": 0},
+        {"limit": 101},
+        {"limit": 1.5},
+    ],
+)
+async def test_thread_list_rejects_invalid_pagination_params(
+    tmp_path: Path,
+    params: dict[str, object],
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event)
+    try:
+        routed = await kernel.router.dispatch(1, "thread.list", params)
+
+        error = routed.response.get("error")
+        assert isinstance(error, dict)
+        assert error["code"] == -32602
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_list_defaults_to_fifty_and_returns_next_page(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(store, _discard_event)
+    try:
+        for index in range(51):
+            kernel.threads.create({"title": f"Thread {index}"})
+
+        first = kernel.threads.list({})
+        assert len(first["threads"]) == 50
+        assert first["hasMore"] is True
+        assert isinstance(first["nextCursor"], str)
+        assert first["snapshotSeq"] == 51
+
+        second = kernel.threads.list({"cursor": first["nextCursor"]})
+        assert len(second["threads"]) == 1
+        assert second["hasMore"] is False
+        assert second["nextCursor"] is None
+        assert second["snapshotSeq"] == 51
     finally:
         await kernel.close()
         store.close()
@@ -3014,7 +3090,7 @@ async def test_thread_workspace_cannot_contain_configured_credentials(tmp_path: 
                     },
                 }
             )
-        assert store.list_threads() == []
+        assert store.list_thread_page(cursor=None, limit=50).threads == ()
         assert store.latest_sequence() == 0
     finally:
         await kernel.close()

@@ -13,8 +13,11 @@ export interface RuntimeThreadSummary {
   updatedAt: string;
 }
 
+export const RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION = 1 as const;
+
 export interface RuntimeJournalEvent {
   seq: number;
+  schemaVersion: typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION;
   type: string;
   threadId: string | null;
   branchId: string | null;
@@ -28,6 +31,18 @@ export interface RuntimeJournalEvent {
 export interface RuntimeThreadCreateResult {
   thread: RuntimeThreadSummary;
   event: RuntimeJournalEvent;
+}
+
+export interface RuntimeThreadListParams {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface RuntimeThreadListPage {
+  threads: RuntimeThreadSummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotSeq: number;
 }
 
 export interface RuntimeThreadCreateParams {

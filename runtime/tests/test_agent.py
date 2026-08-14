@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import ikaros_runtime.agent.loop as agent_loop_module
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
@@ -76,6 +77,62 @@ class PausingProvider:
         await cancellation.sleep(60)
         yield TextDelta("late")
         yield ResponseCompleted()
+
+
+class BufferedPausingProvider:
+    def __init__(self) -> None:
+        self.pending_delta_buffered = asyncio.Event()
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        yield TextDelta("first")
+        yield TextDelta(" pending")
+        self.pending_delta_buffered.set()
+        await cancellation.sleep(60)
+        yield ResponseCompleted()
+
+
+class ChunkedTextProvider:
+    def __init__(self, deltas: list[str], *, fail_after_text: bool = False) -> None:
+        self.deltas = deltas
+        self.fail_after_text = fail_after_text
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        for delta in self.deltas:
+            yield TextDelta(delta)
+        if self.fail_after_text:
+            raise RuntimeError("expected provider failure after text")
+        yield ResponseCompleted()
+
+
+class ChangingProtectedValuesProvider:
+    def __init__(self, protected_values: list[str], newly_protected: str) -> None:
+        self.protected_values = protected_values
+        self.newly_protected = newly_protected
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        yield TextDelta("safe-first")
+        yield TextDelta(self.newly_protected)
+        self.protected_values.append(self.newly_protected)
 
 
 class BlockingExecutor:
@@ -223,7 +280,8 @@ class NarratedToolLoopProvider(ToolLoopProvider):
         self.requests.append(request)
         has_tool_result = any(message.role == "tool" for message in request.messages)
         if not has_tool_result:
-            yield TextDelta("Let me demonstrate:")
+            yield TextDelta("Let me ")
+            yield TextDelta("demonstrate:")
             yield ToolCallCompleted(
                 ToolCall(
                     id="call-narrated",
@@ -313,6 +371,11 @@ async def test_running_provider_stops_after_cancellation_and_preserves_partial_t
         task = asyncio.create_task(loop.run(prepared.run_id, cancellation))
 
         await asyncio.wait_for(provider.first_delta_emitted.wait(), timeout=1)
+        assert [
+            event.payload["delta"]
+            for event in events
+            if event.type == "item.delta" and event.run_id == prepared.run_id
+        ] == ["partial"]
         cancellation.cancel()
         await asyncio.wait_for(task, timeout=1)
 
@@ -331,6 +394,241 @@ async def test_running_provider_stops_after_cancellation_and_preserves_partial_t
         assert terminal[0].payload["item"]["content"] == "partial"
         assert terminal[0].payload["item"]["status"] == "cancelled"
         assert terminal[1].payload["status"] == "cancelled"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_text_deltas_are_batched_without_changing_final_text_or_event_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+    append_calls: list[str] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    original_append = store.append_text_delta
+
+    def append_text_delta(item_id: str, delta: str) -> JournalEvent:
+        append_calls.append(delta)
+        return original_append(item_id, delta)
+
+    monkeypatch.setattr(store, "append_text_delta", append_text_delta)
+    monkeypatch.setattr(agent_loop_module, "monotonic", lambda: 0.0)
+    try:
+        thread, _ = store.create_thread("Batched stream")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="stream many chunks",
+            provider_id="chunked",
+            model_id="chunked-v1",
+        )
+        chunks = [str(index % 10) for index in range(1025)]
+        loop = AgentLoop(store, {"chunked": ChunkedTextProvider(chunks)}, publish)
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        deltas = [
+            event.payload["delta"]
+            for event in events
+            if event.type == "item.delta" and event.run_id == prepared.run_id
+        ]
+        assistant = next(
+            event.payload["item"]
+            for event in events
+            if event.type == "item.completed"
+            and event.run_id == prepared.run_id
+            and event.payload["item"]["role"] == "assistant"
+        )
+        assert append_calls == deltas
+        assert len(append_calls) == 5
+        assert append_calls[0] == chunks[0]
+        assert "".join(deltas) == "".join(chunks)
+        assert assistant["content"] == "".join(chunks)
+        assert [event.type for event in events if event.run_id == prepared.run_id][-2:] == [
+            "item.completed",
+            "run.settled",
+        ]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_text_delta_time_window_flushes_on_the_next_arriving_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+    times = iter((0.0, 0.01, 0.06))
+    monkeypatch.setattr(agent_loop_module, "monotonic", lambda: next(times))
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Timed stream")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="flush by time",
+            provider_id="chunked",
+            model_id="chunked-v1",
+        )
+        loop = AgentLoop(store, {"chunked": ChunkedTextProvider(["a", "b", "c"])}, publish)
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert [
+            event.payload["delta"]
+            for event in events
+            if event.type == "item.delta" and event.run_id == prepared.run_id
+        ] == ["a", "bc"]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_flushes_safe_pending_text_before_terminal_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+    monkeypatch.setattr(agent_loop_module, "monotonic", lambda: 0.0)
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Failed stream")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="fail after text",
+            provider_id="chunked",
+            model_id="chunked-v1",
+        )
+        provider = ChunkedTextProvider(["first", " pending"], fail_after_text=True)
+        loop = AgentLoop(store, {"chunked": provider}, publish)
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        run_events = [event for event in events if event.run_id == prepared.run_id]
+        assert [event.payload["delta"] for event in run_events if event.type == "item.delta"] == [
+            "first",
+            " pending",
+        ]
+        assert [event.type for event in run_events][-3:] == [
+            "item.delta",
+            "item.completed",
+            "run.settled",
+        ]
+        assert run_events[-2].payload["item"]["content"] == "first pending"
+        assert run_events[-2].payload["item"]["status"] == "failed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_flushes_safe_pending_text_before_terminal_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+    monkeypatch.setattr(agent_loop_module, "monotonic", lambda: 0.0)
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Cancelled buffered stream")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="cancel buffered text",
+            provider_id="pausing",
+            model_id="pausing-v1",
+        )
+        provider = BufferedPausingProvider()
+        loop = AgentLoop(store, {"pausing": provider}, publish)
+        cancellation = CancellationToken()
+        task = asyncio.create_task(loop.run(prepared.run_id, cancellation))
+
+        await asyncio.wait_for(provider.pending_delta_buffered.wait(), timeout=1)
+        assert [event.payload["delta"] for event in events if event.type == "item.delta"] == [
+            "first"
+        ]
+        cancellation.cancel()
+        await asyncio.wait_for(task, timeout=1)
+
+        run_events = [event for event in events if event.run_id == prepared.run_id]
+        assert [event.payload["delta"] for event in run_events if event.type == "item.delta"] == [
+            "first",
+            " pending",
+        ]
+        assert [event.type for event in run_events][-3:] == [
+            "item.delta",
+            "item.completed",
+            "run.settled",
+        ]
+        assert run_events[-2].payload["item"]["content"] == "first pending"
+        assert run_events[-2].payload["item"]["status"] == "cancelled"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_changed_protected_values_discard_unpersisted_text_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    newly_protected = "newly-protected-buffered-sentinel"
+    protected_values: list[str] = []
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+    monkeypatch.setattr(agent_loop_module, "monotonic", lambda: 0.0)
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Changing protection")
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="change protection",
+            provider_id="changing",
+            model_id="changing-v1",
+        )
+        provider = ChangingProtectedValuesProvider(protected_values, newly_protected)
+        loop = AgentLoop(
+            store,
+            {"changing": provider},
+            publish,
+            protected_values=lambda: tuple(protected_values),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        serialized_events = json.dumps([event.to_wire() for event in events])
+        persisted_rows = store._connection.execute(
+            "SELECT payload_json FROM events UNION ALL SELECT content FROM items "
+            "UNION ALL SELECT data_json FROM items"
+        ).fetchall()
+        assert newly_protected not in serialized_events
+        assert all(newly_protected not in str(row[0]) for row in persisted_rows)
+        run_events = [event for event in events if event.run_id == prepared.run_id]
+        assert [event.payload["delta"] for event in run_events if event.type == "item.delta"] == [
+            "safe-first"
+        ]
+        assert run_events[-2].payload["item"]["content"] == "safe-first"
+        assert run_events[-1].payload["reasonCode"] == "agent_error"
     finally:
         store.close()
 
@@ -463,6 +761,25 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
         assert second_messages[1].tool_calls == (
             ToolCall("call-narrated", "process_run", {"command": "test-command"}),
         )
+        narrated_deltas = [
+            event
+            for event in events
+            if event.run_id == prepared.run_id
+            and event.type == "item.delta"
+            and event.payload["delta"] in {"Let me ", "demonstrate:"}
+        ]
+        first_tool_call = next(
+            event
+            for event in events
+            if event.run_id == prepared.run_id
+            and event.type == "item.started"
+            and event.payload["item"]["kind"] == "tool_call"
+        )
+        assert [event.payload["delta"] for event in narrated_deltas] == [
+            "Let me ",
+            "demonstrate:",
+        ]
+        assert all(event.seq < first_tool_call.seq for event in narrated_deltas)
         narrated_terminal = [
             event
             for event in events

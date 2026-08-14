@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { RuntimeJournalEvent, RuntimeThreadSummary } from "../shared/runtime";
+import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeJournalEvent,
+  type RuntimeThreadSummary
+} from "../shared/runtime";
 import {
   projectRuntimeProjects,
   projectRuntimeThreads,
@@ -55,6 +59,7 @@ function event(
 ): RuntimeJournalEvent {
   return {
     seq,
+    schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
     type,
     threadId: summary.id,
     branchId: summary.defaultBranchId,

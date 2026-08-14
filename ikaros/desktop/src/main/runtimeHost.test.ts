@@ -7,9 +7,17 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { RuntimeJournalEvent, RuntimeReplayResult } from "../shared/runtime";
 import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeJournalEvent,
+  type RuntimeReplayResult
+} from "../shared/runtime";
+import {
+  parseRuntimeJournalEvent,
   parseRuntimeJsonRpcResponse,
+  parseRuntimeReplayResult,
+  parseRuntimeThreadListPage,
+  listAllRuntimeThreads,
   RuntimeHost,
   RuntimeRpcError,
   type RuntimeConnectionInfo,
@@ -48,6 +56,7 @@ interface RuntimeHostInternals {
 function journalEvent(seq: number): RuntimeJournalEvent {
   return {
     seq,
+    schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
     type: "test.event",
     threadId: "thread-test",
     branchId: "branch-test",
@@ -59,7 +68,170 @@ function journalEvent(seq: number): RuntimeJournalEvent {
   };
 }
 
+function catalogThread(id: string) {
+  return {
+    id,
+    title: id,
+    defaultBranchId: `branch-${id}`,
+    workspace: null,
+    createdAt: "2026-08-14T00:00:00.000Z",
+    updatedAt: "2026-08-14T00:00:00.000Z"
+  };
+}
+
 describe("RuntimeHost integration", () => {
+  it("aggregates paginated Thread catalog pages while watermarks advance", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-1")],
+        nextCursor: "cursor_one",
+        hasMore: true,
+        snapshotSeq: 10
+      })
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-2")],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 12
+      });
+
+    await expect(listAllRuntimeThreads({ request })).resolves.toEqual({
+      threads: [catalogThread("thread-1"), catalogThread("thread-2")]
+    });
+    expect(request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 100 });
+    expect(request).toHaveBeenNthCalledWith(2, "thread.list", {
+      limit: 100,
+      cursor: "cursor_one"
+    });
+  });
+
+  it("rejects malformed Thread catalog page boundaries", () => {
+    const valid = {
+      threads: [catalogThread("thread-1")],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 1
+    };
+
+    expect(parseRuntimeThreadListPage(valid)).toEqual(valid);
+    for (const invalid of [
+      { ...valid, snapshotSeq: -1 },
+      { ...valid, snapshotSeq: 1.5 },
+      { ...valid, hasMore: true },
+      { ...valid, nextCursor: "cursor", hasMore: false },
+      { ...valid, threads: Array.from({ length: 101 }, (_, index) => catalogThread(`${index}`)) },
+      { ...valid, nextCursor: "not valid!", hasMore: true }
+    ]) {
+      expect(() => parseRuntimeThreadListPage(invalid)).toThrow(
+        "Runtime returned an invalid thread catalog page."
+      );
+    }
+  });
+
+  it("rejects backward watermarks, duplicate Threads, and repeated cursors", async () => {
+    const backward = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-1")],
+        nextCursor: "cursor_one",
+        hasMore: true,
+        snapshotSeq: 2
+      })
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-2")],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 1
+      });
+    await expect(listAllRuntimeThreads({ request: backward })).rejects.toThrow(
+      "watermark moved backwards"
+    );
+
+    const duplicate = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-1")],
+        nextCursor: "cursor_one",
+        hasMore: true,
+        snapshotSeq: 1
+      })
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-1")],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 1
+      });
+    await expect(listAllRuntimeThreads({ request: duplicate })).rejects.toThrow(
+      "duplicate thread"
+    );
+
+    const repeatedCursor = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-1")],
+        nextCursor: "cursor_one",
+        hasMore: true,
+        snapshotSeq: 1
+      })
+      .mockResolvedValueOnce({
+        threads: [catalogThread("thread-2")],
+        nextCursor: "cursor_one",
+        hasMore: true,
+        snapshotSeq: 1
+      });
+    await expect(listAllRuntimeThreads({ request: repeatedCursor })).rejects.toThrow(
+      "cursor did not advance"
+    );
+  });
+
+  it("bounds a Runtime that emits infinitely many unique catalog cursors", async () => {
+    let page = 0;
+    const request = vi.fn(async () => {
+      page += 1;
+      return {
+        threads: [catalogThread(`thread-${page}`)],
+        nextCursor: `cursor_${page}`,
+        hasMore: true,
+        snapshotSeq: page
+      };
+    });
+
+    await expect(listAllRuntimeThreads({ request })).rejects.toThrow(
+      "thread catalog exceeded the page limit"
+    );
+    expect(request).toHaveBeenCalledTimes(10_000);
+  });
+
+  it("accepts the current journal schema and rejects missing or future versions", () => {
+    const current = journalEvent(1);
+    expect(parseRuntimeJournalEvent(current)).toEqual(current);
+    expect(
+      parseRuntimeReplayResult({
+        events: [current],
+        latestSeq: 1,
+        nextAfterSeq: 1,
+        hasMore: false
+      })
+    ).toEqual({
+      events: [current],
+      latestSeq: 1,
+      nextAfterSeq: 1,
+      hasMore: false
+    });
+    expect(() =>
+      parseRuntimeJournalEvent({ ...current, schemaVersion: undefined })
+    ).toThrow("schema undefined is unsupported");
+    expect(() =>
+      parseRuntimeReplayResult({
+        events: [{ ...current, schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION + 1 }],
+        latestSeq: 1,
+        nextAfterSeq: 1,
+        hasMore: false
+      })
+    ).toThrow("schema 2 is unsupported");
+  });
+
   it.each([
     { jsonrpc: "2.0", id: 1 },
     { jsonrpc: "2.0", id: 1, result: {}, error: { code: -32602, message: "no" } },

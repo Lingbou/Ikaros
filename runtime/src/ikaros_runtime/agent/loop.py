@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import ContextItem, JournalEvent
@@ -30,6 +31,42 @@ ProtectedValues = Callable[[], Sequence[str]]
 _LOGGER = logging.getLogger("ikaros_runtime.agent")
 _MAX_REASONING_CHARACTERS = 1_000_000
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
+_TEXT_DELTA_FLUSH_CHARACTERS = 256
+_TEXT_DELTA_FLUSH_SECONDS = 0.05
+
+
+class _TextDeltaBatch:
+    """Deterministically coalesce safe provider text without background writes."""
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._characters = 0
+        self._first_delta_emitted = False
+        self._last_flush_at: float | None = None
+
+    def add(self, delta: str, *, now: float) -> str | None:
+        if not self._first_delta_emitted:
+            self._first_delta_emitted = True
+            self._last_flush_at = now
+            return delta
+        self._parts.append(delta)
+        self._characters += len(delta)
+        last_flush_at = self._last_flush_at
+        if self._characters >= _TEXT_DELTA_FLUSH_CHARACTERS or (
+            last_flush_at is not None and now - last_flush_at >= _TEXT_DELTA_FLUSH_SECONDS
+        ):
+            return self.flush(now=now)
+        return None
+
+    def flush(self, *, now: float | None = None) -> str | None:
+        if not self._parts:
+            return None
+        delta = "".join(self._parts)
+        self._parts.clear()
+        self._characters = 0
+        if now is not None:
+            self._last_flush_at = now
+        return delta
 
 
 class AgentLoop:
@@ -144,51 +181,66 @@ class AgentLoop:
         protected_values = self._current_protected_values()
         text_guard = ProtectedStreamGuard(protected_values)
         reasoning_guard = ProtectedStreamGuard(protected_values)
+        text_batch = _TextDeltaBatch()
         completed = False
-        async for event in provider.stream(request, cancellation=cancellation):
-            cancellation.raise_if_cancelled()
-            self._assert_protected_values_unchanged(protected_values)
-            if completed:
-                raise RuntimeError("provider emitted an event after response.completed")
-            if isinstance(event, TextDelta):
-                if tool_calls:
-                    raise RuntimeError("provider emitted text after a completed tool call")
-                if not event.delta:
-                    continue
-                safe_delta = text_guard.feed(event.delta)
-                if not safe_delta:
-                    continue
-                if assistant_item_id is None:
-                    assistant_item_id, started = self._store.create_assistant_item(run_id)
-                    await self._publish(started)
-                    self._assert_protected_values_unchanged(protected_values)
-                await self._publish(self._store.append_text_delta(assistant_item_id, safe_delta))
-            elif isinstance(event, ReasoningDelta):
-                reasoning_seen = True
-                reasoning_characters += len(event.delta)
-                if reasoning_characters > _MAX_REASONING_CHARACTERS:
-                    raise RuntimeError("provider reasoning exceeded the supported size")
-                safe_delta = reasoning_guard.feed(event.delta)
-                if safe_delta:
-                    reasoning_parts.append(safe_delta)
-            elif isinstance(event, ToolCallCompleted):
-                call = event.call
-                if (
-                    not isinstance(call.id, str)
-                    or not call.id
-                    or not isinstance(call.name, str)
-                    or not call.name
-                    or not isinstance(call.arguments, dict)
-                ):
-                    raise RuntimeError("provider emitted an invalid tool call")
-                if call.id in call_ids:
-                    raise RuntimeError("provider emitted a duplicate tool call ID")
-                call_ids.add(call.id)
-                tool_calls.append(call)
-            elif isinstance(event, ResponseCompleted):
-                completed = True
-            else:
-                raise RuntimeError("provider emitted an unknown event")
+        try:
+            async for event in provider.stream(request, cancellation=cancellation):
+                cancellation.raise_if_cancelled()
+                self._assert_protected_values_unchanged(protected_values)
+                if completed:
+                    raise RuntimeError("provider emitted an event after response.completed")
+                if isinstance(event, TextDelta):
+                    if tool_calls:
+                        raise RuntimeError("provider emitted text after a completed tool call")
+                    if not event.delta:
+                        continue
+                    safe_delta = text_guard.feed(event.delta)
+                    if not safe_delta:
+                        continue
+                    if assistant_item_id is None:
+                        assistant_item_id, started = self._store.create_assistant_item(run_id)
+                        await self._publish(started)
+                        self._assert_protected_values_unchanged(protected_values)
+                    await self._publish_text_delta(
+                        assistant_item_id,
+                        text_batch.add(safe_delta, now=monotonic()),
+                    )
+                elif isinstance(event, ReasoningDelta):
+                    reasoning_seen = True
+                    reasoning_characters += len(event.delta)
+                    if reasoning_characters > _MAX_REASONING_CHARACTERS:
+                        raise RuntimeError("provider reasoning exceeded the supported size")
+                    safe_delta = reasoning_guard.feed(event.delta)
+                    if safe_delta:
+                        reasoning_parts.append(safe_delta)
+                elif isinstance(event, ToolCallCompleted):
+                    await self._publish_text_delta(assistant_item_id, text_batch.flush())
+                    call = event.call
+                    if (
+                        not isinstance(call.id, str)
+                        or not call.id
+                        or not isinstance(call.name, str)
+                        or not call.name
+                        or not isinstance(call.arguments, dict)
+                    ):
+                        raise RuntimeError("provider emitted an invalid tool call")
+                    if call.id in call_ids:
+                        raise RuntimeError("provider emitted a duplicate tool call ID")
+                    call_ids.add(call.id)
+                    tool_calls.append(call)
+                elif isinstance(event, ResponseCompleted):
+                    await self._publish_text_delta(assistant_item_id, text_batch.flush())
+                    completed = True
+                else:
+                    raise RuntimeError("provider emitted an unknown event")
+        except Exception:
+            # Only text already released by ProtectedStreamGuard is buffered.
+            # Do not call finish() on an incomplete or cancelled stream.
+            if self._current_protected_values() == tuple(protected_values):
+                await self._publish_text_delta(assistant_item_id, text_batch.flush())
+            raise
+        self._assert_protected_values_unchanged(protected_values)
+        await self._publish_text_delta(assistant_item_id, text_batch.flush())
         if not completed:
             raise RuntimeError("provider stream ended without response.completed")
         self._assert_protected_values_unchanged(protected_values)
@@ -198,13 +250,24 @@ class AgentLoop:
                 assistant_item_id, started = self._store.create_assistant_item(run_id)
                 await self._publish(started)
                 self._assert_protected_values_unchanged(protected_values)
-            await self._publish(self._store.append_text_delta(assistant_item_id, trailing_text))
+            await self._publish_text_delta(
+                assistant_item_id,
+                text_batch.add(trailing_text, now=monotonic()),
+            )
+        await self._publish_text_delta(assistant_item_id, text_batch.flush())
         trailing_reasoning = reasoning_guard.finish()
         if trailing_reasoning:
             reasoning_parts.append(trailing_reasoning)
         reasoning_content = "".join(reasoning_parts) if reasoning_seen else None
         step_id = f"step_{uuid.uuid4().hex}" if tool_calls and assistant_item_id else None
         return assistant_item_id, tuple(tool_calls), reasoning_content, step_id
+
+    async def _publish_text_delta(self, item_id: str | None, delta: str | None) -> None:
+        if delta is None:
+            return
+        if item_id is None:
+            raise RuntimeError("text delta has no assistant item")
+        await self._publish(self._store.append_text_delta(item_id, delta))
 
     async def _execute_tool_calls(
         self,

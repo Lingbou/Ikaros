@@ -5,7 +5,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from ..domain import JournalEvent
+from ..domain import JOURNAL_EVENT_SCHEMA_VERSION, JournalEvent
+from ..errors import UnsupportedJournalEventVersionError
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 
@@ -31,11 +32,12 @@ def append_event(
     cursor = connection.execute(
         """
         INSERT INTO events(
-            event_type, thread_id, branch_id, turn_id, run_id, item_id,
+            schema_version, event_type, thread_id, branch_id, turn_id, run_id, item_id,
             created_at, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            JOURNAL_EVENT_SCHEMA_VERSION,
             event_type,
             thread_id,
             branch_id,
@@ -50,6 +52,7 @@ def append_event(
         raise RuntimeError("SQLite did not return an event sequence")
     return JournalEvent(
         seq=cursor.lastrowid,
+        schema_version=JOURNAL_EVENT_SCHEMA_VERSION,
         type=event_type,
         thread_id=thread_id,
         branch_id=branch_id,
@@ -68,7 +71,7 @@ def replay_events(
 ) -> tuple[list[JournalEvent], int]:
     rows = connection.execute(
         """
-        SELECT seq, event_type, thread_id, branch_id, turn_id, run_id, item_id,
+        SELECT seq, schema_version, event_type, thread_id, branch_id, turn_id, run_id, item_id,
                created_at, payload_json
         FROM events
         WHERE seq > ?
@@ -85,15 +88,25 @@ def latest_sequence(connection: sqlite3.Connection) -> int:
     return int(connection.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
 
 
-def projection_rows(connection: sqlite3.Connection) -> list[sqlite3.Row]:
-    return connection.execute(
-        "SELECT event_type, created_at, payload_json FROM events ORDER BY seq"
+def projection_events(connection: sqlite3.Connection) -> list[JournalEvent]:
+    rows = connection.execute(
+        """
+        SELECT seq, schema_version, event_type, thread_id, branch_id, turn_id, run_id, item_id,
+               created_at, payload_json
+        FROM events ORDER BY seq
+        """
     ).fetchall()
+    return [event_from_row(row) for row in rows]
 
 
 def event_from_row(row: sqlite3.Row) -> JournalEvent:
+    stored_version = _event_schema_version(row["schema_version"])
+    decoded_payload = json_loads(row["payload_json"])
+    if not isinstance(decoded_payload, dict):
+        raise RuntimeError("journal event payload is not an object")
     return JournalEvent(
         seq=int(row["seq"]),
+        schema_version=stored_version,
         type=row["event_type"],
         thread_id=row["thread_id"],
         branch_id=row["branch_id"],
@@ -101,5 +114,16 @@ def event_from_row(row: sqlite3.Row) -> JournalEvent:
         run_id=row["run_id"],
         item_id=row["item_id"],
         timestamp=row["created_at"],
-        payload=json_loads(row["payload_json"]),
+        payload=decoded_payload,
     )
+
+
+def _event_schema_version(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise UnsupportedJournalEventVersionError("journal event has an invalid schema version")
+    if value != JOURNAL_EVENT_SCHEMA_VERSION:
+        raise UnsupportedJournalEventVersionError(
+            f"journal event schema version {value} does not match supported version "
+            f"{JOURNAL_EVENT_SCHEMA_VERSION}"
+        )
+    return value

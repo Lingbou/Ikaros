@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Any, cast
 
-from ..domain import ContextItem, PreparedTurn, RunDescriptor, ThreadSummary, WorkspaceSummary
+from ..domain import ContextItem, PreparedTurn, RunDescriptor, WorkspaceSummary
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..security import (
@@ -85,27 +85,6 @@ def contains_protected_projection_values(
         ):
             return True
     return False
-
-
-def list_threads(connection: sqlite3.Connection) -> list[ThreadSummary]:
-    rows = connection.execute(
-        """
-        SELECT id, title, default_branch_id, workspace_json, created_at, updated_at
-        FROM threads
-        ORDER BY updated_at DESC, id
-        """
-    ).fetchall()
-    return [
-        ThreadSummary(
-            id=row["id"],
-            title=row["title"],
-            default_branch_id=row["default_branch_id"],
-            workspace=workspace_from_json(row["workspace_json"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
-        for row in rows
-    ]
 
 
 def find_turn_by_client_request_id(

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 JsonObject = dict[str, Any]
+JOURNAL_EVENT_SCHEMA_VERSION = 1
 
 
 def utc_now() -> str:
@@ -48,6 +49,7 @@ class ThreadSummary:
 @dataclass(frozen=True, slots=True)
 class JournalEvent:
     seq: int
+    schema_version: int
     type: str
     thread_id: str | None
     branch_id: str | None
@@ -60,6 +62,7 @@ class JournalEvent:
     def to_wire(self) -> JsonObject:
         return {
             "seq": self.seq,
+            "schemaVersion": self.schema_version,
             "type": self.type,
             "threadId": self.thread_id,
             "branchId": self.branch_id,

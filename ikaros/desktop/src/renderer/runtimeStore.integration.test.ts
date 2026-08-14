@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IkarosDesktopApi } from "../shared/platform";
-import type {
-  IkarosRuntimeApi,
-  RuntimeInvocationResult,
-  RuntimeJournalEvent,
-  RuntimeModelSummary,
-  RuntimeProviderSummary,
-  RuntimeThreadCreateParams,
+import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type IkarosRuntimeApi,
+  type RuntimeInvocationResult,
+  type RuntimeJournalEvent,
+  type RuntimeModelSummary,
+  type RuntimeProviderSummary,
+  type RuntimeThreadCreateParams,
 } from "../shared/runtime";
 
 const createdAt = "2026-08-11T12:00:00.000Z";
@@ -126,6 +127,7 @@ function runtimeEvent(
 ): RuntimeJournalEvent {
   return {
     seq,
+    schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
     type,
     threadId: identity.threadId ?? "thread-runtime",
     branchId: identity.branchId ?? "branch-runtime",
@@ -195,6 +197,7 @@ describe("Runtime-backed renderer store", () => {
       seq += 1;
       const event: RuntimeJournalEvent = {
         seq,
+        schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
         type: "thread.created",
         threadId: thread.id,
         branchId: thread.defaultBranchId,
@@ -275,6 +278,7 @@ describe("Runtime-backed renderer store", () => {
     };
     const createdEvent: RuntimeJournalEvent = {
       seq: 1,
+      schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
       type: "thread.created",
       threadId: thread.id,
       branchId: thread.defaultBranchId,
@@ -1092,6 +1096,7 @@ describe("Runtime-backed renderer store", () => {
       const clientRequestId = params.clientRequestId;
       createdEvent = {
         seq: 1,
+        schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
         type: "thread.created",
         threadId: thread.id,
         branchId: thread.defaultBranchId,
@@ -1180,6 +1185,7 @@ describe("Runtime-backed renderer store", () => {
       if (createAttempts <= 5) throw new Error("Runtime connection unavailable");
       const event: RuntimeJournalEvent = {
         seq: 1,
+        schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
         type: "thread.created",
         threadId: thread.id,
         branchId: thread.defaultBranchId,
@@ -1322,6 +1328,7 @@ describe("Runtime-backed renderer store", () => {
       }
       const event: RuntimeJournalEvent = {
         seq: 1,
+        schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
         type: "thread.created",
         threadId: thread.id,
         branchId: thread.defaultBranchId,
@@ -1736,6 +1743,7 @@ describe("Runtime-backed renderer store", () => {
     };
     const createdEvent: RuntimeJournalEvent = {
       seq: 1,
+      schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
       type: "thread.created",
       threadId: createdThread.id,
       branchId: createdThread.defaultBranchId,
@@ -1831,6 +1839,7 @@ describe("Runtime-backed renderer store", () => {
     };
     const createdEvent: RuntimeJournalEvent = {
       seq: 1,
+      schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
       type: "thread.created",
       threadId: thread.id,
       branchId: thread.defaultBranchId,
@@ -1917,6 +1926,7 @@ describe("Runtime-backed renderer store", () => {
     };
     const createdEvent: RuntimeJournalEvent = {
       seq: 1,
+      schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
       type: "thread.created",
       threadId: thread.id,
       branchId: thread.defaultBranchId,
@@ -2122,6 +2132,7 @@ describe("Runtime-backed renderer store", () => {
     };
     const createdEvent: RuntimeJournalEvent = {
       seq: 1,
+      schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
       type: "thread.created",
       threadId: thread.id,
       branchId: thread.defaultBranchId,
@@ -2196,6 +2207,7 @@ describe("Runtime-backed renderer store", () => {
     };
     const createdEvent: RuntimeJournalEvent = {
       seq: 1,
+      schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
       type: "thread.created",
       threadId: thread.id,
       branchId: thread.defaultBranchId,

@@ -174,6 +174,46 @@ describe("desktop window controls", () => {
     });
   });
 
+  it("aggregates Runtime Thread catalog pages before crossing the renderer bridge", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    const first = {
+      id: "thread-1",
+      title: "First",
+      defaultBranchId: "branch-1",
+      workspace: null,
+      createdAt: "2026-08-14T00:00:00.000Z",
+      updatedAt: "2026-08-14T00:00:00.000Z",
+    };
+    const second = { ...first, id: "thread-2", title: "Second", defaultBranchId: "branch-2" };
+    electron.runtimeHost.request
+      .mockResolvedValueOnce({
+        threads: [first],
+        nextCursor: "cursor_one",
+        hasMore: true,
+        snapshotSeq: 1,
+      })
+      .mockResolvedValueOnce({
+        threads: [second],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 2,
+      });
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+
+    const handler = electron.handlers.get("ikaros:runtime:thread-list");
+    const result = await handler?.({ sender: {} });
+
+    expect(result).toEqual({ ok: true, value: { threads: [first, second] } });
+    expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 100 });
+    expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(2, "thread.list", {
+      limit: 100,
+      cursor: "cursor_one",
+    });
+  });
+
   it.each([
     ["ikaros:runtime:provider-list", [], "provider.list", undefined],
     [

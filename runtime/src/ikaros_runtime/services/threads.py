@@ -7,6 +7,7 @@ from typing import Any
 from ..domain import CommandOutcome, WorkspaceSummary
 from ..errors import InvalidParamsError
 from ..storage import SqliteRuntimeStore
+from ..storage.thread_catalog import THREAD_CATALOG_DEFAULT_LIMIT, THREAD_CATALOG_MAX_LIMIT
 
 RequestSafetyCheck = Callable[[object], None]
 _MAX_WORKSPACE_ID_LENGTH = 200
@@ -55,9 +56,26 @@ class ThreadService:
         )
 
     def list(self, params: dict[str, Any]) -> dict[str, Any]:
-        if params:
-            raise InvalidParamsError("thread.list does not accept parameters")
-        return {"threads": [thread.to_wire() for thread in self._store.list_threads()]}
+        unknown = set(params) - {"cursor", "limit"}
+        if unknown:
+            raise InvalidParamsError("thread.list contains unsupported parameters")
+        cursor: str | None = None
+        if "cursor" in params:
+            raw_cursor = params["cursor"]
+            if not isinstance(raw_cursor, str) or not raw_cursor:
+                raise InvalidParamsError("thread.list cursor must be a non-empty string")
+            cursor = raw_cursor
+        limit = params.get("limit", THREAD_CATALOG_DEFAULT_LIMIT)
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise InvalidParamsError("thread.list limit must be an integer")
+        if limit < 1 or limit > THREAD_CATALOG_MAX_LIMIT:
+            raise InvalidParamsError(
+                f"thread.list limit must be between 1 and {THREAD_CATALOG_MAX_LIMIT}"
+            )
+        try:
+            return self._store.list_thread_page(cursor=cursor, limit=limit).to_wire()
+        except ValueError as error:
+            raise InvalidParamsError(str(error)) from error
 
 
 def client_request_id_from(params: dict[str, Any]) -> str | None:

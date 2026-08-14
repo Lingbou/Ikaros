@@ -1,29 +1,43 @@
-"""SQLite schema and atomic migrations for Runtime state."""
+"""Canonical SQLite schema for reset-only development Runtime state."""
 
 from __future__ import annotations
 
 import sqlite3
 
-_SCHEMA_VERSION = 6
-_INITIAL_SCHEMA = """
+_SCHEMA_VERSION = 1
+_CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL CHECK (schema_version >= 1),
     event_type TEXT NOT NULL,
     thread_id TEXT,
     branch_id TEXT,
+    turn_id TEXT,
+    run_id TEXT,
+    item_id TEXT,
     created_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
 );
 
 CREATE INDEX events_thread_seq_idx ON events(thread_id, seq);
+CREATE INDEX events_run_seq_idx ON events(run_id, seq);
+CREATE UNIQUE INDEX events_one_settled_per_run
+ON events(run_id) WHERE event_type = 'run.settled';
 
 CREATE TABLE threads (
     id TEXT PRIMARY KEY,
     title TEXT,
     default_branch_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    client_request_id TEXT,
+    workspace_json TEXT
 );
+
+CREATE UNIQUE INDEX threads_client_request_id_idx
+ON threads(client_request_id) WHERE client_request_id IS NOT NULL;
+CREATE INDEX threads_catalog_order_idx
+ON threads(updated_at DESC, id ASC);
 
 CREATE TABLE branches (
     id TEXT PRIMARY KEY,
@@ -34,14 +48,6 @@ CREATE TABLE branches (
 
 CREATE UNIQUE INDEX branches_default_thread_idx
 ON branches(thread_id) WHERE is_default = 1;
-"""
-
-_MIGRATION_2 = """
-ALTER TABLE events ADD COLUMN turn_id TEXT;
-ALTER TABLE events ADD COLUMN run_id TEXT;
-ALTER TABLE events ADD COLUMN item_id TEXT;
-
-CREATE INDEX events_run_seq_idx ON events(run_id, seq);
 
 CREATE TABLE turns (
     id TEXT PRIMARY KEY,
@@ -61,8 +67,13 @@ CREATE TABLE runs (
     model_id TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    settled_at TEXT
+    settled_at TEXT,
+    client_request_id TEXT,
+    execution_policy TEXT NOT NULL DEFAULT 'full_access'
 );
+
+CREATE UNIQUE INDEX runs_client_request_id_idx
+ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
 
 CREATE TABLE items (
     id TEXT PRIMARY KEY,
@@ -75,66 +86,47 @@ CREATE TABLE items (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    data_json TEXT NOT NULL DEFAULT '{}',
     UNIQUE(run_id, ordinal)
 );
 """
 
-_MIGRATION_3 = """
-CREATE UNIQUE INDEX events_one_settled_per_run
-ON events(run_id) WHERE event_type = 'run.settled';
-"""
-
-_MIGRATION_4 = """
-ALTER TABLE threads ADD COLUMN client_request_id TEXT;
-ALTER TABLE runs ADD COLUMN client_request_id TEXT;
-
-CREATE UNIQUE INDEX threads_client_request_id_idx
-ON threads(client_request_id) WHERE client_request_id IS NOT NULL;
-
-CREATE UNIQUE INDEX runs_client_request_id_idx
-ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
-"""
-
-_MIGRATION_5 = """
-ALTER TABLE runs ADD COLUMN execution_policy TEXT NOT NULL DEFAULT 'full_access';
-ALTER TABLE items ADD COLUMN data_json TEXT NOT NULL DEFAULT '{}';
-"""
-
-_MIGRATION_6 = """
-ALTER TABLE threads ADD COLUMN workspace_json TEXT;
-"""
+_INCOMPATIBLE_MESSAGE = "state database schema is incompatible; reset required"
 
 
-def migrate(connection: sqlite3.Connection) -> None:
+def initialize_schema(connection: sqlite3.Connection) -> None:
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if version > _SCHEMA_VERSION:
-        raise RuntimeError(
-            f"state database schema {version} is newer than supported schema {_SCHEMA_VERSION}"
-        )
-    migrations = (
-        (0, _INITIAL_SCHEMA, 1),
-        (1, _MIGRATION_2, 2),
-        (2, _MIGRATION_3, 3),
-        (3, _MIGRATION_4, 4),
-        (4, _MIGRATION_5, 5),
-        (5, _MIGRATION_6, 6),
+    if version == 0:
+        if _application_objects(connection):
+            raise RuntimeError(_INCOMPATIBLE_MESSAGE)
+        _create_schema(connection)
+        return
+    if version != _SCHEMA_VERSION:
+        raise RuntimeError(_INCOMPATIBLE_MESSAGE)
+
+
+def _application_objects(connection: sqlite3.Connection) -> tuple[str, ...]:
+    rows = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def _create_schema(connection: sqlite3.Connection) -> None:
+    transaction = (
+        f"BEGIN IMMEDIATE;\n{_CANONICAL_SCHEMA}\n"
+        f"PRAGMA user_version = {_SCHEMA_VERSION};\nCOMMIT;"
     )
-    for source_version, script, target_version in migrations:
-        if version == source_version:
-            _apply_migration(connection, script, target_version=target_version)
-            version = target_version
-
-
-def _apply_migration(
-    connection: sqlite3.Connection,
-    script: str,
-    *,
-    target_version: int,
-) -> None:
-    transaction = f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {target_version};\nCOMMIT;"
     try:
         connection.executescript(transaction)
     except BaseException:
         if connection.in_transaction:
             connection.rollback()
         raise
+
+
+__all__ = ["initialize_schema"]

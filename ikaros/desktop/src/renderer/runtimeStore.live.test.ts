@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RuntimeHost, RuntimeRpcError } from "../main/runtimeHost";
+import { listAllRuntimeThreads, RuntimeHost, RuntimeRpcError } from "../main/runtimeHost";
 import type { IkarosDesktopApi } from "../shared/platform";
 import type {
   IkarosRuntimeBridgeApi,
@@ -20,7 +20,6 @@ import type {
   RuntimeProviderRemoveResult,
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
-  RuntimeThreadSummary,
   RuntimeTurnStartResult,
 } from "../shared/runtime";
 import { activeBranch, type AgentEvent, type Thread, type Turn } from "./domain";
@@ -49,8 +48,7 @@ function runtimeBridge(
   cancellationResults: RuntimeCancelRunResult[],
 ): IkarosRuntimeBridgeApi {
   return {
-    listThreads: () =>
-      bridgeInvocation(() => host.request<{ threads: RuntimeThreadSummary[] }>("thread.list")),
+    listThreads: () => bridgeInvocation(() => listAllRuntimeThreads(host)),
     createThread: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeThreadCreateResult>("thread.create", { ...params }),

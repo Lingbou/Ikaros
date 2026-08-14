@@ -22,7 +22,7 @@ from .journal import (
     append_event,
     event_from_row,
     latest_sequence,
-    projection_rows,
+    projection_events,
     replay_events,
 )
 from .projections import (
@@ -35,13 +35,13 @@ from .projections import (
     has_active_runs,
     item_location,
     item_row,
-    list_threads,
     next_item_ordinal,
     run_status,
     workspace_from_json,
     workspace_to_json,
 )
-from .schema import migrate
+from .schema import initialize_schema
+from .thread_catalog import ThreadCatalogPage, list_thread_page
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
@@ -56,7 +56,7 @@ class SqliteRuntimeStore:
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA synchronous = NORMAL")
         try:
-            migrate(self._connection)
+            initialize_schema(self._connection)
         except BaseException:
             self._connection.close()
             raise
@@ -119,7 +119,8 @@ class SqliteRuntimeStore:
                     )
                 event_row = self._connection.execute(
                     """
-                    SELECT seq, event_type, thread_id, branch_id, turn_id, run_id, item_id,
+                    SELECT seq, schema_version, event_type, thread_id, branch_id, turn_id, run_id,
+                           item_id,
                            created_at, payload_json
                     FROM events
                     WHERE event_type = 'thread.created' AND thread_id = ?
@@ -199,8 +200,8 @@ class SqliteRuntimeStore:
             )
         return thread, event, True
 
-    def list_threads(self) -> list[ThreadSummary]:
-        return list_threads(self._connection)
+    def list_thread_page(self, *, cursor: str | None, limit: int) -> ThreadCatalogPage:
+        return list_thread_page(self._connection, cursor=cursor, limit=limit)
 
     def find_turn_by_client_request_id(
         self,
@@ -932,19 +933,19 @@ class SqliteRuntimeStore:
         return latest_sequence(self._connection)
 
     def rebuild_projections(self) -> None:
-        rows = projection_rows(self._connection)
+        events = projection_events(self._connection)
         with self._connection:
             self._connection.execute("DELETE FROM items")
             self._connection.execute("DELETE FROM runs")
             self._connection.execute("DELETE FROM turns")
             self._connection.execute("DELETE FROM branches")
             self._connection.execute("DELETE FROM threads")
-            for row in rows:
+            for event in events:
                 apply_event(
                     self._connection,
-                    row["event_type"],
-                    json_loads(row["payload_json"]),
-                    timestamp=row["created_at"],
+                    event.type,
+                    event.payload,
+                    timestamp=event.timestamp,
                 )
 
     def _append_event(

@@ -108,6 +108,15 @@ All Runtime-owned local files live below the current user's Ikaros home:
   logs/                created only if persistent file logging is enabled
 ```
 
+During pre-release development, `state.db` uses an explicit reset-only schema
+policy. An empty database is created atomically at canonical database schema
+version 1. A non-empty unversioned database or any different `user_version`
+fails startup with `reset required`; the Runtime never migrates or silently
+deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
+only after the owning Runtime has stopped. `config.yaml` is independent and is
+not removed by a conversation-state reset. Durable release migrations remain a
+future compatibility commitment rather than a partial framework in V1.
+
 On Windows, `~/.ikaros` resolves below the user's profile directory in the same
 way as `~/.codex`. V1 does not create a separate credential store or encrypted
 secret file. API keys and optional custom-header values are stored as plain
@@ -241,7 +250,11 @@ Turn in the public model.
 
 An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
-client can resume from a cursor without guessing what it missed.
+client can resume from a cursor without guessing what it missed. Every
+persisted and wire Event also carries `schemaVersion`. The current Event schema
+is version 1. Readers require that exact version and reject unknown versions;
+there is no payload upcaster while the database itself follows the explicit
+development reset policy above.
 
 Representative event semantics are:
 
@@ -264,6 +277,36 @@ Names remain subject to a dedicated protocol specification. Their semantic
 distinctions are already locked: commands are acknowledged quickly, execution
 continues asynchronously, and each Run reaches exactly one settled terminal
 state such as completed, failed, or cancelled.
+
+### Thread Catalog pagination
+
+`thread.list` is the Runtime-owned query surface for the sidebar catalog. It
+accepts only optional `cursor` and `limit` fields. The default page size is 50,
+the maximum is 100, and the response is always:
+
+```text
+threads
+nextCursor
+hasMore
+snapshotSeq
+```
+
+Rows are ordered by `updated_at DESC, id ASC` using the matching SQLite index.
+The opaque URL-safe cursor is a canonical, versioned encoding of the final
+returned row's `(updatedAt, id)` key. The next page uses the equivalent
+range-seek predicate `updated_at <= cursor.updatedAt AND
+(updated_at < cursor.updatedAt OR id > cursor.id)` and reads `limit + 1` rows,
+so equal timestamps neither duplicate
+nor omit stable rows. Malformed, non-canonical, future-version, or out-of-bound
+cursors and limits are JSON-RPC `-32602` errors.
+
+Each page and its `snapshotSeq` are read in one SQLite read transaction.
+`snapshotSeq` is the canonical Journal waterline observed for that page, so a
+client can align later live/replayed Events with that page. It is deliberately
+not a cross-request MVCC snapshot: another page may return a larger waterline
+when a Run is active or a Thread changes between requests. Clients must not
+require equality across pages or claim that one cursor freezes the whole
+catalog.
 
 ### ACK, cancellation, recovery, and replay semantics
 
@@ -333,11 +376,15 @@ across a gap. Consequently a dropped notification or failed replay attempt
 cannot authorize the client to skip canonical history; replay is retried from
 the same cursor.
 
-Streaming deltas may be buffered or persisted in batches. Completed Items,
-terminal Run state, branch/fork decisions, retry links, and other semantic
-records are appended canonically. Projections are rebuildable from the SQLite
-journal; existing history is not rewritten when a Branch, retry, or compaction
-record is added.
+The first safe text delta in a provider Step is persisted and published
+immediately. Later safe deltas are coalesced until 256 characters accumulate or
+the 50 ms window is observed by an arriving chunk; pending text is synchronously
+flushed at provider completion, Tool Call boundaries, cancellation, and provider
+failure. There is no background journal writer, so commit and publication stay
+ordered. Completed Items, terminal Run state, branch/fork decisions, retry links,
+and other semantic records are appended canonically. Projections are rebuildable
+from the SQLite journal; existing history is not rewritten when a Branch, retry,
+or compaction record is added.
 
 ## Scheduling and Agent loop
 
@@ -677,8 +724,9 @@ current operating-system user's authority. Once Skill scripts are integrated
 through the same executor, they will inherit that authority as well. This is an
 explicit development-version trade-off, not a sandbox or security guarantee.
 
-The current SQLite schema version is 6. Thread projections include optional
-`workspace_json`. Each Run snapshots
+The current reset-only SQLite database schema is canonical version 1. Thread
+projections include optional `workspace_json` and the indexed Thread Catalog
+ordering key. Each Run snapshots
 `execution_policy = full_access`, and each Item has structured `data_json` for
 Tool Call arguments and normalized results. Rebuilding projections from the
 journal restores these records and the provider context. A bounded Agent loop
@@ -718,6 +766,16 @@ when renderer navigation changes. Desktop uses stable request IDs for
 `thread.create` and `turn.start`, projects Runtime Threads and workspaces,
 selects from `model.list`, sends the explicit Provider/model reference with
 each Turn, and drives Stop through `run.cancel`.
+
+The Runtime wire method `thread.list` is already keyset-paginated. As a
+transitional aggregation bridge before direct renderer pagination, Electron
+main currently traverses its pages with a limit of 100, rejects malformed
+pages, duplicate/repeating cursors, backward
+waterlines, and unbounded pagination, then continues to expose the renderer's
+existing aggregate `{ threads }` shape. Increasing page waterlines are valid.
+Direct renderer pagination and removal of full cold-start Event replay belong
+to a later gate; this bridge does not pretend multiple page requests share an
+MVCC snapshot.
 
 Desktop projects `process_run` as `process.run` and projects `read`, `write`,
 and `edit` with file-specific icons, translated fixed labels, and bounded

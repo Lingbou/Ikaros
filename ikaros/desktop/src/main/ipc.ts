@@ -20,14 +20,13 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
-  RuntimeThreadSummary,
   RuntimeTurnStartParams,
   RuntimeTurnStartResult,
   RuntimeWorkspaceSummary
 } from "../shared/runtime";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
 import type { RendererTrustPolicy } from "./security";
-import { RuntimeRpcError, type RuntimeHost } from "./runtimeHost";
+import { listAllRuntimeThreads, RuntimeRpcError, type RuntimeHost } from "./runtimeHost";
 import { updateWindowChrome } from "./window";
 
 type RemoveIpcHandlers = () => void;
@@ -150,9 +149,7 @@ export function registerDesktopIpc(
 
   ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.threadList, async (event) => {
     trustPolicy.assertTrustedIpc(event);
-    return invokeRuntime(() =>
-      runtimeHost.request<{ threads: RuntimeThreadSummary[] }>("thread.list")
-    );
+    return invokeRuntime(() => listAllRuntimeThreads(runtimeHost));
   });
 
   ipcMain.handle(

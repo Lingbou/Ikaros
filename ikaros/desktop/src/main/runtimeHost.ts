@@ -6,11 +6,19 @@ import { createInterface } from "node:readline";
 
 import WebSocket, { type RawData } from "ws";
 
-import type { RuntimeJournalEvent, RuntimeReplayResult } from "../shared/runtime";
+import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeJournalEvent,
+  type RuntimeReplayResult,
+  type RuntimeThreadListPage,
+  type RuntimeThreadSummary
+} from "../shared/runtime";
 
 const PROTOCOL_VERSION = 1;
 const SOCKET_RECONNECT_DELAYS_MS = [50, 100, 200, 400, 800] as const;
 const RUNTIME_RESTART_DELAYS_MS = [100, 200, 400] as const;
+const THREAD_CATALOG_PAGE_LIMIT = 100;
+const MAX_THREAD_CATALOG_PAGES = 10_000;
 
 function wait(delayMs: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
@@ -89,6 +97,145 @@ function responseId(value: unknown): number | undefined {
   }
   const id = (value as { id?: unknown }).id;
   return typeof id === "number" && Number.isInteger(id) ? id : undefined;
+}
+
+export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Runtime returned an invalid journal event.");
+  }
+  const event = value as Partial<RuntimeJournalEvent>;
+  if (!Number.isInteger(event.seq) || typeof event.type !== "string") {
+    throw new Error("Runtime returned an invalid journal event.");
+  }
+  if (event.schemaVersion !== RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION) {
+    throw new Error(
+      `Runtime journal event schema ${String(event.schemaVersion)} is unsupported.`
+    );
+  }
+  return event as RuntimeJournalEvent;
+}
+
+export function parseRuntimeReplayResult(value: unknown): RuntimeReplayResult {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Runtime returned an invalid event replay result.");
+  }
+  const replay = value as Partial<RuntimeReplayResult>;
+  if (
+    !Array.isArray(replay.events) ||
+    !Number.isInteger(replay.latestSeq) ||
+    !Number.isInteger(replay.nextAfterSeq) ||
+    typeof replay.hasMore !== "boolean"
+  ) {
+    throw new Error("Runtime returned an invalid event replay result.");
+  }
+  return {
+    events: replay.events.map(parseRuntimeJournalEvent),
+    latestSeq: replay.latestSeq as number,
+    nextAfterSeq: replay.nextAfterSeq as number,
+    hasMore: replay.hasMore
+  };
+}
+
+function parseRuntimeThreadSummary(value: unknown): RuntimeThreadSummary {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Runtime returned an invalid thread catalog page.");
+  }
+  const thread = value as Partial<RuntimeThreadSummary>;
+  const workspace = thread.workspace;
+  const validWorkspace =
+    workspace === null ||
+    (typeof workspace === "object" &&
+      workspace !== null &&
+      typeof workspace.id === "string" &&
+      typeof workspace.name === "string" &&
+      (workspace.rootUri === null || typeof workspace.rootUri === "string"));
+  if (
+    typeof thread.id !== "string" ||
+    !thread.id ||
+    (thread.title !== null && typeof thread.title !== "string") ||
+    typeof thread.defaultBranchId !== "string" ||
+    !validWorkspace ||
+    typeof thread.createdAt !== "string" ||
+    typeof thread.updatedAt !== "string"
+  ) {
+    throw new Error("Runtime returned an invalid thread catalog page.");
+  }
+  return thread as RuntimeThreadSummary;
+}
+
+export function parseRuntimeThreadListPage(value: unknown): RuntimeThreadListPage {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Runtime returned an invalid thread catalog page.");
+  }
+  const page = value as Partial<RuntimeThreadListPage>;
+  const validCursor =
+    page.nextCursor === null ||
+    (typeof page.nextCursor === "string" &&
+      page.nextCursor.length > 0 &&
+      page.nextCursor.length <= 1024 &&
+      /^[A-Za-z0-9_-]+$/.test(page.nextCursor));
+  if (
+    !Array.isArray(page.threads) ||
+    page.threads.length > THREAD_CATALOG_PAGE_LIMIT ||
+    typeof page.hasMore !== "boolean" ||
+    !Number.isSafeInteger(page.snapshotSeq) ||
+    (page.snapshotSeq as number) < 0 ||
+    !validCursor ||
+    (page.hasMore && (page.nextCursor === null || page.threads.length === 0)) ||
+    (!page.hasMore && page.nextCursor !== null)
+  ) {
+    throw new Error("Runtime returned an invalid thread catalog page.");
+  }
+  return {
+    threads: page.threads.map(parseRuntimeThreadSummary),
+    nextCursor: page.nextCursor as string | null,
+    hasMore: page.hasMore,
+    snapshotSeq: page.snapshotSeq as number
+  };
+}
+
+interface RuntimeThreadCatalogRequester {
+  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+}
+
+export async function listAllRuntimeThreads(
+  requester: RuntimeThreadCatalogRequester
+): Promise<{ threads: RuntimeThreadSummary[] }> {
+  const threads: RuntimeThreadSummary[] = [];
+  const threadIds = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let previousSnapshotSeq = -1;
+  for (let pageNumber = 0; pageNumber < MAX_THREAD_CATALOG_PAGES; pageNumber += 1) {
+    const params: Record<string, unknown> = { limit: THREAD_CATALOG_PAGE_LIMIT };
+    if (cursor !== undefined) {
+      params.cursor = cursor;
+    }
+    const page = parseRuntimeThreadListPage(
+      await requester.request("thread.list", params)
+    );
+    if (page.snapshotSeq < previousSnapshotSeq) {
+      throw new Error("Runtime thread catalog watermark moved backwards.");
+    }
+    previousSnapshotSeq = page.snapshotSeq;
+    for (const thread of page.threads) {
+      if (threadIds.has(thread.id)) {
+        throw new Error("Runtime thread catalog returned a duplicate thread.");
+      }
+      threadIds.add(thread.id);
+      threads.push(thread);
+    }
+    if (!page.hasMore) {
+      return { threads };
+    }
+    const nextCursor = page.nextCursor as string;
+    if (nextCursor === cursor || cursors.has(nextCursor)) {
+      throw new Error("Runtime thread catalog cursor did not advance.");
+    }
+    cursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+  throw new Error("Runtime thread catalog exceeded the page limit.");
 }
 
 export function parseRuntimeJsonRpcResponse(value: unknown): JsonRpcResponse {
@@ -349,12 +496,18 @@ class JsonRpcConnection {
     let message: unknown;
     try {
       message = JSON.parse(raw.toString()) as unknown;
-      if (isRuntimeNotification(message)) {
-        this.onNotification(message);
-        return;
-      }
     } catch {
       this.disconnect(new Error("Runtime returned invalid JSON."));
+      this.socket.terminate();
+      return;
+    }
+    if (isRuntimeNotification(message)) {
+      try {
+        this.onNotification(message);
+      } catch (error) {
+        this.disconnect(error instanceof Error ? error : new Error(String(error)));
+        this.socket.terminate();
+      }
       return;
     }
     const id = responseId(message);
@@ -529,7 +682,11 @@ export class RuntimeHost {
     if (!connection?.isOpen) {
       throw new Error("Runtime connection is unavailable.");
     }
-    return connection.request<TResult>(method, params, this.options.startTimeoutMs);
+    const result = await connection.request<unknown>(method, params, this.options.startTimeoutMs);
+    if (method === "event.replay") {
+      return parseRuntimeReplayResult(result) as TResult;
+    }
+    return result as TResult;
   }
 
   private async ensureConnectedOnce(): Promise<RuntimeConnectionInfo> {
@@ -733,10 +890,12 @@ export class RuntimeHost {
     initialConnection: boolean
   ): Promise<void> {
     if (initialConnection) {
-      const snapshot = await connection.request<RuntimeReplayResult>(
-        "event.replay",
-        { afterSeq: 0, limit: 1 },
-        this.options.startTimeoutMs
+      const snapshot = parseRuntimeReplayResult(
+        await connection.request<unknown>(
+          "event.replay",
+          { afterSeq: 0, limit: 1 },
+          this.options.startTimeoutMs
+        )
       );
       this.lastEventSeq = snapshot.latestSeq;
       for (const seq of this.pendingEventNotifications.keys()) {
@@ -747,10 +906,12 @@ export class RuntimeHost {
     } else {
       let cursor = this.lastEventSeq;
       while (true) {
-        const replay = await connection.request<RuntimeReplayResult>(
-          "event.replay",
-          { afterSeq: cursor, limit: 1000 },
-          this.options.startTimeoutMs
+        const replay = parseRuntimeReplayResult(
+          await connection.request<unknown>(
+            "event.replay",
+            { afterSeq: cursor, limit: 1000 },
+            this.options.startTimeoutMs
+          )
         );
         for (const event of replay.events) {
           if (event.seq > this.lastEventSeq) {
@@ -779,11 +940,7 @@ export class RuntimeHost {
       this.emitNotification(notification);
       return;
     }
-    const event = notification.params as Partial<RuntimeJournalEvent>;
-    if (!Number.isInteger(event.seq) || typeof event.type !== "string") {
-      return;
-    }
-    const journalEvent = event as RuntimeJournalEvent;
+    const journalEvent = parseRuntimeJournalEvent(notification.params);
     if (this.synchronizingEvents) {
       this.bufferedEventNotifications.set(journalEvent.seq, journalEvent);
       return;

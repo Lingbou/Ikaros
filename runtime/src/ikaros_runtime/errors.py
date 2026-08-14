@@ -62,3 +62,7 @@ class RuntimeHomeLockError(RuntimeError):
 
 class ProtectedValueError(RuntimeError):
     """Protected configuration data was detected without retaining its value."""
+
+
+class UnsupportedJournalEventVersionError(RuntimeError):
+    """A persisted Event cannot be interpreted by this Runtime version."""
