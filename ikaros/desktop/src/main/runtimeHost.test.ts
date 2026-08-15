@@ -25,7 +25,6 @@ import {
   parseRuntimeThreadListPage,
   parseRuntimeTurnListPage,
   parseRuntimeUsageReadResult,
-  listAllRuntimeThreads,
   RuntimeHost,
   RuntimeRpcError,
   type RuntimeConnectionInfo,
@@ -51,29 +50,47 @@ interface RuntimeHostInternals {
     };
   };
   connectToRuntime: (...args: unknown[]) => Promise<RuntimeConnectionInfo>;
+  beginStartAttempt: () => Promise<RuntimeConnectionInfo>;
   handleRuntimeNotification(notification: RuntimeNotification): void;
   lastEventSeq: number;
   generation: number;
+  supervisionEpoch: number;
+  stopping: boolean;
   automaticRecoveryEnabled: boolean;
   restarting?: Promise<void>;
   restartFailureCount: number;
   restartCircuitOpen: boolean;
   options: { pythonExecutable?: string };
   synchronizeEventStream: (...args: unknown[]) => Promise<void>;
+  updateHostStatus(
+    state: "starting" | "connected" | "reconnecting" | "offline",
+    message?: string | null,
+  ): void;
 }
 
 function journalEvent(seq: number): RuntimeJournalEvent {
+  const timestamp = "2026-08-11T00:00:00Z";
   return {
     seq,
     schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
-    type: "test.event",
+    type: "thread.renamed",
     threadId: "thread-test",
     branchId: "branch-test",
     turnId: null,
     runId: null,
     itemId: null,
-    timestamp: "2026-08-11T00:00:00Z",
-    payload: {},
+    timestamp,
+    payload: {
+      thread: {
+        id: "thread-test",
+        title: "Renamed thread",
+        defaultBranchId: "branch-test",
+        workspace: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        archivedAt: null,
+      },
+    },
   };
 }
 
@@ -131,40 +148,61 @@ function historyTurn(ordinal: number): RuntimeTurnHistory {
 }
 
 describe("RuntimeHost integration", () => {
-  it("requests archived Thread catalog pages with a filter on every page", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-1")],
-        nextCursor: "next",
-        hasMore: true,
-        snapshotSeq: 5,
-      })
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-2")],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 5,
-      });
+  it("does not let a stale or stop-superseded start failure overwrite host status", async () => {
+    const host = new RuntimeHost({ runtimeRoot });
+    const internals = host as unknown as RuntimeHostInternals;
+    let rejectStale!: (error: Error) => void;
+    const staleAttempt = new Promise<RuntimeConnectionInfo>((_resolve, reject) => {
+      rejectStale = reject;
+    });
+    internals.beginStartAttempt = vi.fn(() => staleAttempt);
+    const notifications: RuntimeNotification[] = [];
+    host.onNotification((notification) => notifications.push(notification));
 
-    await expect(listAllRuntimeThreads({ request }, { archived: true })).resolves.toMatchObject({
-      snapshotSeq: 5,
+    const starting = host.start();
+    internals.generation += 1;
+    internals.supervisionEpoch += 1;
+    internals.updateHostStatus("connected");
+    rejectStale(new Error("stale readiness failure"));
+    await expect(starting).rejects.toThrow("stale readiness failure");
+    await Promise.resolve();
+
+    expect(
+      notifications
+        .filter((notification) => notification.method === "ikaros.host.status")
+        .map((notification) => notification.params),
+    ).toEqual([{ state: "connected", message: null }]);
+
+    const stoppedHost = new RuntimeHost({ runtimeRoot });
+    const stoppedInternals = stoppedHost as unknown as RuntimeHostInternals;
+    let rejectStopped!: (error: Error) => void;
+    const stoppedAttempt = new Promise<RuntimeConnectionInfo>((_resolve, reject) => {
+      rejectStopped = reject;
     });
-    expect(request).toHaveBeenNthCalledWith(1, "thread.list", {
-      limit: 100,
-      archived: true,
-    });
-    expect(request).toHaveBeenNthCalledWith(2, "thread.list", {
-      limit: 100,
-      archived: true,
-      cursor: "next",
-    });
+    stoppedInternals.beginStartAttempt = vi.fn(() => stoppedAttempt);
+    const stoppedNotifications: RuntimeNotification[] = [];
+    stoppedHost.onNotification((notification) => stoppedNotifications.push(notification));
+
+    const stopSupersededStart = stoppedHost.start();
+    await stoppedHost.stop();
+    rejectStopped(new Error("stop won"));
+    await expect(stopSupersededStart).rejects.toThrow("stop won");
+    await Promise.resolve();
+    expect(
+      stoppedNotifications.some(
+        (notification) =>
+          notification.method === "ikaros.host.status" &&
+          (notification.params as { state?: unknown }).state === "offline",
+      ),
+    ).toBe(false);
   });
 
   it("validates changed and no-op Thread mutation results", () => {
+    const archivedAt = "2026-08-14T01:00:00.000Z";
     const archivedThread = {
       ...catalogThread("thread-1"),
-      archivedAt: "2026-08-14T01:00:00.000Z",
+      updatedAt: archivedAt,
+      archivedAt,
     };
     const event = {
       ...journalEvent(2),
@@ -223,33 +261,6 @@ describe("RuntimeHost integration", () => {
     ).toThrow("invalid Thread mutation result");
   });
 
-  it("aggregates paginated Thread catalog pages while watermarks advance", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-1")],
-        nextCursor: "cursor_one",
-        hasMore: true,
-        snapshotSeq: 10
-      })
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-2")],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 12
-      });
-
-    await expect(listAllRuntimeThreads({ request })).resolves.toEqual({
-      threads: [catalogThread("thread-1"), catalogThread("thread-2")],
-      snapshotSeq: 10
-    });
-    expect(request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 100 });
-    expect(request).toHaveBeenNthCalledWith(2, "thread.list", {
-      limit: 100,
-      cursor: "cursor_one"
-    });
-  });
-
   it("rejects malformed Thread catalog page boundaries", () => {
     const valid = {
       threads: [catalogThread("thread-1")],
@@ -271,80 +282,6 @@ describe("RuntimeHost integration", () => {
         "Runtime returned an invalid thread catalog page."
       );
     }
-  });
-
-  it("rejects backward watermarks, duplicate Threads, and repeated cursors", async () => {
-    const backward = vi
-      .fn()
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-1")],
-        nextCursor: "cursor_one",
-        hasMore: true,
-        snapshotSeq: 2
-      })
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-2")],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 1
-      });
-    await expect(listAllRuntimeThreads({ request: backward })).rejects.toThrow(
-      "watermark moved backwards"
-    );
-
-    const duplicate = vi
-      .fn()
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-1")],
-        nextCursor: "cursor_one",
-        hasMore: true,
-        snapshotSeq: 1
-      })
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-1")],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 1
-      });
-    await expect(listAllRuntimeThreads({ request: duplicate })).rejects.toThrow(
-      "duplicate thread"
-    );
-
-    const repeatedCursor = vi
-      .fn()
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-1")],
-        nextCursor: "cursor_one",
-        hasMore: true,
-        snapshotSeq: 1
-      })
-      .mockResolvedValueOnce({
-        threads: [catalogThread("thread-2")],
-        nextCursor: "cursor_one",
-        hasMore: true,
-        snapshotSeq: 1
-      });
-    await expect(listAllRuntimeThreads({ request: repeatedCursor })).rejects.toThrow(
-      "cursor did not advance"
-    );
-  });
-
-  it("bounds a Runtime that emits infinitely many unique catalog cursors", async () => {
-    let page = 0;
-    const request = vi.fn(async () => {
-      page += 1;
-      return {
-        threads: [catalogThread(`thread-${page}`)],
-        nextCursor: `cursor_${page}`,
-        hasMore: true,
-        snapshotSeq: page
-      };
-    });
-
-    await expect(listAllRuntimeThreads({ request })).rejects.toThrow(
-      "thread catalog exceeded the page limit"
-    );
-    expect(request).toHaveBeenCalledTimes(10_000);
   });
 
   it("validates Thread metadata and nested Turn history at the Runtime boundary", () => {
@@ -525,7 +462,9 @@ describe("RuntimeHost integration", () => {
         nextAfterSeq: 1,
         hasMore: false
       })
-    ).toThrow("schema 2 is unsupported");
+    ).toThrow(
+      `schema ${RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION + 1} is unsupported`
+    );
   });
 
   it.each([

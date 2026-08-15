@@ -555,7 +555,7 @@ def test_failed_atomic_replace_preserves_file_memory_and_cleans_temporary_file(
         del source, target
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("ikaros_runtime.providers.registry.os.replace", fail_replace)
+    monkeypatch.setattr("ikaros_runtime.config.os.replace", fail_replace)
 
     with pytest.raises(ConfigError) as captured:
         store.configure_deepseek(api_key="sk-new-secret", models=[model("new", "New")])
@@ -586,7 +586,7 @@ def test_successful_replace_does_not_depend_on_post_commit_target_chmod(
             raise OSError("target chmod must not run after atomic replace")
         original_chmod(path, mode)
 
-    monkeypatch.setattr("ikaros_runtime.providers.registry.os.chmod", reject_target_chmod)
+    monkeypatch.setattr("ikaros_runtime.config.os.chmod", reject_target_chmod)
 
     store.configure_deepseek(api_key="sk-replaced", models=[model("new", "New")])
 

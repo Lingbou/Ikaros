@@ -95,6 +95,21 @@ Desktop and a future CLI are clients of the same versioned, language-neutral
 protocol. The renderer continues to depend on `AgentClient`; transport and
 process supervision stay outside React.
 
+### Versioned protocol contract
+
+`protocol/spec.py` is the sole hand-maintained registry for protocol version,
+RPC method names, persisted Journal Event discriminators, initialization
+capabilities, and provider-facing Tool IDs. It deterministically generates the
+committed JSON manifest and Desktop literal unions. Python and Desktop consume
+the same `protocol/golden-trace.json`; Desktop runs it through the production
+method/Event parsers, including scope-mirror validation for `turnId`, `runId`,
+and `itemId`. Unknown method/Event names or invalid discriminated payloads fail
+at the wire boundary and cannot silently advance the ordered event cursor.
+
+The provider Tool ID is `process_run`. The dotted `process.run` spelling is a
+presentation label and ScriptedProvider command syntax, not a machine protocol
+identifier.
+
 ## Runtime home and configuration
 
 All Runtime-owned local files live below the current user's Ikaros home:
@@ -111,7 +126,7 @@ All Runtime-owned local files live below the current user's Ikaros home:
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 3. A non-empty unversioned database or any different `user_version`
+version 4. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml` is independent and is
@@ -825,7 +840,7 @@ current operating-system user's authority. Once Skill scripts are integrated
 through the same executor, they will inherit that authority as well. This is an
 explicit development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 3. Thread
+The current reset-only SQLite database schema is canonical version 4. Thread
 projections include optional `workspace_json`, nullable `archived_at`, and an
 indexed active/archived Thread Catalog ordering key; Run history hydration is
 indexed by `turn_id`. Each Run snapshots

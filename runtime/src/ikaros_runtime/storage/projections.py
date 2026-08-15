@@ -7,7 +7,16 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any, cast
 
-from ..domain import ContextItem, JournalEvent, PreparedTurn, RunDescriptor, WorkspaceSummary
+from ..domain import (
+    JOURNAL_EVENT_SCHEMA_VERSION,
+    ContextItem,
+    JournalEvent,
+    PreparedTurn,
+    RunDescriptor,
+    SkillDescriptor,
+    WorkspaceSummary,
+    skill_descriptors_from_wire,
+)
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..security import (
@@ -144,6 +153,7 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunDescriptor:
     ).fetchone()
     if row is None:
         raise LookupError("run was not found")
+    skills = _run_skill_snapshot(connection, run_id)
     return RunDescriptor(
         id=row["id"],
         turn_id=row["turn_id"],
@@ -153,7 +163,36 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunDescriptor:
         model_id=row["model_id"],
         execution_policy=row["execution_policy"],
         workspace=workspace_from_json(row["workspace_json"]),
+        skills=skills,
     )
+
+
+def _run_skill_snapshot(
+    connection: sqlite3.Connection,
+    run_id: str,
+) -> tuple[SkillDescriptor, ...]:
+    row = connection.execute(
+        """
+        SELECT schema_version, payload_json
+        FROM events
+        WHERE run_id = ? AND event_type = 'item.completed'
+        ORDER BY seq ASC
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None or row["schema_version"] != JOURNAL_EVENT_SCHEMA_VERSION:
+        raise RuntimeError("Run Skill snapshot is unavailable or incompatible")
+    try:
+        payload = json_loads(str(row["payload_json"]))
+        if not isinstance(payload, dict):
+            raise ValueError
+        run = payload.get("run")
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise ValueError
+        return skill_descriptors_from_wire(run.get("skills"))
+    except (TypeError, ValueError):
+        raise RuntimeError("Run Skill snapshot is invalid") from None
 
 
 def run_status(connection: sqlite3.Connection, run_id: str) -> str:
@@ -670,6 +709,7 @@ _RUN_KEYS = {
     "status",
     "createdAt",
     "settledAt",
+    "skills",
 }
 _MODEL_USAGE_KEYS = {
     "inputTokens",
@@ -728,6 +768,10 @@ def _validate_run(run: dict[str, Any]) -> None:
         _require_string(f"Run {key}", run[key])
     _require_optional_string("Run settledAt", run["settledAt"])
     _validate_optional_client_request(run)
+    try:
+        skill_descriptors_from_wire(run["skills"])
+    except ValueError:
+        raise RuntimeError("journal event Run Skills are invalid") from None
 
 
 def _validate_item(item: dict[str, Any]) -> None:

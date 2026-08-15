@@ -14,12 +14,10 @@ export interface RuntimeThreadSummary {
   archivedAt: string | null;
 }
 
-export const RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION = 1 as const;
-
 export interface RuntimeJournalEvent {
   seq: number;
   schemaVersion: typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION;
-  type: string;
+  type: RuntimeJournalEventType;
   threadId: string | null;
   branchId: string | null;
   turnId: string | null;
@@ -29,18 +27,74 @@ export interface RuntimeJournalEvent {
   payload: Record<string, unknown>;
 }
 
+export interface RuntimeSkillDescriptor {
+  name: string;
+  description: string;
+  location: string;
+}
+
+export interface RuntimeSkillSummary extends RuntimeSkillDescriptor {
+  enabled: boolean;
+}
+
+export interface RuntimeSkillDiagnostic {
+  entry: string;
+  code: string;
+  message: string;
+}
+
+export interface RuntimeSkillListResult {
+  skills: RuntimeSkillSummary[];
+  diagnostics: RuntimeSkillDiagnostic[];
+}
+
+export interface RuntimeSkillSetEnabledResult {
+  skill: RuntimeSkillSummary;
+}
+
+export interface RuntimeSkillSetEnabledParams {
+  name: string;
+  enabled: boolean;
+}
+
+export interface RuntimeInitializeResult {
+  protocolVersion: number;
+  server: { name: string; version: string };
+  capabilities: {
+    threads: true;
+    turns: true;
+    eventReplay: true;
+    streaming: true;
+    scriptedProvider: true;
+    runCancellation: true;
+    providers: true;
+    models: true;
+    usage: true;
+    skills: true;
+    tools: readonly string[];
+    executionPolicy: "full_access";
+  };
+}
+
+export type RuntimeHostStatusState =
+  | "starting"
+  | "connected"
+  | "reconnecting"
+  | "offline";
+
+export interface RuntimeHostStatus {
+  state: RuntimeHostStatusState;
+  message: string | null;
+}
+
 export interface RuntimeThreadCreateResult {
   thread: RuntimeThreadSummary;
   event: RuntimeJournalEvent;
 }
 
-export interface RuntimeThreadListParams {
+export interface RuntimeThreadCatalogParams {
   cursor?: string;
   limit?: number;
-  archived?: boolean;
-}
-
-export interface RuntimeThreadCatalogParams {
   archived?: boolean;
 }
 
@@ -251,7 +305,7 @@ export type RuntimeInvocationResult<TResult> =
 export interface IkarosRuntimeApi {
   listThreads(
     params?: RuntimeThreadCatalogParams
-  ): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>;
+  ): Promise<RuntimeThreadListPage>;
   getThread(threadId: string): Promise<RuntimeThreadGetResult>;
   listTurns(params: RuntimeTurnListParams): Promise<RuntimeTurnListPage>;
   createThread(params: RuntimeThreadCreateParams): Promise<RuntimeThreadCreateResult>;
@@ -274,13 +328,18 @@ export interface IkarosRuntimeApi {
   setModelEnabled(
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeModelSetEnabledResult>;
+  listSkills(): Promise<RuntimeSkillListResult>;
+  setSkillEnabled(
+    params: RuntimeSkillSetEnabledParams
+  ): Promise<RuntimeSkillSetEnabledResult>;
   readUsage(): Promise<RuntimeUsageReadResult>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
+  onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
 }
 
 export interface IkarosRuntimeBridgeApi {
   listThreads(params?: RuntimeThreadCatalogParams): Promise<
-    RuntimeInvocationResult<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>
+    RuntimeInvocationResult<RuntimeThreadListPage>
   >;
   getThread(threadId: string): Promise<RuntimeInvocationResult<RuntimeThreadGetResult>>;
   listTurns(
@@ -325,6 +384,28 @@ export interface IkarosRuntimeBridgeApi {
   setModelEnabled(
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>;
+  listSkills(): Promise<RuntimeInvocationResult<RuntimeSkillListResult>>;
+  setSkillEnabled(
+    params: RuntimeSkillSetEnabledParams
+  ): Promise<RuntimeInvocationResult<RuntimeSkillSetEnabledResult>>;
   readUsage(): Promise<RuntimeInvocationResult<RuntimeUsageReadResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
+  onStatus?(listener: (status: RuntimeHostStatus) => void): () => void;
 }
+import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeJournalEventType
+} from "./generated/runtimeProtocol";
+
+export {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  RUNTIME_JOURNAL_EVENT_TYPES,
+  RUNTIME_PROTOCOL_MANIFEST,
+  RUNTIME_PROTOCOL_VERSION,
+  RUNTIME_PROVIDER_TOOL_IDS,
+  RUNTIME_RPC_METHODS,
+  RUNTIME_SERVER_NAME,
+  type RuntimeJournalEventType,
+  type RuntimeProviderToolId,
+  type RuntimeRpcMethod
+} from "./generated/runtimeProtocol";

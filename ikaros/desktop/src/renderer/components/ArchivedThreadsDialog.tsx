@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { Archive, LoaderCircle, RotateCcw, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useTranslation } from "../i18n";
 import { useAppStore } from "../store";
@@ -17,9 +17,24 @@ export function ArchivedThreadsDialog({
   const { t } = useTranslation();
   const archivedThreads = useAppStore((state) => state.archivedThreads);
   const status = useAppStore((state) => state.archivedCatalogStatus);
+  const runtimeError = useAppStore((state) => state.runtimeError);
+  const runtimeIssue = useAppStore((state) => state.runtimeIssue);
   const loadArchivedThreads = useAppStore((state) => state.loadArchivedThreads);
+  const archivedCatalogHasMore = useAppStore(
+    (state) => state.archivedCatalogHasMore,
+  );
+  const archivedCatalogMoreStatus = useAppStore(
+    (state) => state.archivedCatalogMoreStatus,
+  );
+  const archivedCatalogMoreError = useAppStore(
+    (state) => state.archivedCatalogMoreError,
+  );
+  const loadMoreArchivedThreads = useAppStore(
+    (state) => state.loadMoreArchivedThreads,
+  );
   const unarchiveThread = useAppStore((state) => state.unarchiveThread);
   const [restoring, setRestoring] = useState<ReadonlySet<string>>(new Set());
+  const continuationSentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) {
@@ -28,6 +43,35 @@ export function ArchivedThreadsDialog({
     }
     void loadArchivedThreads().catch(() => undefined);
   }, [loadArchivedThreads, open]);
+
+  useEffect(() => {
+    const sentinel = continuationSentinelRef.current;
+    if (
+      !open ||
+      !sentinel ||
+      !archivedCatalogHasMore ||
+      archivedCatalogMoreStatus !== "idle" ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+    const viewport = sentinel.closest<HTMLElement>("[data-archived-viewport]");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadMoreArchivedThreads();
+        }
+      },
+      { root: viewport, rootMargin: "0px 0px 72px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [
+    archivedCatalogHasMore,
+    archivedCatalogMoreStatus,
+    loadMoreArchivedThreads,
+    open,
+  ]);
 
   const restore = async (threadId: string) => {
     setRestoring((current) => new Set(current).add(threadId));
@@ -72,8 +116,31 @@ export function ArchivedThreadsDialog({
             </Dialog.Close>
           </div>
 
-          <div className="app-scrollbar min-h-[180px] overflow-y-auto p-3">
-            {status === "loading" && archivedThreads.length === 0 ? (
+          <div
+            data-archived-viewport
+            className="app-scrollbar min-h-[180px] overflow-y-auto p-3"
+          >
+            {status === "error" ? (
+              <div role="alert" className="flex h-40 flex-col items-center justify-center px-6 text-center">
+                <Archive size={20} aria-hidden="true" className="text-[#e07070]" />
+                <div className="mt-2 text-[12px] font-medium leading-[18px] text-[var(--text)]">
+                  {t("runtime.error.archivedCatalog")}
+                </div>
+                {runtimeIssue?.kind === "archived_catalog" && runtimeIssue.message === runtimeError ? (
+                  <div className="mt-1 max-w-sm break-words text-[10px] leading-4 text-[var(--muted)]">
+                    {runtimeIssue.message}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void loadArchivedThreads().catch(() => undefined)}
+                  className="mt-3 flex h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-3 text-[11px] font-medium text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                >
+                  <RotateCcw size={11} aria-hidden="true" />
+                  {t("common.retry")}
+                </button>
+              </div>
+            ) : status === "loading" && archivedThreads.length === 0 ? (
               <div className="flex h-40 items-center justify-center text-[var(--muted)]">
                 <LoaderCircle size={17} className="animate-spin" aria-label={t("common.loading")} />
               </div>
@@ -88,6 +155,10 @@ export function ArchivedThreadsDialog({
               <div className="space-y-1">
                 {archivedThreads.map((thread) => {
                   const isRestoring = restoring.has(thread.id);
+                  const restoreError =
+                    runtimeIssue?.kind === "unarchive" &&
+                    runtimeIssue.threadId === thread.id &&
+                    runtimeIssue.message === runtimeError;
                   return (
                     <div
                       key={thread.id}
@@ -100,6 +171,11 @@ export function ArchivedThreadsDialog({
                         {thread.workspace ? (
                           <div className="truncate text-[10px] leading-4 text-[var(--muted)]">
                             {thread.workspace.name}
+                          </div>
+                        ) : null}
+                        {restoreError ? (
+                          <div title={runtimeIssue.message} className="truncate text-[10px] leading-4 text-[#e07070]">
+                            {t("runtime.error.unarchive")}
                           </div>
                         ) : null}
                       </div>
@@ -119,6 +195,28 @@ export function ArchivedThreadsDialog({
                     </div>
                   );
                 })}
+                <div
+                  ref={continuationSentinelRef}
+                  aria-live="polite"
+                  className="flex min-h-9 items-center justify-center"
+                >
+                  {archivedCatalogMoreStatus === "loading" ? (
+                    <span role="status" className="flex items-center gap-1.5 text-[10px] text-[var(--muted)]">
+                      <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />
+                      {t("common.loading")}
+                    </span>
+                  ) : archivedCatalogMoreStatus === "error" ? (
+                    <button
+                      type="button"
+                      title={archivedCatalogMoreError ?? undefined}
+                      onClick={() => void loadMoreArchivedThreads()}
+                      className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[10px] font-medium text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    >
+                      <RotateCcw size={10} aria-hidden="true" />
+                      {t("common.retry")}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             )}
           </div>

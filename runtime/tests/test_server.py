@@ -253,7 +253,8 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "providers": True,
             "models": True,
             "usage": True,
-            "tools": ["process.run", "read", "write", "edit"],
+            "skills": True,
+            "tools": ["process_run", "read", "write", "edit"],
             "executionPolicy": "full_access",
         },
     }
@@ -3771,6 +3772,114 @@ async def test_scripted_provider_runs_a_real_command_and_continues_the_conversat
         assert "Previous assistant: Command exited with code 0." in follow_up_answer
         assert "Current user: what happened" in follow_up_answer
         await _shutdown(connection, process, 201)
+    finally:
+        await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_skill_vertical_slice_reads_instructions_runs_script_and_persists_item_order(
+    tmp_path: Path,
+) -> None:
+    skill_directory = tmp_path / "skills" / "demo"
+    skill_directory.mkdir(parents=True)
+    script = skill_directory / "skill_script.py"
+    script.write_text("print('skill-script-output')\n", encoding="utf-8")
+    command = subprocess.list2cmdline([sys.executable, str(script)])
+    skill_file = skill_directory / "SKILL.md"
+    skill_file.write_text(
+        "\n".join(
+            (
+                "---",
+                "name: demo",
+                "description: Run the deterministic Skill script.",
+                "---",
+                "",
+                f"IKAROS_SCRIPT_COMMAND: {command}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    token = secrets.token_urlsafe(32)
+    process, ready = await _start_runtime(token, tmp_path)
+    try:
+        connection = await _initialize(f"ws://{ready['host']}:{ready['port']}", token)
+        catalog = await _rpc(connection, 2, "skill.list", {})
+        assert catalog["result"]["diagnostics"] == []
+        assert catalog["result"]["skills"] == [
+            {
+                "name": "demo",
+                "description": "Run the deterministic Skill script.",
+                "location": str(skill_file.resolve()),
+                "enabled": True,
+            }
+        ]
+        created = await _rpc(connection, 3, "thread.create", {"title": "Skill turn"})
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "/skill.run demo",
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        run_id = started["result"]["runId"]
+        run_events = [
+            event
+            for event in await _collect_run_events(connection, run_id)
+            if event["runId"] == run_id
+        ]
+        initial = next(
+            event
+            for event in run_events
+            if event["type"] == "item.completed" and "run" in event["payload"]
+        )
+        assert initial["payload"]["run"]["skills"] == [
+            {
+                "name": "demo",
+                "description": "Run the deterministic Skill script.",
+                "location": str(skill_file.resolve()),
+            }
+        ]
+        history = await _rpc(
+            connection,
+            5,
+            "turn.list",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "limit": 10,
+            },
+        )
+        items = history["result"]["turns"][0]["runs"][0]["items"]
+        assert [(item["kind"], item["role"]) for item in items] == [
+            ("message", "user"),
+            ("tool_call", "assistant"),
+            ("tool_result", "tool"),
+            ("tool_call", "assistant"),
+            ("tool_result", "tool"),
+            ("message", "assistant"),
+        ]
+        assert [
+            item["data"].get("toolName")
+            for item in items
+            if item["kind"] == "tool_call"
+        ] == ["read", "process_run"]
+        process_result = next(
+            item["data"]["result"]
+            for item in items
+            if item["kind"] == "tool_result" and item["data"]["toolName"] == "process_run"
+        )
+        assert process_result["exitCode"] == 0
+        assert "skill-script-output" in process_result["stdout"]
+        assert "skill-script-output" in items[-1]["content"]
+        assert sum(event["type"] == "run.settled" for event in run_events) == 1
+        await _shutdown(connection, process, 6)
     finally:
         await _stop_failed_process(process)
 

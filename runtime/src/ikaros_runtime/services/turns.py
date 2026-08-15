@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from ..agent.scheduler import AgentScheduler
-from ..domain import CommandOutcome
+from ..domain import CommandOutcome, SkillDescriptor
 from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
 from ..providers.scripted import ScriptedProvider
 from ..storage import SqliteRuntimeStore
 from ..storage.thread_history import TURN_HISTORY_DEFAULT_LIMIT, TURN_HISTORY_MAX_LIMIT
 from .threads import RequestSafetyCheck, client_request_id_from, record_id_from
+
+type SkillSnapshotSource = Callable[[], tuple[SkillDescriptor, ...]]
 
 
 class TurnService:
@@ -19,11 +22,13 @@ class TurnService:
         scheduler: AgentScheduler,
         config_store: ConfigStore,
         assert_request_safe: RequestSafetyCheck,
+        skill_snapshot: SkillSnapshotSource | None = None,
     ) -> None:
         self._store = store
         self._scheduler = scheduler
         self._config = config_store
         self._assert_request_safe = assert_request_safe
+        self._skill_snapshot = skill_snapshot or _empty_skill_snapshot
 
     def start_turn(self, params: dict[str, Any]) -> CommandOutcome:
         required = {"threadId", "branchId", "content", "providerId", "modelId"}
@@ -67,6 +72,7 @@ class TurnService:
                 self._config.resolve_model(values["providerId"], values["modelId"])
             except ConfigError as error:
                 raise InvalidParamsError(str(error)) from None
+        skills = self._skill_snapshot()
         try:
             prepared = self._store.prepare_turn(
                 thread_id=values["threadId"],
@@ -75,6 +81,7 @@ class TurnService:
                 provider_id=values["providerId"],
                 model_id=values["modelId"],
                 client_request_id=client_request_id,
+                skills=skills,
             )
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
@@ -157,6 +164,10 @@ class TurnService:
             ).to_wire()
         except (LookupError, ValueError) as error:
             raise InvalidParamsError(str(error)) from error
+
+
+def _empty_skill_snapshot() -> tuple[SkillDescriptor, ...]:
+    return ()
 
 
 __all__ = ["TurnService"]

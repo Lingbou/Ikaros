@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from .protocol.spec import JOURNAL_EVENT_SCHEMA_VERSION as JOURNAL_EVENT_SCHEMA_VERSION
+
 JsonObject = dict[str, Any]
-JOURNAL_EVENT_SCHEMA_VERSION = 1
+SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+MAX_SKILL_DESCRIPTION_CHARACTERS = 1024
+MAX_SKILL_LOCATION_CHARACTERS = 32767
 
 
 def utc_now() -> str:
@@ -77,6 +83,35 @@ class JournalEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillDescriptor:
+    name: str
+    description: str
+    location: str
+
+    def to_wire(self) -> JsonObject:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "location": self.location,
+        }
+
+    @classmethod
+    def from_wire(cls, value: object) -> SkillDescriptor:
+        if not isinstance(value, dict) or set(value) != {"name", "description", "location"}:
+            raise ValueError("Skill descriptor has an invalid structure")
+        name = value["name"]
+        description = value["description"]
+        location = value["location"]
+        if not is_valid_skill_name(name):
+            raise ValueError("Skill descriptor name is invalid")
+        if not is_valid_skill_description(description):
+            raise ValueError("Skill descriptor description is invalid")
+        if not is_valid_skill_location(location):
+            raise ValueError("Skill descriptor location is invalid")
+        return cls(name=name, description=description, location=location)
+
+
+@dataclass(frozen=True, slots=True)
 class RunDescriptor:
     id: str
     turn_id: str
@@ -86,6 +121,7 @@ class RunDescriptor:
     model_id: str
     execution_policy: str
     workspace: WorkspaceSummary | None
+    skills: tuple[SkillDescriptor, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,3 +201,36 @@ class CommandOutcome:
     events_after_ack: tuple[JournalEvent, ...] = ()
     run_after_ack: str | None = None
     cancel_after_ack: str | None = None
+
+
+def is_valid_skill_name(value: object) -> bool:
+    return isinstance(value, str) and SKILL_NAME_PATTERN.fullmatch(value) is not None
+
+
+def is_valid_skill_description(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and 0 < len(value) <= MAX_SKILL_DESCRIPTION_CHARACTERS
+        and all(character.isprintable() for character in value)
+    )
+
+
+def is_valid_skill_location(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and 0 < len(value) <= MAX_SKILL_LOCATION_CHARACTERS
+        and all(character.isprintable() for character in value)
+        and (Path(value).is_absolute() or PureWindowsPath(value).is_absolute())
+    )
+
+
+def skill_descriptors_from_wire(value: object) -> tuple[SkillDescriptor, ...]:
+    if not isinstance(value, list):
+        raise ValueError("Run Skill snapshot must be an array")
+    descriptors = tuple(SkillDescriptor.from_wire(candidate) for candidate in value)
+    names = tuple(descriptor.name for descriptor in descriptors)
+    if names != tuple(sorted(names)) or len(names) != len(set(names)):
+        raise ValueError("Run Skill snapshot must be unique and sorted")
+    return descriptors

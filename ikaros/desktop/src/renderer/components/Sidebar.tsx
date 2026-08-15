@@ -29,7 +29,7 @@ import { useAppStore } from "../store";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 import { cx, IconButton } from "./ui";
 
-type NavigationThread = Pick<Thread, "id" | "projectId" | "title">;
+type NavigationThread = Pick<Thread, "id" | "projectId" | "title" | "updatedAt">;
 type ThreadNavigation = {
   threads: NavigationThread[];
   recentThreads: NavigationThread[];
@@ -68,28 +68,39 @@ function useResizableSidebar(): boolean {
 
 function selectThreadNavigation(state: { threads: Thread[] }): ThreadNavigation {
   const cached = cachedThreadNavigation;
+  const cachedById = cached
+    ? new Map(cached.threads.map((thread) => [thread.id, thread]))
+    : undefined;
   if (
     cached &&
     cached.threads.length === state.threads.length &&
-    state.threads.every((thread, index) => {
-      const cachedThread = cached.threads[index];
+    state.threads.every((thread) => {
+      const cachedThread = cachedById?.get(thread.id);
       return (
         cachedThread?.id === thread.id &&
         cachedThread.title === thread.title &&
-        cachedThread.projectId === thread.projectId
+        cachedThread.projectId === thread.projectId &&
+        cachedThread.updatedAt === thread.updatedAt
       );
     })
   ) {
     return cached;
   }
 
+  const byRecentActivity = (left: Thread, right: Thread) =>
+    right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id);
   cachedThreadNavigation = {
-    threads: state.threads.map(({ id, projectId, title }) => ({ id, projectId, title })),
-    recentThreads: standaloneThreads(state.threads).map(({ id, projectId, title }) => ({
-      id,
-      projectId,
-      title,
-    })),
+    threads: [...state.threads]
+      .sort(byRecentActivity)
+      .map(({ id, projectId, title, updatedAt }) => ({ id, projectId, title, updatedAt })),
+    recentThreads: standaloneThreads(state.threads)
+      .sort(byRecentActivity)
+      .map(({ id, projectId, title, updatedAt }) => ({
+        id,
+        projectId,
+        title,
+        updatedAt,
+      })),
   };
   return cachedThreadNavigation;
 }
@@ -133,6 +144,14 @@ export function Sidebar() {
   const selectThread = useAppStore((state) => state.selectThread);
   const toggleProject = useAppStore((state) => state.toggleProject);
   const newChat = useAppStore((state) => state.newChat);
+  const threadCatalogHasMore = useAppStore((state) => state.threadCatalogHasMore);
+  const threadCatalogMoreStatus = useAppStore(
+    (state) => state.threadCatalogMoreStatus,
+  );
+  const threadCatalogMoreError = useAppStore(
+    (state) => state.threadCatalogMoreError,
+  );
+  const loadMoreThreads = useAppStore((state) => state.loadMoreThreads);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [recentsExpanded, setRecentsExpanded] = useState(true);
@@ -144,6 +163,30 @@ export function Sidebar() {
     startWidth: number;
     previewWidth: number;
   } | null>(null);
+  const catalogSentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const sentinel = catalogSentinelRef.current;
+    if (
+      !sentinel ||
+      !threadCatalogHasMore ||
+      threadCatalogMoreStatus !== "idle" ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+    const viewport = sentinel.closest<HTMLElement>("[data-sidebar-viewport]");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadMoreThreads();
+        }
+      },
+      { root: viewport, rootMargin: "0px 0px 96px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadMoreThreads, threadCatalogHasMore, threadCatalogMoreStatus]);
 
   const persistSidebarWidth = (width: number) => {
     const nextWidth = clampSidebarWidth(width);
@@ -282,7 +325,10 @@ export function Sidebar() {
       </div>
 
       <ScrollArea.Root className="mt-4 min-h-0 flex-1 overflow-hidden">
-        <ScrollArea.Viewport className="app-scrollbar h-full w-full px-2 pb-5">
+        <ScrollArea.Viewport
+          data-sidebar-viewport
+          className="app-scrollbar h-full w-full px-2 pb-5"
+        >
           <section aria-labelledby="project-chats-label">
             <div className="group flex h-7 items-center px-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
               <button
@@ -402,6 +448,26 @@ export function Sidebar() {
               ))}
             </div> : null}
           </section>
+          <div
+            ref={catalogSentinelRef}
+            aria-live="polite"
+            className="flex min-h-7 items-center justify-center px-2 py-1"
+          >
+            {threadCatalogMoreStatus === "loading" ? (
+              <span role="status" className="text-[10px] leading-4 text-[var(--muted)]">
+                {t("common.loading")}
+              </span>
+            ) : threadCatalogMoreStatus === "error" ? (
+              <button
+                type="button"
+                title={threadCatalogMoreError ?? undefined}
+                onClick={() => void loadMoreThreads()}
+                className="rounded-md px-2 py-1 text-[10px] leading-4 text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              >
+                {t("common.retry")}
+              </button>
+            ) : null}
+          </div>
         </ScrollArea.Viewport>
         <ScrollArea.Scrollbar orientation="vertical" className="flex w-2.5 touch-none p-0.5">
           <ScrollArea.Thumb className="relative flex-1 rounded-full bg-[var(--border)]" />

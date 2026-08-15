@@ -6,11 +6,10 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
-from ..domain import ContextItem, JournalEvent, ModelUsage
+from ..domain import JournalEvent, ModelUsage
 from ..errors import ProtectedValueError, ProviderFailure
 from ..providers.base import (
     ProviderAdapter,
-    ProviderMessage,
     ProviderRequest,
     ProviderResolver,
     ReasoningDelta,
@@ -23,8 +22,10 @@ from ..security import (
     contains_protected_value,
     json_contains_protected_value,
 )
+from ..skills import build_skill_prompt
 from ..storage import SqliteRuntimeStore
 from ..tools.core import ToolCall, ToolExecutionCancelled, ToolExecutor, ToolResult
+from .context import ContextBuilder
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
 ProtectedValues = Callable[[], Sequence[str]]
@@ -33,15 +34,6 @@ _MAX_REASONING_CHARACTERS = 1_000_000
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
 _TEXT_DELTA_FLUSH_CHARACTERS = 256
 _TEXT_DELTA_FLUSH_SECONDS = 0.05
-_OUTPUT_STYLE_SYSTEM_MESSAGE = ProviderMessage(
-    role="system",
-    content=(
-        "Use a restrained, professional response style. Do not use emoji or decorative "
-        "Unicode symbols unless the user explicitly asks for them. Never use them for "
-        "decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) "
-        "for ordinary unordered lists; the client will render them as simple round bullets."
-    ),
-)
 
 
 class _TextDeltaBatch:
@@ -88,6 +80,7 @@ class AgentLoop:
         max_steps: int = 16,
         *,
         protected_values: ProtectedValues | None = None,
+        context_builder: ContextBuilder | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -97,6 +90,9 @@ class AgentLoop:
         self._tool_executor = tool_executor
         self._max_steps = max_steps
         self._protected_values = protected_values or _empty_protected_values
+        self._context_builder = (
+            context_builder if context_builder is not None else ContextBuilder()
+        )
 
     async def run(self, run_id: str, cancellation: CancellationToken) -> None:
         try:
@@ -113,20 +109,19 @@ class AgentLoop:
                 raise RuntimeError("run execution policy is not available")
 
             await self._publish(self._store.mark_run_running(run_id))
+            skill_prompt = build_skill_prompt(run.skills)
             for step_ordinal in range(1, self._max_steps + 1):
                 cancellation.raise_if_cancelled()
-                messages = self._provider_messages(
-                    self._store.context_items(
+                request = self._context_builder.build_request(
+                    model_id=run.model_id,
+                    items=self._store.context_items(
                         run.branch_id,
                         through_turn_id=run.turn_id,
-                    )
-                )
-                request = ProviderRequest(
-                    model_id=run.model_id,
-                    messages=(_OUTPUT_STYLE_SYSTEM_MESSAGE, *messages),
+                    ),
                     tools=(
                         self._tool_executor.definitions if self._tool_executor is not None else ()
                     ),
+                    extra_system=(skill_prompt,) if skill_prompt is not None else (),
                 )
                 assistant_item_id, tool_calls, reasoning_content, step_id = (
                     await self._provider_step(
@@ -455,115 +450,10 @@ class AgentLoop:
             cancelled=True,
         )
 
-    @staticmethod
-    def _provider_messages(items: Sequence[ContextItem]) -> list[ProviderMessage]:
-        messages: list[ProviderMessage] = []
-        index = 0
-        while index < len(items):
-            item = items[index]
-            if item.kind == "message":
-                if item.role not in {"user", "assistant"}:
-                    raise RuntimeError("message context item has an invalid role")
-                step_id = item.data.get("stepId")
-                if item.role == "assistant" and isinstance(step_id, str):
-                    index += 1
-                    calls, index, reasoning_content = _tool_calls_for_step(
-                        items,
-                        index,
-                        step_id,
-                    )
-                    if not calls:
-                        # Calls from a failed/cancelled Run are omitted from
-                        # later context. Preserve its narration as plain text
-                        # instead of breaking every future context rebuild.
-                        messages.append(ProviderMessage(role="assistant", content=item.content))
-                        continue
-                    messages.append(
-                        ProviderMessage(
-                            role="assistant",
-                            content=item.content,
-                            tool_calls=tuple(calls),
-                            reasoning_content=reasoning_content,
-                        )
-                    )
-                    continue
-                messages.append(ProviderMessage(role=item.role, content=item.content))
-                index += 1
-                continue
-            if item.kind == "tool_call":
-                step_id = item.data.get("stepId")
-                if not isinstance(step_id, str):
-                    raise RuntimeError("tool call context item has no step ID")
-                calls, index, reasoning_content = _tool_calls_for_step(items, index, step_id)
-                messages.append(
-                    ProviderMessage(
-                        role="assistant",
-                        content="",
-                        tool_calls=tuple(calls),
-                        reasoning_content=reasoning_content,
-                    )
-                )
-                continue
-            if item.kind == "tool_result":
-                call_id = item.data.get("callId")
-                if not isinstance(call_id, str):
-                    raise RuntimeError("tool result context item is invalid")
-                messages.append(
-                    ProviderMessage(
-                        role="tool",
-                        content=item.content,
-                        tool_call_id=call_id,
-                    )
-                )
-                index += 1
-                continue
-            raise RuntimeError(f"unknown context item kind: {item.kind}")
-        return messages
-
     def _resolve_provider(self, provider_id: str) -> ProviderAdapter | None:
         if isinstance(self._providers, Mapping):
             return self._providers.get(provider_id)
         return self._providers.resolve(provider_id)
-
-
-def _reasoning_content(item: ContextItem) -> str | None:
-    value = item.data.get("reasoningContent")
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise RuntimeError("tool call reasoning context is invalid")
-    return value
-
-
-def _tool_calls_for_step(
-    items: Sequence[ContextItem],
-    index: int,
-    step_id: str,
-) -> tuple[list[ToolCall], int, str | None]:
-    calls: list[ToolCall] = []
-    reasoning_content: str | None = None
-    while index < len(items):
-        candidate = items[index]
-        if candidate.kind != "tool_call" or candidate.data.get("stepId") != step_id:
-            break
-        call_id = candidate.data.get("callId")
-        tool_name = candidate.data.get("toolName")
-        arguments = candidate.data.get("arguments")
-        if (
-            not isinstance(call_id, str)
-            or not isinstance(tool_name, str)
-            or not isinstance(arguments, dict)
-        ):
-            raise RuntimeError("tool call context item is invalid")
-        candidate_reasoning = _reasoning_content(candidate)
-        if candidate_reasoning is not None:
-            if reasoning_content is not None:
-                raise RuntimeError("tool call step contains duplicate reasoning context")
-            reasoning_content = candidate_reasoning
-        calls.append(ToolCall(call_id, tool_name, arguments))
-        index += 1
-    return calls, index, reasoning_content
-
 
 def _failure_reason_code(error: Exception) -> str:
     if isinstance(error, ProviderFailure):

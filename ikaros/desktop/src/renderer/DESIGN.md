@@ -10,7 +10,7 @@
 - Project chats and standalone chats use the same `thread.create -> turn.start` path. The workspace and the resulting default Tool working directory are the only semantic difference.
 - Agent profiles, providers, models, tools, and artifacts are orthogonal resources rather than navigation parents.
 - The renderer should look and feel like a restrained dark native desktop chat client while using Ikaros general-agent language.
-- The composer keeps the selected Runtime Model and fixed V1 `full_access` state visible. Unsupported attachments, tool selection, and regeneration remain disabled.
+- The composer keeps the selected Runtime Model and fixed V1 `full_access` state visible. Unsupported attachments, tool selection, and regeneration are not advertised in production UI.
 - Runtime-backed Tool calls render as typed events instead of raw protocol JSON. Future permissions, plans, file changes, and Artifacts must follow the same projection rule when their protocols exist.
 - If message editing is connected later, it must create a new Branch and preserve the original history. The current Runtime has no Branch RPC, so editing and Branch creation are disabled in Runtime mode.
 - A deterministic mock client remains available for renderer tests and non-Electron development, but it does not drive the production Electron conversation path.

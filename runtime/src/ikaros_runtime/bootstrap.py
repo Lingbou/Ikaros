@@ -11,6 +11,7 @@ from websockets.asyncio.server import ServerConnection
 
 from .agent.loop import AgentLoop, EventPublisher
 from .agent.scheduler import AgentScheduler
+from .config import ConfigDocumentStore
 from .domain import CommandOutcome
 from .protocol.router import RuntimeRouter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
@@ -21,9 +22,11 @@ from .server.connection import handle_connection
 from .server.event_hub import EventHub
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
 from .services.providers import ModelDiscovery, ProviderService
+from .services.skills import SkillService
 from .services.threads import ThreadService
 from .services.turns import TurnService
 from .services.usage import UsageService
+from .skills import SkillCatalog
 from .storage import SqliteRuntimeStore
 from .tools import EditTool, ProcessRunTool, ReadTool, WriteTool
 from .tools.core import ToolExecutor, ToolRegistry
@@ -42,12 +45,22 @@ class RuntimeApplication:
         model_discovery: ModelDiscovery = discover_openai_compatible_models,
     ) -> None:
         self._store = store
-        self._config = config_store or ConfigStore(store.database_path.parent)
+        self._config = config_store or ConfigStore(
+            ConfigDocumentStore(store.database_path.parent)
+        )
         self.security = RuntimeSecurity(
             self._config.protected_values,
             self._store.journal_contains_protected_values,
         )
         self.security.assert_configuration_safe()
+
+        self.skills = SkillService(
+            SkillCatalog(
+                self._config.document_store.path.parent / "skills",
+                self.security.protected_values,
+            ),
+            self._config.document_store,
+        )
 
         self._provider_registry = RuntimeProviderRegistry(
             self._config,
@@ -73,6 +86,7 @@ class RuntimeApplication:
             self._scheduler,
             self._config,
             self.security.assert_request_safe,
+            self.skills.enabled_descriptors,
         )
         self.providers = ProviderService(
             self._config,
@@ -82,7 +96,13 @@ class RuntimeApplication:
             self.security.assert_credentials_safe,
         )
         self.usage = UsageService(store)
-        self.router = RuntimeRouter(self.threads, self.turns, self.providers, self.usage)
+        self.router = RuntimeRouter(
+            self.threads,
+            self.turns,
+            self.providers,
+            self.usage,
+            self.skills,
+        )
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
         self._scheduler.start(recovered_run_ids)
@@ -109,7 +129,8 @@ async def run_runtime_server(settings: ServerSettings) -> None:
     application: RuntimeApplication | None = None
     try:
         logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-        config_store = ConfigStore(settings.runtime_home)
+        config_document_store = ConfigDocumentStore(settings.runtime_home)
+        config_store = ConfigStore(config_document_store)
         store = SqliteRuntimeStore(settings.runtime_home / "state.db")
 
         pre_recovery_security = RuntimeSecurity(

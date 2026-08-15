@@ -22,7 +22,7 @@ from websockets.http11 import Request, Response
 
 from ..errors import RuntimeHomeLockError as RuntimeHomeLockError
 from ..json_codec import dumps as json_dumps
-from ..protocol.jsonrpc import PROTOCOL_VERSION
+from ..protocol.spec import PROTOCOL_VERSION
 
 _LOGGER = logging.getLogger("ikaros_runtime")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})

@@ -7,46 +7,43 @@ import { createInterface } from "node:readline";
 import WebSocket, { type RawData } from "ws";
 
 import {
-  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
-  type RuntimeItemHistory,
-  type RuntimeJournalEvent,
-  type RuntimeReplayResult,
-  type RuntimeRunHistory,
-  type RuntimeThreadGetResult,
-  type RuntimeThreadCatalogParams,
-  type RuntimeThreadListPage,
-  type RuntimeThreadMutationResult,
-  type RuntimeThreadSummary,
-  type RuntimeTurnHistory,
-  type RuntimeTurnListPage,
-  type RuntimeTurnListParams,
-  type RuntimeUsageReadResult
+  RUNTIME_PROTOCOL_VERSION,
+  type RuntimeHostStatus,
+  type RuntimeJournalEvent
 } from "../shared/runtime";
+import {
+  RuntimeRpcError,
+  isRuntimeNotification,
+  parseRuntimeInitializeResult,
+  parseRuntimeJournalEvent,
+  parseRuntimeJsonRpcResponse,
+  parseRuntimeMethodResult,
+  parseRuntimeReplayResult,
+  parseRuntimeThreadListPage,
+  responseId,
+  type JsonRpcResponse,
+  type RuntimeNotification
+} from "./runtime/wire";
 
-const PROTOCOL_VERSION = 1;
+export {
+  RuntimeRpcError,
+  parseRuntimeEventNotification,
+  parseRuntimeInitializeResult,
+  parseRuntimeJournalEvent,
+  parseRuntimeJsonRpcResponse,
+  parseRuntimeMethodResult,
+  parseRuntimeReplayResult,
+  parseRuntimeThreadGetResult,
+  parseRuntimeThreadListPage,
+  parseRuntimeThreadMutationResult,
+  parseRuntimeTurnListPage,
+  parseRuntimeUsageReadResult
+} from "./runtime/wire";
+export type { RuntimeNotification } from "./runtime/wire";
+
 const SOCKET_RECONNECT_DELAYS_MS = [50, 100, 200, 400, 800] as const;
 const RUNTIME_RESTART_DELAYS_MS = [100, 200, 400] as const;
-const THREAD_CATALOG_PAGE_LIMIT = 100;
-const MAX_THREAD_CATALOG_PAGES = 10_000;
-const TURN_HISTORY_PAGE_LIMIT = 100;
-const TURN_HISTORY_CURSOR_MAX_LENGTH = 2048;
-const MAX_WIRE_IDENTIFIER_LENGTH = 200;
-
-const TURN_AND_RUN_STATUSES = new Set([
-  "queued",
-  "running",
-  "completed",
-  "failed",
-  "cancelled"
-]);
-const ITEM_STATUSES = new Set([
-  "streaming",
-  "running",
-  "completed",
-  "failed",
-  "cancelled"
-]);
-const ITEM_KINDS = new Set(["message", "tool_call", "tool_result"]);
+export const RUNTIME_HOST_STATUS_NOTIFICATION = "ikaros.host.status";
 
 function wait(delayMs: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
@@ -70,612 +67,6 @@ interface RuntimeReadyRecord {
   host: string;
   port: number;
   pid: number;
-}
-
-interface JsonRpcResultResponse {
-  jsonrpc: "2.0";
-  id: number;
-  result: unknown;
-}
-
-interface JsonRpcErrorResponse {
-  jsonrpc: "2.0";
-  id: number;
-  error: { code: number; message: string };
-}
-
-type JsonRpcResponse = JsonRpcResultResponse | JsonRpcErrorResponse;
-
-export class RuntimeRpcError extends Error {
-  readonly kind = "json_rpc" as const;
-
-  constructor(
-    readonly code: number,
-    message: string
-  ) {
-    super(message);
-    this.name = "RuntimeRpcError";
-  }
-}
-
-export interface RuntimeNotification {
-  jsonrpc: "2.0";
-  method: string;
-  params: unknown;
-}
-
-function hasOwn(value: object, property: PropertyKey): boolean {
-  return Object.prototype.hasOwnProperty.call(value, property);
-}
-
-function isRuntimeNotification(value: unknown): value is RuntimeNotification {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Partial<RuntimeNotification>).jsonrpc === "2.0" &&
-    typeof (value as Partial<RuntimeNotification>).method === "string" &&
-    !hasOwn(value, "id") &&
-    hasOwn(value, "params")
-  );
-}
-
-function responseId(value: unknown): number | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-  const id = (value as { id?: unknown }).id;
-  return typeof id === "number" && Number.isInteger(id) ? id : undefined;
-}
-
-export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid journal event.");
-  }
-  const event = value as Partial<RuntimeJournalEvent>;
-  if (!Number.isInteger(event.seq) || typeof event.type !== "string") {
-    throw new Error("Runtime returned an invalid journal event.");
-  }
-  if (event.schemaVersion !== RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION) {
-    throw new Error(
-      `Runtime journal event schema ${String(event.schemaVersion)} is unsupported.`
-    );
-  }
-  return event as RuntimeJournalEvent;
-}
-
-export function parseRuntimeReplayResult(value: unknown): RuntimeReplayResult {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid event replay result.");
-  }
-  const replay = value as Partial<RuntimeReplayResult>;
-  if (
-    !Array.isArray(replay.events) ||
-    !Number.isInteger(replay.latestSeq) ||
-    !Number.isInteger(replay.nextAfterSeq) ||
-    typeof replay.hasMore !== "boolean"
-  ) {
-    throw new Error("Runtime returned an invalid event replay result.");
-  }
-  return {
-    events: replay.events.map(parseRuntimeJournalEvent),
-    latestSeq: replay.latestSeq as number,
-    nextAfterSeq: replay.nextAfterSeq as number,
-    hasMore: replay.hasMore
-  };
-}
-
-function isWireObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function isWireIdentifier(value: unknown): value is string {
-  return isNonEmptyString(value) && value.length <= MAX_WIRE_IDENTIFIER_LENGTH;
-}
-
-function isSafeNonNegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function isSafePositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0;
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actualKeys = Object.keys(value);
-  return actualKeys.length === keys.length && keys.every((key) => hasOwn(value, key));
-}
-
-function isNullableSafeNonNegativeInteger(value: unknown): value is number | null {
-  return value === null || isSafeNonNegativeInteger(value);
-}
-
-function isCanonicalCalendarDate(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (year < 1) return false;
-  const date = new Date(0);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCFullYear(year, month - 1, day);
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-  );
-}
-
-export function parseRuntimeUsageReadResult(value: unknown): RuntimeUsageReadResult {
-  const invalidMessage = "Runtime returned an invalid usage result.";
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["summary", "dailyUsageBuckets"]) ||
-    !isWireObject(value.summary) ||
-    !hasExactKeys(value.summary, [
-      "lifetimeTokens",
-      "peakDailyTokens",
-      "longestRunningTurnSec",
-      "currentStreakDays",
-      "longestStreakDays"
-    ]) ||
-    !isNullableSafeNonNegativeInteger(value.summary.lifetimeTokens) ||
-    !isNullableSafeNonNegativeInteger(value.summary.peakDailyTokens) ||
-    !isNullableSafeNonNegativeInteger(value.summary.longestRunningTurnSec) ||
-    !isSafeNonNegativeInteger(value.summary.currentStreakDays) ||
-    !isSafeNonNegativeInteger(value.summary.longestStreakDays) ||
-    !Array.isArray(value.dailyUsageBuckets)
-  ) {
-    throw new Error(invalidMessage);
-  }
-
-  const dailyUsageBuckets = value.dailyUsageBuckets.map((bucket) => {
-    if (
-      !isWireObject(bucket) ||
-      !hasExactKeys(bucket, ["startDate", "tokens"]) ||
-      !isCanonicalCalendarDate(bucket.startDate) ||
-      !isSafeNonNegativeInteger(bucket.tokens)
-    ) {
-      throw new Error(invalidMessage);
-    }
-    return { startDate: bucket.startDate, tokens: bucket.tokens };
-  });
-
-  return {
-    summary: {
-      lifetimeTokens: value.summary.lifetimeTokens,
-      peakDailyTokens: value.summary.peakDailyTokens,
-      longestRunningTurnSec: value.summary.longestRunningTurnSec,
-      currentStreakDays: value.summary.currentStreakDays,
-      longestStreakDays: value.summary.longestStreakDays
-    },
-    dailyUsageBuckets
-  };
-}
-
-function parseRuntimeThreadSummary(
-  value: unknown,
-  invalidMessage = "Runtime returned an invalid thread catalog page."
-): RuntimeThreadSummary {
-  if (!isWireObject(value)) {
-    throw new Error(invalidMessage);
-  }
-  const thread = value as Partial<RuntimeThreadSummary>;
-  const workspace = thread.workspace;
-  const validWorkspace =
-    workspace === null ||
-    (isWireObject(workspace) &&
-      isWireIdentifier(workspace.id) &&
-      isNonEmptyString(workspace.name) &&
-      (workspace.rootUri === null || isNonEmptyString(workspace.rootUri)));
-  if (
-    !isWireIdentifier(thread.id) ||
-    (thread.title !== null && typeof thread.title !== "string") ||
-    !isWireIdentifier(thread.defaultBranchId) ||
-    !validWorkspace ||
-    !isNonEmptyString(thread.createdAt) ||
-    !isNonEmptyString(thread.updatedAt) ||
-    (thread.archivedAt !== null && !isNonEmptyString(thread.archivedAt))
-  ) {
-    throw new Error(invalidMessage);
-  }
-  return {
-    id: thread.id,
-    title: thread.title as string | null,
-    defaultBranchId: thread.defaultBranchId,
-    workspace: workspace as RuntimeThreadSummary["workspace"],
-    createdAt: thread.createdAt,
-    updatedAt: thread.updatedAt,
-    archivedAt: thread.archivedAt as string | null
-  };
-}
-
-export function parseRuntimeThreadMutationResult(
-  value: unknown,
-  expectedThreadId?: string,
-  expectedEventType?: "thread.renamed" | "thread.archived" | "thread.unarchived"
-): RuntimeThreadMutationResult {
-  const invalidMessage = "Runtime returned an invalid Thread mutation result.";
-  if (!isWireObject(value) || typeof value.changed !== "boolean") {
-    throw new Error(invalidMessage);
-  }
-  const thread = parseRuntimeThreadSummary(value.thread, invalidMessage);
-  if (expectedThreadId !== undefined && thread.id !== expectedThreadId) {
-    throw new Error(invalidMessage);
-  }
-  if (
-    (expectedEventType === "thread.archived" && thread.archivedAt === null) ||
-    (expectedEventType === "thread.unarchived" && thread.archivedAt !== null)
-  ) {
-    throw new Error(invalidMessage);
-  }
-  const event = value.event;
-  if (event === null) {
-    if (value.changed) throw new Error(invalidMessage);
-    return { thread, changed: false, event: null };
-  }
-  if (!value.changed) throw new Error(invalidMessage);
-  const parsedEvent = parseRuntimeJournalEvent(event);
-  const eventThread = parseRuntimeThreadSummary(parsedEvent.payload.thread, invalidMessage);
-  if (
-    parsedEvent.threadId !== thread.id ||
-    parsedEvent.branchId !== thread.defaultBranchId ||
-    parsedEvent.timestamp !== thread.updatedAt ||
-    !sameRuntimeThreadSummary(eventThread, thread) ||
-    (expectedEventType !== undefined && parsedEvent.type !== expectedEventType) ||
-    !["thread.renamed", "thread.archived", "thread.unarchived"].includes(
-      parsedEvent.type
-    )
-  ) {
-    throw new Error(invalidMessage);
-  }
-  return { thread, changed: true, event: parsedEvent };
-}
-
-function sameRuntimeThreadSummary(
-  left: RuntimeThreadSummary,
-  right: RuntimeThreadSummary
-): boolean {
-  const sameWorkspace =
-    left.workspace === null
-      ? right.workspace === null
-      : right.workspace !== null &&
-        left.workspace.id === right.workspace.id &&
-        left.workspace.name === right.workspace.name &&
-        left.workspace.rootUri === right.workspace.rootUri;
-  return (
-    left.id === right.id &&
-    left.title === right.title &&
-    left.defaultBranchId === right.defaultBranchId &&
-    sameWorkspace &&
-    left.createdAt === right.createdAt &&
-    left.updatedAt === right.updatedAt &&
-    left.archivedAt === right.archivedAt
-  );
-}
-
-export function parseRuntimeThreadGetResult(
-  value: unknown,
-  expectedThreadId?: string
-): RuntimeThreadGetResult {
-  const invalidMessage = "Runtime returned invalid Thread metadata.";
-  if (!isWireObject(value) || !isSafeNonNegativeInteger(value.snapshotSeq)) {
-    throw new Error(invalidMessage);
-  }
-  const thread = parseRuntimeThreadSummary(value.thread, invalidMessage);
-  if (expectedThreadId !== undefined && thread.id !== expectedThreadId) {
-    throw new Error(invalidMessage);
-  }
-  return { thread, snapshotSeq: value.snapshotSeq };
-}
-
-function invalidTurnHistory(): Error {
-  return new Error("Runtime returned an invalid Turn history page.");
-}
-
-function parseRuntimeItemHistory(
-  value: unknown,
-  turnId: string,
-  runId: string
-): RuntimeItemHistory {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
-  const item = value as Partial<RuntimeItemHistory>;
-  const roleMatchesKind =
-    (item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
-    (item.kind === "tool_call" && item.role === "assistant") ||
-    (item.kind === "tool_result" && item.role === "tool");
-  if (
-    !isWireIdentifier(item.id) ||
-    item.turnId !== turnId ||
-    item.runId !== runId ||
-    !isSafePositiveInteger(item.ordinal) ||
-    !ITEM_KINDS.has(item.kind as string) ||
-    !roleMatchesKind ||
-    !ITEM_STATUSES.has(item.status as string) ||
-    typeof item.content !== "string" ||
-    !isWireObject(item.data) ||
-    !isNonEmptyString(item.createdAt) ||
-    !isNonEmptyString(item.updatedAt)
-  ) {
-    throw invalidTurnHistory();
-  }
-  return {
-    id: item.id,
-    turnId,
-    runId,
-    ordinal: item.ordinal,
-    kind: item.kind as RuntimeItemHistory["kind"],
-    role: item.role as RuntimeItemHistory["role"],
-    status: item.status as RuntimeItemHistory["status"],
-    content: item.content,
-    data: item.data,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt
-  };
-}
-
-function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHistory {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
-  const run = value as Partial<RuntimeRunHistory>;
-  const terminal =
-    run.status === "completed" || run.status === "failed" || run.status === "cancelled";
-  if (
-    !isWireIdentifier(run.id) ||
-    run.turnId !== turnId ||
-    !isNonEmptyString(run.providerId) ||
-    !isNonEmptyString(run.modelId) ||
-    run.executionPolicy !== "full_access" ||
-    !TURN_AND_RUN_STATUSES.has(run.status as string) ||
-    !isNonEmptyString(run.createdAt) ||
-    (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
-    !Array.isArray(run.items)
-  ) {
-    throw invalidTurnHistory();
-  }
-
-  const itemIds = new Set<string>();
-  let previousOrdinal = 0;
-  const items = run.items.map((candidate) => {
-    const item = parseRuntimeItemHistory(candidate, turnId, run.id as string);
-    if (itemIds.has(item.id) || item.ordinal <= previousOrdinal) {
-      throw invalidTurnHistory();
-    }
-    itemIds.add(item.id);
-    previousOrdinal = item.ordinal;
-    return item;
-  });
-  return {
-    id: run.id,
-    turnId,
-    providerId: run.providerId,
-    modelId: run.modelId,
-    executionPolicy: "full_access",
-    status: run.status as RuntimeRunHistory["status"],
-    createdAt: run.createdAt,
-    settledAt: run.settledAt as string | null,
-    items
-  };
-}
-
-function parseRuntimeTurnHistory(
-  value: unknown,
-  expectedScope?: Pick<RuntimeTurnListParams, "threadId" | "branchId">
-): RuntimeTurnHistory {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
-  const turn = value as Partial<RuntimeTurnHistory>;
-  if (
-    !isWireIdentifier(turn.id) ||
-    !isWireIdentifier(turn.threadId) ||
-    !isWireIdentifier(turn.branchId) ||
-    (expectedScope !== undefined &&
-      (turn.threadId !== expectedScope.threadId || turn.branchId !== expectedScope.branchId)) ||
-    !isSafePositiveInteger(turn.ordinal) ||
-    !TURN_AND_RUN_STATUSES.has(turn.status as string) ||
-    !isNonEmptyString(turn.createdAt) ||
-    !isNonEmptyString(turn.updatedAt) ||
-    !Array.isArray(turn.runs)
-  ) {
-    throw invalidTurnHistory();
-  }
-
-  const runIds = new Set<string>();
-  const runs = turn.runs.map((candidate) => {
-    const run = parseRuntimeRunHistory(candidate, turn.id as string);
-    if (runIds.has(run.id)) {
-      throw invalidTurnHistory();
-    }
-    runIds.add(run.id);
-    return run;
-  });
-  return {
-    id: turn.id,
-    threadId: turn.threadId,
-    branchId: turn.branchId,
-    ordinal: turn.ordinal,
-    status: turn.status as RuntimeTurnHistory["status"],
-    createdAt: turn.createdAt,
-    updatedAt: turn.updatedAt,
-    runs
-  };
-}
-
-export function parseRuntimeTurnListPage(
-  value: unknown,
-  expectedScope?: Pick<RuntimeTurnListParams, "threadId" | "branchId">
-): RuntimeTurnListPage {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
-  const page = value as Partial<RuntimeTurnListPage>;
-  const validCursor =
-    page.nextCursor === null ||
-    (isNonEmptyString(page.nextCursor) &&
-      page.nextCursor.length <= TURN_HISTORY_CURSOR_MAX_LENGTH &&
-      /^[A-Za-z0-9_-]+$/.test(page.nextCursor));
-  if (
-    !Array.isArray(page.turns) ||
-    page.turns.length > TURN_HISTORY_PAGE_LIMIT ||
-    typeof page.hasMore !== "boolean" ||
-    !isSafeNonNegativeInteger(page.snapshotSeq) ||
-    !validCursor ||
-    (page.hasMore && (page.nextCursor === null || page.turns.length === 0)) ||
-    (!page.hasMore && page.nextCursor !== null)
-  ) {
-    throw invalidTurnHistory();
-  }
-
-  const turnIds = new Set<string>();
-  let previousOrdinal = 0;
-  const turns = page.turns.map((candidate) => {
-    const turn = parseRuntimeTurnHistory(candidate, expectedScope);
-    if (turnIds.has(turn.id) || turn.ordinal <= previousOrdinal) {
-      throw invalidTurnHistory();
-    }
-    turnIds.add(turn.id);
-    previousOrdinal = turn.ordinal;
-    return turn;
-  });
-  return {
-    turns,
-    nextCursor: page.nextCursor as string | null,
-    hasMore: page.hasMore,
-    snapshotSeq: page.snapshotSeq
-  };
-}
-
-export function parseRuntimeThreadListPage(value: unknown): RuntimeThreadListPage {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid thread catalog page.");
-  }
-  const page = value as Partial<RuntimeThreadListPage>;
-  const validCursor =
-    page.nextCursor === null ||
-    (typeof page.nextCursor === "string" &&
-      page.nextCursor.length > 0 &&
-      page.nextCursor.length <= 1024 &&
-      /^[A-Za-z0-9_-]+$/.test(page.nextCursor));
-  if (
-    !Array.isArray(page.threads) ||
-    page.threads.length > THREAD_CATALOG_PAGE_LIMIT ||
-    typeof page.hasMore !== "boolean" ||
-    !Number.isSafeInteger(page.snapshotSeq) ||
-    (page.snapshotSeq as number) < 0 ||
-    !validCursor ||
-    (page.hasMore && (page.nextCursor === null || page.threads.length === 0)) ||
-    (!page.hasMore && page.nextCursor !== null)
-  ) {
-    throw new Error("Runtime returned an invalid thread catalog page.");
-  }
-  return {
-    threads: page.threads.map((thread) => parseRuntimeThreadSummary(thread)),
-    nextCursor: page.nextCursor as string | null,
-    hasMore: page.hasMore,
-    snapshotSeq: page.snapshotSeq as number
-  };
-}
-
-interface RuntimeThreadCatalogRequester {
-  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
-}
-
-export async function listAllRuntimeThreads(
-  requester: RuntimeThreadCatalogRequester,
-  options: RuntimeThreadCatalogParams = {}
-): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
-  const threads: RuntimeThreadSummary[] = [];
-  const threadIds = new Set<string>();
-  const cursors = new Set<string>();
-  let cursor: string | undefined;
-  let firstSnapshotSeq: number | undefined;
-  let previousSnapshotSeq = -1;
-  for (let pageNumber = 0; pageNumber < MAX_THREAD_CATALOG_PAGES; pageNumber += 1) {
-    const params: Record<string, unknown> = { limit: THREAD_CATALOG_PAGE_LIMIT };
-    if (options.archived === true) {
-      params.archived = true;
-    }
-    if (cursor !== undefined) {
-      params.cursor = cursor;
-    }
-    const page = parseRuntimeThreadListPage(
-      await requester.request("thread.list", params)
-    );
-    firstSnapshotSeq ??= page.snapshotSeq;
-    if (page.snapshotSeq < previousSnapshotSeq) {
-      throw new Error("Runtime thread catalog watermark moved backwards.");
-    }
-    previousSnapshotSeq = page.snapshotSeq;
-    for (const thread of page.threads) {
-      if (threadIds.has(thread.id)) {
-        throw new Error("Runtime thread catalog returned a duplicate thread.");
-      }
-      threadIds.add(thread.id);
-      threads.push(thread);
-    }
-    if (!page.hasMore) {
-      return { threads, snapshotSeq: firstSnapshotSeq };
-    }
-    const nextCursor = page.nextCursor as string;
-    if (nextCursor === cursor || cursors.has(nextCursor)) {
-      throw new Error("Runtime thread catalog cursor did not advance.");
-    }
-    cursors.add(nextCursor);
-    cursor = nextCursor;
-  }
-  throw new Error("Runtime thread catalog exceeded the page limit.");
-}
-
-export function parseRuntimeJsonRpcResponse(value: unknown): JsonRpcResponse {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid JSON-RPC response.");
-  }
-  const candidate = value as {
-    jsonrpc?: unknown;
-    id?: unknown;
-    result?: unknown;
-    error?: unknown;
-  };
-  const hasResult = hasOwn(candidate, "result");
-  const hasError = hasOwn(candidate, "error");
-  if (
-    candidate.jsonrpc !== "2.0" ||
-    typeof candidate.id !== "number" ||
-    !Number.isInteger(candidate.id) ||
-    hasResult === hasError
-  ) {
-    throw new Error("Runtime returned an invalid JSON-RPC response.");
-  }
-  if (hasResult) {
-    return { jsonrpc: "2.0", id: candidate.id, result: candidate.result };
-  }
-  const error = candidate.error;
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    typeof (error as { code?: unknown }).code !== "number" ||
-    !Number.isInteger((error as { code: number }).code) ||
-    typeof (error as { message?: unknown }).message !== "string"
-  ) {
-    throw new Error("Runtime returned an invalid JSON-RPC response.");
-  }
-  return {
-    jsonrpc: "2.0",
-    id: candidate.id,
-    error: {
-      code: (error as { code: number }).code,
-      message: (error as { message: string }).message
-    }
-  };
 }
 
 interface PendingRequest {
@@ -1020,6 +411,7 @@ export class RuntimeHost {
   private readonly bufferedEventNotifications = new Map<number, RuntimeJournalEvent>();
   private readonly pendingEventNotifications = new Map<number, RuntimeJournalEvent>();
   private readonly notificationListeners = new Set<(notification: RuntimeNotification) => void>();
+  private hostStatus: RuntimeHostStatus = { state: "starting", message: null };
 
   constructor(options: RuntimeHostOptions) {
     this.options = {
@@ -1052,7 +444,25 @@ export class RuntimeHost {
       this.restartFailureCount = 0;
       this.supervisionEpoch += 1;
     }
-    return this.beginStartAttempt();
+    if (!this.connection?.isOpen) {
+      this.updateHostStatus(this.hasConnected ? "reconnecting" : "starting");
+    }
+    const attempt = this.beginStartAttempt();
+    const generation = this.generation;
+    const supervisionEpoch = this.supervisionEpoch;
+    void attempt.catch((error: unknown) => {
+      if (
+        !this.stopping &&
+        generation === this.generation &&
+        supervisionEpoch === this.supervisionEpoch &&
+        !this.connection?.isOpen &&
+        !this.reconnecting &&
+        !this.restarting
+      ) {
+        this.updateHostStatus("offline", errorMessage(error));
+      }
+    });
+    return attempt;
   }
 
   private beginStartAttempt(): Promise<RuntimeConnectionInfo> {
@@ -1080,46 +490,7 @@ export class RuntimeHost {
       throw new Error("Runtime connection is unavailable.");
     }
     const result = await connection.request<unknown>(method, params, this.options.startTimeoutMs);
-    if (method === "event.replay") {
-      return parseRuntimeReplayResult(result) as TResult;
-    }
-    if (method === "thread.list") {
-      return parseRuntimeThreadListPage(result) as TResult;
-    }
-    if (method === "thread.get") {
-      return parseRuntimeThreadGetResult(
-        result,
-        typeof params.threadId === "string" ? params.threadId : undefined
-      ) as TResult;
-    }
-    if (
-      method === "thread.rename" ||
-      method === "thread.archive" ||
-      method === "thread.unarchive"
-    ) {
-      const expectedEventType =
-        method === "thread.rename"
-          ? "thread.renamed"
-          : method === "thread.archive"
-            ? "thread.archived"
-            : "thread.unarchived";
-      return parseRuntimeThreadMutationResult(
-        result,
-        typeof params.threadId === "string" ? params.threadId : undefined,
-        expectedEventType
-      ) as TResult;
-    }
-    if (method === "turn.list") {
-      const expectedScope =
-        typeof params.threadId === "string" && typeof params.branchId === "string"
-          ? { threadId: params.threadId, branchId: params.branchId }
-          : undefined;
-      return parseRuntimeTurnListPage(result, expectedScope) as TResult;
-    }
-    if (method === "usage.read") {
-      return parseRuntimeUsageReadResult(result) as TResult;
-    }
-    return result as TResult;
+    return parseRuntimeMethodResult(method, result, params) as TResult;
   }
 
   private async ensureConnectedOnce(): Promise<RuntimeConnectionInfo> {
@@ -1197,9 +568,9 @@ export class RuntimeHost {
         this.options.startTimeoutMs,
         "Timed out waiting for Ikaros Runtime readiness."
       );
-      if (ready.protocolVersion !== PROTOCOL_VERSION) {
+      if (ready.protocolVersion !== RUNTIME_PROTOCOL_VERSION) {
         throw new Error(
-          `Runtime readiness protocol ${ready.protocolVersion} is incompatible with Desktop protocol ${PROTOCOL_VERSION}.`
+          `Runtime readiness protocol ${ready.protocolVersion} is incompatible with Desktop protocol ${RUNTIME_PROTOCOL_VERSION}.`
         );
       }
       if (this.stopping || generation !== this.generation || this.child !== child) {
@@ -1266,24 +637,16 @@ export class RuntimeHost {
     );
     this.connection = connection;
     try {
-      const result = await connection.request<{
-        protocolVersion?: number;
-        server?: { name?: string; version?: string };
-      }>(
-        "initialize",
-        {
-          protocolVersion: PROTOCOL_VERSION,
-          client: { name: "ikaros-desktop", version: "0.1.0" }
-        },
-        this.options.startTimeoutMs
+      const result = parseRuntimeInitializeResult(
+        await connection.request<unknown>(
+          "initialize",
+          {
+            protocolVersion: RUNTIME_PROTOCOL_VERSION,
+            client: { name: "ikaros-desktop", version: "0.1.0" }
+          },
+          this.options.startTimeoutMs
+        )
       );
-      if (
-        result.protocolVersion !== PROTOCOL_VERSION ||
-        typeof result.server?.name !== "string" ||
-        typeof result.server.version !== "string"
-      ) {
-        throw new Error("Runtime initialization result did not match the expected schema.");
-      }
       await this.synchronizeEventStream(connection, !this.hasConnected);
       if (
         this.stopping ||
@@ -1305,6 +668,7 @@ export class RuntimeHost {
       this.restartFailureCount = 0;
       this.restartCircuitOpen = false;
       established = true;
+      this.updateHostStatus("connected");
       return connectionInfo;
     } catch (error) {
       if (this.connection === connection) {
@@ -1409,6 +773,21 @@ export class RuntimeHost {
     }
   }
 
+  private updateHostStatus(
+    state: RuntimeHostStatus["state"],
+    message: string | null = null
+  ): void {
+    if (this.hostStatus.state === state && this.hostStatus.message === message) {
+      return;
+    }
+    this.hostStatus = { state, message };
+    this.emitNotification({
+      jsonrpc: "2.0",
+      method: RUNTIME_HOST_STATUS_NOTIFICATION,
+      params: this.hostStatus
+    });
+  }
+
   private handleConnectionLoss(
     connection: JsonRpcConnection,
     generation: number,
@@ -1426,6 +805,7 @@ export class RuntimeHost {
     }
     this.connection = undefined;
     this.connectionInfo = undefined;
+    this.updateHostStatus("reconnecting", error.message);
     this.scheduleSocketReconnect(child, generation, error);
   }
 
@@ -1493,8 +873,10 @@ export class RuntimeHost {
       }
     }
     if (this.canReconnectSocket(child, generation, supervisionEpoch)) {
+      const message = `WebSocket reconnect attempts exhausted: ${errorMessage(lastError)}`;
+      this.updateHostStatus("offline", message);
       reportRuntimeHostFailure(
-        `WebSocket reconnect attempts exhausted: ${errorMessage(lastError)}`
+        message
       );
     }
   }
@@ -1517,6 +899,7 @@ export class RuntimeHost {
     this.generation += 1;
     connection?.close();
     if (!this.stopping && this.hasConnected && this.automaticRecoveryEnabled) {
+      this.updateHostStatus("reconnecting", "Ikaros Runtime exited unexpectedly.");
       this.scheduleRuntimeRestart();
     }
   }
@@ -1584,6 +967,10 @@ export class RuntimeHost {
     }
     if (this.canRestartRuntime(supervisionEpoch)) {
       this.restartCircuitOpen = true;
+      this.updateHostStatus(
+        "offline",
+        "Automatic Runtime restart stopped after repeated readiness failures."
+      );
       reportRuntimeHostFailure(
         "automatic restart circuit opened after repeated readiness failures."
       );
@@ -1603,24 +990,19 @@ export class RuntimeHost {
     );
     const connection = new JsonRpcConnection(socket, () => undefined, () => undefined);
     try {
-      const result = await connection.request<{
-        protocolVersion?: number;
-        server?: { name?: string; version?: string };
-      }>(
-        "initialize",
-        {
-          protocolVersion: PROTOCOL_VERSION,
-          client: { name: "ikaros-desktop-shutdown", version: "0.1.0" }
-        },
-        remainingTimeoutMs(deadline, "Timed out initializing Runtime shutdown connection.")
+      parseRuntimeInitializeResult(
+        await connection.request<unknown>(
+          "initialize",
+          {
+            protocolVersion: RUNTIME_PROTOCOL_VERSION,
+            client: { name: "ikaros-desktop-shutdown", version: "0.1.0" }
+          },
+          remainingTimeoutMs(
+            deadline,
+            "Timed out initializing Runtime shutdown connection."
+          )
+        )
       );
-      if (
-        result.protocolVersion !== PROTOCOL_VERSION ||
-        typeof result.server?.name !== "string" ||
-        typeof result.server.version !== "string"
-      ) {
-        throw new Error("Runtime shutdown initialization did not match the expected schema.");
-      }
       return connection;
     } catch (error) {
       connection.close();

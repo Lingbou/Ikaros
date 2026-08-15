@@ -10,6 +10,28 @@ only the machine-readable readiness record used to discover the ephemeral
 port; standard error carries diagnostics, and business traffic never uses
 stdio.
 
+## Protocol contract
+
+`src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
+version 1, the 19 post-initialize RPC methods, the 10 persisted Journal Event
+types, capabilities, and provider-facing Tool IDs. The deterministic generator
+commits both `protocol/runtime-protocol.json` and Desktop's
+`src/shared/generated/runtimeProtocol.ts`; CI-style verification is available
+without rewriting either file:
+
+```powershell
+uv run --project runtime python -m ikaros_runtime.protocol.generate --check
+```
+
+`protocol/golden-trace.json` is consumed by both Python and Desktop tests. It
+covers initialize, catalog/history pages, every Journal Event discriminator,
+both `item.completed` payload families, Tool Call/Result Items, usage, and Run
+settlement. Desktop parses the fixture with its production wire parsers, so an
+unknown method/Event or malformed discriminated payload fails before it can
+advance the live Journal cursor. Machine protocol capabilities expose
+`process_run`; `process.run` remains only a Desktop label and deterministic
+slash-command syntax.
+
 ## Implemented vertical slice
 
 The current Desktop/Runtime path provides:

@@ -9,6 +9,7 @@ import {
 import type {
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeHostStatus,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -20,10 +21,14 @@ import type {
   RuntimeProviderSummary,
   RuntimeCancelRunResult,
   RuntimeReplayResult,
+  RuntimeSkillListResult,
+  RuntimeSkillSetEnabledParams,
+  RuntimeSkillSetEnabledResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
   RuntimeThreadCatalogParams,
   RuntimeThreadGetResult,
+  RuntimeThreadListPage,
   RuntimeThreadMutationResult,
   RuntimeThreadRenameParams,
   RuntimeThreadSummary,
@@ -44,7 +49,7 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
   runtime: Object.freeze({
     listThreads: (params: RuntimeThreadCatalogParams = {}) =>
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.threadList, params) as Promise<
-        RuntimeInvocationResult<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }>
+        RuntimeInvocationResult<RuntimeThreadListPage>
       >,
     getThread: (threadId: string) =>
       ipcRenderer.invoke(
@@ -125,12 +130,23 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>,
+    listSkills: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.skillList) as Promise<
+        RuntimeInvocationResult<RuntimeSkillListResult>
+      >,
+    setSkillEnabled: (params: RuntimeSkillSetEnabledParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeSkillSetEnabledResult>>,
     readUsage: () =>
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.usageRead) as Promise<
         RuntimeInvocationResult<RuntimeUsageReadResult>
       >,
     onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
-      subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener)
+      subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener),
+    onStatus: (listener: (status: RuntimeHostStatus) => void) =>
+      subscribe(DESKTOP_IPC_CHANNELS.runtime.status, listener)
   }),
   workspace: Object.freeze({
     chooseDirectory: () =>

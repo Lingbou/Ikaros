@@ -14,13 +14,12 @@ from ..domain import CommandOutcome, JournalEvent
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..protocol.jsonrpc import (
-    JSONRPC_VERSION,
-    PROTOCOL_VERSION,
     configuration_write_values,
     initialize_result,
     jsonrpc_error,
     valid_request_id,
 )
+from ..protocol.spec import JSONRPC_VERSION, PROTOCOL_VERSION
 
 _LOGGER = logging.getLogger("ikaros_runtime")
 _EVENT_QUEUE_LIMIT = 1024

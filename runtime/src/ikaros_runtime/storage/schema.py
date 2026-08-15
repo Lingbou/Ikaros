@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,

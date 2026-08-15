@@ -198,6 +198,44 @@ describe("Sidebar conversation ownership", () => {
     expect(screen.getAllByText("Summarize the field notes")).toHaveLength(1);
   });
 
+  it("sorts chats by latest activity and preserves the loaded page on continuation failure", () => {
+    const seeded = createInitialThreads();
+    const older = findThread(seeded, "thread-recent-priorities");
+    const newer = findThread(seeded, "thread-recent-notes");
+    if (!older || !newer) throw new Error("Expected standalone thread fixtures");
+    const loadMoreThreads = vi.fn(async () => undefined);
+    useAppStore.setState({
+      threads: [
+        { ...older, updatedAt: "2026-08-14T00:00:00.000Z" },
+        { ...newer, updatedAt: "2026-08-15T00:00:00.000Z" },
+      ],
+      threadCatalogHasMore: true,
+      threadCatalogMoreStatus: "error",
+      threadCatalogMoreError: "next page unavailable",
+      loadMoreThreads,
+    });
+
+    render(
+      <Tooltip.Provider>
+        <Sidebar />
+      </Tooltip.Provider>,
+    );
+
+    const recents = screen.getByRole("region", { name: "Recents" });
+    const labels = within(recents)
+      .getAllByRole("button")
+      .map((button) => button.textContent?.trim());
+    expect(labels.indexOf("Compare note-taking methods")).toBeLessThan(
+      labels.indexOf("Plan tomorrow's priorities"),
+    );
+    const retry = within(recents.parentElement ?? recents).getByRole("button", {
+      name: "Retry",
+    });
+    expect(retry.getAttribute("title")).toBe("next page unavailable");
+    fireEvent.click(retry);
+    expect(loadMoreThreads).toHaveBeenCalledOnce();
+  });
+
   it("opens both groups through the same thread action", () => {
     const selectThread = vi.fn(async () => undefined);
     useAppStore.setState({ selectThread });

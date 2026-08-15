@@ -13,9 +13,11 @@ from ..domain import (
     PreparedTurn,
     RecoveryPlan,
     RunDescriptor,
+    SkillDescriptor,
     ThreadSummary,
     UsageSnapshot,
     WorkspaceSummary,
+    skill_descriptors_from_wire,
     utc_now,
 )
 from ..json_codec import dumps as json_dumps
@@ -378,6 +380,7 @@ class SqliteRuntimeStore:
         provider_id: str,
         model_id: str,
         client_request_id: str | None = None,
+        skills: Sequence[SkillDescriptor] = (),
     ) -> PreparedTurn:
         if client_request_id is not None:
             existing = self.find_turn_by_client_request_id(
@@ -404,6 +407,8 @@ class SqliteRuntimeStore:
             raise LookupError("thread or branch was not found")
         if owner["archived_at"] is not None:
             raise LookupError("thread is archived")
+
+        skill_snapshot = skill_descriptors_from_wire([skill.to_wire() for skill in skills])
 
         ordinal = int(
             self._connection.execute(
@@ -433,6 +438,7 @@ class SqliteRuntimeStore:
             "status": "queued",
             "createdAt": timestamp,
             "settledAt": None,
+            "skills": [skill.to_wire() for skill in skill_snapshot],
         }
         if client_request_id is not None:
             run_payload["clientRequestId"] = client_request_id

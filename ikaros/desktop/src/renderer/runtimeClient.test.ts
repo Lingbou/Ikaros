@@ -24,6 +24,8 @@ function bridgeWithListThreads(
     removeProvider: vi.fn(),
     listModels: vi.fn(),
     setModelEnabled: vi.fn(),
+    listSkills: vi.fn(),
+    setSkillEnabled: vi.fn(),
     readUsage: vi.fn(),
     onEvent: vi.fn(() => () => undefined)
   };
@@ -31,7 +33,12 @@ function bridgeWithListThreads(
 
 describe("RuntimeClient", () => {
   it("unwraps successful Electron bridge results", async () => {
-    const threads = { threads: [], snapshotSeq: 0 };
+    const threads = {
+      threads: [],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 0,
+    };
     const client = new RuntimeClient(
       bridgeWithListThreads(vi.fn(async () => ({ ok: true as const, value: threads })))
     );
@@ -42,7 +49,7 @@ describe("RuntimeClient", () => {
   it("forwards archived catalog and Thread lifecycle mutations", async () => {
     const listThreads = vi.fn(async () => ({
       ok: true as const,
-      value: { threads: [], snapshotSeq: 4 },
+      value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 4 },
     }));
     const bridge = bridgeWithListThreads(listThreads);
     const mutation = {
@@ -57,6 +64,8 @@ describe("RuntimeClient", () => {
 
     await expect(client.listThreads({ archived: true })).resolves.toEqual({
       threads: [],
+      nextCursor: null,
+      hasMore: false,
       snapshotSeq: 4,
     });
     await expect(
@@ -75,7 +84,10 @@ describe("RuntimeClient", () => {
 
   it("forwards the Thread workspace snapshot without flattening it", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } })),
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 0 },
+      })),
     );
     const value = { thread: { id: "thread-1" }, event: { seq: 1 } };
     bridge.createThread = vi.fn(async () => ({ ok: true as const, value })) as never;
@@ -92,7 +104,10 @@ describe("RuntimeClient", () => {
 
   it("forwards Thread metadata and paginated Turn history reads", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 5 } })),
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 5 },
+      })),
     );
     const thread = {
       id: "thread-1",
@@ -147,7 +162,10 @@ describe("RuntimeClient", () => {
 
   it("forwards write-only provider configuration and unwraps the redacted result", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } }))
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 0 },
+      }))
     );
     const provider = {
       id: "deepseek",
@@ -177,7 +195,10 @@ describe("RuntimeClient", () => {
 
   it("forwards write-only discovery credentials and unwraps only discovered models", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } }))
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 0 },
+      }))
     );
     const models = [
       { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },
@@ -199,7 +220,10 @@ describe("RuntimeClient", () => {
 
   it("unwraps aggregate token usage without scanning loaded Thread history", async () => {
     const bridge = bridgeWithListThreads(
-      vi.fn(async () => ({ ok: true as const, value: { threads: [], snapshotSeq: 0 } }))
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 0 },
+      }))
     );
     const usage = {
       summary: {
@@ -216,6 +240,36 @@ describe("RuntimeClient", () => {
 
     await expect(client.readUsage()).resolves.toEqual(usage);
     expect(bridge.readUsage).toHaveBeenCalledOnce();
+  });
+
+  it("forwards the Skills catalog and global enablement toggle", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 0 }
+      }))
+    );
+    const skill = {
+      name: "demo",
+      description: "Demo Skill",
+      location: "C:/Users/demo/.ikaros/skills/demo/SKILL.md",
+      enabled: true
+    };
+    bridge.listSkills = vi.fn(async () => ({
+      ok: true as const,
+      value: { skills: [skill], diagnostics: [] }
+    }));
+    bridge.setSkillEnabled = vi.fn(async () => ({
+      ok: true as const,
+      value: { skill: { ...skill, enabled: false } }
+    }));
+    const client = new RuntimeClient(bridge);
+
+    await expect(client.listSkills()).resolves.toEqual({ skills: [skill], diagnostics: [] });
+    await expect(
+      client.setSkillEnabled({ name: "demo", enabled: false })
+    ).resolves.toEqual({ skill: { ...skill, enabled: false } });
+    expect(bridge.setSkillEnabled).toHaveBeenCalledWith({ name: "demo", enabled: false });
   });
 
   it.each([

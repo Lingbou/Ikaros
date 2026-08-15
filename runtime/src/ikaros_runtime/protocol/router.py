@@ -7,34 +7,12 @@ from typing import Any
 from ..domain import CommandOutcome
 from ..errors import InvalidParamsError, ProviderFailure
 from ..services.providers import ProviderService
+from ..services.skills import SkillService
 from ..services.threads import ThreadService
 from ..services.turns import TurnService
 from ..services.usage import UsageService
-from .jsonrpc import JSONRPC_VERSION, jsonrpc_error
-
-RPC_METHODS = frozenset(
-    {
-        "runtime.shutdown",
-        "thread.create",
-        "thread.rename",
-        "thread.archive",
-        "thread.unarchive",
-        "thread.get",
-        "thread.list",
-        "provider.list",
-        "provider.configure",
-        "provider.discover_models",
-        "provider.disconnect",
-        "provider.remove",
-        "model.list",
-        "model.set_enabled",
-        "turn.start",
-        "turn.list",
-        "run.cancel",
-        "event.replay",
-        "usage.read",
-    }
-)
+from .jsonrpc import jsonrpc_error
+from .spec import JSONRPC_VERSION, RPC_METHOD_SET
 
 _LOGGER = logging.getLogger("ikaros_runtime")
 
@@ -61,11 +39,13 @@ class RuntimeRouter:
         turns: TurnService,
         providers: ProviderService,
         usage: UsageService,
+        skills: SkillService,
     ) -> None:
         self._threads = threads
         self._turns = turns
         self._providers = providers
         self._usage = usage
+        self._skills = skills
 
     async def dispatch(
         self,
@@ -74,6 +54,9 @@ class RuntimeRouter:
         params: dict[str, Any],
     ) -> RouteResult:
         outcome: CommandOutcome | None = None
+        if method not in RPC_METHOD_SET:
+            return RouteResult(jsonrpc_error(request_id, -32601, "method not found"))
+        result: dict[str, object]
         try:
             if method == "runtime.shutdown":
                 result = {"accepted": True}
@@ -107,6 +90,10 @@ class RuntimeRouter:
                 result = self._providers.list_models(params)
             elif method == "model.set_enabled":
                 result = self._providers.set_model_enabled(params)
+            elif method == "skill.list":
+                result = self._skills.list_skills(params)
+            elif method == "skill.set_enabled":
+                result = self._skills.set_enabled(params)
             elif method == "turn.start":
                 outcome = self._turns.start_turn(params)
                 result = outcome.result
@@ -119,8 +106,8 @@ class RuntimeRouter:
                 result = self._turns.replay_events(params)
             elif method == "usage.read":
                 result = self._usage.read(params)
-            else:
-                return RouteResult(jsonrpc_error(request_id, -32601, "method not found"))
+            else:  # pragma: no cover - guarded by the exhaustive protocol registry above
+                raise AssertionError(f"registered Runtime method is not dispatched: {method}")
         except InvalidParamsError as error:
             return RouteResult(jsonrpc_error(request_id, -32602, str(error)))
         except ProviderFailure as error:
@@ -141,4 +128,4 @@ class RuntimeRouter:
         )
 
 
-__all__ = ["RPC_METHODS", "RouteResult", "RuntimeRouter"]
+__all__ = ["RouteResult", "RuntimeRouter"]

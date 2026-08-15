@@ -13,6 +13,9 @@ beforeEach(() => {
     projects: createInitialProjects(),
     threads: createInitialThreads(),
     searchOpen: true,
+    searchCatalogStatus: "ready",
+    searchCatalogError: null,
+    loadAllThreadsForSearch: vi.fn(async () => undefined),
   });
 });
 
@@ -89,5 +92,28 @@ describe("SearchDialog keyboard navigation", () => {
 
     fireEvent.keyDown(input, { key: "Escape" });
     await waitFor(() => expect(useAppStore.getState().searchOpen).toBe(false));
+  });
+
+  it("keeps loaded results visible when catalog continuation fails and retries", () => {
+    const loadAllThreadsForSearch = vi.fn(async () => undefined);
+    useAppStore.setState({
+      searchCatalogStatus: "error",
+      searchCatalogError: "catalog unavailable",
+      loadAllThreadsForSearch,
+    });
+
+    render(
+      <Tooltip.Provider>
+        <SearchDialog />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByText("Check the source archive")).toBeInTheDocument();
+    const retry = screen.getByRole("button", {
+      name: "Some chats are missing · Retry",
+    });
+    expect(retry).toHaveAttribute("title", "catalog unavailable");
+    fireEvent.click(retry);
+    expect(loadAllThreadsForSearch).toHaveBeenCalledTimes(2);
   });
 });

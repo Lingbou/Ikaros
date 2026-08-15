@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   externalEventText,
@@ -145,6 +145,178 @@ afterEach(() => {
 });
 
 describe("EventFeed dynamic row measurement", () => {
+  it("shows a retryable history error instead of an empty conversation", () => {
+    const thread = threadWith([]);
+    const retryRuntimeThread = vi.fn(async () => undefined);
+    useAppStore.setState({
+      runtimeMode: true,
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runtimeThreadDetails: {
+        [thread.id]: {
+          status: "error",
+          snapshotSeq: 0,
+          error: "history unavailable",
+          nextCursor: null,
+          hasMore: false,
+          olderStatus: "idle",
+          olderError: null,
+          historySnapshotSeq: 0,
+          turnOrdinals: {},
+        },
+      },
+      retryRuntimeThread,
+    });
+
+    render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load this conversation");
+    expect(screen.queryByText("What should we work on?")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retryRuntimeThread).toHaveBeenCalledWith(thread.id);
+  });
+
+  it("keeps loaded turns visible when an earlier-page request fails", () => {
+    const thread = threadWith([
+      message("user-loaded", "turn-feed-measurement", "user", "Already loaded"),
+    ]);
+    const loadOlderRuntimeTurns = vi.fn(async () => undefined);
+    useAppStore.setState({
+      runtimeMode: true,
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runtimeThreadDetails: {
+        [thread.id]: {
+          status: "ready",
+          snapshotSeq: 5,
+          error: null,
+          hasMore: true,
+          nextCursor: "older-page",
+          olderStatus: "error",
+          olderError: "older page unavailable",
+          historySnapshotSeq: 5,
+          turnOrdinals: { "turn-feed-measurement": 1 },
+        },
+      },
+      loadOlderRuntimeTurns,
+    });
+
+    render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByText("Already loaded")).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(retry).toHaveAttribute("title", "older page unavailable");
+    fireEvent.click(retry);
+    expect(loadOlderRuntimeTurns).toHaveBeenCalledWith(thread.id);
+  });
+
+  it("restores the same event anchor and does not animate prepended history", async () => {
+    for (let index = 0; index < 13; index += 1) rowHeights.set(index, 72);
+    const thread = threadWith(
+      Array.from({ length: 12 }, (_, index) =>
+        message(
+          `user-current-${index}`,
+          "turn-feed-measurement",
+          "user",
+          index === 0 ? "Current turn" : `Current filler ${index}`,
+        ),
+      ),
+    );
+    const loadOlderRuntimeTurns = vi.fn(async (threadId: string) => {
+      const state = useAppStore.getState();
+      const current = state.threads.find((candidate) => candidate.id === threadId);
+      const branch = current?.branches[0];
+      if (!current || !branch) throw new Error("Expected current Runtime Thread");
+      useAppStore.setState({
+        threads: [
+          {
+            ...current,
+            branches: [
+              {
+                ...branch,
+                turns: [
+                  {
+                    id: "turn-earlier",
+                    branchId: branch.id,
+                    status: "completed",
+                    events: [
+                      message("user-earlier", "turn-earlier", "user", "Earlier turn"),
+                    ],
+                  },
+                  ...branch.turns,
+                ],
+              },
+            ],
+          },
+        ],
+        runtimeThreadDetails: {
+          [threadId]: {
+            status: "ready",
+            snapshotSeq: 6,
+            error: null,
+            nextCursor: null,
+            hasMore: false,
+            olderStatus: "idle",
+            olderError: null,
+            historySnapshotSeq: 5,
+            turnOrdinals: {
+              "turn-earlier": 1,
+              "turn-feed-measurement": 2,
+            },
+          },
+        },
+      });
+    });
+    useAppStore.setState({
+      runtimeMode: true,
+      threads: [thread],
+      selectedThreadId: thread.id,
+      runtimeThreadDetails: {
+        [thread.id]: {
+          status: "ready",
+          snapshotSeq: 5,
+          error: null,
+          nextCursor: "older-page",
+          hasMore: true,
+          olderStatus: "error",
+          olderError: "retry older page",
+          historySnapshotSeq: 5,
+          turnOrdinals: { "turn-feed-measurement": 2 },
+        },
+      },
+      loadOlderRuntimeTurns,
+    });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Earlier turn")).toBeInTheDocument();
+      const calls = vi.mocked(HTMLElement.prototype.scrollTo).mock.calls;
+      expect(calls.some(([options]) => {
+        const candidate = options as unknown;
+        if (typeof candidate !== "object" || candidate === null) return false;
+        const top = (candidate as { top?: unknown }).top;
+        return typeof top === "number" && top > 0;
+      })).toBe(true);
+    });
+    const historicalRow = screen.getByText("Earlier turn").closest("[data-index]");
+    expect(historicalRow?.querySelector(".event-enter")).toBeNull();
+    expect(container).toHaveTextContent("Current turn");
+  });
+
   it("renders the empty conversation without a decorative icon", () => {
     useAppStore.setState({ selectedThreadId: null });
 

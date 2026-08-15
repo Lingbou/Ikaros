@@ -4,6 +4,7 @@ import type {
   RuntimeCancelRunResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeHostStatus,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -14,13 +15,16 @@ import type {
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
   RuntimeReplayResult,
+  RuntimeSkillListResult,
+  RuntimeSkillSetEnabledParams,
+  RuntimeSkillSetEnabledResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
   RuntimeThreadCatalogParams,
   RuntimeThreadGetResult,
+  RuntimeThreadListPage,
   RuntimeThreadMutationResult,
   RuntimeThreadRenameParams,
-  RuntimeThreadSummary,
   RuntimeTurnListPage,
   RuntimeTurnListParams,
   RuntimeTurnStartParams,
@@ -105,7 +109,7 @@ export class RuntimeClient implements IkarosRuntimeApi {
 
   listThreads(
     params: RuntimeThreadCatalogParams = {}
-  ): Promise<{ threads: RuntimeThreadSummary[]; snapshotSeq: number }> {
+  ): Promise<RuntimeThreadListPage> {
     return unwrapRuntimeInvocation(this.api.listThreads(params));
   }
 
@@ -179,12 +183,26 @@ export class RuntimeClient implements IkarosRuntimeApi {
     return unwrapRuntimeInvocation(this.api.setModelEnabled(params));
   }
 
+  listSkills(): Promise<RuntimeSkillListResult> {
+    return unwrapRuntimeInvocation(this.api.listSkills());
+  }
+
+  setSkillEnabled(
+    params: RuntimeSkillSetEnabledParams
+  ): Promise<RuntimeSkillSetEnabledResult> {
+    return unwrapRuntimeInvocation(this.api.setSkillEnabled(params));
+  }
+
   readUsage(): Promise<RuntimeUsageReadResult> {
     return unwrapRuntimeInvocation(this.api.readUsage());
   }
 
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void {
     return this.api.onEvent(listener);
+  }
+
+  onStatus(listener: (status: RuntimeHostStatus) => void): () => void {
+    return this.api.onStatus?.(listener) ?? (() => undefined);
   }
 }
 

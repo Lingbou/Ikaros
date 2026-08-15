@@ -6,6 +6,7 @@ import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electro
 import { DESKTOP_IPC_CHANNELS, type UiPreferences } from "../shared/platform";
 import type {
   RuntimeCancelRunResult,
+  RuntimeHostStatus,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeModelSetEnabledParams,
@@ -18,10 +19,14 @@ import type {
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
   RuntimeReplayResult,
+  RuntimeSkillListResult,
+  RuntimeSkillSetEnabledParams,
+  RuntimeSkillSetEnabledResult,
   RuntimeThreadCreateParams,
   RuntimeThreadCreateResult,
   RuntimeThreadCatalogParams,
   RuntimeThreadGetResult,
+  RuntimeThreadListPage,
   RuntimeThreadMutationResult,
   RuntimeThreadRenameParams,
   RuntimeTurnListPage,
@@ -33,7 +38,11 @@ import type {
 } from "../shared/runtime";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
 import type { RendererTrustPolicy } from "./security";
-import { listAllRuntimeThreads, RuntimeRpcError, type RuntimeHost } from "./runtimeHost";
+import {
+  RUNTIME_HOST_STATUS_NOTIFICATION,
+  RuntimeRpcError,
+  type RuntimeHost
+} from "./runtimeHost";
 import { updateWindowChrome } from "./window";
 
 type RemoveIpcHandlers = () => void;
@@ -141,6 +150,8 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.providerRemove,
     DESKTOP_IPC_CHANNELS.runtime.modelList,
     DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
+    DESKTOP_IPC_CHANNELS.runtime.skillList,
+    DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
     DESKTOP_IPC_CHANNELS.runtime.usageRead,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.preferences.get,
@@ -151,6 +162,21 @@ export function registerDesktopIpc(
   ];
 
   const removeRuntimeNotification = runtimeHost.onNotification((notification) => {
+    if (notification.method === RUNTIME_HOST_STATUS_NOTIFICATION) {
+      const status = notification.params as Partial<RuntimeHostStatus>;
+      if (
+        (status.state === "starting" ||
+          status.state === "connected" ||
+          status.state === "reconnecting" ||
+          status.state === "offline") &&
+        (status.message === null || typeof status.message === "string")
+      ) {
+        for (const window of BrowserWindow.getAllWindows()) {
+          sendToLiveWindow(window, DESKTOP_IPC_CHANNELS.runtime.status, status);
+        }
+      }
+      return;
+    }
     if (notification.method !== "event") {
       return;
     }
@@ -163,8 +189,10 @@ export function registerDesktopIpc(
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.threadList,
     async (event, params: RuntimeThreadCatalogParams = {}) => {
-    trustPolicy.assertTrustedIpc(event);
-      return invokeRuntime(() => listAllRuntimeThreads(runtimeHost, params));
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeThreadListPage>("thread.list", { ...params })
+      );
     }
   );
 
@@ -294,6 +322,23 @@ export function registerDesktopIpc(
       trustPolicy.assertTrustedIpc(event);
       return invokeRuntime(() =>
         runtimeHost.request<RuntimeModelSetEnabledResult>("model.set_enabled", {
+          ...params
+        })
+      );
+    }
+  );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.skillList, async (event) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() => runtimeHost.request<RuntimeSkillListResult>("skill.list"));
+  });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
+    async (event, params: RuntimeSkillSetEnabledParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeSkillSetEnabledResult>("skill.set_enabled", {
           ...params
         })
       );

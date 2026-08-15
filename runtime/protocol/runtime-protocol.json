@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "jsonrpcVersion": "2.0",
+  "serverName": "ikaros-runtime",
+  "initializeMethod": "initialize",
+  "rpcMethods": [
+    "runtime.shutdown",
+    "thread.create",
+    "thread.rename",
+    "thread.archive",
+    "thread.unarchive",
+    "thread.get",
+    "thread.list",
+    "provider.list",
+    "provider.configure",
+    "provider.discover_models",
+    "provider.disconnect",
+    "provider.remove",
+    "model.list",
+    "model.set_enabled",
+    "skill.list",
+    "skill.set_enabled",
+    "turn.start",
+    "turn.list",
+    "run.cancel",
+    "event.replay",
+    "usage.read"
+  ],
+  "notificationMethods": [
+    "event"
+  ],
+  "journal": {
+    "schemaVersion": 2,
+    "eventTypes": [
+      "thread.created",
+      "thread.renamed",
+      "thread.archived",
+      "thread.unarchived",
+      "run.state_changed",
+      "item.started",
+      "item.delta",
+      "item.completed",
+      "model.usage_recorded",
+      "run.settled"
+    ]
+  },
+  "capabilities": {
+    "threads": true,
+    "turns": true,
+    "eventReplay": true,
+    "streaming": true,
+    "scriptedProvider": true,
+    "runCancellation": true,
+    "providers": true,
+    "models": true,
+    "usage": true,
+    "skills": true,
+    "tools": [
+      "process_run",
+      "read",
+      "write",
+      "edit"
+    ],
+    "executionPolicy": "full_access"
+  },
+  "providerToolIds": [
+    "process_run",
+    "read",
+    "write",
+    "edit"
+  ]
+}

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RuntimeRpcError, type RuntimeNotification } from "./runtimeHost";
+import {
+  RUNTIME_HOST_STATUS_NOTIFICATION,
+  RuntimeRpcError,
+  type RuntimeNotification
+} from "./runtimeHost";
 
 const electron = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
@@ -174,7 +178,43 @@ describe("desktop window controls", () => {
     });
   });
 
-  it("aggregates Runtime Thread catalog pages before crossing the renderer bridge", async () => {
+  it("forwards Skill catalog and enablement calls without reshaping them", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    const catalog = { skills: [], diagnostics: [] };
+    const toggled = {
+      skill: {
+        name: "demo",
+        description: "Demo Skill",
+        location: "C:/Users/demo/.ikaros/skills/demo/SKILL.md",
+        enabled: false,
+      },
+    };
+    electron.runtimeHost.request
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce(toggled);
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    const event = { sender: {} };
+
+    await expect(
+      electron.handlers.get("ikaros:runtime:skill-list")?.(event)
+    ).resolves.toEqual({ ok: true, value: catalog });
+    await expect(
+      electron.handlers
+        .get("ikaros:runtime:skill-set-enabled")
+        ?.(event, { name: "demo", enabled: false })
+    ).resolves.toEqual({ ok: true, value: toggled });
+    expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(1, "skill.list");
+    expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(
+      2,
+      "skill.set_enabled",
+      { name: "demo", enabled: false }
+    );
+  });
+
+  it("forwards exactly one typed Runtime Thread catalog page", async () => {
     const trustPolicy = {
       assertTrustedIpc: vi.fn(),
       isTrustedUrl: vi.fn(() => true),
@@ -188,34 +228,25 @@ describe("desktop window controls", () => {
       updatedAt: "2026-08-14T00:00:00.000Z",
       archivedAt: null,
     };
-    const second = { ...first, id: "thread-2", title: "Second", defaultBranchId: "branch-2" };
-    electron.runtimeHost.request
-      .mockResolvedValueOnce({
-        threads: [first],
-        nextCursor: "cursor_one",
-        hasMore: true,
-        snapshotSeq: 1,
-      })
-      .mockResolvedValueOnce({
-        threads: [second],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 2,
-      });
+    const page = {
+      threads: [first],
+      nextCursor: "cursor_one",
+      hasMore: true,
+      snapshotSeq: 1,
+    };
+    electron.runtimeHost.request.mockResolvedValueOnce(page);
     registerDesktopIpc(trustPolicy, electron.runtimeHost);
 
     const handler = electron.handlers.get("ikaros:runtime:thread-list");
-    const result = await handler?.({ sender: {} });
+    const params = { cursor: "cursor_zero", limit: 25, archived: true };
+    const result = await handler?.({ sender: {} }, params);
 
     expect(result).toEqual({
       ok: true,
-      value: { threads: [first, second], snapshotSeq: 1 },
+      value: page,
     });
-    expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(1, "thread.list", { limit: 100 });
-    expect(electron.runtimeHost.request).toHaveBeenNthCalledWith(2, "thread.list", {
-      limit: 100,
-      cursor: "cursor_one",
-    });
+    expect(electron.runtimeHost.request).toHaveBeenCalledOnce();
+    expect(electron.runtimeHost.request).toHaveBeenCalledWith("thread.list", params);
   });
 
   it("forwards the archived Thread catalog filter", async () => {
@@ -235,7 +266,6 @@ describe("desktop window controls", () => {
     await handler?.({ sender: {} }, { archived: true });
 
     expect(electron.runtimeHost.request).toHaveBeenCalledWith("thread.list", {
-      limit: 100,
       archived: true,
     });
   });
@@ -428,5 +458,29 @@ describe("desktop window controls", () => {
 
     expect(destroyedContents.send).toHaveBeenCalledOnce();
     expect(liveContents.send).toHaveBeenCalledWith("ikaros:runtime:event", event);
+  });
+
+  it("broadcasts validated Runtime host lifecycle status", () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    const liveContents = {
+      isDestroyed: vi.fn(() => false),
+      send: vi.fn(),
+    };
+    electron.windows.push({ isDestroyed: vi.fn(() => false), webContents: liveContents });
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+
+    electron.runtimeNotification.listener?.({
+      jsonrpc: "2.0",
+      method: RUNTIME_HOST_STATUS_NOTIFICATION,
+      params: { state: "reconnecting", message: "socket closed" },
+    });
+
+    expect(liveContents.send).toHaveBeenCalledWith("ikaros:runtime:status", {
+      state: "reconnecting",
+      message: "socket closed",
+    });
   });
 });

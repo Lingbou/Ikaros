@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
-import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-import yaml
-
+from ..config import ConfigDocumentStore
 from ..errors import ConfigError as ConfigError
 from ..security import contains_protected_value
 from .base import (
@@ -23,56 +19,15 @@ from .base import (
 )
 from .scripted import ScriptedProvider
 
-CONFIG_VERSION = 1
 DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_DISPLAY_NAME = "DeepSeek"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-_MAX_CONFIG_BYTES = 256 * 1024
 _MAX_SECRET_LENGTH = 8192
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _RESERVED_PROVIDER_IDS = frozenset({DEEPSEEK_PROVIDER_ID, "scripted"})
 _TRANSPORT_HEADERS = frozenset(
     {"accept", "connection", "content-length", "content-type", "host", "transfer-encoding"}
-)
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """Safe YAML loader that rejects mappings whose keys would be overwritten."""
-
-
-def _construct_unique_mapping(
-    loader: _UniqueKeyLoader,
-    node: yaml.nodes.MappingNode,
-    deep: bool = False,
-) -> dict[object, object]:
-    loader.flatten_mapping(node)
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as error:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found an unhashable key",
-                key_node.start_mark,
-            ) from error
-        if duplicate:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found a duplicate key",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_mapping,
 )
 
 
@@ -129,14 +84,22 @@ class ModelSummary:
 
 
 class ConfigStore:
-    def __init__(self, runtime_home: Path) -> None:
-        self._runtime_home = runtime_home
-        self._path = runtime_home / "config.yaml"
+    """Provider-section facade over the shared Runtime configuration document."""
+
+    def __init__(self, source: Path | ConfigDocumentStore) -> None:
+        self._document_store = (
+            source if isinstance(source, ConfigDocumentStore) else ConfigDocumentStore(source)
+        )
+        self._path = self._document_store.path
         self._providers = self._load()
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def document_store(self) -> ConfigDocumentStore:
+        return self._document_store
 
     def provider_summaries(self) -> tuple[ProviderSummary, ...]:
         deepseek = self._providers.get(DEEPSEEK_PROVIDER_ID)
@@ -305,26 +268,15 @@ class ConfigStore:
         )
 
     def _load(self) -> dict[str, ProviderConfig]:
-        if not self._path.exists():
+        section = self._document_store.read_section("providers")
+        if section is None:
             return {}
-        load_failed = False
         try:
-            if self._path.stat().st_size > _MAX_CONFIG_BYTES:
-                raise ConfigError("config.yaml exceeds the supported size")
-            source = self._path.read_text(encoding="utf-8")
-            document = yaml.load(source, Loader=_UniqueKeyLoader)
-        except ConfigError:
-            raise
-        except (OSError, UnicodeError, yaml.YAMLError):
-            load_failed = True
-        if load_failed:
-            raise ConfigError("config.yaml could not be read or parsed")
-        try:
-            return _parse_document(document)
+            return _parse_provider_section(section)
         except ConfigError:
             raise
         except Exception:
-            raise ConfigError("config.yaml has an invalid structure") from None
+            raise ConfigError("config.yaml providers have an invalid structure") from None
 
     def _persist(self, providers: Mapping[str, ProviderConfig]) -> None:
         _validate_public_fields(
@@ -332,73 +284,12 @@ class ConfigStore:
             additional_protected_values=self.protected_values(),
         )
         if not providers:
-            try:
-                self._path.unlink(missing_ok=True)
-            except OSError:
-                raise ConfigError("config.yaml could not be updated") from None
+            self._document_store.remove_section("providers")
             return
-        document = _document(providers)
-        try:
-            serialized = yaml.safe_dump(
-                document,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-        except yaml.YAMLError:
-            raise ConfigError("config.yaml could not be serialized") from None
-        try:
-            serialized_size = len(serialized.encode("utf-8"))
-        except UnicodeError:
-            raise ConfigError("config.yaml could not be serialized") from None
-        if serialized_size > _MAX_CONFIG_BYTES:
-            raise ConfigError("config.yaml exceeds the supported size")
-        temporary_path: Path | None = None
-        try:
-            self._runtime_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if os.name != "nt":
-                os.chmod(self._runtime_home, 0o700)
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=".config-",
-                suffix=".tmp",
-                dir=self._runtime_home,
-            )
-            temporary_path = Path(temporary_name)
-            try:
-                os.chmod(temporary_path, 0o600)
-                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                    descriptor = -1
-                    handle.write(serialized)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            finally:
-                if descriptor >= 0:
-                    os.close(descriptor)
-            os.replace(temporary_path, self._path)
-            temporary_path = None
-            _sync_directory_best_effort(self._runtime_home)
-        except OSError:
-            raise ConfigError("config.yaml could not be updated") from None
-        finally:
-            if temporary_path is not None:
-                with suppress(OSError):
-                    temporary_path.unlink(missing_ok=True)
+        self._document_store.replace_section("providers", _provider_section(providers))
 
 
-def _sync_directory_best_effort(directory: Path) -> None:
-    if os.name == "nt":
-        return
-    try:
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    except OSError:
-        pass
-
-
-def _document(providers: Mapping[str, ProviderConfig]) -> dict[str, object]:
+def _provider_section(providers: Mapping[str, ProviderConfig]) -> dict[str, object]:
     rows: dict[str, object] = {}
     for provider in sorted(providers.values(), key=lambda item: item.id):
         models = {
@@ -427,17 +318,10 @@ def _document(providers: Mapping[str, ProviderConfig]) -> dict[str, object]:
         if provider.headers:
             row["headers"] = dict(provider.headers)
         rows[provider.id] = row
-    return {"version": CONFIG_VERSION, "providers": rows}
+    return rows
 
 
-def _parse_document(value: Any) -> dict[str, ProviderConfig]:
-    if not isinstance(value, dict) or set(value) != {"version", "providers"}:
-        raise ConfigError("config.yaml has an invalid top-level structure")
-    if value["version"] != CONFIG_VERSION or isinstance(value["version"], bool):
-        raise ConfigError("config.yaml uses an unsupported version")
-    rows = value["providers"]
-    if not isinstance(rows, dict):
-        raise ConfigError("config.yaml providers must be a mapping")
+def _parse_provider_section(rows: Mapping[str, object]) -> dict[str, ProviderConfig]:
     providers: dict[str, ProviderConfig] = {}
     for raw_id, raw_provider in rows.items():
         if not isinstance(raw_id, str) or not isinstance(raw_provider, dict):

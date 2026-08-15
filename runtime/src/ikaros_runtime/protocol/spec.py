@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from typing import Final
+
+PROTOCOL_SPEC_SCHEMA_VERSION: Final = 1
+PROTOCOL_VERSION: Final = 1
+JSONRPC_VERSION: Final = "2.0"
+SERVER_NAME: Final = "ikaros-runtime"
+INITIALIZE_METHOD: Final = "initialize"
+EVENT_NOTIFICATION_METHOD: Final = "event"
+JOURNAL_EVENT_SCHEMA_VERSION: Final = 2
+
+RPC_METHODS: Final = (
+    "runtime.shutdown",
+    "thread.create",
+    "thread.rename",
+    "thread.archive",
+    "thread.unarchive",
+    "thread.get",
+    "thread.list",
+    "provider.list",
+    "provider.configure",
+    "provider.discover_models",
+    "provider.disconnect",
+    "provider.remove",
+    "model.list",
+    "model.set_enabled",
+    "skill.list",
+    "skill.set_enabled",
+    "turn.start",
+    "turn.list",
+    "run.cancel",
+    "event.replay",
+    "usage.read",
+)
+RPC_METHOD_SET: Final = frozenset(RPC_METHODS)
+
+JOURNAL_EVENT_TYPES: Final = (
+    "thread.created",
+    "thread.renamed",
+    "thread.archived",
+    "thread.unarchived",
+    "run.state_changed",
+    "item.started",
+    "item.delta",
+    "item.completed",
+    "model.usage_recorded",
+    "run.settled",
+)
+JOURNAL_EVENT_TYPE_SET: Final = frozenset(JOURNAL_EVENT_TYPES)
+
+# These are Provider-facing Tool IDs. Renderer labels such as ``process.run``
+# are presentation details and deliberately do not belong to the wire contract.
+PROVIDER_TOOL_IDS: Final = ("process_run", "read", "write", "edit")
+PROVIDER_TOOL_ID_SET: Final = frozenset(PROVIDER_TOOL_IDS)
+EXECUTION_POLICY: Final = "full_access"
+
+CAPABILITY_FLAGS: Final = (
+    ("threads", True),
+    ("turns", True),
+    ("eventReplay", True),
+    ("streaming", True),
+    ("scriptedProvider", True),
+    ("runCancellation", True),
+    ("providers", True),
+    ("models", True),
+    ("usage", True),
+    ("skills", True),
+)
+
+
+def initialize_capabilities() -> dict[str, object]:
+    capabilities: dict[str, object] = dict(CAPABILITY_FLAGS)
+    capabilities["tools"] = list(PROVIDER_TOOL_IDS)
+    capabilities["executionPolicy"] = EXECUTION_POLICY
+    return capabilities
+
+
+def protocol_manifest() -> dict[str, object]:
+    return {
+        "schemaVersion": PROTOCOL_SPEC_SCHEMA_VERSION,
+        "protocolVersion": PROTOCOL_VERSION,
+        "jsonrpcVersion": JSONRPC_VERSION,
+        "serverName": SERVER_NAME,
+        "initializeMethod": INITIALIZE_METHOD,
+        "rpcMethods": list(RPC_METHODS),
+        "notificationMethods": [EVENT_NOTIFICATION_METHOD],
+        "journal": {
+            "schemaVersion": JOURNAL_EVENT_SCHEMA_VERSION,
+            "eventTypes": list(JOURNAL_EVENT_TYPES),
+        },
+        "capabilities": initialize_capabilities(),
+        "providerToolIds": list(PROVIDER_TOOL_IDS),
+    }
+
+
+__all__ = [
+    "CAPABILITY_FLAGS",
+    "EVENT_NOTIFICATION_METHOD",
+    "EXECUTION_POLICY",
+    "INITIALIZE_METHOD",
+    "JOURNAL_EVENT_SCHEMA_VERSION",
+    "JOURNAL_EVENT_TYPES",
+    "JOURNAL_EVENT_TYPE_SET",
+    "JSONRPC_VERSION",
+    "PROTOCOL_SPEC_SCHEMA_VERSION",
+    "PROTOCOL_VERSION",
+    "PROVIDER_TOOL_IDS",
+    "PROVIDER_TOOL_ID_SET",
+    "RPC_METHODS",
+    "RPC_METHOD_SET",
+    "SERVER_NAME",
+    "initialize_capabilities",
+    "protocol_manifest",
+]

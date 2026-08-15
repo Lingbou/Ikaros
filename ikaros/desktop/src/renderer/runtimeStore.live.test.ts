@@ -1,13 +1,13 @@
 /// <reference types="node" />
 
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listAllRuntimeThreads, RuntimeHost, RuntimeRpcError } from "../main/runtimeHost";
+import { RuntimeHost, RuntimeRpcError } from "../main/runtimeHost";
 import type { IkarosDesktopApi } from "../shared/platform";
 import type {
   IkarosRuntimeBridgeApi,
@@ -21,6 +21,7 @@ import type {
   RuntimeReplayResult,
   RuntimeThreadCreateResult,
   RuntimeThreadGetResult,
+  RuntimeThreadListPage,
   RuntimeThreadMutationResult,
   RuntimeTurnListPage,
   RuntimeTurnStartResult,
@@ -52,7 +53,10 @@ function runtimeBridge(
   cancellationResults: RuntimeCancelRunResult[],
 ): IkarosRuntimeBridgeApi {
   return {
-    listThreads: () => bridgeInvocation(() => listAllRuntimeThreads(host)),
+    listThreads: (params = {}) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeThreadListPage>("thread.list", { ...params }),
+      ),
     getThread: (threadId) =>
       bridgeInvocation(() =>
         host.request<RuntimeThreadGetResult>("thread.get", { threadId }),
@@ -131,6 +135,26 @@ function runtimeBridge(
     setModelEnabled: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeModelSetEnabledResult>("model.set_enabled", { ...params }),
+      ),
+    listSkills: () =>
+      bridgeInvocation(() =>
+        host.request<Awaited<ReturnType<IkarosRuntimeBridgeApi["listSkills"]>> extends {
+          ok: true;
+          value: infer TValue;
+        }
+          ? TValue
+          : never>("skill.list"),
+      ),
+    setSkillEnabled: (params) =>
+      bridgeInvocation(() =>
+        host.request<
+          Awaited<ReturnType<IkarosRuntimeBridgeApi["setSkillEnabled"]>> extends {
+            ok: true;
+            value: infer TValue;
+          }
+            ? TValue
+            : never
+        >("skill.set_enabled", { ...params }),
       ),
     readUsage: () =>
       bridgeInvocation(() => host.request<RuntimeUsageReadResult>("usage.read")),
@@ -392,12 +416,27 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
       let fileWorkspace: string | undefined;
 
       try {
+        const liveSkillDirectory = join(runtimeHome, "skills", "live-validation");
+        await mkdir(liveSkillDirectory, { recursive: true });
+        await writeFile(
+          join(liveSkillDirectory, "SKILL.md"),
+          "---\n" +
+            "name: live-validation\n" +
+            "description: Use only when the user explicitly asks for the Ikaros live Skill validation workflow.\n" +
+            "---\n\n" +
+            "LIVE_SKILL_BODY_MUST_STAY_LAZY\n",
+          "utf8",
+        );
         await host.start();
         installDesktopBridge(runtimeBridge(host, cancellationResults));
         vi.resetModules();
         const { useAppStore } = await import("./store");
 
         await useAppStore.getState().initializeRuntime();
+        await useAppStore.getState().loadSkillCatalog();
+        expect(useAppStore.getState().skills).toEqual([
+          expect.objectContaining({ name: "live-validation", enabled: true }),
+        ]);
         await useAppStore.getState().configureProvider({
           kind: "deepseek",
           apiKey,
@@ -443,6 +482,25 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
               event.payload.delta.length > 0,
           ),
         ).toBe(true);
+        const firstRunSnapshotEvent = rawEvents.find(
+          (event) =>
+            event.runId === firstTurn.runId &&
+            event.type === "item.completed" &&
+            typeof event.payload.run === "object" &&
+            event.payload.run !== null,
+        );
+        expect(firstRunSnapshotEvent).toBeDefined();
+        const firstRunSnapshot = firstRunSnapshotEvent?.payload.run as Record<string, unknown>;
+        expect(firstRunSnapshot.skills).toEqual([
+          expect.objectContaining({
+            name: "live-validation",
+            description:
+              "Use only when the user explicitly asks for the Ikaros live Skill validation workflow.",
+          }),
+        ]);
+        expect(JSON.stringify(firstRunSnapshot.skills)).not.toContain(
+          "LIVE_SKILL_BODY_MUST_STAY_LAZY",
+        );
 
         fileWorkspace = await mkdtemp(join(tmpdir(), "ikaros-live-files-"));
         const filePath = join(fileWorkspace, "tool-proof.txt");

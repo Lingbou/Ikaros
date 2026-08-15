@@ -36,7 +36,6 @@ async function initializeDesktop(): Promise<void> {
   Menu.setApplicationMenu(null);
 
   runtimeHost = new RuntimeHost({ runtimeRoot: developmentRuntimeRoot(app.getAppPath()) });
-  await runtimeHost.start();
 
   const preferences = await getUiPreferences();
   applyNativeTheme(preferences);

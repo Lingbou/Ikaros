@@ -1,0 +1,767 @@
+{
+  "fixtureVersion": 1,
+  "messages": [
+    {
+      "name": "initialize",
+      "kind": "response",
+      "method": "initialize",
+      "requestParams": {
+        "protocolVersion": 1,
+        "client": {
+          "name": "golden-client",
+          "version": "1.0.0"
+        }
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "server": {
+            "name": "ikaros-runtime",
+            "version": "0.1.0"
+          },
+          "capabilities": {
+            "threads": true,
+            "turns": true,
+            "eventReplay": true,
+            "streaming": true,
+            "scriptedProvider": true,
+            "runCancellation": true,
+            "providers": true,
+            "models": true,
+            "usage": true,
+            "skills": true,
+            "tools": [
+              "process_run",
+              "read",
+              "write",
+              "edit"
+            ],
+            "executionPolicy": "full_access"
+          }
+        }
+      }
+    },
+    {
+      "name": "thread-list-page",
+      "kind": "response",
+      "method": "thread.list",
+      "requestParams": {
+        "limit": 25
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "threads": [
+            {
+              "id": "thread_golden",
+              "title": "Golden trace",
+              "defaultBranchId": "branch_golden",
+              "workspace": null,
+              "createdAt": "2026-08-15T00:00:00.000Z",
+              "updatedAt": "2026-08-15T00:00:14.000Z",
+              "archivedAt": null
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": false,
+          "snapshotSeq": 15
+        }
+      }
+    },
+    {
+      "name": "turn-list-page",
+      "kind": "response",
+      "method": "turn.list",
+      "requestParams": {
+        "threadId": "thread_golden",
+        "branchId": "branch_golden",
+        "limit": 25
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "turns": [
+            {
+              "id": "turn_golden",
+              "threadId": "thread_golden",
+              "branchId": "branch_golden",
+              "ordinal": 1,
+              "status": "completed",
+              "createdAt": "2026-08-15T00:00:04.000Z",
+              "updatedAt": "2026-08-15T00:00:14.000Z",
+              "runs": [
+                {
+                  "id": "run_golden",
+                  "turnId": "turn_golden",
+                  "providerId": "scripted",
+                  "modelId": "scripted-v1",
+                  "executionPolicy": "full_access",
+                  "status": "completed",
+                  "createdAt": "2026-08-15T00:00:04.000Z",
+                  "settledAt": "2026-08-15T00:00:14.000Z",
+                  "items": [
+                    {
+                      "id": "item_user_golden",
+                      "turnId": "turn_golden",
+                      "runId": "run_golden",
+                      "ordinal": 1,
+                      "kind": "message",
+                      "role": "user",
+                      "status": "completed",
+                      "content": "Run the golden command",
+                      "data": {},
+                      "createdAt": "2026-08-15T00:00:04.000Z",
+                      "updatedAt": "2026-08-15T00:00:04.000Z"
+                    },
+                    {
+                      "id": "item_assistant_golden",
+                      "turnId": "turn_golden",
+                      "runId": "run_golden",
+                      "ordinal": 2,
+                      "kind": "message",
+                      "role": "assistant",
+                      "status": "completed",
+                      "content": "I will run it.",
+                      "data": {
+                        "stepId": "step_golden"
+                      },
+                      "createdAt": "2026-08-15T00:00:07.000Z",
+                      "updatedAt": "2026-08-15T00:00:09.000Z"
+                    },
+                    {
+                      "id": "item_tool_call_golden",
+                      "turnId": "turn_golden",
+                      "runId": "run_golden",
+                      "ordinal": 3,
+                      "kind": "tool_call",
+                      "role": "assistant",
+                      "status": "completed",
+                      "content": "",
+                      "data": {
+                        "stepId": "step_golden",
+                        "callId": "call_golden",
+                        "toolName": "process_run",
+                        "arguments": {
+                          "command": "Write-Output golden"
+                        },
+                        "outcome": "completed",
+                        "durationMs": 8
+                      },
+                      "createdAt": "2026-08-15T00:00:10.000Z",
+                      "updatedAt": "2026-08-15T00:00:11.000Z"
+                    },
+                    {
+                      "id": "item_tool_result_golden",
+                      "turnId": "turn_golden",
+                      "runId": "run_golden",
+                      "ordinal": 4,
+                      "kind": "tool_result",
+                      "role": "tool",
+                      "status": "completed",
+                      "content": "golden",
+                      "data": {
+                        "stepId": "step_golden",
+                        "callId": "call_golden",
+                        "toolCallItemId": "item_tool_call_golden",
+                        "toolName": "process_run",
+                        "result": {
+                          "toolCallId": "call_golden",
+                          "toolName": "process_run",
+                          "ok": true,
+                          "output": "golden"
+                        }
+                      },
+                      "createdAt": "2026-08-15T00:00:11.000Z",
+                      "updatedAt": "2026-08-15T00:00:11.000Z"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": false,
+          "snapshotSeq": 15
+        }
+      }
+    },
+    {
+      "name": "skill-list",
+      "kind": "response",
+      "method": "skill.list",
+      "requestParams": {},
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "skills": [
+            {
+              "name": "demo",
+              "description": "Golden Skill",
+              "location": "C:/Users/golden/.ikaros/skills/demo/SKILL.md",
+              "enabled": true
+            }
+          ],
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "name": "skill-set-enabled",
+      "kind": "response",
+      "method": "skill.set_enabled",
+      "requestParams": {
+        "name": "demo",
+        "enabled": false
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "skill": {
+            "name": "demo",
+            "description": "Golden Skill",
+            "location": "C:/Users/golden/.ikaros/skills/demo/SKILL.md",
+            "enabled": false
+          }
+        }
+      }
+    },
+    {
+      "name": "thread-created",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 1,
+          "schemaVersion": 2,
+          "type": "thread.created",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": null,
+          "runId": null,
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:00.000Z",
+          "payload": {
+            "thread": {
+              "id": "thread_golden",
+              "title": null,
+              "defaultBranchId": "branch_golden",
+              "workspace": null,
+              "createdAt": "2026-08-15T00:00:00.000Z",
+              "updatedAt": "2026-08-15T00:00:00.000Z",
+              "archivedAt": null
+            },
+            "branch": {
+              "id": "branch_golden",
+              "threadId": "thread_golden",
+              "createdAt": "2026-08-15T00:00:00.000Z",
+              "isDefault": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "thread-renamed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 2,
+          "schemaVersion": 2,
+          "type": "thread.renamed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": null,
+          "runId": null,
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:01.000Z",
+          "payload": {
+            "thread": {
+              "id": "thread_golden",
+              "title": "Golden trace",
+              "defaultBranchId": "branch_golden",
+              "workspace": null,
+              "createdAt": "2026-08-15T00:00:00.000Z",
+              "updatedAt": "2026-08-15T00:00:01.000Z",
+              "archivedAt": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "thread-archived",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 3,
+          "schemaVersion": 2,
+          "type": "thread.archived",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": null,
+          "runId": null,
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:02.000Z",
+          "payload": {
+            "thread": {
+              "id": "thread_golden",
+              "title": "Golden trace",
+              "defaultBranchId": "branch_golden",
+              "workspace": null,
+              "createdAt": "2026-08-15T00:00:00.000Z",
+              "updatedAt": "2026-08-15T00:00:02.000Z",
+              "archivedAt": "2026-08-15T00:00:02.000Z"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "thread-unarchived",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 4,
+          "schemaVersion": 2,
+          "type": "thread.unarchived",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": null,
+          "runId": null,
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:03.000Z",
+          "payload": {
+            "thread": {
+              "id": "thread_golden",
+              "title": "Golden trace",
+              "defaultBranchId": "branch_golden",
+              "workspace": null,
+              "createdAt": "2026-08-15T00:00:00.000Z",
+              "updatedAt": "2026-08-15T00:00:03.000Z",
+              "archivedAt": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "initial-user-item-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 5,
+          "schemaVersion": 2,
+          "type": "item.completed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_user_golden",
+          "timestamp": "2026-08-15T00:00:04.000Z",
+          "payload": {
+            "turn": {
+              "id": "turn_golden",
+              "threadId": "thread_golden",
+              "branchId": "branch_golden",
+              "ordinal": 1,
+              "status": "queued",
+              "createdAt": "2026-08-15T00:00:04.000Z",
+              "updatedAt": "2026-08-15T00:00:04.000Z"
+            },
+            "run": {
+              "id": "run_golden",
+              "turnId": "turn_golden",
+              "providerId": "scripted",
+              "modelId": "scripted-v1",
+              "executionPolicy": "full_access",
+              "status": "queued",
+              "createdAt": "2026-08-15T00:00:04.000Z",
+              "settledAt": null,
+              "skills": [],
+              "clientRequestId": "request_golden"
+            },
+            "item": {
+              "id": "item_user_golden",
+              "turnId": "turn_golden",
+              "runId": "run_golden",
+              "ordinal": 1,
+              "kind": "message",
+              "role": "user",
+              "status": "completed",
+              "content": "Run the golden command",
+              "data": {},
+              "createdAt": "2026-08-15T00:00:04.000Z",
+              "updatedAt": "2026-08-15T00:00:04.000Z"
+            },
+            "clientRequestId": "request_golden",
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_user_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "run-queued",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 6,
+          "schemaVersion": 2,
+          "type": "run.state_changed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:05.000Z",
+          "payload": {
+            "status": "queued",
+            "turnId": "turn_golden",
+            "runId": "run_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "run-running",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 7,
+          "schemaVersion": 2,
+          "type": "run.state_changed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:06.000Z",
+          "payload": {
+            "status": "running",
+            "turnId": "turn_golden",
+            "runId": "run_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-started",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 8,
+          "schemaVersion": 2,
+          "type": "item.started",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_assistant_golden",
+          "timestamp": "2026-08-15T00:00:07.000Z",
+          "payload": {
+            "item": {
+              "id": "item_assistant_golden",
+              "turnId": "turn_golden",
+              "runId": "run_golden",
+              "ordinal": 2,
+              "kind": "message",
+              "role": "assistant",
+              "status": "streaming",
+              "content": "",
+              "data": {},
+              "createdAt": "2026-08-15T00:00:07.000Z",
+              "updatedAt": "2026-08-15T00:00:07.000Z"
+            },
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_assistant_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-delta",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 9,
+          "schemaVersion": 2,
+          "type": "item.delta",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_assistant_golden",
+          "timestamp": "2026-08-15T00:00:08.000Z",
+          "payload": {
+            "delta": "I will run it.",
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_assistant_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 10,
+          "schemaVersion": 2,
+          "type": "item.completed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_assistant_golden",
+          "timestamp": "2026-08-15T00:00:09.000Z",
+          "payload": {
+            "item": {
+              "id": "item_assistant_golden",
+              "turnId": "turn_golden",
+              "runId": "run_golden",
+              "ordinal": 2,
+              "kind": "message",
+              "role": "assistant",
+              "status": "completed",
+              "content": "I will run it.",
+              "data": {
+                "stepId": "step_golden"
+              },
+              "createdAt": "2026-08-15T00:00:07.000Z",
+              "updatedAt": "2026-08-15T00:00:09.000Z"
+            },
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_assistant_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-call-started",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 11,
+          "schemaVersion": 2,
+          "type": "item.started",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_tool_call_golden",
+          "timestamp": "2026-08-15T00:00:10.000Z",
+          "payload": {
+            "item": {
+              "id": "item_tool_call_golden",
+              "turnId": "turn_golden",
+              "runId": "run_golden",
+              "ordinal": 3,
+              "kind": "tool_call",
+              "role": "assistant",
+              "status": "running",
+              "content": "",
+              "data": {
+                "stepId": "step_golden",
+                "callId": "call_golden",
+                "toolName": "process_run",
+                "arguments": {
+                  "command": "Write-Output golden"
+                }
+              },
+              "createdAt": "2026-08-15T00:00:10.000Z",
+              "updatedAt": "2026-08-15T00:00:10.000Z"
+            },
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_tool_call_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-call-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 12,
+          "schemaVersion": 2,
+          "type": "item.completed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_tool_call_golden",
+          "timestamp": "2026-08-15T00:00:11.000Z",
+          "payload": {
+            "item": {
+              "id": "item_tool_call_golden",
+              "turnId": "turn_golden",
+              "runId": "run_golden",
+              "ordinal": 3,
+              "kind": "tool_call",
+              "role": "assistant",
+              "status": "completed",
+              "content": "",
+              "data": {
+                "stepId": "step_golden",
+                "callId": "call_golden",
+                "toolName": "process_run",
+                "arguments": {
+                  "command": "Write-Output golden"
+                },
+                "outcome": "completed",
+                "durationMs": 8
+              },
+              "createdAt": "2026-08-15T00:00:10.000Z",
+              "updatedAt": "2026-08-15T00:00:11.000Z"
+            },
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_tool_call_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-result-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 13,
+          "schemaVersion": 2,
+          "type": "item.completed",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": "item_tool_result_golden",
+          "timestamp": "2026-08-15T00:00:11.000Z",
+          "payload": {
+            "item": {
+              "id": "item_tool_result_golden",
+              "turnId": "turn_golden",
+              "runId": "run_golden",
+              "ordinal": 4,
+              "kind": "tool_result",
+              "role": "tool",
+              "status": "completed",
+              "content": "golden",
+              "data": {
+                "stepId": "step_golden",
+                "callId": "call_golden",
+                "toolCallItemId": "item_tool_call_golden",
+                "toolName": "process_run",
+                "result": {
+                  "toolCallId": "call_golden",
+                  "toolName": "process_run",
+                  "ok": true,
+                  "output": "golden"
+                }
+              },
+              "createdAt": "2026-08-15T00:00:11.000Z",
+              "updatedAt": "2026-08-15T00:00:11.000Z"
+            },
+            "turnId": "turn_golden",
+            "runId": "run_golden",
+            "itemId": "item_tool_result_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "model-usage-recorded",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 14,
+          "schemaVersion": 2,
+          "type": "model.usage_recorded",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:13.000Z",
+          "payload": {
+            "stepOrdinal": 1,
+            "providerId": "scripted",
+            "modelId": "scripted-v1",
+            "activityDate": "2026-08-15",
+            "completedAt": "2026-08-15T00:00:13.000Z",
+            "usage": {
+              "inputTokens": 12,
+              "cachedInputTokens": null,
+              "outputTokens": 5,
+              "reasoningOutputTokens": null,
+              "totalTokens": 17
+            },
+            "turnId": "turn_golden",
+            "runId": "run_golden"
+          }
+        }
+      }
+    },
+    {
+      "name": "run-settled",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 15,
+          "schemaVersion": 2,
+          "type": "run.settled",
+          "threadId": "thread_golden",
+          "branchId": "branch_golden",
+          "turnId": "turn_golden",
+          "runId": "run_golden",
+          "itemId": null,
+          "timestamp": "2026-08-15T00:00:14.000Z",
+          "payload": {
+            "status": "completed",
+            "settledAt": "2026-08-15T00:00:14.000Z",
+            "turnId": "turn_golden",
+            "runId": "run_golden"
+          }
+        }
+      }
+    }
+  ]
+}

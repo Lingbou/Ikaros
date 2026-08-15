@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, cast
+
+from ikaros_runtime.protocol.spec import (
+    EVENT_NOTIFICATION_METHOD,
+    INITIALIZE_METHOD,
+    JOURNAL_EVENT_SCHEMA_VERSION,
+    JOURNAL_EVENT_TYPE_SET,
+    JSONRPC_VERSION,
+    PROTOCOL_VERSION,
+    PROVIDER_TOOL_IDS,
+    RPC_METHOD_SET,
+    RPC_METHODS,
+    SERVER_NAME,
+    initialize_capabilities,
+    protocol_manifest,
+)
+
+_RUNTIME_ROOT = Path(__file__).resolve().parents[1]
+_MANIFEST_PATH = _RUNTIME_ROOT / "protocol" / "runtime-protocol.json"
+_GOLDEN_TRACE_PATH = _RUNTIME_ROOT / "protocol" / "golden-trace.json"
+
+
+def _load_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return cast(dict[str, Any], value)
+
+
+def test_committed_manifest_is_the_deterministic_python_spec() -> None:
+    assert _load_object(_MANIFEST_PATH) == protocol_manifest()
+    completed = subprocess.run(
+        [sys.executable, "-m", "ikaros_runtime.protocol.generate", "--check"],
+        cwd=_RUNTIME_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
+    trace = _load_object(_GOLDEN_TRACE_PATH)
+    assert trace["fixtureVersion"] == 1
+    messages = trace["messages"]
+    assert isinstance(messages, list)
+    observed_methods: set[str] = set()
+    observed_event_types: set[str] = set()
+
+    for raw_message in messages:
+        assert isinstance(raw_message, dict)
+        message = cast(dict[str, Any], raw_message)
+        envelope = message["envelope"]
+        assert isinstance(envelope, dict)
+        assert envelope["jsonrpc"] == JSONRPC_VERSION
+        if message["kind"] == "response":
+            method = message["method"]
+            assert isinstance(method, str)
+            assert method == INITIALIZE_METHOD or method in RPC_METHOD_SET
+            assert isinstance(message["requestParams"], dict)
+            assert isinstance(envelope["id"], int) and not isinstance(envelope["id"], bool)
+            result = envelope["result"]
+            assert isinstance(result, dict)
+            observed_methods.add(method)
+            if method == INITIALIZE_METHOD:
+                assert result["protocolVersion"] == PROTOCOL_VERSION
+                assert result["server"]["name"] == SERVER_NAME
+                assert result["capabilities"] == initialize_capabilities()
+                assert tuple(result["capabilities"]["tools"]) == PROVIDER_TOOL_IDS
+            elif method == "thread.list":
+                assert isinstance(result["threads"], list)
+                assert isinstance(result["snapshotSeq"], int)
+            elif method == "turn.list":
+                assert isinstance(result["turns"], list)
+                assert isinstance(result["snapshotSeq"], int)
+        else:
+            assert message["kind"] == "notification"
+            assert envelope["method"] == EVENT_NOTIFICATION_METHOD
+            event = envelope["params"]
+            assert isinstance(event, dict)
+            assert event["schemaVersion"] == JOURNAL_EVENT_SCHEMA_VERSION
+            assert event["type"] in JOURNAL_EVENT_TYPE_SET
+            assert isinstance(event["payload"], dict)
+            for wire_key in ("turnId", "runId", "itemId"):
+                scope_value = event[wire_key]
+                if scope_value is None:
+                    assert wire_key not in event["payload"]
+                else:
+                    assert event["payload"][wire_key] == scope_value
+            observed_event_types.add(event["type"])
+
+    assert observed_methods == {
+        INITIALIZE_METHOD,
+        "skill.list",
+        "skill.set_enabled",
+        "thread.list",
+        "turn.list",
+    }
+    assert observed_event_types == JOURNAL_EVENT_TYPE_SET
+    assert len(RPC_METHODS) == 21
+
+
+def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
+    assert len(RPC_METHODS) == len(RPC_METHOD_SET)
+    assert "process_run" in PROVIDER_TOOL_IDS
+    assert "process.run" not in PROVIDER_TOOL_IDS

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { IkarosRuntimeApi, RuntimeTurnHistory } from "../shared/runtime";
-import { loadRuntimeThreadHistory } from "./runtimeHistory";
+import {
+  loadOlderRuntimeTurnPage,
+  loadRuntimeThreadHistory,
+} from "./runtimeHistory";
 
 const thread = {
   id: "thread-1",
@@ -36,44 +39,31 @@ function reader(
 }
 
 describe("Runtime Thread history loader", () => {
-  it("loads every page and returns Turns in canonical ordinal order", async () => {
-    const listTurns = vi
-      .fn<IkarosRuntimeApi["listTurns"]>()
-      .mockResolvedValueOnce({
-        turns: [turn(3), turn(4)],
-        nextCursor: "older_page",
-        hasMore: true,
-        snapshotSeq: 11,
-      })
-      .mockResolvedValueOnce({
-        turns: [turn(1), turn(2)],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 12,
-      });
+  it("loads only the newest Turn page and exposes its continuation", async () => {
+    const listTurns = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
+      turns: [turn(3), turn(4)],
+      nextCursor: "older_page",
+      hasMore: true,
+      snapshotSeq: 11,
+    });
 
     await expect(loadRuntimeThreadHistory(reader(listTurns), thread.id)).resolves.toEqual({
       thread,
       turns: [
-        { turn: turn(1), snapshotSeq: 12 },
-        { turn: turn(2), snapshotSeq: 12 },
         { turn: turn(3), snapshotSeq: 11 },
         { turn: turn(4), snapshotSeq: 11 },
       ],
+      nextCursor: "older_page",
+      hasMore: true,
       metadataSnapshotSeq: 10,
       historySnapshotSeq: 11,
-      latestSnapshotSeq: 12,
+      latestSnapshotSeq: 11,
     });
-    expect(listTurns).toHaveBeenNthCalledWith(1, {
+    expect(listTurns).toHaveBeenCalledOnce();
+    expect(listTurns).toHaveBeenCalledWith({
       threadId: thread.id,
       branchId: thread.defaultBranchId,
-      limit: 100,
-    });
-    expect(listTurns).toHaveBeenNthCalledWith(2, {
-      threadId: thread.id,
-      branchId: thread.defaultBranchId,
-      cursor: "older_page",
-      limit: 100,
+      limit: 25,
     });
   });
 
@@ -88,26 +78,18 @@ describe("Runtime Thread history loader", () => {
       "escaped its requested scope",
     );
 
-    const duplicated = vi
-      .fn<IkarosRuntimeApi["listTurns"]>()
-      .mockResolvedValueOnce({
-        turns: [turn(2)],
-        nextCursor: "older_page",
-        hasMore: true,
-        snapshotSeq: 10,
-      })
-      .mockResolvedValueOnce({
-        turns: [turn(2)],
-        nextCursor: null,
-        hasMore: false,
-        snapshotSeq: 10,
-      });
+    const duplicated = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
+      turns: [turn(2), { ...turn(2), id: "turn-other" }],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 10,
+    });
     await expect(loadRuntimeThreadHistory(reader(duplicated), thread.id)).rejects.toThrow(
       "duplicate Turn",
     );
   });
 
-  it("rejects backward watermarks and non-advancing cursors", async () => {
+  it("rejects a backward initial history watermark", async () => {
     const backward = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
       turns: [],
       nextCursor: null,
@@ -118,15 +100,69 @@ describe("Runtime Thread history loader", () => {
       "watermark moved backwards",
     );
 
-    const stuck = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
-      turns: [],
-      nextCursor: "same_cursor",
-      hasMore: true,
+  });
+
+  it("loads one older page and rejects cursor, watermark, or ordinal overlap", async () => {
+    const existingTurnIds = new Set(["turn-3", "turn-4"]);
+    const existingOrdinals = new Set([3, 4]);
+    const request = {
+      threadId: thread.id,
+      branchId: thread.defaultBranchId,
+      cursor: "older_page",
+      previousSnapshotSeq: 11,
+      existingTurnIds,
+      existingOrdinals,
+    };
+    const listTurns = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
+      turns: [turn(1), turn(2)],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 12,
+    });
+    await expect(loadOlderRuntimeTurnPage({ listTurns }, request)).resolves.toEqual({
+      turns: [
+        { turn: turn(1), snapshotSeq: 12 },
+        { turn: turn(2), snapshotSeq: 12 },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 12,
+    });
+    expect(listTurns).toHaveBeenCalledWith({
+      threadId: thread.id,
+      branchId: thread.defaultBranchId,
+      cursor: "older_page",
+      limit: 25,
+    });
+
+    const backward = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
+      turns: [turn(2)],
+      nextCursor: null,
+      hasMore: false,
       snapshotSeq: 10,
     });
-    const stuckReader = reader(stuck);
-    const pending = loadRuntimeThreadHistory(stuckReader, thread.id);
-    await expect(pending).rejects.toThrow("cursor did not advance");
-    expect(stuck).toHaveBeenCalledTimes(2);
+    await expect(loadOlderRuntimeTurnPage({ listTurns: backward }, request)).rejects.toThrow(
+      "watermark moved backwards",
+    );
+
+    const overlap = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
+      turns: [turn(3)],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 12,
+    });
+    await expect(loadOlderRuntimeTurnPage({ listTurns: overlap }, request)).rejects.toThrow(
+      "duplicate Turn",
+    );
+
+    const stuck = vi.fn<IkarosRuntimeApi["listTurns"]>().mockResolvedValue({
+      turns: [turn(2)],
+      nextCursor: "older_page",
+      hasMore: true,
+      snapshotSeq: 12,
+    });
+    await expect(loadOlderRuntimeTurnPage({ listTurns: stuck }, request)).rejects.toThrow(
+      "cursor did not advance",
+    );
   });
 });

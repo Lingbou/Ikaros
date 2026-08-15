@@ -3,9 +3,9 @@
 The original process-Tool vertical slice was validated on 2026-08-12
 (Asia/Shanghai) on Windows, starting from Gate 6 commit `48b8cd5`. The most
 recently recorded extension of the same end-to-end smoke with Provider-reported
-Token usage and the file Tools passed on 2026-08-15. This document records that
-run; later code revisions
-require a fresh opt-in run before they can be described as live-validated.
+Token usage, the file Tools, and an enabled frozen Skill descriptor passed on
+2026-08-15. This document records that run; later code revisions require a
+fresh opt-in run before they can be described as live-validated.
 
 ## Live path
 
@@ -18,6 +18,7 @@ Renderer store
   -> RuntimeClient bridge
   -> Desktop RuntimeHost
   -> Python Runtime
+  -> enabled Skill descriptor frozen into the Run context
   -> DeepSeek OpenAI-compatible SSE
   -> write -> read -> edit -> read
   -> model.usage_recorded -> usage.read
@@ -29,6 +30,9 @@ The most recently recorded file-Tool live run used the explicitly configured
 `deepseek-chat` model. Its asserted evidence was:
 
 - two sequential Turns in one Thread;
+- one real enabled Skill discovered through the renderer Store and frozen into
+  the first DeepSeek Run, while the Skill body remained lazy and absent from
+  the persisted descriptor;
 - prior-Turn context reaching the second Provider request;
 - streamed assistant deltas;
 - four real DeepSeek-requested Tool Calls in the exact order `write`, `read`,

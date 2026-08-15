@@ -89,7 +89,7 @@ function installDesktopApi(options: DesktopApiOptions = {}) {
   };
 }
 
-function runtimeEvent(type: string): RuntimeJournalEvent {
+function runtimeEvent(type: RuntimeJournalEvent["type"]): RuntimeJournalEvent {
   return {
     seq: 1,
     schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,

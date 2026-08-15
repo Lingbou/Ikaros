@@ -9,7 +9,9 @@ import {
   type RuntimeItemHistory,
   type RuntimeModelSummary,
   type RuntimeProviderSummary,
+  type RuntimeSkillSummary,
   type RuntimeThreadCreateParams,
+  type RuntimeThreadListPage,
   type RuntimeThreadSummary,
   type RuntimeTurnListPage,
 } from "../shared/runtime";
@@ -84,10 +86,19 @@ function installRuntimeBridge(api: unknown): void {
       listThreads: (params) =>
         bridgeInvocation(async () => {
           const listed = await runtime.listThreads(params);
-          listedThreads = listed.threads;
+          listedThreads = listed.threads.map((thread) => ({
+            ...thread,
+            workspace: thread.workspace ?? null,
+            archivedAt: thread.archivedAt ?? null,
+          }));
           catalogSnapshotSeq =
             typeof listed.snapshotSeq === "number" ? listed.snapshotSeq : 0;
-          return { threads: listed.threads, snapshotSeq: catalogSnapshotSeq };
+          return {
+            threads: listedThreads,
+            nextCursor: listed.nextCursor ?? null,
+            hasMore: listed.hasMore ?? false,
+            snapshotSeq: catalogSnapshotSeq,
+          };
         }),
       getThread: (threadId: string) =>
         bridgeInvocation(async () => {
@@ -145,6 +156,14 @@ function installRuntimeBridge(api: unknown): void {
         ),
       setModelEnabled: (params: Parameters<IkarosRuntimeApi["setModelEnabled"]>[0]) =>
         bridgeInvocation(() => runtime.setModelEnabled(params)),
+      listSkills: () =>
+        bridgeInvocation(() =>
+          typeof runtime.listSkills === "function"
+            ? runtime.listSkills()
+            : Promise.resolve({ skills: [], diagnostics: [] }),
+        ),
+      setSkillEnabled: (params: Parameters<IkarosRuntimeApi["setSkillEnabled"]>[0]) =>
+        bridgeInvocation(() => runtime.setSkillEnabled(params)),
       readUsage: () =>
         bridgeInvocation(() =>
           typeof runtime.readUsage === "function"
@@ -171,7 +190,7 @@ function installRuntimeBridge(api: unknown): void {
 
 function runtimeEvent(
   seq: number,
-  type: string,
+  type: RuntimeJournalEvent["type"],
   itemId: string | null,
   payload: Record<string, unknown>,
   identity: Partial<
@@ -390,10 +409,14 @@ describe("Runtime-backed renderer store", () => {
     };
     let resolveArchivedCatalog!: (value: {
       threads: RuntimeThreadSummary[];
+      nextCursor: string | null;
+      hasMore: boolean;
       snapshotSeq: number;
     }) => void;
     const archivedCatalog = new Promise<{
       threads: RuntimeThreadSummary[];
+      nextCursor: string | null;
+      hasMore: boolean;
       snapshotSeq: number;
     }>((resolve) => {
       resolveArchivedCatalog = resolve;
@@ -403,7 +426,12 @@ describe("Runtime-backed renderer store", () => {
       .mockImplementation((params) =>
         params?.archived
           ? archivedCatalog
-          : Promise.resolve({ threads: [], snapshotSeq: 10 }),
+          : Promise.resolve({
+              threads: [],
+              nextCursor: null,
+              hasMore: false,
+              snapshotSeq: 10,
+            }),
       );
     const api = {
       runtime: {
@@ -444,7 +472,12 @@ describe("Runtime-backed renderer store", () => {
         }),
       );
     }
-    resolveArchivedCatalog({ threads: [archived], snapshotSeq: 10 });
+    resolveArchivedCatalog({
+      threads: [archived],
+      nextCursor: null,
+      hasMore: false,
+      snapshotSeq: 10,
+    });
     await loading;
 
     expect(useAppStore.getState()).toMatchObject({
@@ -1095,6 +1128,101 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().selectedModel).toEqual({
       providerId: "fresh-provider",
       modelId: "fresh-model",
+    });
+  });
+
+  it("loads Skills lazily and applies a global enablement result in place", async () => {
+    const enabled: RuntimeSkillSummary = {
+      name: "demo",
+      description: "Demo Skill",
+      location: "C:/Users/demo/.ikaros/skills/demo/SKILL.md",
+      enabled: true,
+    };
+    const disabled = { ...enabled, enabled: false };
+    const diagnostics = [
+      { entry: "broken", code: "missing_file", message: "SKILL.md is missing." },
+    ];
+    const listSkills = vi.fn(async () => ({ skills: [enabled], diagnostics }));
+    const setSkillEnabled = vi.fn(async () => ({ skill: disabled }));
+    installRuntimeBridge({
+      runtime: {
+        listSkills,
+        setSkillEnabled,
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    expect(useAppStore.getState()).toMatchObject({
+      skillCatalogStatus: "idle",
+      skills: [],
+      skillDiagnostics: [],
+    });
+    expect(listSkills).not.toHaveBeenCalled();
+
+    await useAppStore.getState().loadSkillCatalog();
+    expect(useAppStore.getState()).toMatchObject({
+      skillCatalogStatus: "ready",
+      skillCatalogError: null,
+      skills: [enabled],
+      skillDiagnostics: diagnostics,
+    });
+
+    await useAppStore.getState().setSkillEnabled({ name: "demo", enabled: false });
+    expect(setSkillEnabled).toHaveBeenCalledWith({ name: "demo", enabled: false });
+    expect(useAppStore.getState()).toMatchObject({
+      skillCatalogStatus: "ready",
+      skills: [disabled],
+      skillDiagnostics: diagnostics,
+    });
+  });
+
+  it("ignores stale Skill loads and preserves the catalog when a refresh fails", async () => {
+    let resolveOld: ((value: { skills: RuntimeSkillSummary[]; diagnostics: [] }) => void) | undefined;
+    const old = new Promise<{ skills: RuntimeSkillSummary[]; diagnostics: [] }>((resolve) => {
+      resolveOld = resolve;
+    });
+    const enabled: RuntimeSkillSummary = {
+      name: "demo",
+      description: "Demo Skill",
+      location: "C:/Users/demo/.ikaros/skills/demo/SKILL.md",
+      enabled: true,
+    };
+    const disabled = { ...enabled, enabled: false };
+    const listSkills = vi
+      .fn()
+      .mockImplementationOnce(() => old)
+      .mockRejectedValueOnce(new Error("catalog unavailable"));
+    const setSkillEnabled = vi.fn(async () => ({ skill: disabled }));
+    installRuntimeBridge({
+      runtime: {
+        listSkills,
+        setSkillEnabled,
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    const staleLoad = useAppStore.getState().loadSkillCatalog();
+    await vi.waitFor(() => expect(listSkills).toHaveBeenCalledOnce());
+    await useAppStore.getState().setSkillEnabled({ name: "demo", enabled: false });
+    resolveOld?.({ skills: [enabled], diagnostics: [] });
+    await staleLoad;
+    expect(useAppStore.getState().skills).toEqual([disabled]);
+
+    await expect(useAppStore.getState().loadSkillCatalog()).rejects.toThrow(
+      "catalog unavailable",
+    );
+    expect(useAppStore.getState()).toMatchObject({
+      skillCatalogStatus: "error",
+      skillCatalogError: "catalog unavailable",
+      skills: [disabled],
     });
   });
 
@@ -2533,7 +2661,8 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().runStatus).toBe("idle");
     expect(useAppStore.getState().activeRun).toBeNull();
     expect(useAppStore.getState().pendingRuntimeNewThread).toBeNull();
-    expect(useAppStore.getState().runtimeError).toBe("background create failed");
+    expect(useAppStore.getState().runtimeError).toBeNull();
+    expect(useAppStore.getState().runtimeIssue).toBeNull();
   });
 
   it("does not let a late turn.start rejection overwrite a newer active Thread", async () => {
@@ -2678,8 +2807,14 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().runStatus).toBe("failed");
     expect(useAppStore.getState().draft).toBe("retry creation");
     expect(useAppStore.getState().pendingRuntimeNewThread).toBeNull();
+    expect(useAppStore.getState().runtimeIssue).toEqual({
+      kind: "send",
+      message: "create failed",
+      threadId: null,
+      prompt: "retry creation"
+    });
 
-    await useAppStore.getState().sendDraft();
+    await useAppStore.getState().retryRuntimeIssue();
 
     expect(createThread).toHaveBeenCalledTimes(2);
     expect(startTurn).toHaveBeenCalledOnce();
@@ -3288,6 +3423,7 @@ describe("Runtime-backed renderer store", () => {
 
     await useAppStore.getState().initializeRuntime();
     await useAppStore.getState().selectThread(thread.id);
+    await useAppStore.getState().loadOlderRuntimeTurns(thread.id);
 
     const turns = useAppStore.getState().threads[0]?.branches[0]?.turns ?? [];
     const newer = turns
@@ -3366,6 +3502,7 @@ describe("Runtime-backed renderer store", () => {
 
     await useAppStore.getState().initializeRuntime();
     await useAppStore.getState().selectThread(thread.id);
+    await useAppStore.getState().loadOlderRuntimeTurns(thread.id);
 
     expect(useAppStore.getState().runtimeThreadActivity[thread.id]?.["run-newer"]).toMatchObject({
       seq: 11,
@@ -3506,6 +3643,7 @@ describe("Runtime-backed renderer store", () => {
     const { useAppStore } = await import("./store");
     await useAppStore.getState().initializeRuntime();
     await useAppStore.getState().selectThread(thread.id);
+    await useAppStore.getState().loadOlderRuntimeTurns(thread.id);
 
     expect(useAppStore.getState().runStatus).toBe("queued");
     useAppStore.getState().stopRun();
@@ -3701,5 +3839,476 @@ describe("Runtime-backed renderer store", () => {
     );
     expect(useAppStore.getState().archivedThreads).toEqual([archivedThread]);
     expect(useAppStore.getState().runtimeSeq).toBe(12);
+  });
+
+  it("increments the active catalog page by page without advancing the Journal cursor", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const newest: RuntimeThreadSummary = {
+      id: "thread-page-newest",
+      title: "Newest",
+      defaultBranchId: "branch-page-newest",
+      workspace: null,
+      createdAt,
+      updatedAt: "2026-08-11T12:03:00.000Z",
+      archivedAt: null,
+    };
+    const older: RuntimeThreadSummary = {
+      ...newest,
+      id: "thread-page-older",
+      title: "Older",
+      defaultBranchId: "branch-page-older",
+      updatedAt: "2026-08-11T12:02:00.000Z",
+    };
+    const oldest: RuntimeThreadSummary = {
+      ...newest,
+      id: "thread-page-oldest",
+      title: "Oldest",
+      defaultBranchId: "branch-page-oldest",
+      updatedAt: "2026-08-11T12:01:00.000Z",
+    };
+    let resolveSecond!: (page: RuntimeThreadListPage) => void;
+    const secondPage = new Promise<RuntimeThreadListPage>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const listThreads = vi
+      .fn<IkarosRuntimeApi["listThreads"]>()
+      .mockResolvedValueOnce({
+        threads: [newest],
+        nextCursor: "catalog-page-2",
+        hasMore: true,
+        snapshotSeq: 10,
+      })
+      .mockImplementationOnce(() => secondPage)
+      .mockResolvedValueOnce({
+        threads: [oldest],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 13,
+      });
+    installRuntimeBridge({
+      runtime: {
+        listThreads,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: afterSeq,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    expect(listThreads).toHaveBeenNthCalledWith(1, { limit: 25 });
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 10,
+      threadCatalogHasMore: true,
+      threadCatalogMoreStatus: "idle",
+    });
+
+    const continuation = useAppStore.getState().loadMoreThreads();
+    await vi.waitFor(() => expect(listThreads).toHaveBeenCalledTimes(2));
+    const live = {
+      ...runtimeEvent(11, "item.started", "item-page-live", {
+        item: messageItem("item-page-live", "assistant", "", "streaming"),
+      }, {
+        threadId: newest.id,
+        branchId: newest.defaultBranchId,
+        turnId: "turn-page-live",
+        runId: "run-page-live",
+      }),
+      timestamp: "2026-08-11T12:05:00.000Z",
+    };
+    for (const listener of listeners) listener(live);
+    resolveSecond({
+      threads: [older],
+      nextCursor: "catalog-page-3",
+      hasMore: true,
+      snapshotSeq: 12,
+    });
+    await continuation;
+
+    expect(useAppStore.getState().threads.map((thread) => thread.id)).toEqual([
+      newest.id,
+      older.id,
+    ]);
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 11,
+      threadCatalogHasMore: true,
+      threadCatalogMoreStatus: "idle",
+    });
+    expect(listThreads).toHaveBeenNthCalledWith(2, {
+      cursor: "catalog-page-2",
+      limit: 25,
+    });
+
+    await useAppStore.getState().loadAllThreadsForSearch();
+    expect(listThreads).toHaveBeenNthCalledWith(3, {
+      cursor: "catalog-page-3",
+      limit: 25,
+    });
+    expect(useAppStore.getState().threads.map((thread) => thread.id)).toEqual([
+      newest.id,
+      older.id,
+      oldest.id,
+    ]);
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 11,
+      threadCatalogHasMore: false,
+      searchCatalogStatus: "ready",
+      searchCatalogError: null,
+    });
+  });
+
+  it("preserves an active catalog page and cursor when continuation fails, then retries", async () => {
+    const first: RuntimeThreadSummary = {
+      id: "thread-catalog-first",
+      title: "First",
+      defaultBranchId: "branch-catalog-first",
+      workspace: null,
+      createdAt,
+      updatedAt: "2026-08-11T12:02:00.000Z",
+      archivedAt: null,
+    };
+    const second: RuntimeThreadSummary = {
+      ...first,
+      id: "thread-catalog-second",
+      title: "Second",
+      defaultBranchId: "branch-catalog-second",
+      updatedAt: "2026-08-11T12:01:00.000Z",
+    };
+    const listThreads = vi
+      .fn<IkarosRuntimeApi["listThreads"]>()
+      .mockResolvedValueOnce({
+        threads: [first],
+        nextCursor: "retry-cursor",
+        hasMore: true,
+        snapshotSeq: 5,
+      })
+      .mockRejectedValueOnce(new Error("continuation unavailable"))
+      .mockResolvedValueOnce({
+        threads: [second],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 6,
+      });
+    installRuntimeBridge({
+      runtime: {
+        listThreads,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: afterSeq,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().loadMoreThreads();
+    expect(useAppStore.getState().threads.map((thread) => thread.id)).toEqual([first.id]);
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 5,
+      runtimeError: null,
+      threadCatalogNextCursor: "retry-cursor",
+      threadCatalogHasMore: true,
+      threadCatalogMoreStatus: "error",
+      threadCatalogMoreError: "continuation unavailable",
+    });
+
+    await useAppStore.getState().loadMoreThreads();
+    expect(useAppStore.getState().threads.map((thread) => thread.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 5,
+      threadCatalogNextCursor: null,
+      threadCatalogHasMore: false,
+      threadCatalogMoreStatus: "idle",
+      threadCatalogMoreError: null,
+    });
+  });
+
+  it("keeps loaded Turns and their cursor when an older-page read fails", async () => {
+    const thread: RuntimeThreadSummary = {
+      id: "thread-turn-retry",
+      title: "Turn retry",
+      defaultBranchId: "branch-turn-retry",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+      archivedAt: null,
+    };
+    const newer = singleTurnHistoryPage(thread, [], "completed", 10, {
+      turnId: "turn-newer-retry",
+      runId: "run-newer-retry",
+    });
+    newer.turns[0] = { ...newer.turns[0]!, ordinal: 2 };
+    newer.nextCursor = "older-retry";
+    newer.hasMore = true;
+    const older = singleTurnHistoryPage(thread, [], "completed", 12, {
+      turnId: "turn-older-retry",
+      runId: "run-older-retry",
+    });
+    const listTurns = vi
+      .fn<IkarosRuntimeApi["listTurns"]>()
+      .mockResolvedValueOnce(newer)
+      .mockRejectedValueOnce(new Error("older page unavailable"))
+      .mockResolvedValueOnce(older);
+    installRuntimeBridge({
+      runtime: {
+        listThreads: vi.fn(async () => ({
+          threads: [thread],
+          nextCursor: null,
+          hasMore: false,
+          snapshotSeq: 10,
+        })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 10 })),
+        listTurns,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: afterSeq,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+    await useAppStore.getState().loadOlderRuntimeTurns(thread.id);
+    expect(
+      useAppStore.getState().threads[0]?.branches[0]?.turns.map((turn) => turn.id),
+    ).toEqual(["turn-newer-retry"]);
+    expect(useAppStore.getState().runtimeThreadDetails[thread.id]).toMatchObject({
+      nextCursor: "older-retry",
+      hasMore: true,
+      olderStatus: "error",
+      olderError: "older page unavailable",
+    });
+    expect(useAppStore.getState().runtimeError).toBeNull();
+
+    await useAppStore.getState().loadOlderRuntimeTurns(thread.id);
+    expect(
+      useAppStore.getState().threads[0]?.branches[0]?.turns.map((turn) => turn.id),
+    ).toEqual(["turn-older-retry", "turn-newer-retry"]);
+    expect(useAppStore.getState().runtimeThreadDetails[thread.id]).toMatchObject({
+      nextCursor: null,
+      hasMore: false,
+      olderStatus: "idle",
+      olderError: null,
+    });
+    expect(useAppStore.getState().runtimeSeq).toBe(10);
+  });
+
+  it("paginates archived Threads and preserves the first page on continuation failure", async () => {
+    const archivedAt = "2026-08-11T12:02:00.000Z";
+    const first: RuntimeThreadSummary = {
+      id: "archived-page-first",
+      title: "Archived first",
+      defaultBranchId: "archived-branch-first",
+      workspace: null,
+      createdAt,
+      updatedAt: archivedAt,
+      archivedAt,
+    };
+    const second: RuntimeThreadSummary = {
+      ...first,
+      id: "archived-page-second",
+      title: "Archived second",
+      defaultBranchId: "archived-branch-second",
+      updatedAt: "2026-08-11T12:01:00.000Z",
+      archivedAt: "2026-08-11T12:01:00.000Z",
+    };
+    const listThreads = vi
+      .fn<IkarosRuntimeApi["listThreads"]>()
+      .mockResolvedValueOnce({
+        threads: [],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 7,
+      })
+      .mockResolvedValueOnce({
+        threads: [first],
+        nextCursor: "archived-page-2",
+        hasMore: true,
+        snapshotSeq: 7,
+      })
+      .mockRejectedValueOnce(new Error("archived continuation unavailable"))
+      .mockResolvedValueOnce({
+        threads: [second],
+        nextCursor: null,
+        hasMore: false,
+        snapshotSeq: 8,
+      });
+    installRuntimeBridge({
+      runtime: {
+        listThreads,
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: afterSeq,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().loadArchivedThreads();
+    expect(listThreads).toHaveBeenNthCalledWith(2, { archived: true, limit: 25 });
+    expect(useAppStore.getState()).toMatchObject({
+      archivedCatalogStatus: "ready",
+      archivedCatalogHasMore: true,
+      archivedCatalogMoreStatus: "idle",
+    });
+
+    await useAppStore.getState().loadMoreArchivedThreads();
+    expect(useAppStore.getState().archivedThreads).toEqual([first]);
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 7,
+      runtimeError: null,
+      archivedCatalogNextCursor: "archived-page-2",
+      archivedCatalogHasMore: true,
+      archivedCatalogMoreStatus: "error",
+      archivedCatalogMoreError: "archived continuation unavailable",
+    });
+
+    await useAppStore.getState().loadMoreArchivedThreads();
+    expect(listThreads).toHaveBeenNthCalledWith(4, {
+      archived: true,
+      cursor: "archived-page-2",
+      limit: 25,
+    });
+    expect(useAppStore.getState().archivedThreads).toEqual([first, second]);
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeSeq: 7,
+      archivedCatalogHasMore: false,
+      archivedCatalogMoreStatus: "idle",
+      archivedCatalogMoreError: null,
+    });
+  });
+
+  it("refreshes provider and model catalogs on reconnect without installing a stale retry", async () => {
+    const provider = (displayName: string): RuntimeProviderSummary => ({
+      id: "provider-reconnect",
+      displayName,
+      origin: "custom",
+      configured: true,
+      credentialConfigured: true,
+      health: "ready",
+    });
+    const model = (displayName: string): RuntimeModelSummary => ({
+      providerId: "provider-reconnect",
+      id: "model-reconnect",
+      displayName,
+      enabled: true,
+    });
+    let resolveStaleProviders!: (value: { providers: RuntimeProviderSummary[] }) => void;
+    let resolveStaleModels!: (value: { models: RuntimeModelSummary[] }) => void;
+    const staleProviders = new Promise<{ providers: RuntimeProviderSummary[] }>((resolve) => {
+      resolveStaleProviders = resolve;
+    });
+    const staleModels = new Promise<{ models: RuntimeModelSummary[] }>((resolve) => {
+      resolveStaleModels = resolve;
+    });
+    const listProviders = vi
+      .fn()
+      .mockResolvedValueOnce({ providers: [provider("Initial Provider")] })
+      .mockResolvedValueOnce({ providers: [provider("Refreshed Provider")] })
+      .mockImplementationOnce(() => staleProviders)
+      .mockResolvedValueOnce({ providers: [provider("Newest Provider")] });
+    const listModels = vi
+      .fn()
+      .mockResolvedValueOnce({ models: [model("Initial Model")] })
+      .mockResolvedValueOnce({ models: [model("Refreshed Model")] })
+      .mockImplementationOnce(() => staleModels)
+      .mockResolvedValueOnce({ models: [model("Newest Model")] });
+    installRuntimeBridge({
+      runtime: {
+        listThreads: vi.fn(async () => ({
+          threads: [],
+          nextCursor: null,
+          hasMore: false,
+          snapshotSeq: 0,
+        })),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async (afterSeq: number) => ({
+          events: [],
+          latestSeq: afterSeq,
+          nextAfterSeq: afterSeq,
+          hasMore: false,
+        })),
+        listProviders,
+        listModels,
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().retryRuntimeConnection();
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeConnectionStatus: "connected",
+      providerCatalogStatus: "ready",
+      providers: [{ displayName: "Refreshed Provider" }],
+      models: [{ displayName: "Refreshed Model" }],
+    });
+
+    const staleRetry = useAppStore.getState().retryRuntimeConnection();
+    await vi.waitFor(() => {
+      expect(listProviders).toHaveBeenCalledTimes(3);
+      expect(listModels).toHaveBeenCalledTimes(3);
+    });
+    await useAppStore.getState().loadProviderCatalog();
+    resolveStaleProviders({ providers: [provider("Stale Provider")] });
+    resolveStaleModels({ models: [model("Stale Model")] });
+    await staleRetry;
+
+    expect(useAppStore.getState()).toMatchObject({
+      runtimeConnectionStatus: "connected",
+      providerCatalogStatus: "ready",
+      providers: [{ displayName: "Newest Provider" }],
+      models: [{ displayName: "Newest Model" }],
+    });
   });
 });

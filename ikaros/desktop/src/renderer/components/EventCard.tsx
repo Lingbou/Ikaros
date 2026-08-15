@@ -568,13 +568,6 @@ function AssistantMessageCard({ event }: { event: Extract<AgentEvent, { type: "m
           <IconButton label={t("events.copyResponse")} className="size-6" onClick={() => copyText(event.content)}>
             <Clipboard size={12} />
           </IconButton>
-          <IconButton
-            label={t("events.regenerateUnavailable")}
-            className="size-6"
-            disabled
-          >
-            <RefreshCw size={12} />
-          </IconButton>
         </div>
       ) : null}
     </div>

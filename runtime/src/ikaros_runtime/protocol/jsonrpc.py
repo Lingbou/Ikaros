@@ -3,10 +3,12 @@ from __future__ import annotations
 import math
 
 from .. import __version__
-
-PROTOCOL_VERSION = 1
-JSONRPC_VERSION = "2.0"
-SERVER_NAME = "ikaros-runtime"
+from .spec import (
+    JSONRPC_VERSION,
+    PROTOCOL_VERSION,
+    SERVER_NAME,
+    initialize_capabilities,
+)
 
 
 def jsonrpc_error(request_id: object, code: int, message: str) -> dict[str, object]:
@@ -29,19 +31,7 @@ def initialize_result() -> dict[str, object]:
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "server": {"name": SERVER_NAME, "version": __version__},
-        "capabilities": {
-            "threads": True,
-            "turns": True,
-            "eventReplay": True,
-            "streaming": True,
-            "scriptedProvider": True,
-            "tools": ["process.run", "read", "write", "edit"],
-            "executionPolicy": "full_access",
-            "runCancellation": True,
-            "providers": True,
-            "models": True,
-            "usage": True,
-        },
+        "capabilities": initialize_capabilities(),
     }
 
 

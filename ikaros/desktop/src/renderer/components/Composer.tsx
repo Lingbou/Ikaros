@@ -5,11 +5,9 @@ import {
   ChevronDown,
   FolderPlus,
   Hand,
-  Paperclip,
   Plus,
   ShieldAlert,
   ShieldCheck,
-  Wrench,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isRunActive } from "../domain";
@@ -285,14 +283,8 @@ export function Composer({
                   sideOffset={8}
                   className="glass-menu z-[90] w-52 rounded-xl p-1.5"
                 >
-                  <DropdownMenu.Item disabled className="outline-none">
-                    <MenuItem icon={<Paperclip size={14} />} label={t("composer.attachFile")} detail={t("common.unavailable")} disabled />
-                  </DropdownMenu.Item>
                   <DropdownMenu.Item onSelect={addProjectFolder} className="outline-none">
                     <MenuItem icon={<FolderPlus size={14} />} label={t("composer.addProjectFolder")} />
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item disabled className="outline-none">
-                    <MenuItem icon={<Wrench size={14} />} label={t("composer.chooseTools")} detail={t("common.unavailable")} disabled />
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>

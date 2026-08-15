@@ -113,6 +113,7 @@ export function mergeUiPreferences(
 export const DESKTOP_IPC_CHANNELS = Object.freeze({
   runtime: {
     event: "ikaros:runtime:event",
+    status: "ikaros:runtime:status",
     threadCreate: "ikaros:runtime:thread-create",
     threadRename: "ikaros:runtime:thread-rename",
     threadArchive: "ikaros:runtime:thread-archive",
@@ -130,6 +131,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     providerRemove: "ikaros:runtime:provider-remove",
     modelList: "ikaros:runtime:model-list",
     modelSetEnabled: "ikaros:runtime:model-set-enabled",
+    skillList: "ikaros:runtime:skill-list",
+    skillSetEnabled: "ikaros:runtime:skill-set-enabled",
     usageRead: "ikaros:runtime:usage-read"
   },
   workspace: {

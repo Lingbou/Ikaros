@@ -31,14 +31,23 @@ import {
   runtimeThreadSummaryFromEvent,
   runtimeThreadWorkspaceFromEvent,
 } from "./runtimeProjection";
-import { loadRuntimeThreadHistory } from "./runtimeHistory";
+import {
+  loadOlderRuntimeTurnPage,
+  loadRuntimeThreadHistory,
+  type LoadedRuntimeTurnHistory,
+} from "./runtimeHistory";
 import type {
   RuntimeDiscoveredModel,
+  RuntimeHostStatus,
+  RuntimeHostStatusState,
   RuntimeJournalEvent,
   RuntimeModelSetEnabledParams,
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
   RuntimeProviderSummary,
+  RuntimeSkillDiagnostic,
+  RuntimeSkillSetEnabledParams,
+  RuntimeSkillSummary,
   RuntimeThreadCreateResult,
   RuntimeThreadMutationResult,
   RuntimeThreadSummary,
@@ -73,12 +82,21 @@ type PendingRuntimeSubmission = {
 };
 type RuntimeModelSelection = { providerId: string; modelId: string };
 type ProviderCatalogStatus = "idle" | "loading" | "ready" | "error";
+type SkillCatalogStatus = "idle" | "loading" | "ready" | "error";
 type RuntimeThreadDetailStatus = "idle" | "loading" | "ready" | "error";
 type RuntimeArchivedCatalogStatus = "idle" | "loading" | "ready" | "error";
+type RuntimeContinuationStatus = "idle" | "loading" | "error";
+type RuntimeSearchCatalogStatus = "idle" | "loading" | "ready" | "error";
 type RuntimeThreadDetailState = {
   status: RuntimeThreadDetailStatus;
   snapshotSeq: number;
   error: string | null;
+  nextCursor: string | null;
+  hasMore: boolean;
+  olderStatus: RuntimeContinuationStatus;
+  olderError: string | null;
+  historySnapshotSeq: number;
+  turnOrdinals: Record<string, number>;
 };
 type RuntimeRunActivityState = {
   seq: number;
@@ -90,20 +108,45 @@ type RuntimeRunActivityState = {
   runOrdinal: number | null;
 };
 type RuntimeThreadActivityState = Record<string, RuntimeRunActivityState>;
+export type RuntimeIssue =
+  | { kind: "connection" | "initialization"; message: string }
+  | { kind: "send"; message: string; threadId: string | null; prompt: string }
+  | { kind: "cancel"; message: string; runId: string }
+  | { kind: "history" | "archive" | "unarchive"; message: string; threadId: string }
+  | { kind: "rename"; message: string; threadId: string; title: string | null }
+  | { kind: "archived_catalog"; message: string };
 
 interface AppState {
   runtimeMode: boolean;
   runtimeReady: boolean;
+  runtimeConnectionStatus: RuntimeHostStatusState;
   runtimeError: string | null;
+  runtimeIssue: RuntimeIssue | null;
   runtimeSeq: number;
   providerCatalogStatus: ProviderCatalogStatus;
   providers: RuntimeProviderSummary[];
   models: RuntimeModelSummary[];
+  skillCatalogStatus: SkillCatalogStatus;
+  skillCatalogError: string | null;
+  skills: RuntimeSkillSummary[];
+  skillDiagnostics: RuntimeSkillDiagnostic[];
   selectedModel: RuntimeModelSelection | null;
   projects: Project[];
   threads: Thread[];
+  threadCatalogNextCursor: string | null;
+  threadCatalogSnapshotSeq: number;
+  threadCatalogHasMore: boolean;
+  threadCatalogMoreStatus: RuntimeContinuationStatus;
+  threadCatalogMoreError: string | null;
+  searchCatalogStatus: RuntimeSearchCatalogStatus;
+  searchCatalogError: string | null;
   archivedThreads: RuntimeThreadSummary[];
+  archivedCatalogNextCursor: string | null;
+  archivedCatalogSnapshotSeq: number;
   archivedCatalogStatus: RuntimeArchivedCatalogStatus;
+  archivedCatalogHasMore: boolean;
+  archivedCatalogMoreStatus: RuntimeContinuationStatus;
+  archivedCatalogMoreError: string | null;
   runtimeThreadDetails: Record<string, RuntimeThreadDetailState>;
   runtimeThreadActivity: Record<string, RuntimeThreadActivityState>;
   selectedThreadId: string | null;
@@ -126,8 +169,14 @@ interface AppState {
   newThreadWorkspace: RuntimeWorkspaceSummary | null;
 
   initializeRuntime: () => Promise<void>;
+  retryRuntimeConnection: () => Promise<void>;
+  retryRuntimeIssue: () => Promise<void>;
+  clearRuntimeError: () => void;
   applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
+  loadMoreThreads: () => Promise<void>;
+  loadAllThreadsForSearch: () => Promise<void>;
   loadArchivedThreads: () => Promise<void>;
+  loadMoreArchivedThreads: () => Promise<void>;
   renameThread: (threadId: string, title: string | null) => Promise<void>;
   archiveThread: (threadId: string) => Promise<void>;
   unarchiveThread: (threadId: string) => Promise<void>;
@@ -137,6 +186,8 @@ interface AppState {
   disconnectProvider: (providerId: "deepseek") => Promise<void>;
   removeProvider: (providerId: string) => Promise<void>;
   setModelEnabled: (params: RuntimeModelSetEnabledParams) => Promise<void>;
+  loadSkillCatalog: () => Promise<void>;
+  setSkillEnabled: (params: RuntimeSkillSetEnabledParams) => Promise<void>;
   selectModel: (selection: RuntimeModelSelection | null) => void;
   setDraft: (draft: string) => void;
   setSidebarOpen: (open: boolean) => void;
@@ -154,6 +205,8 @@ interface AppState {
   stageProjectWorkspace: (workspace: RuntimeWorkspaceSummary) => void;
   bindWorkspaceFromFolder: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
+  retryRuntimeThread: (threadId: string) => Promise<void>;
+  loadOlderRuntimeTurns: (threadId: string) => Promise<void>;
   sendDraft: () => Promise<void>;
   stopRun: () => void;
   resolvePermission: (decision: "allow" | "deny") => Promise<void>;
@@ -170,11 +223,15 @@ const client = new MockAgentClient();
 const runtimeClient = createRuntimeClient();
 let runtimeInitialization: Promise<void> | undefined;
 let providerCatalogRevision = 0;
+let skillCatalogRevision = 0;
 let removeRuntimeSubscription: (() => void) | undefined;
+let removeRuntimeStatusSubscription: (() => void) | undefined;
 let bufferedRuntimeEvents: RuntimeJournalEvent[] = [];
 const pendingRuntimeEvents = new Map<number, RuntimeJournalEvent>();
 const runtimeThreadLoadEvents = new Map<string, Map<number, RuntimeJournalEvent>>();
 const runtimeThreadLoads = new Map<string, Promise<void>>();
+const runtimeOlderTurnLoadEvents = new Map<string, Map<number, RuntimeJournalEvent>>();
+const runtimeOlderTurnLoads = new Map<string, Promise<void>>();
 const runtimeCatalogRecoveryEvents = new Map<string, Map<number, RuntimeJournalEvent>>();
 const runtimeCatalogRecoveries = new Map<string, Promise<void>>();
 const cancellingRuntimeRuns = new Set<string>();
@@ -182,10 +239,40 @@ const runtimeTurnContinuations = new Map<string, Promise<void>>();
 const canonicalRuntimeTurnStarts = new Map<string, RuntimeTurnStartResult>();
 let runtimeArchivedCatalogLoadEvents: Map<number, RuntimeJournalEvent> | undefined;
 let runtimeArchivedCatalogLoad: Promise<void> | undefined;
+let runtimeArchivedCatalogContinuation: Promise<void> | undefined;
+let runtimeActiveCatalogLoadEvents: Map<number, RuntimeJournalEvent> | undefined;
+let runtimeActiveCatalogContinuation: Promise<void> | undefined;
+let runtimeSearchCatalogLoad: Promise<void> | undefined;
 let runtimeGapRecovery: Promise<void> | undefined;
 const RUNTIME_GAP_RETRY_DELAYS_MS = [25, 75, 200] as const;
 const RUNTIME_COMMAND_RETRY_DELAYS_MS = [50, 150, 400, 800] as const;
+const RUNTIME_THREAD_CATALOG_PAGE_LIMIT = 25;
+const MAX_THREAD_CATALOG_PAGES_PER_SEARCH = 10_000;
 const MOCK_AT = "2026-08-05T06:00:00.000Z";
+
+function sortRuntimeThreads(threads: readonly Thread[]): Thread[] {
+  return [...threads].sort(
+    (left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
+  );
+}
+
+function emptyRuntimeThreadDetail(
+  snapshotSeq: number,
+  current?: RuntimeThreadDetailState,
+): RuntimeThreadDetailState {
+  return {
+    status: current?.status ?? "idle",
+    snapshotSeq: Math.max(current?.snapshotSeq ?? 0, snapshotSeq),
+    error: current?.error ?? null,
+    nextCursor: current?.nextCursor ?? null,
+    hasMore: current?.hasMore ?? false,
+    olderStatus: current?.olderStatus ?? "idle",
+    olderError: current?.olderError ?? null,
+    historySnapshotSeq: current?.historySnapshotSeq ?? 0,
+    turnOrdinals: current?.turnOrdinals ?? {},
+  };
+}
 
 function runnableModels(
   providers: readonly RuntimeProviderSummary[],
@@ -243,6 +330,8 @@ function appendEventToThread(
   const branch = thread.branches.find((candidate) => candidate.id === branchId);
   if (!branch) return thread;
   const existingTurn = branch.turns.find((turn) => turn.id === event.turnId);
+  const revisesExistingEvent =
+    existingTurn?.events.some((candidate) => candidate.id === event.id) ?? false;
   const nextTurnStatus = turnStatus(status);
   let turns: Turn[];
 
@@ -274,7 +363,11 @@ function appendEventToThread(
 
   return {
     ...thread,
-    updatedAt: event.createdAt,
+    updatedAt: revisesExistingEvent
+      ? thread.updatedAt
+      : event.createdAt.localeCompare(thread.updatedAt) > 0
+        ? event.createdAt
+        : thread.updatedAt,
     branches: thread.branches.map((candidate) =>
       candidate.id === branch.id ? { ...candidate, turns } : candidate,
     ),
@@ -627,7 +720,7 @@ async function refreshRuntimeProviderCatalog(set: StoreSet): Promise<void> {
         modelResult.models,
       ),
       providerCatalogStatus: "ready",
-      runtimeError: null,
+      ...(state.runtimeIssue === null ? { runtimeError: null } : {}),
     }));
   } catch (error: unknown) {
     if (revision !== providerCatalogRevision) return;
@@ -635,6 +728,7 @@ async function refreshRuntimeProviderCatalog(set: StoreSet): Promise<void> {
       providerCatalogStatus: "error",
       runtimeError:
         error instanceof Error ? error.message : "Runtime provider catalog failed",
+      runtimeIssue: null,
     });
     throw error;
   }
@@ -646,7 +740,7 @@ async function mutateRuntimeProviderCatalog(
 ): Promise<void> {
   if (!runtimeClient) {
     const error = new Error("Runtime provider configuration is unavailable.");
-    set({ runtimeError: error.message, providerCatalogStatus: "error" });
+    set({ runtimeError: error.message, runtimeIssue: null, providerCatalogStatus: "error" });
     throw error;
   }
   try {
@@ -655,6 +749,7 @@ async function mutateRuntimeProviderCatalog(
     set({
       runtimeError:
         error instanceof Error ? error.message : "Runtime provider configuration failed",
+      runtimeIssue: null,
     });
     throw error;
   }
@@ -663,6 +758,68 @@ async function mutateRuntimeProviderCatalog(
   } catch {
     // The mutation is already durable. Keep its success separate from a
     // follow-up catalog refresh failure so retrying cannot duplicate it.
+  }
+}
+
+async function refreshRuntimeSkillCatalog(set: StoreSet): Promise<void> {
+  if (!runtimeClient) {
+    set({
+      skillCatalogStatus: "ready",
+      skillCatalogError: null,
+      skills: [],
+      skillDiagnostics: [],
+    });
+    return;
+  }
+  const revision = ++skillCatalogRevision;
+  set({ skillCatalogStatus: "loading", skillCatalogError: null });
+  try {
+    const result = await runtimeClient.listSkills();
+    if (revision !== skillCatalogRevision) return;
+    set({
+      skillCatalogStatus: "ready",
+      skillCatalogError: null,
+      skills: result.skills,
+      skillDiagnostics: result.diagnostics,
+    });
+  } catch (error: unknown) {
+    if (revision !== skillCatalogRevision) return;
+    const message = error instanceof Error ? error.message : "Runtime Skill catalog failed";
+    set({ skillCatalogStatus: "error", skillCatalogError: message });
+    throw error;
+  }
+}
+
+async function mutateRuntimeSkillEnabled(
+  set: StoreSet,
+  params: RuntimeSkillSetEnabledParams,
+): Promise<void> {
+  if (!runtimeClient) {
+    const error = new Error("Runtime Skill configuration is unavailable.");
+    set({ skillCatalogStatus: "error", skillCatalogError: error.message });
+    throw error;
+  }
+  const revision = ++skillCatalogRevision;
+  set({ skillCatalogStatus: "loading", skillCatalogError: null });
+  try {
+    const result = await runtimeClient.setSkillEnabled(params);
+    if (revision !== skillCatalogRevision) return;
+    set((state) => ({
+      skillCatalogStatus: "ready",
+      skillCatalogError: null,
+      skills: state.skills.some((skill) => skill.name === result.skill.name)
+        ? state.skills.map((skill) =>
+            skill.name === result.skill.name ? result.skill : skill,
+          )
+        : [...state.skills, result.skill].sort((left, right) =>
+            left.name.localeCompare(right.name),
+          ),
+    }));
+  } catch (error: unknown) {
+    if (revision !== skillCatalogRevision) return;
+    const message = error instanceof Error ? error.message : "Runtime Skill update failed";
+    set({ skillCatalogStatus: "error", skillCatalogError: message });
+    throw error;
   }
 }
 
@@ -783,16 +940,47 @@ function reconcileArchivedThreadSummary(
   );
 }
 
+function runtimeEventAddsTimelineEntry(
+  thread: Thread | undefined,
+  event: RuntimeJournalEvent,
+): boolean {
+  if (runtimeThreadSummaryFromEvent(event)) return true;
+  if (!thread || !event.branchId || !event.turnId) return false;
+  const branch = thread.branches.find((candidate) => candidate.id === event.branchId);
+  const turn = branch?.turns.find((candidate) => candidate.id === event.turnId);
+  if (!turn) return true;
+  if (event.type !== "item.started" && event.type !== "item.completed") {
+    return false;
+  }
+  const itemId = event.itemId;
+  return Boolean(itemId && !turn.events.some((candidate) => candidate.id === itemId));
+}
+
 function runtimeStateForEvent(state: AppState, event: RuntimeJournalEvent): Partial<AppState> {
   const threadSummary = runtimeThreadSummaryFromEvent(event);
   const detail = event.threadId ? state.runtimeThreadDetails[event.threadId] : undefined;
   const coveredByInstalledSnapshot =
     detail?.status === "ready" && event.seq <= detail.snapshotSeq;
-  const threads = coveredByInstalledSnapshot
+  const existingThread = event.threadId
+    ? findThread(state.threads, event.threadId)
+    : undefined;
+  let projectedThreads = coveredByInstalledSnapshot
     ? state.threads
     : detail?.status === "ready"
       ? projectRuntimeEvent(state.threads, event)
       : applyRuntimeCatalogEvent(state.threads, event);
+  if (
+    existingThread &&
+    event.threadId &&
+    !runtimeEventAddsTimelineEntry(existingThread, event)
+  ) {
+    projectedThreads = projectedThreads.map((thread) =>
+      thread.id === event.threadId
+        ? { ...thread, updatedAt: existingThread.updatedAt }
+        : thread,
+    );
+  }
+  const threads = sortRuntimeThreads(projectedThreads);
   const runtimeThreadDetails =
     event.threadId && detail?.status === "ready" && event.seq > detail.snapshotSeq
       ? {
@@ -1003,6 +1191,7 @@ function waitForRuntimeRetry(delayMs: number): Promise<void> {
 function recordRuntimeThreadLoadEvent(event: RuntimeJournalEvent): void {
   if (!event.threadId) return;
   runtimeThreadLoadEvents.get(event.threadId)?.set(event.seq, event);
+  runtimeOlderTurnLoadEvents.get(event.threadId)?.set(event.seq, event);
 }
 
 function mergeRecoveredRuntimeCatalogThread(existing: Thread, recovered: Thread): Thread {
@@ -1078,9 +1267,11 @@ async function recoverRuntimeCatalogThread(
         const installed = current
           ? mergeRecoveredRuntimeCatalogThread(current, recovered)
           : recovered;
-        const threads = current
-          ? state.threads.map((thread) => (thread.id === threadId ? installed : thread))
-          : [installed, ...state.threads];
+        const threads = sortRuntimeThreads(
+          current
+            ? state.threads.map((thread) => (thread.id === threadId ? installed : thread))
+            : [installed, ...state.threads],
+        );
         const currentDetail = state.runtimeThreadDetails[threadId];
         const runtimeThreadDetails =
           currentDetail?.status === "ready" || currentDetail?.status === "loading"
@@ -1088,11 +1279,8 @@ async function recoverRuntimeCatalogThread(
             : {
                 ...state.runtimeThreadDetails,
                 [threadId]: {
+                  ...emptyRuntimeThreadDetail(recoveredSnapshotSeq, currentDetail),
                   status: "idle" as const,
-                  snapshotSeq: Math.max(
-                    currentDetail?.snapshotSeq ?? 0,
-                    recoveredSnapshotSeq,
-                  ),
                   error: null,
                 },
               };
@@ -1112,6 +1300,7 @@ async function recoverRuntimeCatalogThread(
         set({
           runtimeError:
             error instanceof Error ? error.message : "Runtime Thread catalog recovery failed",
+          runtimeIssue: null,
         });
       }
     } finally {
@@ -1152,7 +1341,7 @@ function projectLoadedRuntimeThread(
 }
 
 function snapshotRuntimeThreadActivities(
-  loaded: Awaited<ReturnType<typeof loadRuntimeThreadHistory>>,
+  loaded: { turns: readonly LoadedRuntimeTurnHistory[] },
 ): RuntimeThreadActivityState {
   const activities: RuntimeThreadActivityState = {};
   for (const { turn, snapshotSeq } of loaded.turns) {
@@ -1242,6 +1431,7 @@ function recoverRuntimeEventGap(set: StoreSet, get: StoreGet): void {
       const firstPending = Math.min(...pendingRuntimeEvents.keys());
       set({
         runtimeError: `Runtime event sequence gap: expected ${get().runtimeSeq + 1}, received ${firstPending}.`,
+        runtimeIssue: null,
       });
     }
   })()
@@ -1249,6 +1439,7 @@ function recoverRuntimeEventGap(set: StoreSet, get: StoreGet): void {
       set({
         runtimeError:
           error instanceof Error ? error.message : "Runtime event replay failed",
+        runtimeIssue: null,
       });
     })
     .finally(() => {
@@ -1264,6 +1455,7 @@ function enqueueRuntimeEvent(
   get: StoreGet,
   event: RuntimeJournalEvent,
 ): void {
+  runtimeActiveCatalogLoadEvents?.set(event.seq, event);
   runtimeArchivedCatalogLoadEvents?.set(event.seq, event);
   recordRuntimeThreadLoadEvent(event);
   recordRuntimeCatalogRecoveryEvent(set, get, event);
@@ -1278,6 +1470,190 @@ function enqueueRuntimeEvent(
   recoverRuntimeEventGap(set, get);
 }
 
+function validateRuntimeThreadCatalogPage(
+  page: Awaited<ReturnType<NonNullable<typeof runtimeClient>["listThreads"]>>,
+  requestedCursor: string | null,
+  previousSnapshotSeq: number,
+  archived: boolean,
+  previouslyLoadedIds: ReadonlySet<string> = new Set(),
+): void {
+  if (page.snapshotSeq < previousSnapshotSeq) {
+    throw new Error("Runtime Thread catalog watermark moved backwards.");
+  }
+  if (page.hasMore && page.nextCursor === requestedCursor) {
+    throw new Error("Runtime Thread catalog cursor did not advance.");
+  }
+  const ids = new Set<string>();
+  for (const summary of page.threads) {
+    if (ids.has(summary.id) || previouslyLoadedIds.has(summary.id)) {
+      throw new Error("Runtime Thread catalog returned a duplicate Thread.");
+    }
+    if ((summary.archivedAt !== null) !== archived) {
+      throw new Error("Runtime Thread catalog escaped its requested scope.");
+    }
+    ids.add(summary.id);
+  }
+}
+
+function mergeActiveRuntimeCatalogPage(
+  state: AppState,
+  summaries: readonly RuntimeThreadSummary[],
+  snapshotSeq: number,
+  observedEvents: ReadonlyMap<number, RuntimeJournalEvent>,
+): Pick<AppState, "projects" | "threads" | "runtimeThreadDetails"> {
+  let threads = [...state.threads];
+  const runtimeThreadDetails = { ...state.runtimeThreadDetails };
+  for (const summary of summaries) {
+    if (summary.archivedAt !== null) continue;
+    const current = findThread(threads, summary.id);
+    const projected = projectRuntimeThread(summary);
+    if (!current) {
+      threads.push(projected);
+    } else if (summary.updatedAt.localeCompare(current.updatedAt) > 0) {
+      threads = threads.map((thread) =>
+        thread.id === summary.id
+          ? {
+              ...projected,
+              activeBranchId: thread.activeBranchId,
+              branches: thread.branches,
+            }
+          : thread,
+      );
+    }
+    runtimeThreadDetails[summary.id] ??= emptyRuntimeThreadDetail(snapshotSeq);
+  }
+  for (const event of [...observedEvents.values()].sort(
+    (left, right) => left.seq - right.seq,
+  )) {
+    if (event.seq > snapshotSeq) {
+      threads = applyRuntimeCatalogEvent(threads, event);
+    }
+  }
+  return {
+    projects: mergeRuntimeProjects(state.projects, summaries),
+    threads: sortRuntimeThreads(threads),
+    runtimeThreadDetails,
+  };
+}
+
+async function loadMoreRuntimeThreadsIntoStore(
+  set: StoreSet,
+  get: StoreGet,
+): Promise<void> {
+  if (!runtimeClient) return;
+  if (runtimeActiveCatalogContinuation) return runtimeActiveCatalogContinuation;
+  const initial = get();
+  const cursor = initial.threadCatalogNextCursor;
+  if (!initial.threadCatalogHasMore || !cursor) return;
+
+  const observedEvents = new Map<number, RuntimeJournalEvent>();
+  runtimeActiveCatalogLoadEvents = observedEvents;
+  set({ threadCatalogMoreStatus: "loading", threadCatalogMoreError: null });
+  const loading = (async () => {
+    try {
+      const page = await runtimeClient.listThreads({
+        cursor,
+        limit: RUNTIME_THREAD_CATALOG_PAGE_LIMIT,
+      });
+      validateRuntimeThreadCatalogPage(
+        page,
+        cursor,
+        initial.threadCatalogSnapshotSeq,
+        false,
+        new Set(initial.threads.map((thread) => thread.id)),
+      );
+      set((state) => ({
+        ...mergeActiveRuntimeCatalogPage(
+          state,
+          page.threads,
+          page.snapshotSeq,
+          observedEvents,
+        ),
+        threadCatalogNextCursor: page.nextCursor,
+        threadCatalogHasMore: page.hasMore,
+        threadCatalogSnapshotSeq: page.snapshotSeq,
+        threadCatalogMoreStatus: "idle",
+        threadCatalogMoreError: null,
+      }));
+    } catch (error: unknown) {
+      set({
+        threadCatalogMoreStatus: "error",
+        threadCatalogMoreError:
+          error instanceof Error ? error.message : "Thread catalog loading failed",
+      });
+    } finally {
+      if (runtimeActiveCatalogLoadEvents === observedEvents) {
+        runtimeActiveCatalogLoadEvents = undefined;
+      }
+      runtimeActiveCatalogContinuation = undefined;
+    }
+  })();
+  runtimeActiveCatalogContinuation = loading;
+  return loading;
+}
+
+async function loadAllRuntimeThreadsForSearch(
+  set: StoreSet,
+  get: StoreGet,
+): Promise<void> {
+  if (!runtimeClient) {
+    set({ searchCatalogStatus: "ready", searchCatalogError: null });
+    return;
+  }
+  if (runtimeSearchCatalogLoad) return runtimeSearchCatalogLoad;
+  set({ searchCatalogStatus: "loading", searchCatalogError: null });
+  const loading = (async () => {
+    for (let pageNumber = 0; pageNumber < MAX_THREAD_CATALOG_PAGES_PER_SEARCH; pageNumber += 1) {
+      if (!get().threadCatalogHasMore) {
+        set({ searchCatalogStatus: "ready", searchCatalogError: null });
+        return;
+      }
+      await loadMoreRuntimeThreadsIntoStore(set, get);
+      const state = get();
+      if (state.threadCatalogMoreStatus === "error") {
+        set({
+          searchCatalogStatus: "error",
+          searchCatalogError: state.threadCatalogMoreError ?? "Thread catalog loading failed",
+        });
+        return;
+      }
+    }
+    set({
+      searchCatalogStatus: "error",
+      searchCatalogError: "Runtime Thread catalog exceeded the page limit.",
+    });
+  })().finally(() => {
+    runtimeSearchCatalogLoad = undefined;
+  });
+  runtimeSearchCatalogLoad = loading;
+  return loading;
+}
+
+function mergeArchivedRuntimeCatalogPage(
+  current: readonly RuntimeThreadSummary[],
+  summaries: readonly RuntimeThreadSummary[],
+  snapshotSeq: number,
+  observedEvents: ReadonlyMap<number, RuntimeJournalEvent>,
+): RuntimeThreadSummary[] {
+  let archivedThreads = [...current];
+  for (const summary of summaries) {
+    const existing = archivedThreads.find((thread) => thread.id === summary.id);
+    if (!existing || summary.updatedAt.localeCompare(existing.updatedAt) > 0) {
+      archivedThreads = reconcileArchivedThreadSummary(archivedThreads, summary);
+    }
+  }
+  for (const event of [...observedEvents.values()].sort(
+    (left, right) => left.seq - right.seq,
+  )) {
+    if (event.seq <= snapshotSeq) continue;
+    const summary = runtimeThreadSummaryFromEvent(event);
+    if (summary) {
+      archivedThreads = reconcileArchivedThreadSummary(archivedThreads, summary);
+    }
+  }
+  return archivedThreads;
+}
+
 async function loadArchivedThreadsIntoStore(
   set: StoreSet,
   get: StoreGet,
@@ -1286,30 +1662,48 @@ async function loadArchivedThreadsIntoStore(
     set({ archivedCatalogStatus: "ready" });
     return;
   }
+  if (get().archivedCatalogStatus === "ready") return;
   if (runtimeArchivedCatalogLoad) return runtimeArchivedCatalogLoad;
 
   const observedEvents = new Map<number, RuntimeJournalEvent>();
   runtimeArchivedCatalogLoadEvents = observedEvents;
-  set({ archivedCatalogStatus: "loading", runtimeError: null });
+  set((state) => ({
+    archivedCatalogStatus: "loading",
+    ...(state.runtimeIssue?.kind === "archived_catalog"
+      ? { runtimeError: null, runtimeIssue: null }
+      : {}),
+  }));
   const loading = (async () => {
     try {
-      const listed = await runtimeClient.listThreads({ archived: true });
-      let archivedThreads = [...listed.threads];
-      for (const event of [...observedEvents.values()].sort(
-        (left, right) => left.seq - right.seq,
-      )) {
-        if (event.seq <= listed.snapshotSeq) continue;
-        const summary = runtimeThreadSummaryFromEvent(event);
-        if (summary) {
-          archivedThreads = reconcileArchivedThreadSummary(archivedThreads, summary);
-        }
-      }
-      set({ archivedThreads, archivedCatalogStatus: "ready", runtimeError: null });
+      const listed = await runtimeClient.listThreads({
+        archived: true,
+        limit: RUNTIME_THREAD_CATALOG_PAGE_LIMIT,
+      });
+      validateRuntimeThreadCatalogPage(listed, null, 0, true);
+      set((state) => ({
+        archivedThreads: mergeArchivedRuntimeCatalogPage(
+          [],
+          listed.threads,
+          listed.snapshotSeq,
+          observedEvents,
+        ),
+        archivedCatalogStatus: "ready",
+        archivedCatalogNextCursor: listed.nextCursor,
+        archivedCatalogHasMore: listed.hasMore,
+        archivedCatalogSnapshotSeq: listed.snapshotSeq,
+        archivedCatalogMoreStatus: "idle",
+        archivedCatalogMoreError: null,
+        ...(state.runtimeIssue?.kind === "archived_catalog"
+          ? { runtimeError: null, runtimeIssue: null }
+          : {}),
+      }));
     } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Archived Thread catalog loading failed";
       set({
         archivedCatalogStatus: "error",
-        runtimeError:
-          error instanceof Error ? error.message : "Archived Thread catalog loading failed",
+        runtimeError: message,
+        runtimeIssue: { kind: "archived_catalog", message },
       });
       throw error;
     } finally {
@@ -1320,6 +1714,63 @@ async function loadArchivedThreadsIntoStore(
     }
   })();
   runtimeArchivedCatalogLoad = loading;
+  return loading;
+}
+
+async function loadMoreArchivedThreadsIntoStore(
+  set: StoreSet,
+  get: StoreGet,
+): Promise<void> {
+  if (!runtimeClient) return;
+  if (runtimeArchivedCatalogContinuation) return runtimeArchivedCatalogContinuation;
+  const initial = get();
+  const cursor = initial.archivedCatalogNextCursor;
+  if (!initial.archivedCatalogHasMore || !cursor) return;
+
+  const observedEvents = new Map<number, RuntimeJournalEvent>();
+  runtimeArchivedCatalogLoadEvents = observedEvents;
+  set({ archivedCatalogMoreStatus: "loading", archivedCatalogMoreError: null });
+  const loading = (async () => {
+    try {
+      const page = await runtimeClient.listThreads({
+        archived: true,
+        cursor,
+        limit: RUNTIME_THREAD_CATALOG_PAGE_LIMIT,
+      });
+      validateRuntimeThreadCatalogPage(
+        page,
+        cursor,
+        initial.archivedCatalogSnapshotSeq,
+        true,
+        new Set(initial.archivedThreads.map((thread) => thread.id)),
+      );
+      set((state) => ({
+        archivedThreads: mergeArchivedRuntimeCatalogPage(
+          state.archivedThreads,
+          page.threads,
+          page.snapshotSeq,
+          observedEvents,
+        ),
+        archivedCatalogNextCursor: page.nextCursor,
+        archivedCatalogHasMore: page.hasMore,
+        archivedCatalogSnapshotSeq: page.snapshotSeq,
+        archivedCatalogMoreStatus: "idle",
+        archivedCatalogMoreError: null,
+      }));
+    } catch (error: unknown) {
+      set({
+        archivedCatalogMoreStatus: "error",
+        archivedCatalogMoreError:
+          error instanceof Error ? error.message : "Archived Thread catalog loading failed",
+      });
+    } finally {
+      if (runtimeArchivedCatalogLoadEvents === observedEvents) {
+        runtimeArchivedCatalogLoadEvents = undefined;
+      }
+      runtimeArchivedCatalogContinuation = undefined;
+    }
+  })();
+  runtimeArchivedCatalogContinuation = loading;
   return loading;
 }
 
@@ -1343,18 +1794,37 @@ function reconcileRuntimeThreadMutation(
               : thread,
           )
         : [projectRuntimeThread(summary), ...state.threads];
+  const sortedThreads = sortRuntimeThreads(threads);
   const selectedThreadId =
     summary.archivedAt !== null && state.selectedThreadId === summary.id
       ? null
       : state.selectedThreadId;
   return {
-    threads,
+    threads: sortedThreads,
     archivedThreads: reconcileArchivedThreadSummary(state.archivedThreads, summary),
     projects: mergeRuntimeProjects(state.projects, [summary]),
     selectedThreadId,
-    runStatus: runtimeRunStatusForSelection(state, selectedThreadId, threads),
-    runtimeError: null,
+    runStatus: runtimeRunStatusForSelection(state, selectedThreadId, sortedThreads),
   };
+}
+
+function isMatchingThreadMutationIssue(
+  current: RuntimeIssue | null,
+  requested:
+    | { kind: "archive" | "unarchive"; threadId: string }
+    | { kind: "rename"; threadId: string; title: string | null },
+): boolean {
+  if (requested.kind === "rename") {
+    return (
+      current?.kind === "rename" &&
+      current.threadId === requested.threadId &&
+      current.title === requested.title
+    );
+  }
+  return (
+    current?.kind === requested.kind &&
+    current.threadId === requested.threadId
+  );
 }
 
 function localThreadSummary(
@@ -1387,16 +1857,30 @@ async function mutateRuntimeThread(
   set: StoreSet,
   get: StoreGet,
   invoke: () => Promise<RuntimeThreadMutationResult>,
+  issue:
+    | { kind: "archive" | "unarchive"; threadId: string }
+    | { kind: "rename"; threadId: string; title: string | null },
 ): Promise<void> {
   if (!runtimeClient) return;
+  set((state) =>
+    isMatchingThreadMutationIssue(state.runtimeIssue, issue)
+      ? { runtimeError: null, runtimeIssue: null }
+      : {},
+  );
   try {
     const result = await invoke();
-    set((state) => reconcileRuntimeThreadMutation(state, result.thread));
+    set((state) => ({
+      ...reconcileRuntimeThreadMutation(state, result.thread),
+      ...(isMatchingThreadMutationIssue(state.runtimeIssue, issue)
+        ? { runtimeError: null, runtimeIssue: null }
+        : {}),
+    }));
     if (result.event) {
       get().applyRuntimeEvent(result.event);
     }
   } catch (error: unknown) {
-    set({ runtimeError: error instanceof Error ? error.message : "Thread update failed" });
+    const message = error instanceof Error ? error.message : "Thread update failed";
+    set({ runtimeError: message, runtimeIssue: { ...issue, message } });
     throw error;
   }
 }
@@ -1417,11 +1901,19 @@ async function loadRuntimeThreadIntoStore(
   const observedEvents = new Map<number, RuntimeJournalEvent>();
   runtimeThreadLoadEvents.set(threadId, observedEvents);
   set((state) => ({
+    ...(state.selectedThreadId === threadId &&
+    state.runtimeIssue?.kind === "history" &&
+    state.runtimeIssue.threadId === threadId
+      ? { runtimeError: null, runtimeIssue: null }
+      : {}),
     runtimeThreadDetails: {
       ...state.runtimeThreadDetails,
       [threadId]: {
+        ...emptyRuntimeThreadDetail(
+          state.runtimeThreadDetails[threadId]?.snapshotSeq ?? 0,
+          state.runtimeThreadDetails[threadId],
+        ),
         status: "loading",
-        snapshotSeq: state.runtimeThreadDetails[threadId]?.snapshotSeq ?? 0,
         error: null,
       },
     },
@@ -1449,10 +1941,11 @@ async function loadRuntimeThreadIntoStore(
 
       set((state) => {
         const existingIndex = state.threads.findIndex((thread) => thread.id === threadId);
-        const threads =
+        const threads = sortRuntimeThreads(
           existingIndex === -1
             ? [projected, ...state.threads]
-            : state.threads.map((thread) => (thread.id === threadId ? projected : thread));
+            : state.threads.map((thread) => (thread.id === threadId ? projected : thread)),
+        );
         const currentActivities = state.runtimeThreadActivity[threadId] ?? {};
         const mergedActivities = { ...snapshotActivities };
         for (const [runId, activity] of Object.entries(currentActivities)) {
@@ -1480,10 +1973,22 @@ async function loadRuntimeThreadIntoStore(
               status: "ready",
               snapshotSeq: latestSnapshotSeq,
               error: null,
+              nextCursor: loaded.nextCursor,
+              hasMore: loaded.hasMore,
+              olderStatus: "idle",
+              olderError: null,
+              historySnapshotSeq: loaded.historySnapshotSeq,
+              turnOrdinals: Object.fromEntries(
+                loaded.turns.map(({ turn }) => [turn.id, turn.ordinal]),
+              ),
             },
           },
           runtimeThreadActivity,
-          ...(state.selectedThreadId === threadId ? { runtimeError: null } : {}),
+          ...(state.selectedThreadId === threadId &&
+          state.runtimeIssue?.kind === "history" &&
+          state.runtimeIssue.threadId === threadId
+            ? { runtimeError: null, runtimeIssue: null }
+            : {}),
           runStatus: runtimeRunStatusForSelection(
             { ...state, runtimeThreadActivity },
             state.selectedThreadId,
@@ -1496,11 +2001,18 @@ async function loadRuntimeThreadIntoStore(
         error instanceof Error ? error.message : "Runtime Thread history loading failed";
       set((state) => ({
         runtimeError: state.selectedThreadId === threadId ? message : state.runtimeError,
+        runtimeIssue:
+          state.selectedThreadId === threadId
+            ? { kind: "history" as const, message, threadId }
+            : state.runtimeIssue,
         runtimeThreadDetails: {
           ...state.runtimeThreadDetails,
           [threadId]: {
+            ...emptyRuntimeThreadDetail(
+              state.runtimeThreadDetails[threadId]?.snapshotSeq ?? 0,
+              state.runtimeThreadDetails[threadId],
+            ),
             status: "error",
-            snapshotSeq: state.runtimeThreadDetails[threadId]?.snapshotSeq ?? 0,
             error: message,
           },
         },
@@ -1516,6 +2028,313 @@ async function loadRuntimeThreadIntoStore(
   return loading;
 }
 
+function runtimeSummaryForProjectedThread(
+  state: AppState,
+  thread: Thread,
+): RuntimeThreadSummary {
+  const project = thread.projectId
+    ? state.projects.find((candidate) => candidate.id === thread.projectId)
+    : undefined;
+  const branch =
+    thread.branches.find((candidate) => candidate.id === thread.activeBranchId) ??
+    thread.branches[0];
+  return {
+    id: thread.id,
+    title: thread.title || null,
+    defaultBranchId: thread.activeBranchId,
+    workspace: project
+      ? { id: project.id, name: project.name, rootUri: project.rootUri ?? null }
+      : null,
+    createdAt: branch?.createdAt ?? thread.updatedAt,
+    updatedAt: thread.updatedAt,
+    archivedAt: null,
+  };
+}
+
+async function loadOlderRuntimeTurnsIntoStore(
+  set: StoreSet,
+  get: StoreGet,
+  threadId: string,
+): Promise<void> {
+  if (!runtimeClient) return;
+  const existing = runtimeOlderTurnLoads.get(threadId);
+  if (existing) return existing;
+
+  const initial = get();
+  const thread = findThread(initial.threads, threadId);
+  const detail = initial.runtimeThreadDetails[threadId];
+  const cursor = detail?.nextCursor;
+  if (!thread || detail?.status !== "ready" || !detail.hasMore || !cursor) return;
+  const branch =
+    thread.branches.find((candidate) => candidate.id === thread.activeBranchId) ??
+    thread.branches[0];
+  if (!branch) return;
+
+  const observedEvents = new Map<number, RuntimeJournalEvent>();
+  runtimeOlderTurnLoadEvents.set(threadId, observedEvents);
+  const existingTurnIds = new Set(branch.turns.map((turn) => turn.id));
+  const existingOrdinals = new Set(Object.values(detail.turnOrdinals));
+  set((state) => ({
+    runtimeThreadDetails: {
+      ...state.runtimeThreadDetails,
+      [threadId]: {
+        ...(state.runtimeThreadDetails[threadId] ?? detail),
+        olderStatus: "loading",
+        olderError: null,
+      },
+    },
+  }));
+
+  const loading = (async () => {
+    try {
+      const page = await loadOlderRuntimeTurnPage(runtimeClient, {
+        threadId,
+        branchId: branch.id,
+        cursor,
+        previousSnapshotSeq: detail.historySnapshotSeq,
+        existingTurnIds,
+        existingOrdinals,
+      });
+      let projectedOlder = projectRuntimeThreadHistory(
+        runtimeSummaryForProjectedThread(initial, thread),
+        page.turns.map(({ turn }) => turn),
+      );
+      for (const event of [...observedEvents.values()].sort(
+        (left, right) => left.seq - right.seq,
+      )) {
+        if (event.threadId === threadId && event.seq > page.snapshotSeq) {
+          projectedOlder = projectRuntimeEvent([projectedOlder], event)[0] ?? projectedOlder;
+        }
+      }
+      const projectedBranch = projectedOlder.branches.find(
+        (candidate) => candidate.id === branch.id,
+      );
+      const olderTurns = projectedBranch?.turns ?? [];
+      const olderTurnIds = new Set(olderTurns.map((turn) => turn.id));
+      const snapshotActivities = snapshotRuntimeThreadActivities(page);
+
+      set((state) => {
+        const current = findThread(state.threads, threadId);
+        const currentDetail = state.runtimeThreadDetails[threadId];
+        if (!current || !currentDetail) return {};
+        const threads = state.threads.map((candidate) => {
+          if (candidate.id !== threadId) return candidate;
+          return {
+            ...candidate,
+            branches: candidate.branches.map((candidateBranch) =>
+              candidateBranch.id === branch.id
+                ? {
+                    ...candidateBranch,
+                    turns: [
+                      ...olderTurns,
+                      ...candidateBranch.turns.filter(
+                        (turn) => !olderTurnIds.has(turn.id),
+                      ),
+                    ],
+                  }
+                : candidateBranch,
+            ),
+          };
+        });
+        const currentActivities = state.runtimeThreadActivity[threadId] ?? {};
+        const mergedActivities = { ...snapshotActivities };
+        for (const [runId, activity] of Object.entries(currentActivities)) {
+          if (!mergedActivities[runId] || activity.seq > mergedActivities[runId].seq) {
+            mergedActivities[runId] = activity;
+          }
+        }
+        const runtimeThreadActivity = {
+          ...state.runtimeThreadActivity,
+          [threadId]: mergedActivities,
+        };
+        return {
+          threads,
+          runtimeThreadActivity,
+          runtimeThreadDetails: {
+            ...state.runtimeThreadDetails,
+            [threadId]: {
+              ...currentDetail,
+              nextCursor: page.nextCursor,
+              hasMore: page.hasMore,
+              olderStatus: "idle" as const,
+              olderError: null,
+              historySnapshotSeq: page.snapshotSeq,
+              turnOrdinals: {
+                ...currentDetail.turnOrdinals,
+                ...Object.fromEntries(
+                  page.turns.map(({ turn }) => [turn.id, turn.ordinal]),
+                ),
+              },
+            },
+          },
+          runStatus: runtimeRunStatusForSelection(
+            { ...state, runtimeThreadActivity },
+            state.selectedThreadId,
+            threads,
+          ),
+        };
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Older Runtime Turns loading failed";
+      set((state) => {
+        const currentDetail = state.runtimeThreadDetails[threadId];
+        if (!currentDetail) return {};
+        return {
+          runtimeThreadDetails: {
+            ...state.runtimeThreadDetails,
+            [threadId]: {
+              ...currentDetail,
+              olderStatus: "error" as const,
+              olderError: message,
+            },
+          },
+        };
+      });
+    } finally {
+      if (runtimeOlderTurnLoadEvents.get(threadId) === observedEvents) {
+        runtimeOlderTurnLoadEvents.delete(threadId);
+      }
+      runtimeOlderTurnLoads.delete(threadId);
+    }
+  })();
+  runtimeOlderTurnLoads.set(threadId, loading);
+  return loading;
+}
+
+function applyRuntimeHostStatus(set: StoreSet, status: RuntimeHostStatus): void {
+  set((state) => {
+    if (status.state === "connected") {
+      const clearsConnectionError =
+        state.runtimeIssue?.kind === "connection" ||
+        state.runtimeIssue?.kind === "initialization";
+      return {
+        runtimeConnectionStatus: "connected",
+        ...(clearsConnectionError ? { runtimeError: null, runtimeIssue: null } : {}),
+      };
+    }
+    if (status.state === "offline") {
+      const message = status.message ?? "Runtime connection is unavailable.";
+      return {
+        runtimeConnectionStatus: "offline",
+        runtimeError: message,
+        runtimeIssue: { kind: "connection", message },
+      };
+    }
+    return { runtimeConnectionStatus: status.state };
+  });
+}
+
+async function retryRuntimeConnectionInStore(
+  set: StoreSet,
+  get: StoreGet,
+): Promise<void> {
+  if (!runtimeClient) return;
+  const initialized = get().runtimeReady;
+  set((state) => ({
+    runtimeConnectionStatus: initialized ? "reconnecting" : "starting",
+    ...(state.runtimeIssue?.kind === "connection" ||
+    state.runtimeIssue?.kind === "initialization"
+      ? { runtimeError: null, runtimeIssue: null }
+      : {}),
+  }));
+  if (!initialized) {
+    await initializeRuntimeInStore(set, get);
+    return;
+  }
+  const catalogRevision = ++providerCatalogRevision;
+  set({ providerCatalogStatus: "loading" });
+  try {
+    const [providerResult, modelResult] = await Promise.all([
+      runtimeClient.listProviders(),
+      runtimeClient.listModels(),
+    ]);
+    set((state) => ({
+      runtimeConnectionStatus: "connected",
+      ...(catalogRevision === providerCatalogRevision
+        ? {
+            providers: providerResult.providers,
+            models: modelResult.models,
+            selectedModel: reconcileModelSelection(
+              state.selectedModel,
+              providerResult.providers,
+              modelResult.models,
+            ),
+            providerCatalogStatus: "ready" as const,
+          }
+        : {}),
+      ...(state.runtimeIssue?.kind === "connection" ||
+      state.runtimeIssue?.kind === "initialization"
+        ? { runtimeError: null, runtimeIssue: null }
+        : {}),
+    }));
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Runtime connection failed";
+    set((state) => ({
+      runtimeConnectionStatus: "offline",
+      runtimeError: message,
+      runtimeIssue: { kind: "connection" as const, message },
+      ...(catalogRevision === providerCatalogRevision
+        ? { providerCatalogStatus: "error" as const }
+        : { providerCatalogStatus: state.providerCatalogStatus }),
+    }));
+  }
+}
+
+async function retryRuntimeIssueInStore(set: StoreSet, get: StoreGet): Promise<void> {
+  const issue = get().runtimeIssue;
+  if (!issue || issue.message !== get().runtimeError) return;
+  const clearIssue = (): void => {
+    set((state) =>
+      state.runtimeIssue === issue && state.runtimeError === issue.message
+        ? { runtimeError: null, runtimeIssue: null }
+        : {},
+    );
+  };
+  switch (issue.kind) {
+    case "connection":
+    case "initialization":
+      await retryRuntimeConnectionInStore(set, get);
+      return;
+    case "send": {
+      const state = get();
+      if (state.selectedThreadId !== issue.threadId || state.draft !== issue.prompt) {
+        return;
+      }
+      clearIssue();
+      await get().sendDraft();
+      return;
+    }
+    case "cancel": {
+      if (currentRunContext(get())?.runId !== issue.runId) {
+        return;
+      }
+      clearIssue();
+      get().stopRun();
+      return;
+    }
+    case "history":
+      clearIssue();
+      await loadRuntimeThreadIntoStore(set, get, issue.threadId);
+      return;
+    case "archived_catalog":
+      clearIssue();
+      await loadArchivedThreadsIntoStore(set, get);
+      return;
+    case "archive":
+      clearIssue();
+      await get().archiveThread(issue.threadId);
+      return;
+    case "unarchive":
+      clearIssue();
+      await get().unarchiveThread(issue.threadId);
+      return;
+    case "rename":
+      clearIssue();
+      await get().renameThread(issue.threadId, issue.title);
+  }
+}
+
 async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<void> {
   if (!runtimeClient || get().runtimeReady) {
     return;
@@ -1525,6 +2344,7 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
   }
 
   const initialization = (async () => {
+    set({ runtimeConnectionStatus: "starting", runtimeError: null, runtimeIssue: null });
     const catalogRevision = ++providerCatalogRevision;
     bufferedRuntimeEvents = [];
     removeRuntimeSubscription ??= runtimeClient.onEvent((event) => {
@@ -1534,20 +2354,31 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
         bufferedRuntimeEvents.push(event);
       }
     });
+    removeRuntimeStatusSubscription ??= runtimeClient.onStatus((status) => {
+      applyRuntimeHostStatus(set, status);
+    });
 
     const [listed, providerResult, modelResult] = await Promise.all([
-      runtimeClient.listThreads(),
+      runtimeClient.listThreads({ limit: RUNTIME_THREAD_CATALOG_PAGE_LIMIT }),
       runtimeClient.listProviders(),
       runtimeClient.listModels(),
     ]);
+    validateRuntimeThreadCatalogPage(listed, null, 0, false);
     pendingRuntimeEvents.clear();
     set((state) => ({
       projects: mergeRuntimeProjects(state.projects, listed.threads),
-      threads: projectRuntimeThreads(listed.threads),
+      threads: sortRuntimeThreads(projectRuntimeThreads(listed.threads)),
+      threadCatalogNextCursor: listed.nextCursor,
+      threadCatalogHasMore: listed.hasMore,
+      threadCatalogSnapshotSeq: listed.snapshotSeq,
+      threadCatalogMoreStatus: "idle",
+      threadCatalogMoreError: null,
+      searchCatalogStatus: "idle",
+      searchCatalogError: null,
       runtimeThreadDetails: Object.fromEntries(
         listed.threads.map((thread) => [
           thread.id,
-          { status: "idle", snapshotSeq: listed.snapshotSeq, error: null },
+          emptyRuntimeThreadDetail(listed.snapshotSeq),
         ]),
       ),
       runtimeThreadActivity: {},
@@ -1574,11 +2405,17 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
       : null;
     set((state) => {
       const catalogIsCurrent = catalogRevision === providerCatalogRevision;
+      const clearsInitializationIssue =
+        state.runtimeIssue?.kind === "connection" ||
+        state.runtimeIssue?.kind === "initialization";
       return {
         threads,
         selectedThreadId,
         runtimeReady: true,
-        runtimeError: catalogIsCurrent ? null : state.runtimeError,
+        runtimeConnectionStatus: "connected",
+        ...(catalogIsCurrent && clearsInitializationIssue
+          ? { runtimeError: null, runtimeIssue: null }
+          : {}),
         ...(catalogIsCurrent
           ? {
               providers: providerResult.providers,
@@ -1600,8 +2437,12 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
   try {
     await initialization;
   } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Runtime initialization failed";
     set({
-      runtimeError: error instanceof Error ? error.message : "Runtime initialization failed",
+      runtimeConnectionStatus:
+        get().runtimeConnectionStatus === "connected" ? "connected" : "offline",
+      runtimeError: message,
+      runtimeIssue: { kind: "initialization", message },
     });
   } finally {
     if (runtimeInitialization === initialization) {
@@ -1724,9 +2565,11 @@ function adoptRuntimeCreatedThread(
       return state;
     }
     const threadId = created.thread.id;
-    const threads = state.threads.some((thread) => thread.id === threadId)
-      ? state.threads
-      : [projectRuntimeThread(created.thread), ...state.threads];
+    const threads = sortRuntimeThreads(
+      state.threads.some((thread) => thread.id === threadId)
+        ? state.threads
+        : [projectRuntimeThread(created.thread), ...state.threads],
+    );
     const ownsForeground = ownsRuntimeSendForeground(
       state,
       submission.epoch,
@@ -1743,6 +2586,12 @@ function adoptRuntimeCreatedThread(
           status: "ready",
           snapshotSeq: created.event.seq,
           error: null,
+          nextCursor: null,
+          hasMore: false,
+          olderStatus: "idle",
+          olderError: null,
+          historySnapshotSeq: created.event.seq,
+          turnOrdinals: {},
         },
       },
       pendingRuntimeSubmissions: {
@@ -1804,8 +2653,23 @@ function handleRuntimeSubmissionFailure(
       pendingRuntimeNewThread,
     };
     return {
+      ...(ownsForeground || matchedThreadId !== null
+        ? {
+            runtimeError,
+            runtimeIssue: {
+              kind: "send" as const,
+              message: runtimeError,
+              threadId: matchedThreadId,
+              prompt: submission.prompt,
+            },
+          }
+        : {}),
       ...(ownsForeground
-        ? { draft: submission.prompt, runStatus: "failed" as const, activeRun: null }
+        ? {
+            draft: submission.prompt,
+            runStatus: "failed" as const,
+            activeRun: null,
+          }
         : {
             runStatus: runtimeRunStatusForSelection(
               projectedState,
@@ -1814,7 +2678,6 @@ function handleRuntimeSubmissionFailure(
           }),
       pendingRuntimeSubmissions,
       pendingRuntimeNewThread,
-      runtimeError,
     };
   });
 }
@@ -1966,7 +2829,16 @@ async function sendRuntimeDraft(
   }
 
   if (!selectionIsRunnable(selectedModelAtSend, initial.providers, initial.models)) {
-    set({ runtimeError: "No configured model is selected." });
+    const message = "No configured model is selected.";
+    set({
+      runtimeError: message,
+      runtimeIssue: {
+        kind: "send",
+        message,
+        threadId: selectedThreadIdAtSend,
+        prompt,
+      },
+    });
     return;
   }
 
@@ -1994,6 +2866,7 @@ async function sendRuntimeDraft(
     draft: "",
     runStatus: "queued",
     runtimeError: null,
+    runtimeIssue: null,
     runEpoch: epoch,
     pendingRuntimeSubmissions:
       selectionAtSend === null
@@ -2035,16 +2908,34 @@ async function sendRuntimeDraft(
 export const useAppStore = create<AppState>()((set, get) => ({
   runtimeMode: runtimeClient !== null,
   runtimeReady: runtimeClient === null,
+  runtimeConnectionStatus: runtimeClient === null ? "connected" : "starting",
   runtimeError: null,
+  runtimeIssue: null,
   runtimeSeq: 0,
   providerCatalogStatus: runtimeClient === null ? "ready" : "idle",
   providers: [],
   models: [],
+  skillCatalogStatus: runtimeClient === null ? "ready" : "idle",
+  skillCatalogError: null,
+  skills: [],
+  skillDiagnostics: [],
   selectedModel: null,
   projects: runtimeClient ? [] : createInitialProjects(),
   threads: runtimeClient ? [] : createInitialThreads(),
+  threadCatalogNextCursor: null,
+  threadCatalogSnapshotSeq: 0,
+  threadCatalogHasMore: false,
+  threadCatalogMoreStatus: "idle",
+  threadCatalogMoreError: null,
+  searchCatalogStatus: runtimeClient ? "idle" : "ready",
+  searchCatalogError: null,
   archivedThreads: [],
+  archivedCatalogNextCursor: null,
+  archivedCatalogSnapshotSeq: 0,
   archivedCatalogStatus: "idle",
+  archivedCatalogHasMore: false,
+  archivedCatalogMoreStatus: "idle",
+  archivedCatalogMoreError: null,
   runtimeThreadDetails: {},
   runtimeThreadActivity: {},
   selectedThreadId: null,
@@ -2070,12 +2961,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
   newThreadWorkspace: null,
 
   initializeRuntime: () => initializeRuntimeInStore(set, get),
+  retryRuntimeConnection: () => retryRuntimeConnectionInStore(set, get),
+  retryRuntimeIssue: () => retryRuntimeIssueInStore(set, get),
+  clearRuntimeError: () => set({ runtimeError: null, runtimeIssue: null }),
   applyRuntimeEvent: (event) => enqueueRuntimeEvent(set, get, event),
+  loadMoreThreads: () => loadMoreRuntimeThreadsIntoStore(set, get),
+  loadAllThreadsForSearch: () => loadAllRuntimeThreadsForSearch(set, get),
   loadArchivedThreads: () => loadArchivedThreadsIntoStore(set, get),
+  loadMoreArchivedThreads: () => loadMoreArchivedThreadsIntoStore(set, get),
   renameThread: async (threadId, title) => {
     if (runtimeClient) {
       await mutateRuntimeThread(set, get, () =>
         runtimeClient.renameThread({ threadId, title }),
+        { kind: "rename", threadId, title },
       );
       return;
     }
@@ -2090,7 +2988,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   archiveThread: async (threadId) => {
     if (runtimeClient) {
-      await mutateRuntimeThread(set, get, () => runtimeClient.archiveThread(threadId));
+      await mutateRuntimeThread(
+        set,
+        get,
+        () => runtimeClient.archiveThread(threadId),
+        { kind: "archive", threadId },
+      );
       return;
     }
     set((state) => {
@@ -2109,7 +3012,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   unarchiveThread: async (threadId) => {
     if (runtimeClient) {
-      await mutateRuntimeThread(set, get, () => runtimeClient.unarchiveThread(threadId));
+      await mutateRuntimeThread(
+        set,
+        get,
+        () => runtimeClient.unarchiveThread(threadId),
+        { kind: "unarchive", threadId },
+      );
       return;
     }
     set((state) => {
@@ -2149,6 +3057,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     mutateRuntimeProviderCatalog(set, () =>
       runtimeClient?.setModelEnabled(params) ?? Promise.resolve(),
     ),
+  loadSkillCatalog: () => refreshRuntimeSkillCatalog(set),
+  setSkillEnabled: (params) => mutateRuntimeSkillEnabled(set, params),
   selectModel: (selection) =>
     set((state) => ({
       selectedModel: selectionIsRunnable(selection, state.providers, state.models)
@@ -2353,6 +3263,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
+  retryRuntimeThread: (threadId) => loadRuntimeThreadIntoStore(set, get, threadId),
+  loadOlderRuntimeTurns: (threadId) =>
+    loadOlderRuntimeTurnsIntoStore(set, get, threadId),
+
   sendDraft: async () => {
     const state = get();
     const prompt = state.draft.trim();
@@ -2468,6 +3382,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
         return;
       }
       cancellingRuntimeRuns.add(context.runId);
+      set((state) =>
+        state.runtimeIssue?.kind === "cancel" &&
+        state.runtimeIssue.runId === context.runId
+          ? { runtimeError: null, runtimeIssue: null }
+          : {},
+      );
       void runtimeClient
         .cancelRun(context.runId)
         .then(async (result) => {
@@ -2480,9 +3400,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
         })
         .catch((error: unknown) => {
           cancellingRuntimeRuns.delete(context.runId as string);
-          set({
-            runtimeError: error instanceof Error ? error.message : "Runtime cancellation failed",
-          });
+          const message =
+            error instanceof Error ? error.message : "Runtime cancellation failed";
+          set((state) =>
+            currentRunContext(state)?.runId === context.runId
+              ? {
+                  runtimeError: message,
+                  runtimeIssue: { kind: "cancel", message, runId: context.runId as string },
+                }
+              : {},
+          );
         });
       return;
     }

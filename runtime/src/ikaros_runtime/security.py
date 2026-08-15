@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 from .errors import ConfigError, InvalidParamsError
 from .errors import ProtectedValueError as ProtectedValueError
+from .protocol.spec import JOURNAL_EVENT_TYPE_SET, PROVIDER_TOOL_ID_SET, SERVER_NAME
 
 type ProtectedValuesSource = Callable[[], Sequence[str]]
 type JournalSecretProbe = Callable[[Sequence[str]], bool]
@@ -157,20 +158,6 @@ def rpc_request_values_contain_protected_value(
     return False
 
 
-_FIXED_EVENT_TYPES = frozenset(
-    {
-        "thread.created",
-        "thread.renamed",
-        "thread.archived",
-        "thread.unarchived",
-        "run.state_changed",
-        "item.started",
-        "item.delta",
-        "item.completed",
-        "model.usage_recorded",
-        "run.settled",
-    }
-)
 _FIXED_STATUSES = frozenset({"queued", "running", "streaming", "completed", "failed", "cancelled"})
 _FIXED_ROLES = frozenset({"user", "assistant", "tool"})
 _FIXED_KINDS = frozenset({"message", "tool_call", "tool_result"})
@@ -224,10 +211,13 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "cwd",
         "data",
         "dailyUsageBuckets",
+        "description",
+        "diagnostics",
         "defaultBranchId",
         "delta",
         "displayName",
         "durationMs",
+        "entry",
         "enabled",
         "error",
         "errorCode",
@@ -250,6 +240,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "lineEnd",
         "lineStart",
         "lineTruncations",
+        "location",
         "lifetimeTokens",
         "longestRunningTurnSec",
         "longestStreakDays",
@@ -294,6 +285,8 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "server",
         "settledAt",
         "status",
+        "skill",
+        "skills",
         "stderr",
         "stdout",
         "stepId",
@@ -370,22 +363,17 @@ def _is_fixed_response_value(path: tuple[str, ...], value: str) -> bool:
         return True
     if path == ("method",) and value == "event":
         return True
-    if path[-2:] == ("server", "name") and value == "ikaros-runtime":
+    if path[-2:] == ("server", "name") and value == SERVER_NAME:
         return True
     if path[-2:] == ("server", "version"):
         return True
-    if path[-2:] == ("capabilities", "tools") and value in {
-        "process.run",
-        "read",
-        "write",
-        "edit",
-    }:
+    if path[-2:] == ("capabilities", "tools") and value in PROVIDER_TOOL_ID_SET:
         return True
     if path and path[-1] == "newline" and value in {"lf", "crlf"}:
         return True
     if path and path[-1] == "executionPolicy" and value == "full_access":
         return True
-    if path and path[-1] == "type" and value in _FIXED_EVENT_TYPES:
+    if path and path[-1] == "type" and value in JOURNAL_EVENT_TYPE_SET:
         return True
     if path and path[-1] in {"status", "outcome"} and value in _FIXED_STATUSES:
         return True

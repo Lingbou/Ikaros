@@ -5,6 +5,7 @@ import { ConversationHeader } from "./components/ConversationHeader";
 import { EditMessageDialog } from "./components/EditMessageDialog";
 import { EventFeed } from "./components/EventFeed";
 import { SearchDialog } from "./components/SearchDialog";
+import { RuntimeStatusBanner } from "./components/RuntimeStatusBanner";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
@@ -99,6 +100,7 @@ export function App() {
     <Tooltip.Provider>
       <div className="flex h-full min-h-0 flex-col bg-[var(--canvas)]">
         <TitleBar />
+        <RuntimeStatusBanner />
         {settingsOpen ? (
           <SettingsPage />
         ) : (

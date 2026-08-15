@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { Folder, MessageSquare, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Folder, LoaderCircle, MessageSquare, RotateCcw, Search, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { findProjectForThread } from "../domain";
 import { useTranslation } from "../i18n";
 import { useAppStore } from "../store";
@@ -25,7 +25,15 @@ function SearchDialogContent() {
   const projects = useAppStore((state) => state.projects);
   const threads = useAppStore((state) => state.threads);
   const selectThread = useAppStore((state) => state.selectThread);
+  const searchCatalogStatus = useAppStore((state) => state.searchCatalogStatus);
+  const searchCatalogError = useAppStore((state) => state.searchCatalogError);
+  const loadAllThreadsForSearch = useAppStore(
+    (state) => state.loadAllThreadsForSearch,
+  );
   const [query, setQuery] = useState("");
+  useEffect(() => {
+    void loadAllThreadsForSearch();
+  }, [loadAllThreadsForSearch]);
   const matches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return threads
@@ -97,13 +105,30 @@ function SearchDialogContent() {
             </div>
           )}
         </div>
-        <div className="flex h-10 items-center justify-between border-t border-[var(--border-soft)] px-4 text-[11px] text-[var(--muted)]">
+        <div className="flex min-h-10 items-center justify-between gap-3 border-t border-[var(--border-soft)] px-4 py-1.5 text-[11px] text-[var(--muted)]">
           <span>
             {matches.length === 1
               ? t("search.countOne")
               : t("search.countMany", { count: matches.length })}
           </span>
-          <span>{t("search.hint")}</span>
+          {searchCatalogStatus === "loading" ? (
+            <span role="status" className="flex items-center gap-1.5">
+              <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />
+              {t("search.loadingAll")}
+            </span>
+          ) : searchCatalogStatus === "error" ? (
+            <button
+              type="button"
+              title={searchCatalogError ?? undefined}
+              onClick={() => void loadAllThreadsForSearch()}
+              className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[#d98b8b] transition-colors hover:bg-[var(--surface-hover)] hover:text-[#e7a1a1]"
+            >
+              <RotateCcw size={10} aria-hidden="true" />
+              {t("search.retryAll")}
+            </button>
+          ) : (
+            <span>{t("search.hint")}</span>
+          )}
         </div>
       </Dialog.Content>
     </Dialog.Portal>

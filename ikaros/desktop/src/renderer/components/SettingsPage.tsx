@@ -2,6 +2,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowLeft,
   Archive,
+  BookOpen,
   Cable,
   Check,
   ChevronDown,
@@ -40,10 +41,17 @@ import {
   ModelsSettings,
   ProvidersSettings
 } from "./ProviderModelSettings";
+import { SkillsSettings } from "./SkillsSettings";
 import { cx } from "./ui";
 
 const LANGUAGE_OPTIONS: readonly UiLanguagePreference[] = ["en", "zh-CN"];
-type SettingsSection = "general" | "profile" | "appearance" | "providers" | "models";
+type SettingsSection =
+  | "general"
+  | "profile"
+  | "appearance"
+  | "providers"
+  | "models"
+  | "skills";
 
 function GeneralSettings({
   preferences,
@@ -165,6 +173,12 @@ export function SettingsPage() {
   const disconnectProvider = useAppStore((state) => state.disconnectProvider);
   const removeProvider = useAppStore((state) => state.removeProvider);
   const setModelEnabled = useAppStore((state) => state.setModelEnabled);
+  const skillCatalogStatus = useAppStore((state) => state.skillCatalogStatus);
+  const skillCatalogError = useAppStore((state) => state.skillCatalogError);
+  const skills = useAppStore((state) => state.skills);
+  const skillDiagnostics = useAppStore((state) => state.skillDiagnostics);
+  const loadSkillCatalog = useAppStore((state) => state.loadSkillCatalog);
+  const setSkillEnabled = useAppStore((state) => state.setSkillEnabled);
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [query, setQuery] = useState("");
   const [preferences, setPreferences] = useState<UiPreferences>(() =>
@@ -180,6 +194,11 @@ export function SettingsPage() {
   useEffect(() => {
     void loadProviderCatalog().catch(() => undefined);
   }, [loadProviderCatalog]);
+
+  useEffect(() => {
+    if (activeSection !== "skills") return;
+    void loadSkillCatalog().catch(() => undefined);
+  }, [activeSection, loadSkillCatalog]);
 
   const applyLocalPreferences = (
     nextPreferences: UiPreferences,
@@ -305,7 +324,8 @@ export function SettingsPage() {
       { id: "profile" as const, label: t("settings.profile"), Icon: CircleUserRound },
       { id: "appearance" as const, label: t("settings.appearance"), Icon: Palette },
       { id: "providers" as const, label: t("settings.providers.title"), Icon: Cable },
-      { id: "models" as const, label: t("settings.models.title"), Icon: Sparkles }
+      { id: "models" as const, label: t("settings.models.title"), Icon: Sparkles },
+      { id: "skills" as const, label: t("settings.skills.title"), Icon: BookOpen }
     ],
     [t]
   );
@@ -410,13 +430,22 @@ export function SettingsPage() {
               onDisconnectDeepSeek={() => disconnectProvider("deepseek")}
               onRemoveCustomProvider={removeProvider}
             />
-          ) : (
+          ) : activeSection === "models" ? (
             <ModelsSettings
               providers={providers}
               models={models}
               onSetModelEnabled={(providerId, modelId, enabled) =>
                 setModelEnabled({ providerId, modelId, enabled })
               }
+            />
+          ) : (
+            <SkillsSettings
+              skills={skills}
+              diagnostics={skillDiagnostics}
+              status={skillCatalogStatus}
+              catalogError={skillCatalogError}
+              onRefresh={loadSkillCatalog}
+              onSetEnabled={(name, enabled) => setSkillEnabled({ name, enabled })}
             />
           )}
           <p aria-live="polite" className="mt-2 min-h-4 px-1 text-[11px] leading-4 text-[#e08b8b]">

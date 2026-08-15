@@ -185,7 +185,7 @@ describe("Runtime workspace projection", () => {
 
 function event(
   seq: number,
-  type: string,
+  type: RuntimeJournalEvent["type"],
   turnId: string,
   runId: string,
   itemId: string | null,

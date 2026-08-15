@@ -38,7 +38,12 @@ function desktopApiWithPreferences(
       runtime: {
         listThreads: async () => ({
           ok: true,
-          value: { threads: [], snapshotSeq: 0 },
+          value: {
+            threads: [],
+            nextCursor: null,
+            hasMore: false,
+            snapshotSeq: 0,
+          },
         }),
         getThread: async () => {
           throw new Error("not used in settings tests");
@@ -102,6 +107,10 @@ function desktopApiWithPreferences(
         },
         listModels: async () => ({ ok: true, value: { models: [] } }),
         setModelEnabled: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        listSkills: async () => ({ ok: true, value: { skills: [], diagnostics: [] } }),
+        setSkillEnabled: async () => {
           throw new Error("not used in preference settings tests");
         },
         readUsage: async () => ({
@@ -766,6 +775,57 @@ describe("SettingsPage", () => {
         .getByRole("switch", { name: "Toggle Persisted Model" })
         .getAttribute("aria-checked")
     ).toBe("false");
+  });
+
+  it("loads Skills only when the Skills section opens and refreshes on re-entry", async () => {
+    const loadSkillCatalog = vi.fn(async () => {
+      useAppStore.setState({
+        skillCatalogStatus: "ready",
+        skillCatalogError: null,
+        skills: [
+          {
+            name: "grill-me",
+            description: "Resolve one design decision at a time.",
+            location: "C:/Users/User/.ikaros/skills/grill-me/SKILL.md",
+            enabled: true
+          }
+        ],
+        skillDiagnostics: []
+      });
+    });
+    const setSkillEnabled = vi.fn(async ({ name, enabled }: { name: string; enabled: boolean }) => {
+      useAppStore.setState((state) => ({
+        skillCatalogStatus: "ready",
+        skills: state.skills.map((skill) =>
+          skill.name === name ? { ...skill, enabled } : skill
+        )
+      }));
+    });
+    useAppStore.setState({
+      skillCatalogStatus: "idle",
+      skillCatalogError: null,
+      skills: [],
+      skillDiagnostics: [],
+      loadSkillCatalog,
+      setSkillEnabled
+    });
+
+    render(<SettingsPage />);
+    expect(loadSkillCatalog).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await waitFor(() => expect(loadSkillCatalog).toHaveBeenCalledOnce());
+    expect(screen.getByRole("heading", { level: 1, name: "Skills" })).toBeTruthy();
+    expect(screen.getByText("Resolve one design decision at a time.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Toggle grill-me" }));
+    await waitFor(() =>
+      expect(setSkillEnabled).toHaveBeenCalledWith({ name: "grill-me", enabled: false })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await waitFor(() => expect(loadSkillCatalog).toHaveBeenCalledTimes(2));
   });
 
   it("finds Profile through settings search without adding fake sections", () => {
