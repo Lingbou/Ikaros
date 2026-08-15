@@ -46,6 +46,7 @@ def dumps(
     *,
     ensure_ascii: bool = True,
     separators: tuple[str, str] | None = None,
+    sort_keys: bool = False,
 ) -> str:
     """Encode JSON only when every number remains valid in JavaScript."""
     _validate_numbers(value)
@@ -54,6 +55,7 @@ def dumps(
             value,
             ensure_ascii=ensure_ascii,
             separators=separators,
+            sort_keys=sort_keys,
             allow_nan=False,
         )
     except RecursionError:

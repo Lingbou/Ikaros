@@ -34,7 +34,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "event"
   ],
   "journal": {
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "eventTypes": [
       "thread.created",
       "thread.renamed",
@@ -44,7 +44,8 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
       "item.started",
       "item.delta",
       "item.completed",
-      "model.usage_recorded",
+      "model.input_prepared",
+      "model.response_finished",
       "run.settled"
     ]
   },

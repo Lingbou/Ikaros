@@ -18,6 +18,8 @@ from ikaros_runtime.skills import SkillCatalog, build_skill_prompt
 from ikaros_runtime.skills.catalog import MAX_FRONTMATTER_BYTES, MAX_SKILL_BYTES
 from ikaros_runtime.storage import SqliteRuntimeStore
 
+from .helpers import prepare_turn
+
 
 def _write_skill(
     root: Path,
@@ -275,7 +277,8 @@ def test_run_skill_snapshot_is_journaled_rebuilt_and_reopened(tmp_path: Path) ->
             "Workspace",
             workspace=WorkspaceSummary("workspace", "Workspace", str(tmp_path)),
         )
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=ordinary.id,
             branch_id=ordinary.default_branch_id,
             content="Use the Skill",
@@ -283,7 +286,8 @@ def test_run_skill_snapshot_is_journaled_rebuilt_and_reopened(tmp_path: Path) ->
             model_id="scripted-v1",
             skills=(descriptor,),
         )
-        workspace_prepared = store.prepare_turn(
+        workspace_prepared = prepare_turn(
+            store,
             thread_id=workspace.id,
             branch_id=workspace.default_branch_id,
             content="Use the same Skill",
@@ -307,24 +311,29 @@ def test_run_skill_snapshot_is_journaled_rebuilt_and_reopened(tmp_path: Path) ->
         reopened.close()
 
 
-def test_prepare_turn_rejects_unsorted_or_duplicate_skill_snapshots(tmp_path: Path) -> None:
+def test_prepare_turn_canonicalizes_unsorted_and_rejects_duplicate_skill_snapshots(
+    tmp_path: Path,
+) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Skills")
         alpha = SkillDescriptor("alpha", "Alpha", str((tmp_path / "alpha.md").resolve()))
         beta = SkillDescriptor("beta", "Beta", str((tmp_path / "beta.md").resolve()))
 
-        with pytest.raises(ValueError, match="unique and sorted"):
-            store.prepare_turn(
-                thread_id=thread.id,
-                branch_id=thread.default_branch_id,
-                content="Unsorted",
-                provider_id="scripted",
-                model_id="scripted-v1",
-                skills=(beta, alpha),
-            )
-        with pytest.raises(ValueError, match="unique and sorted"):
-            store.prepare_turn(
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Unsorted",
+            provider_id="scripted",
+            model_id="scripted-v1",
+            skills=(beta, alpha),
+        )
+        assert store.get_run(prepared.run_id).skills == (alpha, beta)
+
+        with pytest.raises(ValueError, match="Skill names must be unique"):
+            prepare_turn(
+                store,
                 thread_id=thread.id,
                 branch_id=thread.default_branch_id,
                 content="Duplicate",

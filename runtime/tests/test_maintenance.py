@@ -16,6 +16,8 @@ from ikaros_runtime.server.host import RuntimeHomeLock
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.storage import maintenance as storage_maintenance
 
+from .helpers import prepare_turn
+
 
 def test_backup_captures_committed_wal_and_publishes_a_standalone_database(
     tmp_path: Path,
@@ -148,7 +150,8 @@ def test_repair_restores_model_usage_projection_from_the_journal(tmp_path: Path)
     store = SqliteRuntimeStore(state_path)
     try:
         thread, _event = store.create_thread("Usage repair")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="measure",
@@ -156,10 +159,16 @@ def test_repair_restores_model_usage_projection_from_the_journal(tmp_path: Path)
             model_id="deepseek-chat",
         )
         store.mark_run_running(prepared.run_id)
-        store.record_model_usage(
+        store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        store.complete_provider_step(
             prepared.run_id,
             step_ordinal=1,
             usage=ModelUsage(input_tokens=7, output_tokens=3, total_tokens=10),
+            assistant_item_id=None,
+            tool_calls=(),
+            reasoning_content=None,
+            response_model_id=None,
+            request_id=None,
         )
         with store._connection:
             store._connection.execute(

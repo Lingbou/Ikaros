@@ -66,3 +66,11 @@ class ProtectedValueError(RuntimeError):
 
 class UnsupportedJournalEventVersionError(RuntimeError):
     """A persisted Event cannot be interpreted by this Runtime version."""
+
+
+class RunInputDriftError(RuntimeError):
+    """The current execution environment no longer matches a queued Run Frame."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code

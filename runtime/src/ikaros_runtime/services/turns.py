@@ -8,11 +8,14 @@ from ..domain import CommandOutcome, SkillDescriptor
 from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
 from ..providers.scripted import ScriptedProvider
+from ..run_input import ProviderExecutionSnapshotV1, SubmissionFrameTemplateV1
 from ..storage import SqliteRuntimeStore
 from ..storage.thread_history import TURN_HISTORY_DEFAULT_LIMIT, TURN_HISTORY_MAX_LIMIT
+from ..tools.core import ToolDefinition
 from .threads import RequestSafetyCheck, client_request_id_from, record_id_from
 
 type SkillSnapshotSource = Callable[[], tuple[SkillDescriptor, ...]]
+type ToolDefinitionSource = Callable[[], tuple[ToolDefinition, ...]]
 
 
 class TurnService:
@@ -23,12 +26,18 @@ class TurnService:
         config_store: ConfigStore,
         assert_request_safe: RequestSafetyCheck,
         skill_snapshot: SkillSnapshotSource | None = None,
+        tool_definitions: ToolDefinitionSource | None = None,
+        execution_policy: str = "full_access",
+        max_steps: int = 16,
     ) -> None:
         self._store = store
         self._scheduler = scheduler
         self._config = config_store
         self._assert_request_safe = assert_request_safe
         self._skill_snapshot = skill_snapshot or _empty_skill_snapshot
+        self._tool_definitions = tool_definitions or _empty_tool_definitions
+        self._execution_policy = execution_policy
+        self._max_steps = max_steps
 
     def start_turn(self, params: dict[str, Any]) -> CommandOutcome:
         required = {"threadId", "branchId", "content", "providerId", "modelId"}
@@ -38,8 +47,8 @@ class TurnService:
         values = {name: params[name] for name in required}
         if any(not isinstance(value, str) for value in values.values()):
             raise InvalidParamsError("turn.start fields must be strings")
-        content = values["content"].strip()
-        if not content:
+        content = values["content"]
+        if not content.strip():
             raise InvalidParamsError("content must not be empty")
         client_request_id = client_request_id_from(params)
         self._assert_request_safe((*values.values(), content, client_request_id))
@@ -67,21 +76,36 @@ class TurnService:
         if values["providerId"] == ScriptedProvider.id:
             if values["modelId"] != ScriptedProvider.model_id:
                 raise InvalidParamsError("model is not available")
+            provider_snapshot = ProviderExecutionSnapshotV1(
+                provider_id=ScriptedProvider.id,
+                origin="scripted",
+                base_url=None,
+                model_id=ScriptedProvider.model_id,
+                supports_tools=True,
+            )
         else:
             try:
-                self._config.resolve_model(values["providerId"], values["modelId"])
+                provider_snapshot = self._config.execution_snapshot(
+                    values["providerId"],
+                    values["modelId"],
+                )
             except ConfigError as error:
                 raise InvalidParamsError(str(error)) from None
         skills = self._skill_snapshot()
+        frame_template = SubmissionFrameTemplateV1.create(
+            provider=provider_snapshot,
+            execution_policy=self._execution_policy,
+            skills=skills,
+            tools=self._tool_definitions(),
+            max_steps=self._max_steps,
+        )
         try:
             prepared = self._store.prepare_turn(
                 thread_id=values["threadId"],
                 branch_id=values["branchId"],
                 content=content,
-                provider_id=values["providerId"],
-                model_id=values["modelId"],
+                frame_template=frame_template,
                 client_request_id=client_request_id,
-                skills=skills,
             )
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
@@ -167,6 +191,10 @@ class TurnService:
 
 
 def _empty_skill_snapshot() -> tuple[SkillDescriptor, ...]:
+    return ()
+
+
+def _empty_tool_definitions() -> tuple[ToolDefinition, ...]:
     return ()
 
 

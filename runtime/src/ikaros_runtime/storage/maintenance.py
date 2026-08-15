@@ -21,7 +21,9 @@ _PROJECTION_TABLES = (
     ("branches", "id"),
     ("turns", "id"),
     ("runs", "id"),
+    ("run_inputs", "run_id"),
     ("items", "id"),
+    ("model_steps", "run_id, step_ordinal"),
     ("model_usages", "run_id, step_ordinal"),
 )
 

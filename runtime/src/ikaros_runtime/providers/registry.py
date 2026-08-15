@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..config import ConfigDocumentStore
 from ..errors import ConfigError as ConfigError
+from ..run_input import ProviderExecutionSnapshotV1
 from ..security import contains_protected_value
 from .base import (
     ModelConfig,
@@ -150,6 +151,20 @@ class ConfigStore:
         if not model.enabled:
             raise ConfigError("the selected model is disabled")
         return provider, model
+
+    def execution_snapshot(
+        self,
+        provider_id: str,
+        model_id: str,
+    ) -> ProviderExecutionSnapshotV1:
+        provider, model = self.resolve_model(provider_id, model_id)
+        return ProviderExecutionSnapshotV1(
+            provider_id=provider.id,
+            origin=provider.origin,
+            base_url=provider.base_url,
+            model_id=model.id,
+            supports_tools=model.supports_tools,
+        )
 
     def configure_deepseek(
         self,

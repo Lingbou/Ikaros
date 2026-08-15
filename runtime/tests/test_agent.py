@@ -18,9 +18,11 @@ from ikaros_runtime.providers.base import (
     ProviderRequest,
     ReasoningDelta,
     ResponseCompleted,
+    ResponseMetadata,
     TextDelta,
     ToolCallCompleted,
 )
+from ikaros_runtime.run_input import ProviderExecutionSnapshotV1
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import (
     ToolCall,
@@ -30,6 +32,8 @@ from ikaros_runtime.tools.core import (
     ToolResult,
 )
 from ikaros_runtime.tools.policy import FullAccessPolicy
+
+from .helpers import prepare_turn
 
 
 class FailingProvider:
@@ -189,6 +193,22 @@ class RecordingTool:
                 "truncated": False,
             },
         )
+
+
+class ChangedRecordingTool(RecordingTool):
+    definition = ToolDefinition(
+        name="process_run",
+        description="changed process tool definition",
+        input_schema={"type": "object"},
+    )
+
+
+class ReadRecordingTool(RecordingTool):
+    definition = ToolDefinition(
+        name="read",
+        description="test read tool",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+    )
 
 
 class ProtectedResultTool(RecordingTool):
@@ -386,6 +406,38 @@ class UsageThenProtectedValuesChangeProvider:
         self.protected_values.append(self.newly_protected)
 
 
+class UnsafeResponseMetadataProvider:
+    def __init__(self, protected: str) -> None:
+        self.protected = protected
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        yield ResponseMetadata(model_id=self.protected, request_id=self.protected)
+        yield TextDelta("unreachable")
+        yield ResponseCompleted()
+
+
+class ConflictingResponseMetadataProvider:
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        del request
+        cancellation.raise_if_cancelled()
+        yield ResponseMetadata(model_id="upstream-model-a", request_id="request-a")
+        yield TextDelta("partial")
+        yield ResponseMetadata(model_id="upstream-model-b", request_id="request-a")
+        yield ResponseCompleted()
+
+
 @pytest.mark.asyncio
 async def test_provider_failure_settles_run_once_without_an_empty_message(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
@@ -396,7 +448,8 @@ async def test_provider_failure_settles_run_once_without_an_empty_message(tmp_pa
 
     try:
         thread, _ = store.create_thread("Provider failure")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="fail safely",
@@ -434,7 +487,8 @@ async def test_running_provider_stops_after_cancellation_and_preserves_partial_t
 
     try:
         thread, _ = store.create_thread("Cancellation")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="cancel me",
@@ -496,7 +550,8 @@ async def test_text_deltas_are_batched_without_changing_final_text_or_event_orde
     monkeypatch.setattr(agent_loop_module, "monotonic", lambda: 0.0)
     try:
         thread, _ = store.create_thread("Batched stream")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="stream many chunks",
@@ -525,8 +580,9 @@ async def test_text_deltas_are_batched_without_changing_final_text_or_event_orde
         assert append_calls[0] == chunks[0]
         assert "".join(deltas) == "".join(chunks)
         assert assistant["content"] == "".join(chunks)
-        assert [event.type for event in events if event.run_id == prepared.run_id][-2:] == [
+        assert [event.type for event in events if event.run_id == prepared.run_id][-3:] == [
             "item.completed",
+            "model.response_finished",
             "run.settled",
         ]
     finally:
@@ -548,7 +604,8 @@ async def test_text_delta_time_window_flushes_on_the_next_arriving_chunk(
 
     try:
         thread, _ = store.create_thread("Timed stream")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="flush by time",
@@ -582,7 +639,8 @@ async def test_provider_failure_flushes_safe_pending_text_before_terminal_events
 
     try:
         thread, _ = store.create_thread("Failed stream")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="fail after text",
@@ -600,12 +658,12 @@ async def test_provider_failure_flushes_safe_pending_text_before_terminal_events
             " pending",
         ]
         assert [event.type for event in run_events][-3:] == [
-            "item.delta",
             "item.completed",
+            "model.response_finished",
             "run.settled",
         ]
-        assert run_events[-2].payload["item"]["content"] == "first pending"
-        assert run_events[-2].payload["item"]["status"] == "failed"
+        assert run_events[-3].payload["item"]["content"] == "first pending"
+        assert run_events[-3].payload["item"]["status"] == "failed"
     finally:
         store.close()
 
@@ -624,7 +682,8 @@ async def test_cancellation_flushes_safe_pending_text_before_terminal_events(
 
     try:
         thread, _ = store.create_thread("Cancelled buffered stream")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="cancel buffered text",
@@ -649,12 +708,12 @@ async def test_cancellation_flushes_safe_pending_text_before_terminal_events(
             " pending",
         ]
         assert [event.type for event in run_events][-3:] == [
-            "item.delta",
             "item.completed",
+            "model.response_finished",
             "run.settled",
         ]
-        assert run_events[-2].payload["item"]["content"] == "first pending"
-        assert run_events[-2].payload["item"]["status"] == "cancelled"
+        assert run_events[-3].payload["item"]["content"] == "first pending"
+        assert run_events[-3].payload["item"]["status"] == "cancelled"
     finally:
         store.close()
 
@@ -675,7 +734,8 @@ async def test_changed_protected_values_discard_unpersisted_text_batch(
 
     try:
         thread, _ = store.create_thread("Changing protection")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="change protection",
@@ -703,7 +763,14 @@ async def test_changed_protected_values_discard_unpersisted_text_batch(
         assert [event.payload["delta"] for event in run_events if event.type == "item.delta"] == [
             "safe-first"
         ]
-        assert run_events[-2].payload["item"]["content"] == "safe-first"
+        assistant_terminal = next(
+            event
+            for event in run_events
+            if event.type == "item.completed"
+            and event.payload.get("item", {}).get("role") == "assistant"
+        )
+        assert assistant_terminal.payload["item"]["content"] == "safe-first"
+        assert run_events[-1].type == "run.settled"
         assert run_events[-1].payload["reasonCode"] == "agent_error"
     finally:
         store.close()
@@ -721,16 +788,18 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
 
     try:
         thread, _ = store.create_thread("Tool loop")
-        prepared = store.prepare_turn(
-            thread_id=thread.id,
-            branch_id=thread.default_branch_id,
-            content="run the tool",
-            provider_id="tool-loop",
-            model_id="tool-loop-v1",
-        )
         provider = ToolLoopProvider(reasoning_content="tool reasoning")
         tool = RecordingTool()
         executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="user-content-sentinel",
+            provider_id="tool-loop",
+            model_id="tool-loop-v1",
+            tools=executor.definitions,
+        )
         loop = AgentLoop(store, {"tool-loop": provider}, publish, executor)
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -760,6 +829,40 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
         assert tool_content["stdout"] == "tool-output\n"
 
         run_events = [event for event in events if event.run_id == prepared.run_id]
+        prepared_events = [
+            event for event in run_events if event.type == "model.input_prepared"
+        ]
+        assert [event.payload["stepOrdinal"] for event in prepared_events] == [1, 2]
+        assert prepared_events[0].payload["contextSnapshot"] == prepared_events[1].payload[
+            "contextSnapshot"
+        ]
+        assert prepared_events[0].payload["stepManifest"] != prepared_events[1].payload[
+            "stepManifest"
+        ]
+
+        frame_wire = store.get_submission_frame(prepared.run_id).to_wire()
+        run_manifest_wire = json.loads(
+            store._connection.execute(
+                "SELECT run_manifest_json FROM run_inputs WHERE run_id = ?",
+                (prepared.run_id,),
+            ).fetchone()[0]
+        )
+        audit_wire = json.dumps(
+            {
+                "frame": frame_wire,
+                "runManifest": run_manifest_wire,
+                "prepared": [event.payload for event in prepared_events],
+            },
+            ensure_ascii=False,
+        )
+        for forbidden in (
+            "user-content-sentinel",
+            "tool reasoning",
+            "test-command",
+            "tool-output",
+        ):
+            assert forbidden not in audit_wire
+
         item_kinds = [
             event.payload["item"]["kind"]
             for event in run_events
@@ -774,12 +877,16 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
         ]
         assert [event.type for event in run_events] == [
             "run.state_changed",
+            "model.input_prepared",
             "item.started",
+            "model.response_finished",
             "item.completed",
             "item.completed",
+            "model.input_prepared",
             "item.started",
             "item.delta",
             "item.completed",
+            "model.response_finished",
             "run.settled",
         ]
         assert not any(event.type.startswith("permission.") for event in run_events)
@@ -802,6 +909,168 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
 
 
 @pytest.mark.asyncio
+async def test_agent_rejects_provider_configuration_drift_before_model_input(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Provider drift")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="do not run on a changed provider",
+            provider_id="provider-drift",
+            model_id="provider-model",
+        )
+        loop = AgentLoop(
+            store,
+            {"provider-drift": ChunkedTextProvider(["must not run"])},
+            publish,
+            provider_snapshot_resolver=lambda provider_id, model_id: (
+                ProviderExecutionSnapshotV1(
+                    provider_id=provider_id,
+                    origin="custom",
+                    base_url="https://changed.invalid/v1",
+                    model_id=model_id,
+                    supports_tools=True,
+                )
+            ),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert not any(event.type == "model.input_prepared" for event in events)
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["reasonCode"] == "provider_configuration_changed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_registered_but_non_executable_context_selector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Unavailable selector")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="must not reach provider",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        monkeypatch.setattr(
+            agent_loop_module,
+            "EXECUTABLE_CONTEXT_SELECTION_VERSIONS",
+            frozenset(),
+        )
+        loop = AgentLoop(
+            store,
+            {"scripted": ChunkedTextProvider(["must not run"])},
+            publish,
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        run_events = [event for event in events if event.run_id == prepared.run_id]
+        assert not any(event.type == "model.input_prepared" for event in run_events)
+        assert run_events[-1].type == "run.settled"
+        assert run_events[-1].payload["status"] == "failed"
+        assert run_events[-1].payload["reasonCode"] == "model_input_unavailable"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_changed_tool_definitions_but_ignores_registry_order(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        changed_events: list[JournalEvent] = []
+
+        async def publish_changed(event: JournalEvent) -> None:
+            changed_events.append(event)
+
+        changed_thread, _ = store.create_thread("Tool definition drift")
+        frozen_executor = ToolExecutor(
+            ToolRegistry([RecordingTool(), ReadRecordingTool()]),
+            FullAccessPolicy(),
+        )
+        changed = prepare_turn(
+            store,
+            thread_id=changed_thread.id,
+            branch_id=changed_thread.default_branch_id,
+            content="reject changed tools",
+            provider_id="tool-drift",
+            model_id="tool-model",
+            tools=frozen_executor.definitions,
+        )
+        changed_executor = ToolExecutor(
+            ToolRegistry([ChangedRecordingTool(), ReadRecordingTool()]),
+            FullAccessPolicy(),
+        )
+        changed_loop = AgentLoop(
+            store,
+            {"tool-drift": ChunkedTextProvider(["must not run"])},
+            publish_changed,
+            changed_executor,
+        )
+
+        await changed_loop.run(changed.run_id, CancellationToken())
+
+        assert not any(event.type == "model.input_prepared" for event in changed_events)
+        assert changed_events[-1].payload["reasonCode"] == "tool_definitions_changed"
+
+        reordered_events: list[JournalEvent] = []
+
+        async def publish_reordered(event: JournalEvent) -> None:
+            reordered_events.append(event)
+
+        reordered_thread, _ = store.create_thread("Tool order is irrelevant")
+        reordered = prepare_turn(
+            store,
+            thread_id=reordered_thread.id,
+            branch_id=reordered_thread.default_branch_id,
+            content="accept reordered tools",
+            provider_id="tool-order",
+            model_id="tool-model",
+            tools=frozen_executor.definitions,
+        )
+        reordered_executor = ToolExecutor(
+            ToolRegistry([ReadRecordingTool(), RecordingTool()]),
+            FullAccessPolicy(),
+        )
+        reordered_loop = AgentLoop(
+            store,
+            {"tool-order": ChunkedTextProvider(["completed"])},
+            publish_reordered,
+            reordered_executor,
+        )
+
+        await reordered_loop.run(reordered.run_id, CancellationToken())
+
+        assert any(event.type == "model.input_prepared" for event in reordered_events)
+        assert reordered_events[-1].payload["status"] == "completed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_agent_records_provider_usage_once_for_each_completed_model_step(
     tmp_path: Path,
 ) -> None:
@@ -813,24 +1082,31 @@ async def test_agent_records_provider_usage_once_for_each_completed_model_step(
 
     try:
         thread, _ = store.create_thread("Usage tool loop")
-        prepared = store.prepare_turn(
+        provider = UsageToolLoopProvider()
+        executor = ToolExecutor(ToolRegistry([RecordingTool()]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run the tool",
             provider_id="usage-tool-loop",
             model_id="usage-model",
+            tools=executor.definitions,
         )
-        provider = UsageToolLoopProvider()
         loop = AgentLoop(
             store,
             {"usage-tool-loop": provider},
             publish,
-            ToolExecutor(ToolRegistry([RecordingTool()]), FullAccessPolicy()),
+            executor,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
 
-        usage_events = [event for event in events if event.type == "model.usage_recorded"]
+        usage_events = [
+            event
+            for event in events
+            if event.type == "model.response_finished" and event.payload["usage"] is not None
+        ]
         assert [event.payload["stepOrdinal"] for event in usage_events] == [1, 2]
         assert [event.payload["usage"]["totalTokens"] for event in usage_events] == [11, 22]
         rows = store._connection.execute(
@@ -865,23 +1141,30 @@ async def test_agent_keeps_completed_step_usage_when_the_following_tool_crashes(
 
     try:
         thread, _ = store.create_thread("Usage before tool failure")
-        prepared = store.prepare_turn(
+        executor = ToolExecutor(ToolRegistry([ExplodingTool()]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run the failing tool",
             provider_id="usage-tool-loop",
             model_id="usage-model",
+            tools=executor.definitions,
         )
         loop = AgentLoop(
             store,
             {"usage-tool-loop": UsageToolLoopProvider()},
             publish,
-            ToolExecutor(ToolRegistry([ExplodingTool()]), FullAccessPolicy()),
+            executor,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
 
-        usage_events = [event for event in events if event.type == "model.usage_recorded"]
+        usage_events = [
+            event
+            for event in events
+            if event.type == "model.response_finished" and event.payload["usage"] is not None
+        ]
         assert len(usage_events) == 1
         assert usage_events[0].payload["stepOrdinal"] == 1
         assert usage_events[0].payload["usage"]["totalTokens"] == 11
@@ -905,7 +1188,8 @@ async def test_agent_does_not_record_usage_until_the_full_stream_is_validated(
 
     try:
         thread, _ = store.create_thread("Invalid completed stream")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="reject malformed provider output",
@@ -920,7 +1204,10 @@ async def test_agent_does_not_record_usage_until_the_full_stream_is_validated(
 
         await loop.run(prepared.run_id, CancellationToken())
 
-        assert not any(event.type == "model.usage_recorded" for event in events)
+        assert not any(
+            event.type == "model.response_finished" and event.payload["usage"] is not None
+            for event in events
+        )
         assert (
             store._connection.execute(
                 "SELECT COUNT(*) FROM model_usages WHERE run_id = ?",
@@ -949,7 +1236,8 @@ async def test_agent_does_not_record_usage_when_trailing_security_validation_fai
 
     try:
         thread, _ = store.create_thread("Usage rejected after security validation")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="reject stale security snapshot",
@@ -969,11 +1257,150 @@ async def test_agent_does_not_record_usage_when_trailing_security_validation_fai
 
         await loop.run(prepared.run_id, CancellationToken())
 
-        assert not any(event.type == "model.usage_recorded" for event in events)
+        assert not any(
+            event.type == "model.response_finished" and event.payload["usage"] is not None
+            for event in events
+        )
         assert store.read_usage().summary.lifetime_tokens is None
         assert events[-1].type == "run.settled"
         assert events[-1].payload["status"] == "failed"
         assert events[-1].payload["reasonCode"] == "agent_error"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_never_persists_protected_response_metadata(tmp_path: Path) -> None:
+    protected = "provider-metadata-secret"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Protected response metadata")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="reject protected metadata",
+            provider_id="unsafe-metadata",
+            model_id="unsafe-metadata-v1",
+        )
+        loop = AgentLoop(
+            store,
+            {"unsafe-metadata": UnsafeResponseMetadataProvider(protected)},
+            publish,
+            protected_values=lambda: (protected,),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        finished = [event for event in events if event.type == "model.response_finished"]
+        assert len(finished) == 1
+        assert finished[0].payload["outcome"] == "failed"
+        assert finished[0].payload["reasonCode"] == "provider_protocol"
+        assert finished[0].payload["responseModelId"] is None
+        assert finished[0].payload["requestId"] is None
+        assert not store.journal_contains_protected_values((protected,))
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["reasonCode"] == "provider_protocol"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_conflicting_response_metadata_and_keeps_first_identity(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Conflicting response metadata")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="reject conflicting metadata",
+            provider_id="conflicting-metadata",
+            model_id="conflicting-metadata-v1",
+        )
+        loop = AgentLoop(
+            store,
+            {"conflicting-metadata": ConflictingResponseMetadataProvider()},
+            publish,
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        finished = [event for event in events if event.type == "model.response_finished"]
+        assert len(finished) == 1
+        assert finished[0].payload["outcome"] == "failed"
+        assert finished[0].payload["reasonCode"] == "provider_protocol"
+        assert finished[0].payload["responseModelId"] == "upstream-model-a"
+        assert finished[0].payload["requestId"] == "request-a"
+        row = store._connection.execute(
+            """
+            SELECT outcome, response_model_id, request_id
+            FROM model_steps WHERE run_id = ? AND step_ordinal = 1
+            """,
+            (prepared.run_id,),
+        ).fetchone()
+        assert tuple(row) == ("failed", "upstream-model-a", "request-a")
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_prepared_step_is_finished_when_live_event_publication_fails(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    published: list[JournalEvent] = []
+    rejected_prepared = False
+
+    async def publish(event: JournalEvent) -> None:
+        nonlocal rejected_prepared
+        if event.type == "model.input_prepared" and not rejected_prepared:
+            rejected_prepared = True
+            raise RuntimeError("expected prepared-event publication failure")
+        published.append(event)
+
+    try:
+        thread, _ = store.create_thread("Prepared publication failure")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="settle the prepared step",
+            provider_id="unused-provider",
+            model_id="unused-model",
+        )
+        loop = AgentLoop(
+            store,
+            {"unused-provider": ChunkedTextProvider(["unused"])},
+            publish,
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        journal, _latest = store.replay_events(0, 100)
+        run_events = [event for event in journal if event.run_id == prepared.run_id]
+        assert [event.type for event in run_events].count("model.input_prepared") == 1
+        assert [event.type for event in run_events].count("model.response_finished") == 1
+        finished = next(
+            event for event in run_events if event.type == "model.response_finished"
+        )
+        assert finished.payload["outcome"] == "failed"
+        assert finished.payload["reasonCode"] == "agent_error"
+        assert run_events[-1].type == "run.settled"
+        assert run_events[-1].payload["status"] == "failed"
+        assert not any(event.type == "model.input_prepared" for event in published)
     finally:
         store.close()
 
@@ -990,20 +1417,23 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
 
     try:
         thread, _ = store.create_thread("Narrated tool loop")
-        prepared = store.prepare_turn(
+        provider = NarratedToolLoopProvider()
+        tool = RecordingTool()
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="show the tool",
             provider_id="narrated",
             model_id="narrated-v1",
+            tools=executor.definitions,
         )
-        provider = NarratedToolLoopProvider()
-        tool = RecordingTool()
         loop = AgentLoop(
             store,
             {"narrated": provider},
             publish,
-            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            executor,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -1063,7 +1493,7 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
         )
         assert rebuilt == before_rebuild
         replay_plan = ModelInputPlanner().build_plan(
-            model_id="narrated-v1",
+            frame=store.get_submission_frame(prepared.run_id),
             items=rebuilt,
         )
         replayed = ContextBuilder().build_request(replay_plan).messages
@@ -1083,19 +1513,22 @@ async def test_agent_rejects_text_emitted_after_a_completed_tool_call(tmp_path: 
 
     try:
         thread, _ = store.create_thread("Late tool text")
-        prepared = store.prepare_turn(
+        tool = RecordingTool()
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="reject malformed ordering",
             provider_id="late-text",
             model_id="late-text-v1",
+            tools=executor.definitions,
         )
-        tool = RecordingTool()
         loop = AgentLoop(
             store,
             {"late-text": TextAfterToolProvider()},
             publish,
-            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            executor,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -1127,20 +1560,23 @@ async def test_agent_passes_the_thread_workspace_to_tool_execution(tmp_path: Pat
                 root_uri=str(workspace.resolve()),
             ),
         )
-        prepared = store.prepare_turn(
+        provider = ToolLoopProvider()
+        tool = RecordingTool()
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run in the workspace",
             provider_id="tool-loop",
             model_id="tool-loop-v1",
+            tools=executor.definitions,
         )
-        provider = ToolLoopProvider()
-        tool = RecordingTool()
         loop = AgentLoop(
             store,
             {"tool-loop": provider},
             publish,
-            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            executor,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -1161,20 +1597,23 @@ async def test_agent_replaces_a_tool_result_containing_protected_values(tmp_path
 
     try:
         thread, _ = store.create_thread("Protected tool result")
-        prepared = store.prepare_turn(
+        provider = ToolLoopProvider()
+        tool = ProtectedResultTool(protected)
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run the tool safely",
             provider_id="tool-loop",
             model_id="tool-loop-v1",
+            tools=executor.definitions,
         )
-        provider = ToolLoopProvider()
-        tool = ProtectedResultTool(protected)
         loop = AgentLoop(
             store,
             {"tool-loop": provider},
             publish,
-            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            executor,
             protected_values=lambda: (protected,),
         )
 
@@ -1206,19 +1645,22 @@ async def test_agent_returns_stale_content_to_the_provider_and_rebuilds_it(
 
     try:
         thread, _ = store.create_thread("Stale edit result")
-        prepared = store.prepare_turn(
+        provider = ToolLoopProvider()
+        executor = ToolExecutor(ToolRegistry([StaleResultTool()]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="edit safely",
             provider_id="tool-loop",
             model_id="tool-loop-v1",
+            tools=executor.definitions,
         )
-        provider = ToolLoopProvider()
         loop = AgentLoop(
             store,
             {"tool-loop": provider},
             publish,
-            ToolExecutor(ToolRegistry([StaleResultTool()]), FullAccessPolicy()),
+            executor,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -1261,20 +1703,24 @@ async def test_agent_step_limit_settles_an_infinite_tool_loop_once(tmp_path: Pat
 
     try:
         thread, _ = store.create_thread("Step bound")
-        prepared = store.prepare_turn(
+        provider = ToolLoopProvider(always_call=True)
+        tool = RecordingTool()
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="loop forever",
             provider_id="tool-loop",
             model_id="tool-loop-v1",
+            tools=executor.definitions,
+            max_steps=2,
         )
-        provider = ToolLoopProvider(always_call=True)
-        tool = RecordingTool()
         loop = AgentLoop(
             store,
             {"tool-loop": provider},
             publish,
-            ToolExecutor(ToolRegistry([tool]), FullAccessPolicy()),
+            executor,
             max_steps=2,
         )
 

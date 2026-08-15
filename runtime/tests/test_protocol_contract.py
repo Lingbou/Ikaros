@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from ikaros_runtime.protocol.spec import (
     EVENT_NOTIFICATION_METHOD,
     INITIALIZE_METHOD,
@@ -20,6 +22,9 @@ from ikaros_runtime.protocol.spec import (
     initialize_capabilities,
     protocol_manifest,
 )
+from ikaros_runtime.storage import SqliteRuntimeStore
+
+from .golden_trace import build_production_messages
 
 _RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 _MANIFEST_PATH = _RUNTIME_ROOT / "protocol" / "runtime-protocol.json"
@@ -103,6 +108,66 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
     }
     assert observed_event_types == JOURNAL_EVENT_TYPE_SET
     assert len(RPC_METHODS) == 21
+
+
+@pytest.mark.asyncio
+async def test_committed_golden_session_trace_matches_the_production_agent_trace(
+    tmp_path: Path,
+) -> None:
+    trace = _load_object(_GOLDEN_TRACE_PATH)
+    committed = [
+        message
+        for message in cast(list[dict[str, Any]], trace["messages"])
+        if message["kind"] == "notification"
+        or message["name"] in {"thread-list-page", "turn-list-page"}
+    ]
+
+    generated = await build_production_messages(tmp_path / "state.db")
+
+    assert committed == generated
+
+
+def test_golden_trace_notifications_rebuild_the_production_projections(
+    tmp_path: Path,
+) -> None:
+    trace = _load_object(_GOLDEN_TRACE_PATH)
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        with store._connection:
+            for raw_message in trace["messages"]:
+                message = cast(dict[str, Any], raw_message)
+                if message["kind"] != "notification":
+                    continue
+                envelope = cast(dict[str, Any], message["envelope"])
+                event = cast(dict[str, Any], envelope["params"])
+                payload = dict(cast(dict[str, Any], event["payload"]))
+                for scope_key in ("turnId", "runId", "itemId"):
+                    payload.pop(scope_key, None)
+                store._append_event(
+                    event_type=cast(str, event["type"]),
+                    thread_id=cast(str | None, event["threadId"]),
+                    branch_id=cast(str | None, event["branchId"]),
+                    turn_id=cast(str | None, event["turnId"]),
+                    run_id=cast(str | None, event["runId"]),
+                    item_id=cast(str | None, event["itemId"]),
+                    timestamp=cast(str, event["timestamp"]),
+                    payload=payload,
+                )
+
+        before, latest = store.replay_events(0, 1000)
+        store.rebuild_projections()
+        after, rebuilt_latest = store.replay_events(0, 1000)
+        assert after == before
+        assert rebuilt_latest == latest == len(before)
+        initial = next(
+            event
+            for event in after
+            if event.type == "item.completed" and "turn" in event.payload
+        )
+        assert initial.run_id is not None
+        assert store.run_status(initial.run_id) == "completed"
+    finally:
+        store.close()
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:

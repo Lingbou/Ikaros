@@ -6,55 +6,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ..domain import ContextItem, SkillDescriptor
-from ..skills import build_skill_prompt
-from ..tools.core import ToolDefinition
-
-type InstructionAuthority = Literal[
-    "runtime_identity",
-    "runtime_instruction",
-    "user_instruction",
-]
-type InputAuthority = InstructionAuthority | Literal["contextual_data"]
-type InputLifetime = Literal["release", "run"]
-
-_OUTPUT_STYLE_CONTENT = (
-    "Use a restrained, professional response style. Do not use emoji or decorative "
-    "Unicode symbols unless the user explicitly asks for them. Never use them for "
-    "decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) "
-    "for ordinary unordered lists; the client will render them as simple round bullets."
+from ..domain import ContextItem
+from ..run_input import (
+    ContextDataBlockV1,
+    InputAuthority,
+    InputLifetime,
+    InstructionAuthority,
+    InstructionBlockV1,
+    SubmissionFrameV1,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class InstructionBlockV1:
-    """One ordered Runtime instruction with explicit provenance and lifetime."""
-
-    id: str
-    version: int
-    source: str
-    authority: InstructionAuthority
-    scope: str
-    lifetime: InputLifetime
-    content: str
-
-
-@dataclass(frozen=True, slots=True)
-class ContextDataBlockV1:
-    """One ordered, non-instruction context block.
-
-    Gate 1 deliberately creates no context-data blocks.  The separate type reserves a
-    safe input boundary for later Memory retrieval without treating retrieved data as a
-    Runtime instruction.
-    """
-
-    id: str
-    version: int
-    source: str
-    authority: Literal["contextual_data"]
-    scope: str
-    lifetime: InputLifetime
-    content: str
+from ..tools.core import ToolDefinition
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +36,8 @@ class InputBudgetSnapshotV1:
 class ModelInputPlanV1:
     """Immutable ordered structure consumed by :class:`ContextBuilder`.
 
-    Plan-owned sequences are copied to tuples.  Payload objects inside existing
-    ``ContextItem`` and ``ToolDefinition`` records are intentionally not recursively
-    frozen until Gate 2 introduces a durable Run snapshot contract.
+    Plan-owned sequences are copied to tuples.  Gate 2 supplies messages and Tool
+    definitions from the durable Run snapshots before this short-lived plan is built.
     """
 
     version: Literal[1] = field(default=1, init=False)
@@ -99,46 +59,20 @@ class ModelInputPlanV1:
 
 
 class ModelInputPlanner:
-    """Build a deterministic provider-neutral plan from one Run snapshot."""
+    """Build one deterministic plan from a persisted Submission Frame."""
 
     def build_plan(
         self,
         *,
-        model_id: str,
+        frame: SubmissionFrameV1,
         items: Sequence[ContextItem],
-        tools: Sequence[ToolDefinition] = (),
-        skills: Sequence[SkillDescriptor] = (),
     ) -> ModelInputPlanV1:
-        instructions = [
-            InstructionBlockV1(
-                id="output-style",
-                version=1,
-                source="ikaros-runtime:output-style-v1",
-                authority="runtime_instruction",
-                scope="global",
-                lifetime="release",
-                content=_OUTPUT_STYLE_CONTENT,
-            )
-        ]
-        skill_prompt = build_skill_prompt(skills)
-        if skill_prompt is not None:
-            instructions.append(
-                InstructionBlockV1(
-                    id="skill-catalog",
-                    version=1,
-                    source="run:skill-descriptors",
-                    authority="runtime_instruction",
-                    scope="run",
-                    lifetime="run",
-                    content=skill_prompt,
-                )
-            )
         return ModelInputPlanV1(
-            model_id=model_id,
-            instructions=tuple(instructions),
+            model_id=frame.model_id,
+            instructions=frame.instructions,
             context_data=(),
             messages=tuple(items),
-            tools=tuple(tools),
+            tools=frame.tool_definitions,
             generation_options=GenerationOptionsV1(),
             budget_snapshot=InputBudgetSnapshotV1(),
         )

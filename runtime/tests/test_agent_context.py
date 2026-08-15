@@ -8,6 +8,8 @@ from ikaros_runtime.agent import ContextBuilder, ContextDataBlockV1, ModelInputP
 from ikaros_runtime.domain import ContextItem
 from ikaros_runtime.tools.core import ToolCall, ToolDefinition
 
+from .helpers import submission_frame
+
 
 def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
     tool = ToolDefinition(
@@ -61,9 +63,8 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
     )
 
     plan = ModelInputPlanner().build_plan(
-        model_id="model-1",
+        frame=submission_frame("provider", "model-1", tools=(tool,)),
         items=items,
-        tools=(tool,),
     )
     request = ContextBuilder().build_request(plan)
 
@@ -90,7 +91,7 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
 
 def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls() -> None:
     plan = ModelInputPlanner().build_plan(
-        model_id="model-1",
+        frame=submission_frame("provider", "model-1"),
         items=(
             ContextItem(
                 kind="message",
@@ -111,7 +112,10 @@ def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls
 
 
 def test_context_builder_rejects_context_data_until_safe_lowering_is_defined() -> None:
-    plan = ModelInputPlanner().build_plan(model_id="model-1", items=())
+    plan = ModelInputPlanner().build_plan(
+        frame=submission_frame("provider", "model-1"),
+        items=(),
+    )
     plan = replace(
         plan,
         context_data=(
@@ -160,5 +164,8 @@ def test_context_builder_rejects_duplicate_reasoning_for_one_tool_step() -> None
     )
 
     with pytest.raises(RuntimeError, match="duplicate reasoning context"):
-        plan = ModelInputPlanner().build_plan(model_id="model-1", items=items)
+        plan = ModelInputPlanner().build_plan(
+            frame=submission_frame("provider", "model-1"),
+            items=items,
+        )
         ContextBuilder().build_request(plan)

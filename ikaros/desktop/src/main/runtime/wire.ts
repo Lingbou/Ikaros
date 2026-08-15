@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   RUNTIME_JOURNAL_EVENT_TYPES,
@@ -51,6 +53,67 @@ const ITEM_STATUSES = new Set([
   "cancelled"
 ]);
 const ITEM_KINDS = new Set(["message", "tool_call", "tool_result"]);
+const INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1";
+const INPUT_BUDGET_MODES = new Set(["legacy_unbounded"]);
+const OUTPUT_STYLE_CONTENT =
+  "Use a restrained, professional response style. Do not use emoji or decorative " +
+  "Unicode symbols unless the user explicitly asks for them. Never use them for " +
+  "decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) " +
+  "for ordinary unordered lists; the client will render them as simple round bullets.";
+const TOOL_RESULT_REQUIRED_KEYS = [
+  "toolCallId",
+  "toolName",
+  "ok",
+  "output",
+  "cancelled"
+] as const;
+const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
+  process_run: [
+    "stdout",
+    "stderr",
+    "cwd",
+    "exitCode",
+    "durationMs",
+    "timedOut",
+    "truncated",
+    "errorCode"
+  ],
+  read: [
+    "durationMs",
+    "truncated",
+    "errorCode",
+    "path",
+    "lineStart",
+    "lineEnd",
+    "bytesRead",
+    "bom",
+    "lineTruncations",
+    "totalLines",
+    "nextOffset"
+  ],
+  write: [
+    "durationMs",
+    "truncated",
+    "errorCode",
+    "path",
+    "created",
+    "bytesWritten",
+    "verified",
+    "bom",
+    "newline"
+  ],
+  edit: [
+    "durationMs",
+    "truncated",
+    "errorCode",
+    "path",
+    "bytesWritten",
+    "verified",
+    "bom",
+    "newline",
+    "replacements"
+  ]
+} as const satisfies Record<string, readonly string[]>;
 const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYPES);
 const RUNTIME_PROVIDER_TOOL_ID_SET = new Set<string>(RUNTIME_PROVIDER_TOOL_IDS);
 const RUNTIME_RPC_METHOD_SET = new Set<string>(RUNTIME_RPC_METHODS);
@@ -328,35 +391,66 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
     return;
   }
 
-  if (event.type === "model.usage_recorded") {
+  if (event.type === "model.input_prepared") {
+    if (
+      !hasRunEventScope(event, false) ||
+      !hasScopedPayloadKeys(event, [
+        "stepOrdinal",
+        "preparedAt",
+        "contextSnapshot",
+        "stepManifest"
+      ]) ||
+      !isSafePositiveInteger(payload.stepOrdinal) ||
+      payload.preparedAt !== event.timestamp ||
+      !isContextSnapshot(payload.contextSnapshot, event.runId) ||
+      !isStepManifest(
+        payload.stepManifest,
+        payload.stepOrdinal,
+        payload.contextSnapshot,
+        event.runId
+      )
+    ) {
+      invalidJournalEventPayload(event.type);
+    }
+    return;
+  }
+
+  if (event.type === "model.response_finished") {
+    const usageValid =
+      payload.usage === null
+        ? payload.activityDate === null
+        : payload.outcome === "completed" &&
+          isCanonicalCalendarDate(payload.activityDate) &&
+          isModelUsage(payload.usage);
+    const reasonValid =
+      payload.outcome === "completed"
+        ? payload.reasonCode === null
+        : isWireIdentifier(payload.reasonCode);
     if (
       !hasRunEventScope(event, false) ||
       !hasScopedPayloadKeys(event, [
         "stepOrdinal",
         "providerId",
         "modelId",
+        "outcome",
+        "reasonCode",
+        "responseModelId",
+        "requestId",
+        "usage",
         "activityDate",
-        "completedAt",
-        "usage"
+        "finishedAt"
       ]) ||
       !isSafePositiveInteger(payload.stepOrdinal) ||
       !isNonEmptyString(payload.providerId) ||
       !isNonEmptyString(payload.modelId) ||
-      !isCanonicalCalendarDate(payload.activityDate) ||
-      payload.completedAt !== event.timestamp ||
-      !isWireObject(payload.usage) ||
-      !hasExactKeys(payload.usage, [
-        "inputTokens",
-        "cachedInputTokens",
-        "outputTokens",
-        "reasoningOutputTokens",
-        "totalTokens"
-      ]) ||
-      !isSafeNonNegativeInteger(payload.usage.inputTokens) ||
-      !isNullableSafeNonNegativeInteger(payload.usage.cachedInputTokens) ||
-      !isSafeNonNegativeInteger(payload.usage.outputTokens) ||
-      !isNullableSafeNonNegativeInteger(payload.usage.reasoningOutputTokens) ||
-      !isSafeNonNegativeInteger(payload.usage.totalTokens)
+      (payload.outcome !== "completed" &&
+        payload.outcome !== "failed" &&
+        payload.outcome !== "cancelled") ||
+      !reasonValid ||
+      !isNullableWireIdentifier(payload.responseModelId) ||
+      !isNullableWireIdentifier(payload.requestId) ||
+      !usageValid ||
+      payload.finishedAt !== event.timestamp
     ) {
       invalidJournalEventPayload(event.type);
     }
@@ -452,14 +546,97 @@ function validRuntimeItemData(item: RuntimeItemHistory, completed: boolean): boo
     isWireIdentifier(data.callId) &&
     isWireIdentifier(data.toolCallItemId) &&
     isProviderToolId(data.toolName) &&
-    isWireObject(data.result)
+    isCanonicalToolResult(data.result, data.callId, data.toolName, item.status) &&
+    isCanonicalToolResultContent(item.content, data.result)
   );
+}
+
+function isCanonicalToolResult(
+  value: unknown,
+  callId: string,
+  toolName: string,
+  itemStatus: RuntimeItemHistory["status"]
+): value is Record<string, unknown> {
+  const allowedDetails = isProviderToolId(toolName)
+    ? TOOL_RESULT_DETAIL_KEYS_BY_TOOL[toolName]
+    : undefined;
+  if (
+    !isWireObject(value) ||
+    allowedDetails === undefined ||
+    !hasRequiredAndOptionalKeys(
+      value,
+      [...TOOL_RESULT_REQUIRED_KEYS],
+      [...allowedDetails]
+    ) ||
+    value.toolCallId !== callId ||
+    value.toolName !== toolName ||
+    !isWireIdentifier(value.toolCallId) ||
+    !isProviderToolId(value.toolName) ||
+    typeof value.ok !== "boolean" ||
+    typeof value.output !== "string" ||
+    typeof value.cancelled !== "boolean" ||
+    value.ok !== (itemStatus === "completed") ||
+    value.cancelled !== (itemStatus === "cancelled")
+  ) {
+    return false;
+  }
+  return Object.entries(value).every(([key, detail]) =>
+    TOOL_RESULT_REQUIRED_KEYS.includes(key as (typeof TOOL_RESULT_REQUIRED_KEYS)[number])
+      ? true
+      : isCanonicalToolResultDetail(key, detail)
+  );
+}
+
+function isCanonicalToolResultDetail(key: string, value: unknown): boolean {
+  if (key === "stdout" || key === "stderr" || key === "cwd") {
+    return typeof value === "string";
+  }
+  if (key === "exitCode") return value === null || Number.isSafeInteger(value);
+  if (
+    key === "durationMs" ||
+    key === "lineEnd" ||
+    key === "bytesRead" ||
+    key === "lineTruncations" ||
+    key === "totalLines" ||
+    key === "bytesWritten" ||
+    key === "replacements"
+  ) {
+    return isSafeNonNegativeInteger(value);
+  }
+  if (key === "lineStart" || key === "nextOffset") return isSafePositiveInteger(value);
+  if (
+    key === "timedOut" ||
+    key === "truncated" ||
+    key === "bom" ||
+    key === "created" ||
+    key === "verified"
+  ) {
+    return typeof value === "boolean";
+  }
+  if (key === "errorCode") return isWireIdentifier(value);
+  if (key === "path") return value === null || typeof value === "string";
+  if (key === "newline") return value === null || value === "lf" || value === "crlf";
+  return false;
+}
+
+function isCanonicalToolResultContent(content: string, result: Record<string, unknown>): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return false;
+  }
+  return sameWireValue(parsed, result);
 }
 
 function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
   const payload = event.payload;
   if (
-    !hasScopedPayloadKeys(event, ["turn", "run", "item"], ["clientRequestId"]) ||
+    !hasScopedPayloadKeys(
+      event,
+      ["turn", "run", "item", "submissionFrame", "runManifest"],
+      ["clientRequestId"]
+    ) ||
     !isWireObject(payload.turn) ||
     !hasExactKeys(payload.turn, [
       "id",
@@ -505,17 +682,557 @@ function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
     !isOptionalWireIdentifier(payload.clientRequestId) ||
     !isOptionalWireIdentifier(payload.run.clientRequestId) ||
     payload.clientRequestId !== payload.run.clientRequestId ||
-    !parseRuntimeEventItem(event, payload.item, true)
+    !parseRuntimeEventItem(event, payload.item, true) ||
+    !isSubmissionFrame(payload.submissionFrame, event, payload.run) ||
+    !isRunManifest(payload.runManifest, payload.submissionFrame)
   ) {
     invalidJournalEventPayload(event.type);
   }
   const item = payload.item as RuntimeItemHistory;
-  if (item.kind !== "message" || item.role !== "user" || item.status !== "completed") {
+  if (
+    item.id !== event.itemId ||
+    item.ordinal !== 1 ||
+    item.kind !== "message" ||
+    item.role !== "user" ||
+    item.status !== "completed"
+  ) {
     invalidJournalEventPayload(event.type);
   }
 }
 
-function isRuntimeSkillSnapshot(value: unknown): boolean {
+function isSubmissionFrame(
+  value: unknown,
+  event: RuntimeJournalEvent,
+  runValue: unknown
+): boolean {
+  if (
+    !isWireObject(value) ||
+    !isWireObject(runValue) ||
+    !hasExactKeys(value, [
+      "schemaVersion",
+      "userItemId",
+      "threadId",
+      "branchId",
+      "turnId",
+      "runId",
+      "workspace",
+      "providerId",
+      "modelId",
+      "publicProviderConfigFingerprint",
+      "executionPolicy",
+      "skills",
+      "tools",
+      "instructions",
+      "contextData",
+      "maxSteps"
+    ]) ||
+    value.schemaVersion !== 1 ||
+    value.userItemId !== event.itemId ||
+    value.threadId !== event.threadId ||
+    value.branchId !== event.branchId ||
+    value.turnId !== event.turnId ||
+    value.runId !== event.runId ||
+    !isNonEmptyString(value.providerId) ||
+    value.providerId !== runValue.providerId ||
+    !isNonEmptyString(value.modelId) ||
+    value.modelId !== runValue.modelId ||
+    !isSha256(value.publicProviderConfigFingerprint) ||
+    value.executionPolicy !== "full_access" ||
+    value.executionPolicy !== runValue.executionPolicy ||
+    !isSafePositiveInteger(value.maxSteps) ||
+    !isRuntimeSkillSnapshot(value.skills) ||
+    !sameWireValue(value.skills, runValue.skills) ||
+    !Array.isArray(value.tools) ||
+    !isWireObject(value.instructions) ||
+    !hasExactKeys(value.instructions, ["outputStyle", "identityCore", "skillCatalog"]) ||
+    !isInstructionBlock(value.instructions.outputStyle, {
+      id: "output-style",
+      source: "ikaros-runtime:output-style-v1",
+      authority: "runtime_instruction",
+      scope: "global",
+      lifetime: "release",
+      content: OUTPUT_STYLE_CONTENT
+    }) ||
+    value.instructions.identityCore !== null ||
+    !isWireObject(value.contextData) ||
+    !hasExactKeys(value.contextData, ["memory"]) ||
+    !Array.isArray(value.contextData.memory) ||
+    value.contextData.memory.length !== 0 ||
+    !isWorkspaceSnapshot(value.workspace)
+  ) {
+    return false;
+  }
+  const toolNames = new Set<string>();
+  for (const tool of value.tools) {
+    if (
+      !isWireObject(tool) ||
+      !hasExactKeys(tool, ["name", "description", "inputSchema", "definitionSha256"]) ||
+      !isProviderToolId(tool.name) ||
+      toolNames.has(tool.name) ||
+      typeof tool.description !== "string" ||
+      !isWireObject(tool.inputSchema) ||
+      !isSha256(tool.definitionSha256) ||
+      tool.definitionSha256 !==
+        canonicalSha256({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema
+        })
+    ) {
+      return false;
+    }
+    toolNames.add(tool.name);
+  }
+  const hasSkills = value.skills.length > 0;
+  const expectedSkillCatalog = buildSkillCatalogContent(value.skills);
+  return (
+    hasSkills === (value.instructions.skillCatalog !== null) &&
+    (value.instructions.skillCatalog === null ||
+      isInstructionBlock(value.instructions.skillCatalog, {
+        id: "skill-catalog",
+        source: "run:skill-descriptors",
+        authority: "runtime_instruction",
+        scope: "run",
+        lifetime: "run",
+        content: expectedSkillCatalog
+      }))
+  );
+}
+
+function isRunManifest(value: unknown, frameValue: unknown): boolean {
+  if (
+    !isWireObject(value) ||
+    !isWireObject(frameValue) ||
+    !hasExactKeys(value, [
+      "schemaVersion",
+      "runId",
+      "modelInputPlanVersion",
+      "submissionFrameVersion",
+      "contextSelectionVersion",
+      "memoryContextVersion",
+      "instructions",
+      "skills",
+      "tools",
+      "provider",
+      "executionPolicy",
+      "maxSteps"
+    ]) ||
+    value.schemaVersion !== 1 ||
+    value.runId !== frameValue.runId ||
+    value.modelInputPlanVersion !== 1 ||
+    value.submissionFrameVersion !== 1 ||
+    value.contextSelectionVersion !== "legacy-unbounded-v1" ||
+    value.memoryContextVersion !== 1 ||
+    value.executionPolicy !== frameValue.executionPolicy ||
+    value.maxSteps !== frameValue.maxSteps ||
+    !Array.isArray(value.instructions) ||
+    !Array.isArray(value.skills) ||
+    !Array.isArray(value.tools) ||
+    !isWireObject(value.provider) ||
+    !hasExactKeys(value.provider, [
+      "providerId",
+      "modelId",
+      "publicProviderConfigFingerprint"
+    ]) ||
+    value.provider.providerId !== frameValue.providerId ||
+    value.provider.modelId !== frameValue.modelId ||
+    value.provider.publicProviderConfigFingerprint !==
+      frameValue.publicProviderConfigFingerprint
+  ) {
+    return false;
+  }
+
+  if (
+    !isRuntimeSkillSnapshot(frameValue.skills) ||
+    !Array.isArray(frameValue.tools) ||
+    !isWireObject(frameValue.instructions)
+  ) {
+    return false;
+  }
+  const instructionBlocks = [
+    frameValue.instructions.outputStyle,
+    frameValue.instructions.identityCore,
+    frameValue.instructions.skillCatalog
+  ].filter((block) => block !== null);
+  if (!instructionBlocks.every((block) => isWireObject(block))) {
+    return false;
+  }
+  const expectedInstructions = instructionBlocks.map((block) => {
+    const instruction = block as Record<string, unknown>;
+    if (typeof instruction.content !== "string") return null;
+    return {
+      id: instruction.id,
+      version: instruction.version,
+      source: instruction.source,
+      authority: instruction.authority,
+      scope: instruction.scope,
+      lifetime: instruction.lifetime,
+      characters: [...instruction.content].length,
+      contentSha256: canonicalSha256(instruction.content)
+    };
+  });
+  if (expectedInstructions.some((instruction) => instruction === null)) {
+    return false;
+  }
+
+  const expectedSkills = frameValue.skills.map((skill) => ({
+    name: skill.name,
+    descriptorSha256: canonicalSha256(skill)
+  }));
+  const expectedTools = frameValue.tools.map((tool) => {
+    if (!isWireObject(tool)) return null;
+    return { name: tool.name, definitionSha256: tool.definitionSha256 };
+  });
+  if (expectedTools.some((tool) => tool === null)) {
+    return false;
+  }
+
+  return (
+    sameWireValue(value.instructions, expectedInstructions) &&
+    sameWireValue(value.skills, expectedSkills) &&
+    sameWireValue(value.tools, expectedTools)
+  );
+}
+
+function isInstructionBlock(
+  value: unknown,
+  expected: {
+    id: string;
+    source: string;
+    authority: "runtime_identity" | "runtime_instruction";
+    scope: string;
+    lifetime: "release" | "run";
+    content: string;
+  }
+): boolean {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, [
+      "id",
+      "version",
+      "source",
+      "authority",
+      "scope",
+      "lifetime",
+      "content"
+    ]) &&
+    value.id === expected.id &&
+    value.version === 1 &&
+    value.source === expected.source &&
+    value.authority === expected.authority &&
+    value.scope === expected.scope &&
+    value.lifetime === expected.lifetime &&
+    value.content === expected.content
+  );
+}
+
+function buildSkillCatalogContent(
+  skills: Array<{ name: string; description: string; location: string }>
+): string {
+  if (skills.length === 0) return "";
+  const rows = [
+    "Skills provide optional instructions for specialized tasks. When a Skill is relevant, " +
+      "use the read tool to load its SKILL.md from the listed location before following it.",
+    "<available_skills>"
+  ];
+  for (const skill of skills) {
+    rows.push(
+      "  <skill>",
+      `    <name>${escapeXmlText(skill.name)}</name>`,
+      `    <description>${escapeXmlText(skill.description)}</description>`,
+      `    <location>${escapeXmlText(skill.location)}</location>`,
+      "  </skill>"
+    );
+  }
+  rows.push("</available_skills>");
+  return rows.join("\n");
+}
+
+function escapeXmlText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function isWorkspaceSnapshot(value: unknown): boolean {
+  return (
+    value === null ||
+    (isWireObject(value) &&
+      hasExactKeys(value, ["id", "name", "rootUri"]) &&
+      isWireIdentifier(value.id) &&
+      isNonEmptyString(value.name) &&
+      (value.rootUri === null || isNonEmptyString(value.rootUri)))
+  );
+}
+
+function isHistoryItemReference(value: unknown): boolean {
+  const roleMatchesKind =
+    isWireObject(value) &&
+    ((value.kind === "message" &&
+      (value.role === "user" || value.role === "assistant")) ||
+      (value.kind === "tool_call" && value.role === "assistant") ||
+      (value.kind === "tool_result" && value.role === "tool"));
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, ["itemId", "turnId", "runId", "kind", "role", "characters"]) &&
+    isWireIdentifier(value.itemId) &&
+    isWireIdentifier(value.turnId) &&
+    isWireIdentifier(value.runId) &&
+    ITEM_KINDS.has(value.kind as string) &&
+    roleMatchesKind &&
+    isSafeNonNegativeInteger(value.characters)
+  );
+}
+
+function isInputBudget(
+  value: unknown
+): value is Record<string, unknown> & {
+  mode: string;
+  measurementVersion: string;
+  maximumCharacters: number | null;
+  reservedCurrentRunCharacters: number;
+  instructionCharacters: number;
+  contextDataCharacters: number;
+  toolCharacters: number;
+  historyCharacters: number;
+  currentRunCharacters: number;
+  memoryCharacters: number;
+  totalCharacters: number;
+} {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, [
+      "mode",
+      "measurementVersion",
+      "maximumCharacters",
+      "reservedCurrentRunCharacters",
+      "instructionCharacters",
+      "contextDataCharacters",
+      "toolCharacters",
+      "historyCharacters",
+      "currentRunCharacters",
+      "memoryCharacters",
+      "totalCharacters"
+    ]) &&
+    INPUT_BUDGET_MODES.has(value.mode as string) &&
+    value.measurementVersion === INPUT_BUDGET_MEASUREMENT_VERSION &&
+    (value.maximumCharacters === null || isSafePositiveInteger(value.maximumCharacters)) &&
+    value.maximumCharacters === null &&
+    isSafeNonNegativeInteger(value.reservedCurrentRunCharacters) &&
+    value.reservedCurrentRunCharacters === 0 &&
+    isSafeNonNegativeInteger(value.instructionCharacters) &&
+    isSafeNonNegativeInteger(value.contextDataCharacters) &&
+    isSafeNonNegativeInteger(value.toolCharacters) &&
+    isSafeNonNegativeInteger(value.historyCharacters) &&
+    isSafeNonNegativeInteger(value.currentRunCharacters) &&
+    isSafeNonNegativeInteger(value.memoryCharacters) &&
+    isSafeNonNegativeInteger(value.totalCharacters) &&
+    value.totalCharacters ===
+      value.instructionCharacters +
+        value.contextDataCharacters +
+        value.toolCharacters +
+        value.historyCharacters +
+        value.currentRunCharacters +
+        value.memoryCharacters
+  );
+}
+
+function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
+  if (
+    !isWireObject(value) ||
+    !isWireIdentifier(currentRunId) ||
+    !hasExactKeys(value, [
+      "schemaVersion",
+      "selectionVersion",
+      "historyGroups",
+      "historyItems",
+      "memory",
+      "budget",
+      "omissions"
+    ]) ||
+    value.schemaVersion !== 1 ||
+    value.selectionVersion !== "legacy-unbounded-v1" ||
+    !Array.isArray(value.historyGroups) ||
+    value.historyGroups.length === 0 ||
+    !Array.isArray(value.historyItems) ||
+    value.historyItems.length === 0 ||
+    !value.historyItems.every(isHistoryItemReference) ||
+    !hasUniqueHistoryItemIds(value.historyItems) ||
+    !Array.isArray(value.memory) ||
+    value.memory.length !== 0 ||
+    !isInputBudget(value.budget) ||
+    !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
+    value.budget.memoryCharacters !== 0 ||
+    value.budget.contextDataCharacters !== 0 ||
+    !Array.isArray(value.omissions) ||
+    value.omissions.length !== 0
+  ) {
+    return false;
+  }
+  if (!value.historyGroups.every(
+    (group) =>
+      isWireObject(group) &&
+      hasExactKeys(group, ["turnId", "itemIds"]) &&
+      isWireIdentifier(group.turnId) &&
+      Array.isArray(group.itemIds) &&
+      group.itemIds.length > 0 &&
+      group.itemIds.every(isWireIdentifier) &&
+      new Set(group.itemIds).size === group.itemIds.length
+  )) {
+    return false;
+  }
+  const groupTurnIds = value.historyGroups.map((group) =>
+    isWireObject(group) ? group.turnId : undefined
+  );
+  if (
+    !groupTurnIds.every(isWireIdentifier) ||
+    new Set(groupTurnIds).size !== groupTurnIds.length
+  ) {
+    return false;
+  }
+  const historyItems = value.historyItems;
+  const groupedItems = value.historyGroups.flatMap((group) => {
+    const typedGroup = group as { turnId: string; itemIds: string[] };
+    return typedGroup.itemIds.map((itemId) => ({ itemId, turnId: typedGroup.turnId }));
+  });
+  return (
+    groupedItems.length === historyItems.length &&
+    groupedItems.every((grouped, index) => {
+      const item = historyItems[index];
+      return (
+        isWireObject(item) &&
+        grouped.itemId === item.itemId &&
+        grouped.turnId === item.turnId
+      );
+    })
+  );
+}
+
+function isStepManifest(
+  value: unknown,
+  stepOrdinal: unknown,
+  contextSnapshot: unknown,
+  currentRunId: unknown
+): boolean {
+  if (
+    !isWireObject(value) ||
+    !isWireObject(contextSnapshot) ||
+    !isWireIdentifier(currentRunId) ||
+    !hasExactKeys(value, [
+      "schemaVersion",
+      "stepOrdinal",
+      "contextSnapshotVersion",
+      "historyItems",
+      "memory",
+      "budget",
+      "omissions"
+    ]) ||
+    value.schemaVersion !== 1 ||
+    value.stepOrdinal !== stepOrdinal ||
+    value.contextSnapshotVersion !== contextSnapshot.schemaVersion ||
+    !Array.isArray(value.historyItems) ||
+    value.historyItems.length === 0 ||
+    !value.historyItems.every(isHistoryItemReference) ||
+    !hasUniqueHistoryItemIds(value.historyItems) ||
+    !Array.isArray(contextSnapshot.historyItems) ||
+    !isHistoryPrefix(contextSnapshot.historyItems, value.historyItems, currentRunId) ||
+    !Array.isArray(value.memory) ||
+    value.memory.length !== 0 ||
+    !sameWireValue(value.memory, contextSnapshot.memory) ||
+    !isInputBudget(value.budget) ||
+    !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
+    value.budget.memoryCharacters !== 0 ||
+    value.budget.contextDataCharacters !== 0 ||
+    !isWireObject(contextSnapshot.budget) ||
+    value.budget.mode !== contextSnapshot.budget.mode ||
+    value.budget.measurementVersion !== contextSnapshot.budget.measurementVersion ||
+    value.budget.maximumCharacters !== contextSnapshot.budget.maximumCharacters ||
+    value.budget.reservedCurrentRunCharacters !==
+      contextSnapshot.budget.reservedCurrentRunCharacters ||
+    value.budget.instructionCharacters !== contextSnapshot.budget.instructionCharacters ||
+    value.budget.contextDataCharacters !== contextSnapshot.budget.contextDataCharacters ||
+    value.budget.toolCharacters !== contextSnapshot.budget.toolCharacters ||
+    value.budget.historyCharacters !== contextSnapshot.budget.historyCharacters ||
+    value.budget.memoryCharacters !== contextSnapshot.budget.memoryCharacters ||
+    !Array.isArray(value.omissions) ||
+    value.omissions.length !== 0 ||
+    !sameWireValue(value.omissions, contextSnapshot.omissions)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function hasUniqueHistoryItemIds(items: unknown[]): boolean {
+  const ids = items.map((item) => (isWireObject(item) ? item.itemId : undefined));
+  return ids.every(isWireIdentifier) && new Set(ids).size === ids.length;
+}
+
+function isHistoryPrefix(
+  frozenItems: unknown[],
+  stepItems: unknown[],
+  currentRunId: string
+): boolean {
+  if (frozenItems.length > stepItems.length) return false;
+  if (!frozenItems.every((item, index) => sameWireValue(item, stepItems[index]))) {
+    return false;
+  }
+  return stepItems.slice(frozenItems.length).every(
+    (item) => isWireObject(item) && item.runId === currentRunId
+  );
+}
+
+function isHistoryBudgetForItems(
+  budget: Record<string, unknown>,
+  items: unknown[],
+  currentRunId: string
+): boolean {
+  let historyCharacters = 0;
+  let currentRunCharacters = 0;
+  let sawCurrentRun = false;
+  for (const item of items) {
+    if (!isWireObject(item) || !isSafeNonNegativeInteger(item.characters)) return false;
+    if (item.runId === currentRunId) {
+      sawCurrentRun = true;
+      currentRunCharacters += item.characters;
+    } else {
+      if (sawCurrentRun) return false;
+      historyCharacters += item.characters;
+    }
+  }
+  return (
+    sawCurrentRun &&
+    budget.historyCharacters === historyCharacters &&
+    budget.currentRunCharacters === currentRunCharacters
+  );
+}
+
+function isModelUsage(value: unknown): boolean {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, [
+      "inputTokens",
+      "cachedInputTokens",
+      "outputTokens",
+      "reasoningOutputTokens",
+      "totalTokens"
+    ]) &&
+    isSafeNonNegativeInteger(value.inputTokens) &&
+    isNullableSafeNonNegativeInteger(value.cachedInputTokens) &&
+    isSafeNonNegativeInteger(value.outputTokens) &&
+    isNullableSafeNonNegativeInteger(value.reasoningOutputTokens) &&
+    isSafeNonNegativeInteger(value.totalTokens) &&
+    (value.cachedInputTokens === null || value.cachedInputTokens <= value.inputTokens) &&
+    (value.reasoningOutputTokens === null ||
+      value.reasoningOutputTokens <= value.outputTokens)
+  );
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isRuntimeSkillSnapshot(
+  value: unknown
+): value is Array<{ name: string; description: string; location: string }> {
   if (!Array.isArray(value)) {
     return false;
   }
@@ -536,8 +1253,14 @@ function isRuntimeSkillSnapshot(value: unknown): boolean {
   return true;
 }
 
-function isProviderToolId(value: unknown): boolean {
-  return typeof value === "string" && RUNTIME_PROVIDER_TOOL_ID_SET.has(value);
+function isProviderToolId(
+  value: unknown
+): value is keyof typeof TOOL_RESULT_DETAIL_KEYS_BY_TOOL {
+  return (
+    typeof value === "string" &&
+    RUNTIME_PROVIDER_TOOL_ID_SET.has(value) &&
+    hasOwn(TOOL_RESULT_DETAIL_KEYS_BY_TOOL, value)
+  );
 }
 
 export function parseRuntimeReplayResult(value: unknown): RuntimeReplayResult {
@@ -621,6 +1344,43 @@ function sameWireValue(left: unknown, right: unknown): boolean {
     return hasExactKeys(left, keys) && keys.every((key) => sameWireValue(left[key], right[key]));
   }
   return left === right;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new Error("Runtime returned a non-JSON value.");
+    return encoded;
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (isWireObject(value)) {
+    return `{${Object.keys(value)
+      .sort(compareUnicodeCodePoints)
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  throw new Error("Runtime returned a non-JSON value.");
+}
+
+function compareUnicodeCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (character) => character.codePointAt(0) as number);
+  const rightPoints = Array.from(right, (character) => character.codePointAt(0) as number);
+  const length = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) {
+      return leftPoints[index] - rightPoints[index];
+    }
+  }
+  return leftPoints.length - rightPoints.length;
+}
+
+function canonicalSha256(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 }
 
 export function parseRuntimeInitializeResult(value: unknown): RuntimeInitializeResult {
@@ -839,6 +1599,23 @@ function parseRuntimeItemHistory(
   runId: string
 ): RuntimeItemHistory {
   if (!isWireObject(value)) {
+    throw invalidTurnHistory();
+  }
+  if (
+    !hasExactKeys(value, [
+      "id",
+      "turnId",
+      "runId",
+      "ordinal",
+      "kind",
+      "role",
+      "status",
+      "content",
+      "data",
+      "createdAt",
+      "updatedAt"
+    ])
+  ) {
     throw invalidTurnHistory();
   }
   const item = value as Partial<RuntimeItemHistory>;

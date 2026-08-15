@@ -353,6 +353,9 @@ export function applyRuntimeCatalogEvent(
   threads: Thread[],
   event: RuntimeJournalEvent,
 ): Thread[] {
+  if (event.type === "model.input_prepared" || event.type === "model.response_finished") {
+    return threads;
+  }
   if (THREAD_SNAPSHOT_EVENTS.has(event.type)) {
     return projectThreadSnapshot(threads, event) ?? threads;
   }
@@ -373,6 +376,9 @@ export function applyRuntimeCatalogEvent(
 }
 
 export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent): Thread[] {
+  if (event.type === "model.input_prepared" || event.type === "model.response_finished") {
+    return threads;
+  }
   if (THREAD_SNAPSHOT_EVENTS.has(event.type)) {
     return projectThreadSnapshot(threads, event) ?? threads;
   }

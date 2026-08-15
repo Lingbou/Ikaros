@@ -17,6 +17,8 @@ from ikaros_runtime.storage.thread_history import (
     encode_turn_history_cursor,
 )
 
+from .helpers import prepare_turn
+
 
 def _encoded_cursor(payload: object) -> str:
     encoded = json_dumps(payload, separators=(",", ":")).encode()
@@ -64,7 +66,8 @@ def test_turn_list_hydrates_every_run_and_materialized_item(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("History")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run the tool",
@@ -166,7 +169,8 @@ def test_turn_history_pages_latest_first_but_each_page_is_chronological(
     try:
         thread, _ = store.create_thread("Pagination")
         for ordinal in range(1, 7):
-            store.prepare_turn(
+            prepare_turn(
+                store,
                 thread_id=thread.id,
                 branch_id=thread.default_branch_id,
                 content=f"turn {ordinal}",
@@ -185,7 +189,8 @@ def test_turn_history_pages_latest_first_but_each_page_is_chronological(
         assert first.next_cursor is not None
         first_snapshot = first.snapshot_seq
 
-        store.prepare_turn(
+        prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="arrived after the first page",
@@ -294,7 +299,8 @@ def test_turn_page_and_watermark_share_one_sqlite_snapshot(
     writer = sqlite3.connect(database_path)
     try:
         thread, _ = store.create_thread("Snapshot")
-        original = store.prepare_turn(
+        original = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="original",
@@ -397,7 +403,8 @@ def test_turn_history_queries_use_projection_indexes(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Query plan")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="indexed",

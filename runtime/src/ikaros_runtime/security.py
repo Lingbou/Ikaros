@@ -5,6 +5,11 @@ from collections.abc import Callable, Mapping, Sequence
 from .errors import ConfigError, InvalidParamsError
 from .errors import ProtectedValueError as ProtectedValueError
 from .protocol.spec import JOURNAL_EVENT_TYPE_SET, PROVIDER_TOOL_ID_SET, SERVER_NAME
+from .run_input import (
+    INPUT_BUDGET_MEASUREMENT_VERSION,
+    REGISTERED_CONTEXT_SELECTION_VERSIONS,
+    REGISTERED_INPUT_BUDGET_MODES,
+)
 
 type ProtectedValuesSource = Callable[[], Sequence[str]]
 type JournalSecretProbe = Callable[[Sequence[str]], bool]
@@ -170,6 +175,7 @@ _GENERATED_ID_PREFIXES = {
     "threadId": "thread_",
     "toolCallItemId": "item_",
     "turnId": "turn_",
+    "userItemId": "item_",
 }
 _TIMESTAMP_KEYS = frozenset(
     {
@@ -177,6 +183,8 @@ _TIMESTAMP_KEYS = frozenset(
         "archivedAt",
         "completedAt",
         "createdAt",
+        "finishedAt",
+        "preparedAt",
         "settledAt",
         "startDate",
         "timestamp",
@@ -317,6 +325,60 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "verified",
         "workspace",
         "rootUri",
+        # Provider-neutral model-input snapshot vocabulary.
+        "authority",
+        "baseUrl",
+        "budget",
+        "characters",
+        "contentSha256",
+        "contextData",
+        "contextDataCharacters",
+        "contextSelectionVersion",
+        "contextSnapshot",
+        "contextSnapshotVersion",
+        "currentRunCharacters",
+        "definitionSha256",
+        "descriptorSha256",
+        "finishedAt",
+        "historyCharacters",
+        "historyGroups",
+        "historyItems",
+        "identityCore",
+        "inputSchema",
+        "instructionCharacters",
+        "instructions",
+        "itemIds",
+        "lifetime",
+        "maxSteps",
+        "maximumCharacters",
+        "measurementVersion",
+        "memory",
+        "memoryCharacters",
+        "memoryContextVersion",
+        "memoryId",
+        "mode",
+        "modelInputPlanVersion",
+        "omissions",
+        "outputStyle",
+        "preparedAt",
+        "publicProviderConfigFingerprint",
+        "requestId",
+        "responseModelId",
+        "revision",
+        "reservedCurrentRunCharacters",
+        "runManifest",
+        "selectionVersion",
+        "skillCatalog",
+        "source",
+        "sourceId",
+        "sourceType",
+        "stepManifest",
+        "submissionFrame",
+        "submissionFrameVersion",
+        "supportsTools",
+        "totalCharacters",
+        "toolCharacters",
+        "userItemId",
     }
 )
 
@@ -336,29 +398,39 @@ def response_values_contain_protected_value(
     values = tuple(dict.fromkeys(protected for protected in protected_values if protected))
     if not values:
         return False
-    pending: list[tuple[tuple[str, ...], object]] = [((), value)]
+    pending: list[
+        tuple[tuple[str, ...], object, Mapping[object, object] | None]
+    ] = [((), value, None)]
     while pending:
-        path, current = pending.pop()
+        path, current, container = pending.pop()
         if isinstance(current, str):
-            if _is_fixed_response_value(path, current):
+            if _is_fixed_response_value(path, current, container):
                 continue
             if _matches_protected_value(current, values):
                 return True
         elif isinstance(current, Mapping):
             for key, child in current.items():
+                child_path = path + (str(key),)
                 if (
                     isinstance(key, str)
                     and key not in _FIXED_RESPONSE_KEYS
+                    and not _is_runtime_owned_model_input_path(child_path)
                     and _matches_protected_value(key, values)
                 ):
                     return True
-                pending.append((path + (str(key),), child))
+                pending.append((child_path, child, current))
         elif isinstance(current, (list, tuple)):
-            pending.extend((path, child) for child in current)
+            pending.extend((path, child, None) for child in current)
     return False
 
 
-def _is_fixed_response_value(path: tuple[str, ...], value: str) -> bool:
+def _is_fixed_response_value(
+    path: tuple[str, ...],
+    value: str,
+    container: Mapping[object, object] | None,
+) -> bool:
+    if _is_runtime_owned_model_input_path(path):
+        return True
     if path == ("jsonrpc",) and value == "2.0":
         return True
     if path == ("method",) and value == "event":
@@ -373,6 +445,33 @@ def _is_fixed_response_value(path: tuple[str, ...], value: str) -> bool:
         return True
     if path and path[-1] == "executionPolicy" and value == "full_access":
         return True
+    if (
+        path
+        and path[-1] == "contextSelectionVersion"
+        and value in REGISTERED_CONTEXT_SELECTION_VERSIONS
+    ):
+        return True
+    if (
+        path
+        and path[-1] == "selectionVersion"
+        and value in REGISTERED_CONTEXT_SELECTION_VERSIONS
+    ):
+        return True
+    if path and path[-1] == "mode" and value in REGISTERED_INPUT_BUDGET_MODES:
+        return True
+    if (
+        path
+        and path[-1] == "measurementVersion"
+        and value == INPUT_BUDGET_MEASUREMENT_VERSION
+    ):
+        return True
+    if path and path[-1] in {
+        "contentSha256",
+        "definitionSha256",
+        "descriptorSha256",
+        "publicProviderConfigFingerprint",
+    }:
+        return _is_sha256(value)
     if path and path[-1] == "type" and value in JOURNAL_EVENT_TYPE_SET:
         return True
     if path and path[-1] in {"status", "outcome"} and value in _FIXED_STATUSES:
@@ -383,17 +482,92 @@ def _is_fixed_response_value(path: tuple[str, ...], value: str) -> bool:
         return True
     if path and path[-1] == "providerId" and value == "scripted":
         return True
-    if path and path[-1] == "modelId" and value == "scripted-v1":
+    if (
+        path
+        and path[-1] == "modelId"
+        and value == "scripted-v1"
+        and container is not None
+        and container.get("providerId") == "scripted"
+    ):
+        return True
+    if path and path[-1] == "reasonCode":
         return True
     if path and path[-1] in _TIMESTAMP_KEYS:
         return True
     if path and path[-1] == "id":
-        return any(
-            _is_generated_identifier(value, prefix) for prefix in _GENERATED_ID_PREFIXES.values()
-        )
+        prefix = _generated_record_id_prefix(path)
+        return prefix is not None and _is_generated_identifier(value, prefix)
     if path and (prefix := _GENERATED_ID_PREFIXES.get(path[-1])) is not None:
         return _is_generated_identifier(value, prefix)
     return False
+
+
+def _is_runtime_owned_model_input_path(path: tuple[str, ...]) -> bool:
+    """Return whether a snapshot path contains only Runtime-owned provenance.
+
+    Snapshot roots must be direct Journal-event payload fields. This prevents a
+    Tool result from smuggling protected text under look-alike object names.
+    Submission Frames and Run Manifests are deliberately handled field by
+    field because their Workspace, Skill, and Provider/Model values are dynamic.
+    """
+
+    frame_index = _journal_payload_child_index(path, "submissionFrame")
+    if frame_index is not None:
+        relative = path[frame_index + 1 :]
+        if relative[:1] == ("tools",):
+            return True
+        if relative[:2] in {
+            ("instructions", "outputStyle"),
+            ("instructions", "identityCore"),
+        }:
+            return True
+        if relative[:2] == ("instructions", "skillCatalog"):
+            return relative[-1:] != ("content",)
+        if relative[:1] == ("contextData",):
+            return True
+
+    manifest_index = _journal_payload_child_index(path, "runManifest")
+    if manifest_index is not None:
+        relative = path[manifest_index + 1 :]
+        if relative[:1] in {("instructions",), ("tools",)}:
+            return True
+
+    return any(
+        _journal_payload_child_index(path, field) is not None
+        for field in ("contextSnapshot", "stepManifest")
+    )
+
+
+def _journal_payload_child_index(path: tuple[str, ...], field: str) -> int | None:
+    for root in (
+        ("payload", field),
+        ("params", "payload", field),
+        ("result", "events", "payload", field),
+    ):
+        if path[: len(root)] == root:
+            return len(root) - 1
+    return None
+
+
+def _generated_record_id_prefix(path: tuple[str, ...]) -> str | None:
+    if len(path) < 2:
+        return None
+    return {
+        "branch": "branch_",
+        "branches": "branch_",
+        "item": "item_",
+        "items": "item_",
+        "run": "run_",
+        "runs": "run_",
+        "thread": "thread_",
+        "threads": "thread_",
+        "turn": "turn_",
+        "turns": "turn_",
+    }.get(path[-2])
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _matches_protected_value(value: str, protected_values: Sequence[str]) -> bool:

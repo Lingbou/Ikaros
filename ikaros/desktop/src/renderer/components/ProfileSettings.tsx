@@ -89,7 +89,7 @@ export function ProfileSettings() {
       }, 100);
     };
     const unsubscribe = runtime.onEvent((event) => {
-      if (event.type === "model.usage_recorded" || event.type === "run.settled") {
+      if (event.type === "model.response_finished" || event.type === "run.settled") {
         scheduleRefresh();
       }
     });

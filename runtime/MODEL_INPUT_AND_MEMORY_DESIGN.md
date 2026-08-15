@@ -1,9 +1,10 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–1 已完成，Gate 2–10 尚未实现）**
+状态：**IN PROGRESS（Gate 0–2 已完成；Gate 3 是下一 Gate；Gate 4–10 尚未实现）**
 
-审阅基线：`8e09f5c`（2026-08-16）。该提交只用于说明本文编写时核对的代码快照，
-不是永久的“当前版本”声明。已经落地的 Runtime 总体架构以
+初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 和 Gate 2 的实施增量已记录在
+本文及同一原子提交的代码和测试中；该初始基线不是永久的“当前版本”
+声明。已经落地的 Runtime 总体架构以
 [DESIGN.md](DESIGN.md) 为准；真实 DeepSeek 验证记录以
 [LIVE_VALIDATION.md](LIVE_VALIDATION.md) 为准。
 
@@ -79,11 +80,11 @@ flowchart LR
 
 ### 3.1 `CURRENT`
 
-审阅基线已经具备：
+当前实现已经具备：
 
 - `Thread -> Branch -> Turn -> Run -> Item` 的 SQLite Journal 与可重建投影；
-- SQLite schema 5、Journal Event schema 2、Protocol version 1；
-- 21 个初始化后 RPC 和 10 种持久 Journal Event；
+- SQLite schema 6、Journal Event schema 3、Protocol version 1；
+- 21 个初始化后 RPC 和 11 种持久 Journal Event；
 - 独立的
   [ContextBuilder](src/ikaros_runtime/agent/context.py)，负责把固定输出样式、
   额外 system fragment、完整 Branch 历史和 Tool definitions 渲染成
@@ -99,25 +100,29 @@ flowchart LR
   `SKILL.md`；脚本仍通过普通 `process_run` 执行，没有独立 Skill executor；
 - ScriptedProvider 和真实 DeepSeek 的多轮、文件 Tool、Skill descriptor
   冻结和 Token usage 纵切验证。
+- `turn.start` 原子持久化 `SubmissionFrameV1` 和由其确定性派生的
+  `RunManifestV1`；
+- Run 首次 Provider Step 冻结并持久化 `ContextSnapshotV1`，每个 Step
+  持久化自己的 `StepManifestV1`；
+- `model.input_prepared` 和 `model.response_finished` 形成完整 Provider Step
+  生命周期，崩溃恢复会以 `runtime_interrupted` 关闭悬空 Step；
+- Provider 实际 model/request ID 和 Provider-reported usage 经过安全检查后
+  持久化；`model.response_finished` 是唯一 usage Journal 真源。
 
 ### 3.2 `PROPOSED`
 
-审阅基线尚未实现：
+当前尚未实现：
 
-- `ModelInputPlanV1`；
-- `SubmissionFrameV1`、`ContextSnapshotV1` 或统一 TaskFrame；
-- `RunInputManifest`；
 - 历史预算和分页 History Selector；
 - Identity Core；
 - `memory.db`、Memory RPC、Memory UI 或 Memory 召回；
-- 任务级 Skill 选择和 Skill Catalog 总预算；
-- Provider 实际返回 model/request ID 的持久化。
+- 任务级 Skill 选择和 Skill Catalog 总预算。
 
-当前
-[context_items](src/ikaros_runtime/storage/projections.py)
-仍会读取当前 Branch 截至本 Turn 的全部合格历史，并在每个 Tool Step 重新装配。
-因此已实现的 `ModelInputPlanner` 目前仍保留无界历史行为；`ContextBuilder` 只是
-确定性渲染器，不负责选择历史或 Memory。
+当前 `ContextSnapshotV1` 仍使用 `legacy-unbounded-v1`：Run 首次 Provider
+Step 会冻结截至当前 Turn 的全部合格历史。后续 Tool Step 复用冻结历史，只加入
+当前 Run 新产生的 Item，并用各自的 `StepManifestV1` 记录实际输入。因此历史已有
+稳定冻结边界，但仍没有 Gate 3 要实现的硬预算和确定性裁剪；
+`ContextBuilder` 仍只是确定性渲染器，不负责选择历史或 Memory。
 
 ### 3.3 Gate 1 实施增量
 
@@ -134,7 +139,8 @@ Gate 1 在审阅基线之后增加了：
 - 贯穿 SQLite、双 Tool Step、OpenAI-compatible Adapter 和最终 HTTP Body 的静态
   Golden Test。
 
-这仍不包括持久 Frame、Manifest、Identity、Memory 或历史预算。
+Gate 1 本身没有修改持久契约；持久 Frame、Context Snapshot、Run/Step
+Manifest 和响应元数据已由 Gate 2 实现。Identity、Memory 和有界历史仍未实现。
 
 ## 4. 概念边界
 
@@ -300,8 +306,8 @@ UI 只显示“来源记录不可用”。
 | --- | --- | --- | --- |
 | 0 | 修正文档和固定架构不变量 | 已完成 | 否 |
 | 1 | `ModelInputPlanV1`，保持 Provider wire 不变 | 已完成 | 否 |
-| 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 未开始 | 是，仅这一次 |
-| 3 | `HistorySelectorV1`，限制无界历史 | 未开始 | 否 |
+| 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 已完成 | 是，仅这一次 |
+| 3 | `HistorySelectorV1`，限制无界历史 | 下一 Gate（未开始） | 否 |
 | 4 | `identity-core-v1` 与 DeepSeek A/B | 未开始 | 否 |
 | 5 | 独立 `memory.db`，Create/List/Get | 未开始 | 不动 `state.db` |
 | 6 | Correction、Forget、Provenance、幂等 | 未开始 | 否 |
@@ -325,7 +331,8 @@ UI 只显示“来源记录不可用”。
   DESIGN 和代码事实一致；
 - 所有文档链接可解析；
 - `git diff --check` 通过；
-- 没有把 Memory、Identity、History Budget 或 Manifest 写成当前能力。
+- Gate 0 完成时没有提前把 Memory、Identity、History Budget 或 Manifest
+  宣称为当前能力。
 
 ## 8. Gate 1：`ModelInputPlanV1`
 
@@ -400,9 +407,11 @@ ModelInputPlanner
 
 ## 9. Gate 2：Frame、Manifest 和响应元数据
 
-这是本阶段唯一一次修改现有 Session 持久契约的 Gate。SQLite schema 从 5
-变为 6，Journal Event schema 从 2 变为 3。按照 reset-only 政策，实施时停止
-Runtime 并且只显式清理：
+状态：**CURRENT（已实现）**
+
+这是本阶段唯一一次修改现有 Session 持久契约的 Gate。Gate 2 已将
+SQLite schema 从 5 升至 6，Journal Event schema 从 2 升至 3。按照 reset-only
+政策，本次只在停止 Runtime 后显式重建：
 
 ```text
 ~/.ikaros/state.db
@@ -414,18 +423,22 @@ Runtime 并且只显式清理：
 
 ### Submission Frame 和 Context Snapshot
 
-实现第 5.1 节的两阶段冻结。Gate 2 必须预留 Identity 和 Memory 空槽，使 Gate 4
-与 Gate 9 只填充既有契约，不再次改变 Session schema。
+第 5.1 节的两阶段冻结已实现。Gate 2 预留了 Identity 和 Memory 空槽，使
+Gate 4 与 Gate 9 只填充既有契约，不再次改变 Session schema。
 
-`turn.start` 当前会对正文执行 `.strip()`。应改为只用 `.strip()` 判断是否全是
-空白，但原始用户内容必须原样保存。
+`turn.start` 只用 `.strip()` 判断输入是否全是空白，持久化的 User Item 保留
+原始空格、换行和尾随空白。
 
-Tool definitions 冻结完整名称、描述和参数 schema。恢复时 Tool schema 版本或
-hash 不匹配，Run 以稳定错误失败，不能换成当前注册表继续执行。
+Submission Frame 冻结 Provider、Model、Policy、Workspace、Skills、完整 Tool
+definitions、Instruction 空槽、Memory 空槽和 `maxSteps`。恢复时发现 Provider
+公共配置或 Tool definition 漂移，Run 以稳定错误失败，不会换成当前注册表
+继续执行。
 
 ### RunInputManifest
 
-分为：
+`run_inputs` 每个 Run 保存 `SubmissionFrameV1`、`RunManifestV1` 和首次 Step
+冻结的 `ContextSnapshotV1`；`model_steps` 每个 Step 保存 `StepManifestV1`、
+prepared/finished 时间、outcome、响应 model/request ID 和可选 usage。审计结构分为：
 
 ```text
 Run Manifest
@@ -444,6 +457,36 @@ Step Manifest
 ├─ omission reasons
 └─ total character count
 ```
+
+预算记录从 Gate 2 起固定为完整结构，Gate 3 只会启用有界模式，不再改变持久
+Event 形状：
+
+```text
+InputBudgetRecordV1
+├─ mode
+├─ measurementVersion
+├─ maximumCharacters
+├─ reservedCurrentRunCharacters
+├─ instructionCharacters
+├─ contextDataCharacters
+├─ toolCharacters
+├─ historyCharacters
+├─ currentRunCharacters
+├─ memoryCharacters
+└─ totalCharacters
+```
+
+当前 `legacy_unbounded` 强制 `maximumCharacters = null`、
+`reservedCurrentRunCharacters = 0`。`totalCharacters` 必须严格等于 Instruction、
+Context Data、Tool schema、过去历史、当前 Run 和 Memory 六部分之和；Tool schema
+按完整冻结定义的 canonical JSON 计量，而不是只统计名称或描述。
+
+History Item 使用 Provider-neutral 内容计量：普通 User/Assistant Item 只计算正文
+一次；Tool Call 计算 arguments 的 canonical JSON，并另计实际发送的 reasoning
+content；Tool Result 只计算规范化 result 的 canonical JSON 一次。`stepId`、执行
+时长、投影副本等不发送给模型的存储元数据不计入，也不得因为 `content` 与
+`data.result` 是同一结果的两种投影而重复计量。该指标是确定性选择预算，不声称
+等于某个 Provider 的 HTTP body 字节数或 Token 数。
 
 ### Provider Step 事件
 
@@ -479,11 +522,11 @@ run.state_changed(running)
 - Step ordinal；
 - outcome 和稳定错误类别。
 
-Gate 2 必须选择单一 usage 真源。推荐由 `model.response_finished` 取代现有
-`model.usage_recorded`，usage 投影从新事件重建，避免同一组 Token 被两个
-Journal Event 重复记录。
+`model.response_finished` 已取代 `model.usage_recorded`，并且是唯一 Token usage
+Journal 真源。`model_usages` 只是由该事件重建的查询投影，不会产生第二份 usage
+事件。
 
-### 验收
+### 验收结果（已通过）
 
 - queued Run 重启后仍使用原 Submission Frame；
 - 每个 prepared Step 恰有一个 finished Event；

@@ -8,7 +8,7 @@ JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
 EVENT_NOTIFICATION_METHOD: Final = "event"
-JOURNAL_EVENT_SCHEMA_VERSION: Final = 2
+JOURNAL_EVENT_SCHEMA_VERSION: Final = 3
 
 RPC_METHODS: Final = (
     "runtime.shutdown",
@@ -44,7 +44,8 @@ JOURNAL_EVENT_TYPES: Final = (
     "item.started",
     "item.delta",
     "item.completed",
-    "model.usage_recorded",
+    "model.input_prepared",
+    "model.response_finished",
     "run.settled",
 )
 JOURNAL_EVENT_TYPE_SET: Final = frozenset(JOURNAL_EVENT_TYPES)

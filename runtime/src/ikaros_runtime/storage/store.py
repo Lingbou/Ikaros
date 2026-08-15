@@ -13,15 +13,26 @@ from ..domain import (
     PreparedTurn,
     RecoveryPlan,
     RunDescriptor,
-    SkillDescriptor,
     ThreadSummary,
     UsageSnapshot,
     WorkspaceSummary,
-    skill_descriptors_from_wire,
     utc_now,
 )
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
+from ..run_input import (
+    CONTEXT_SELECTION_VERSION,
+    CompletedProviderStepV1,
+    PreparedModelStepV1,
+    RunManifestV1,
+    SubmissionFrameTemplateV1,
+    SubmissionFrameV1,
+    build_context_snapshot,
+    build_step_manifest,
+    canonical_json,
+)
+from ..security import response_values_contain_protected_value
+from ..tools.core import ToolCall
 from .journal import (
     append_event,
     event_from_row,
@@ -39,10 +50,15 @@ from .maintenance import (
 )
 from .projections import (
     contains_protected_projection_values,
+    context_item_records,
+    context_item_records_for_snapshot,
     context_items,
     context_messages,
     find_turn_by_client_request_id,
+    get_context_snapshot,
     get_run,
+    get_run_manifest,
+    get_submission_frame,
     has_active_runs,
     item_location,
     item_row,
@@ -104,7 +120,23 @@ class SqliteRuntimeStore:
         return has_active_runs(self._connection)
 
     def journal_contains_protected_values(self, protected_values: Sequence[str]) -> bool:
-        return contains_protected_projection_values(self._connection, protected_values)
+        values = tuple(dict.fromkeys(value for value in protected_values if value))
+        if not values:
+            return False
+        if contains_protected_projection_values(self._connection, values):
+            return True
+
+        after_seq = 0
+        while True:
+            events, latest_seq = replay_events(self._connection, after_seq, 256)
+            if any(
+                response_values_contain_protected_value(event.to_wire(), values)
+                for event in events
+            ):
+                return True
+            if not events or events[-1].seq >= latest_seq:
+                return False
+            after_seq = events[-1].seq
 
     def create_thread(
         self,
@@ -377,11 +409,11 @@ class SqliteRuntimeStore:
         thread_id: str,
         branch_id: str,
         content: str,
-        provider_id: str,
-        model_id: str,
+        frame_template: SubmissionFrameTemplateV1,
         client_request_id: str | None = None,
-        skills: Sequence[SkillDescriptor] = (),
     ) -> PreparedTurn:
+        provider_id = frame_template.provider.provider_id
+        model_id = frame_template.provider.model_id
         if client_request_id is not None:
             existing = self.find_turn_by_client_request_id(
                 thread_id=thread_id,
@@ -396,7 +428,7 @@ class SqliteRuntimeStore:
 
         owner = self._connection.execute(
             """
-            SELECT t.archived_at
+            SELECT t.archived_at, t.workspace_json
             FROM branches b
             JOIN threads t ON t.id = b.thread_id
             WHERE b.id = ? AND b.thread_id = ?
@@ -408,8 +440,6 @@ class SqliteRuntimeStore:
         if owner["archived_at"] is not None:
             raise LookupError("thread is archived")
 
-        skill_snapshot = skill_descriptors_from_wire([skill.to_wire() for skill in skills])
-
         ordinal = int(
             self._connection.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM turns WHERE branch_id = ?",
@@ -420,6 +450,20 @@ class SqliteRuntimeStore:
         run_id = f"run_{uuid.uuid4().hex}"
         user_item_id = f"item_{uuid.uuid4().hex}"
         timestamp = utc_now()
+        workspace = workspace_from_json(owner["workspace_json"])
+        submission_frame = SubmissionFrameV1.from_template(
+            frame_template,
+            user_item_id=user_item_id,
+            thread_id=thread_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            workspace=workspace,
+        )
+        run_manifest = RunManifestV1.from_frame(
+            submission_frame,
+            context_selection_version=CONTEXT_SELECTION_VERSION,
+        )
         turn_payload = {
             "id": turn_id,
             "threadId": thread_id,
@@ -434,11 +478,11 @@ class SqliteRuntimeStore:
             "turnId": turn_id,
             "providerId": provider_id,
             "modelId": model_id,
-            "executionPolicy": "full_access",
+            "executionPolicy": submission_frame.execution_policy,
             "status": "queued",
             "createdAt": timestamp,
             "settledAt": None,
-            "skills": [skill.to_wire() for skill in skill_snapshot],
+            "skills": [skill.to_wire() for skill in submission_frame.skills],
         }
         if client_request_id is not None:
             run_payload["clientRequestId"] = client_request_id
@@ -469,13 +513,14 @@ class SqliteRuntimeStore:
                 INSERT INTO runs(
                     id, turn_id, provider_id, model_id, execution_policy, status,
                     created_at, client_request_id
-                ) VALUES (?, ?, ?, ?, 'full_access', 'queued', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
                 """,
                 (
                     run_id,
                     turn_id,
                     provider_id,
                     model_id,
+                    submission_frame.execution_policy,
                     timestamp,
                     client_request_id,
                 ),
@@ -488,6 +533,18 @@ class SqliteRuntimeStore:
                 ) VALUES (?, ?, ?, 1, 'message', 'user', 'completed', ?, ?, ?)
                 """,
                 (user_item_id, turn_id, run_id, content, timestamp, timestamp),
+            )
+            self._connection.execute(
+                """
+                INSERT INTO run_inputs(
+                    run_id, submission_frame_json, run_manifest_json, context_snapshot_json
+                ) VALUES (?, ?, ?, NULL)
+                """,
+                (
+                    run_id,
+                    canonical_json(submission_frame.to_wire()),
+                    canonical_json(run_manifest.to_wire()),
+                ),
             )
             self._connection.execute(
                 "UPDATE threads SET updated_at = ? WHERE id = ?",
@@ -505,6 +562,8 @@ class SqliteRuntimeStore:
                     "turn": turn_payload,
                     "run": run_payload,
                     "item": item_payload,
+                    "submissionFrame": submission_frame.to_wire(),
+                    "runManifest": run_manifest.to_wire(),
                     **(
                         {"clientRequestId": client_request_id}
                         if client_request_id is not None
@@ -532,6 +591,12 @@ class SqliteRuntimeStore:
 
     def get_run(self, run_id: str) -> RunDescriptor:
         return get_run(self._connection, run_id)
+
+    def get_submission_frame(self, run_id: str) -> SubmissionFrameV1:
+        return get_submission_frame(self._connection, run_id)
+
+    def get_run_manifest(self, run_id: str) -> RunManifestV1:
+        return get_run_manifest(self._connection, run_id)
 
     def run_status(self, run_id: str) -> str:
         return run_status(self._connection, run_id)
@@ -579,37 +644,384 @@ class SqliteRuntimeStore:
                 payload={"status": "running"},
             )
 
-    def record_model_usage(
+    def prepare_model_step(
         self,
         run_id: str,
         *,
         step_ordinal: int,
-        usage: ModelUsage,
-    ) -> JournalEvent:
-        _validate_model_usage(step_ordinal, usage)
+    ) -> PreparedModelStepV1:
+        if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
+            raise ValueError("model Step ordinal must be a positive integer")
         run = self.get_run(run_id)
+        frame = get_submission_frame(self._connection, run_id)
+        run_manifest = get_run_manifest(self._connection, run_id)
+        snapshot = get_context_snapshot(self._connection, run_id)
+        if snapshot is None:
+            records = context_item_records(
+                self._connection,
+                run.branch_id,
+                through_turn_id=run.turn_id,
+            )
+            snapshot = build_context_snapshot(
+                records,
+                current_run_id=run_id,
+                frame=frame,
+                selection_version=run_manifest.context_selection_version,
+            )
+        else:
+            records = context_item_records_for_snapshot(
+                self._connection,
+                run_id=run_id,
+                snapshot=snapshot,
+            )
+        step_manifest = build_step_manifest(
+            step_ordinal,
+            records,
+            snapshot,
+            current_run_id=run_id,
+            frame=frame,
+        )
         timestamp = utc_now()
-        activity_date = local_activity_date(timestamp)
-        usage_payload = {
-            "inputTokens": usage.input_tokens,
-            "cachedInputTokens": usage.cached_input_tokens,
-            "outputTokens": usage.output_tokens,
-            "reasoningOutputTokens": usage.reasoning_output_tokens,
-            "totalTokens": usage.total_tokens,
-        }
         with self._connection:
             status = self._connection.execute(
                 "SELECT status FROM runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
             if status is None or status["status"] != "running":
-                raise RuntimeError("model usage requires a running Run")
-            duplicate = self._connection.execute(
-                "SELECT 1 FROM model_usages WHERE run_id = ? AND step_ordinal = ?",
-                (run_id, step_ordinal),
-            ).fetchone()
-            if duplicate is not None:
-                raise RuntimeError("model usage was already recorded for this Step")
+                raise RuntimeError("model input preparation requires a running Run")
+            if self._connection.execute(
+                "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
+                (run_id,),
+            ).fetchone() is not None:
+                raise RuntimeError("Run already has an unfinished model Step")
+            expected_ordinal = int(
+                self._connection.execute(
+                    """
+                    SELECT COALESCE(MAX(step_ordinal), 0) + 1
+                    FROM model_steps WHERE run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            if step_ordinal != expected_ordinal:
+                raise RuntimeError("model Step ordinal is not contiguous")
+            stored_snapshot = get_context_snapshot(self._connection, run_id)
+            if stored_snapshot is None:
+                self._connection.execute(
+                    "UPDATE run_inputs SET context_snapshot_json = ? WHERE run_id = ?",
+                    (canonical_json(snapshot.to_wire()), run_id),
+                )
+            elif stored_snapshot != snapshot:
+                raise RuntimeError("model Step changes the frozen Context Snapshot")
+            self._connection.execute(
+                """
+                INSERT INTO model_steps(
+                    run_id, step_ordinal, step_manifest_json, prepared_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    step_ordinal,
+                    canonical_json(step_manifest.to_wire()),
+                    timestamp,
+                ),
+            )
+            event = self._append_event(
+                event_type="model.input_prepared",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run.id,
+                timestamp=timestamp,
+                payload={
+                    "stepOrdinal": step_ordinal,
+                    "preparedAt": timestamp,
+                    "contextSnapshot": snapshot.to_wire(),
+                    "stepManifest": step_manifest.to_wire(),
+                },
+            )
+        return PreparedModelStepV1(
+            context_snapshot=snapshot,
+            step_manifest=step_manifest,
+            items=tuple(record.to_context_item() for record in records),
+            event=event,
+        )
+
+    def complete_provider_step(
+        self,
+        run_id: str,
+        *,
+        step_ordinal: int,
+        assistant_item_id: str | None,
+        tool_calls: Sequence[ToolCall],
+        reasoning_content: str | None,
+        usage: ModelUsage | None,
+        response_model_id: str | None,
+        request_id: str | None,
+    ) -> CompletedProviderStepV1:
+        _validate_model_step_metadata(
+            step_ordinal,
+            usage=usage,
+            response_model_id=response_model_id,
+            request_id=request_id,
+        )
+        run = self.get_run(run_id)
+        step_id = f"step_{uuid.uuid4().hex}" if tool_calls else None
+        events: list[JournalEvent] = []
+        item_ids: list[str] = []
+        with self._connection:
+            self._require_open_model_step(run_id, step_ordinal)
+            if assistant_item_id is not None:
+                events.append(
+                    self._terminalize_assistant_item_in_transaction(
+                        assistant_item_id,
+                        status="completed",
+                        timestamp=utc_now(),
+                        step_id=step_id,
+                    )
+                )
+            for index, call in enumerate(tool_calls):
+                item_id, event = self._create_tool_call_item_in_transaction(
+                    run,
+                    step_id=step_id,
+                    call=call,
+                    reasoning_content=reasoning_content if index == 0 else None,
+                    timestamp=utc_now(),
+                )
+                item_ids.append(item_id)
+                events.append(event)
+            events.append(
+                self._finish_model_step_in_transaction(
+                    run,
+                    step_ordinal=step_ordinal,
+                    outcome="completed",
+                    reason_code=None,
+                    usage=usage,
+                    response_model_id=response_model_id,
+                    request_id=request_id,
+                    timestamp=utc_now(),
+                )
+            )
+        return CompletedProviderStepV1(
+            step_id=step_id,
+            tool_call_item_ids=tuple(item_ids),
+            events=tuple(events),
+        )
+
+    def fail_provider_step(
+        self,
+        run_id: str,
+        *,
+        step_ordinal: int,
+        outcome: str,
+        reason_code: str,
+        assistant_item_id: str | None,
+        response_model_id: str | None = None,
+        request_id: str | None = None,
+    ) -> tuple[JournalEvent, ...]:
+        if outcome not in {"failed", "cancelled"}:
+            raise ValueError("failed Provider Step outcome is invalid")
+        if not reason_code:
+            raise ValueError("failed Provider Step reason is required")
+        _validate_model_step_metadata(
+            step_ordinal,
+            usage=None,
+            response_model_id=response_model_id,
+            request_id=request_id,
+        )
+        run = self.get_run(run_id)
+        events: list[JournalEvent] = []
+        timestamp = utc_now()
+        with self._connection:
+            self._require_open_model_step(run_id, step_ordinal)
+            if assistant_item_id is not None:
+                events.append(
+                    self._terminalize_assistant_item_in_transaction(
+                        assistant_item_id,
+                        status=outcome,
+                        timestamp=timestamp,
+                        step_id=None,
+                    )
+                )
+            events.append(
+                self._finish_model_step_in_transaction(
+                    run,
+                    step_ordinal=step_ordinal,
+                    outcome=outcome,
+                    reason_code=reason_code,
+                    usage=None,
+                    response_model_id=response_model_id,
+                    request_id=request_id,
+                    timestamp=timestamp,
+                )
+            )
+        return tuple(events)
+
+    def _require_open_model_step(self, run_id: str, step_ordinal: int) -> None:
+        row = self._connection.execute(
+            """
+            SELECT ms.outcome, r.status
+            FROM model_steps ms JOIN runs r ON r.id = ms.run_id
+            WHERE ms.run_id = ? AND ms.step_ordinal = ?
+            """,
+            (run_id, step_ordinal),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("model response has no prepared Step")
+        if row["outcome"] is not None:
+            raise RuntimeError("model response Step is already finished")
+        if row["status"] != "running":
+            raise RuntimeError("model response completion requires a running Run")
+
+    def _terminalize_assistant_item_in_transaction(
+        self,
+        item_id: str,
+        *,
+        status: str,
+        timestamp: str,
+        step_id: str | None,
+    ) -> JournalEvent:
+        row = item_row(self._connection, item_id)
+        if (
+            row["kind"] != "message"
+            or row["role"] != "assistant"
+            or row["status"] != "streaming"
+        ):
+            raise RuntimeError("assistant item is not streaming")
+        data = json_loads(row["data_json"])
+        if step_id is not None:
+            data["stepId"] = step_id
+        updated = self._connection.execute(
+            """
+            UPDATE items SET status = ?, updated_at = ?, data_json = ?
+            WHERE id = ? AND status = 'streaming'
+            """,
+            (
+                status,
+                timestamp,
+                json_dumps(data, separators=(",", ":"), ensure_ascii=False),
+                item_id,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("assistant item is not streaming")
+        item = self._item_payload_from_row(
+            row,
+            status=status,
+            updated_at=timestamp,
+            data=data,
+        )
+        return self._append_event(
+            event_type="item.completed",
+            thread_id=str(row["thread_id"]),
+            branch_id=str(row["branch_id"]),
+            turn_id=str(row["turn_id"]),
+            run_id=str(row["run_id"]),
+            item_id=item_id,
+            timestamp=timestamp,
+            payload={"item": item},
+        )
+
+    def _create_tool_call_item_in_transaction(
+        self,
+        run: RunDescriptor,
+        *,
+        step_id: str | None,
+        call: ToolCall,
+        reasoning_content: str | None,
+        timestamp: str,
+    ) -> tuple[str, JournalEvent]:
+        if step_id is None:
+            raise RuntimeError("Tool call response has no Step ID")
+        item_id = f"item_{uuid.uuid4().hex}"
+        ordinal = next_item_ordinal(self._connection, run.id)
+        data: dict[str, Any] = {
+            "stepId": step_id,
+            "callId": call.id,
+            "toolName": call.name,
+            "arguments": call.arguments,
+        }
+        if reasoning_content is not None:
+            data["reasoningContent"] = reasoning_content
+        item = self._item_payload(
+            item_id=item_id,
+            turn_id=run.turn_id,
+            run_id=run.id,
+            ordinal=ordinal,
+            kind="tool_call",
+            role="assistant",
+            status="running",
+            content="",
+            data=data,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        self._connection.execute(
+            """
+            INSERT INTO items(
+                id, turn_id, run_id, ordinal, kind, role, status, content,
+                created_at, updated_at, data_json
+            ) VALUES (?, ?, ?, ?, 'tool_call', 'assistant', 'running', '', ?, ?, ?)
+            """,
+            (
+                item_id,
+                run.turn_id,
+                run.id,
+                ordinal,
+                timestamp,
+                timestamp,
+                json_dumps(data, separators=(",", ":"), ensure_ascii=False),
+            ),
+        )
+        event = self._append_event(
+            event_type="item.started",
+            thread_id=run.thread_id,
+            branch_id=run.branch_id,
+            turn_id=run.turn_id,
+            run_id=run.id,
+            item_id=item_id,
+            timestamp=timestamp,
+            payload={"item": item},
+        )
+        return item_id, event
+
+    def _finish_model_step_in_transaction(
+        self,
+        run: RunDescriptor,
+        *,
+        step_ordinal: int,
+        outcome: str,
+        reason_code: str | None,
+        usage: ModelUsage | None,
+        response_model_id: str | None,
+        request_id: str | None,
+        timestamp: str,
+    ) -> JournalEvent:
+        activity_date = local_activity_date(timestamp) if usage is not None else None
+        usage_payload = _model_usage_payload(usage) if usage is not None else None
+        updated = self._connection.execute(
+            """
+            UPDATE model_steps
+            SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
+                usage_json = ?, activity_date = ?, finished_at = ?
+            WHERE run_id = ? AND step_ordinal = ? AND outcome IS NULL
+            """,
+            (
+                outcome,
+                reason_code,
+                response_model_id,
+                request_id,
+                canonical_json(usage_payload) if usage_payload is not None else None,
+                activity_date,
+                timestamp,
+                run.id,
+                step_ordinal,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("model response Step is not open")
+        if usage is not None:
+            assert activity_date is not None
             self._connection.execute(
                 """
                 INSERT INTO model_usages(
@@ -634,22 +1046,26 @@ class SqliteRuntimeStore:
                     timestamp,
                 ),
             )
-            return self._append_event(
-                event_type="model.usage_recorded",
-                thread_id=run.thread_id,
-                branch_id=run.branch_id,
-                turn_id=run.turn_id,
-                run_id=run.id,
-                timestamp=timestamp,
-                payload={
-                    "stepOrdinal": step_ordinal,
-                    "providerId": run.provider_id,
-                    "modelId": run.model_id,
-                    "activityDate": activity_date,
-                    "completedAt": timestamp,
-                    "usage": usage_payload,
-                },
-            )
+        return self._append_event(
+            event_type="model.response_finished",
+            thread_id=run.thread_id,
+            branch_id=run.branch_id,
+            turn_id=run.turn_id,
+            run_id=run.id,
+            timestamp=timestamp,
+            payload={
+                "stepOrdinal": step_ordinal,
+                "providerId": run.provider_id,
+                "modelId": run.model_id,
+                "outcome": outcome,
+                "reasonCode": reason_code,
+                "responseModelId": response_model_id,
+                "requestId": request_id,
+                "usage": usage_payload,
+                "activityDate": activity_date,
+                "finishedAt": timestamp,
+            },
+        )
 
     def read_usage(self) -> UsageSnapshot:
         return read_usage(self._connection)
@@ -964,6 +1380,7 @@ class SqliteRuntimeStore:
         status: str,
         *,
         reason_code: str | None = None,
+        _finish_open_model_step: bool = False,
     ) -> tuple[JournalEvent, ...]:
         if status not in _TERMINAL_RUN_STATUSES:
             raise ValueError("run status is not terminal")
@@ -976,6 +1393,20 @@ class SqliteRuntimeStore:
             ).fetchone()
             if row["status"] in _TERMINAL_RUN_STATUSES:
                 return ()
+            open_steps = self._connection.execute(
+                """
+                SELECT step_ordinal FROM model_steps
+                WHERE run_id = ? AND outcome IS NULL
+                ORDER BY step_ordinal
+                """,
+                (run_id,),
+            ).fetchall()
+            if len(open_steps) > 1:
+                raise RuntimeError("Run has multiple unfinished model Steps")
+            if open_steps and not _finish_open_model_step:
+                raise RuntimeError("Run cannot settle with an unfinished model Step")
+            if _finish_open_model_step and (status != "failed" or reason_code is None):
+                raise RuntimeError("model Step recovery requires a failed Run reason")
             active_items = self._connection.execute(
                 """
                 SELECT id, ordinal, kind, role, status, content, created_at, data_json
@@ -1113,6 +1544,19 @@ class SqliteRuntimeStore:
                             payload={"item": result_item},
                         )
                     )
+            if open_steps:
+                events.append(
+                    self._finish_model_step_in_transaction(
+                        run,
+                        step_ordinal=int(open_steps[0]["step_ordinal"]),
+                        outcome="failed",
+                        reason_code=reason_code,
+                        usage=None,
+                        response_model_id=None,
+                        request_id=None,
+                        timestamp=timestamp,
+                    )
+                )
             self._connection.execute(
                 "UPDATE runs SET status = ?, settled_at = ?, reason_code = ? WHERE id = ?",
                 (status, timestamp, reason_code, run_id),
@@ -1149,6 +1593,7 @@ class SqliteRuntimeStore:
                 str(row["id"]),
                 "failed",
                 reason_code="runtime_interrupted",
+                _finish_open_model_step=True,
             )
 
         queued_rows = self._connection.execute(
@@ -1287,6 +1732,46 @@ def _validate_model_usage(step_ordinal: int, usage: ModelUsage) -> None:
         and usage.reasoning_output_tokens > usage.output_tokens
     ):
         raise ValueError("reasoning output tokens cannot exceed output tokens")
+
+
+def _validate_model_step_metadata(
+    step_ordinal: int,
+    *,
+    usage: ModelUsage | None,
+    response_model_id: str | None,
+    request_id: str | None,
+) -> None:
+    if usage is not None:
+        _validate_model_usage(step_ordinal, usage)
+    elif (
+        not isinstance(step_ordinal, int)
+        or isinstance(step_ordinal, bool)
+        or step_ordinal < 1
+    ):
+        raise ValueError("model Step ordinal must be a positive integer")
+    _validate_response_identifier("response model ID", response_model_id)
+    _validate_response_identifier("request ID", request_id)
+
+
+def _validate_response_identifier(label: str, value: str | None) -> None:
+    if value is None:
+        return
+    if (
+        not value
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(f"{label} is invalid")
+
+
+def _model_usage_payload(usage: ModelUsage) -> dict[str, int | None]:
+    return {
+        "inputTokens": usage.input_tokens,
+        "cachedInputTokens": usage.cached_input_tokens,
+        "outputTokens": usage.output_tokens,
+        "reasoningOutputTokens": usage.reasoning_output_tokens,
+        "totalTokens": usage.total_tokens,
+    }
 
 
 def _validate_token_count(label: str, value: object) -> None:

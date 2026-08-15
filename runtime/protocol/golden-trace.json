@@ -56,18 +56,18 @@
         "result": {
           "threads": [
             {
-              "id": "thread_golden",
+              "id": "thread_00000000000000000000000000000001",
               "title": "Golden trace",
-              "defaultBranchId": "branch_golden",
+              "defaultBranchId": "branch_00000000000000000000000000000002",
               "workspace": null,
-              "createdAt": "2026-08-15T00:00:00.000Z",
-              "updatedAt": "2026-08-15T00:00:14.000Z",
+              "createdAt": "2026-08-15T12:00:00.000Z",
+              "updatedAt": "2026-08-15T12:00:00.004Z",
               "archivedAt": null
             }
           ],
           "nextCursor": null,
           "hasMore": false,
-          "snapshotSeq": 15
+          "snapshotSeq": 19
         }
       }
     },
@@ -76,8 +76,8 @@
       "kind": "response",
       "method": "turn.list",
       "requestParams": {
-        "threadId": "thread_golden",
-        "branchId": "branch_golden",
+        "threadId": "thread_00000000000000000000000000000001",
+        "branchId": "branch_00000000000000000000000000000002",
         "limit": 25
       },
       "envelope": {
@@ -86,97 +86,103 @@
         "result": {
           "turns": [
             {
-              "id": "turn_golden",
-              "threadId": "thread_golden",
-              "branchId": "branch_golden",
+              "id": "turn_00000000000000000000000000000003",
+              "threadId": "thread_00000000000000000000000000000001",
+              "branchId": "branch_00000000000000000000000000000002",
               "ordinal": 1,
               "status": "completed",
-              "createdAt": "2026-08-15T00:00:04.000Z",
-              "updatedAt": "2026-08-15T00:00:14.000Z",
+              "createdAt": "2026-08-15T12:00:00.004Z",
+              "updatedAt": "2026-08-15T12:00:00.016Z",
               "runs": [
                 {
-                  "id": "run_golden",
-                  "turnId": "turn_golden",
+                  "id": "run_00000000000000000000000000000004",
+                  "turnId": "turn_00000000000000000000000000000003",
                   "providerId": "scripted",
                   "modelId": "scripted-v1",
                   "executionPolicy": "full_access",
                   "status": "completed",
-                  "createdAt": "2026-08-15T00:00:04.000Z",
-                  "settledAt": "2026-08-15T00:00:14.000Z",
+                  "createdAt": "2026-08-15T12:00:00.004Z",
+                  "settledAt": "2026-08-15T12:00:00.016Z",
                   "items": [
                     {
-                      "id": "item_user_golden",
-                      "turnId": "turn_golden",
-                      "runId": "run_golden",
+                      "id": "item_00000000000000000000000000000005",
+                      "turnId": "turn_00000000000000000000000000000003",
+                      "runId": "run_00000000000000000000000000000004",
                       "ordinal": 1,
                       "kind": "message",
                       "role": "user",
                       "status": "completed",
-                      "content": "Run the golden command",
+                      "content": "/process.run golden",
                       "data": {},
-                      "createdAt": "2026-08-15T00:00:04.000Z",
-                      "updatedAt": "2026-08-15T00:00:04.000Z"
+                      "createdAt": "2026-08-15T12:00:00.004Z",
+                      "updatedAt": "2026-08-15T12:00:00.004Z"
                     },
                     {
-                      "id": "item_assistant_golden",
-                      "turnId": "turn_golden",
-                      "runId": "run_golden",
+                      "id": "item_00000000000000000000000000000008",
+                      "turnId": "turn_00000000000000000000000000000003",
+                      "runId": "run_00000000000000000000000000000004",
                       "ordinal": 2,
-                      "kind": "message",
-                      "role": "assistant",
-                      "status": "completed",
-                      "content": "I will run it.",
-                      "data": {
-                        "stepId": "step_golden"
-                      },
-                      "createdAt": "2026-08-15T00:00:07.000Z",
-                      "updatedAt": "2026-08-15T00:00:09.000Z"
-                    },
-                    {
-                      "id": "item_tool_call_golden",
-                      "turnId": "turn_golden",
-                      "runId": "run_golden",
-                      "ordinal": 3,
                       "kind": "tool_call",
                       "role": "assistant",
                       "status": "completed",
                       "content": "",
                       "data": {
-                        "stepId": "step_golden",
-                        "callId": "call_golden",
+                        "stepId": "step_00000000000000000000000000000007",
+                        "callId": "call_00000000000000000000000000000006",
                         "toolName": "process_run",
                         "arguments": {
-                          "command": "Write-Output golden"
+                          "command": "golden"
                         },
                         "outcome": "completed",
-                        "durationMs": 8
+                        "durationMs": 3
                       },
-                      "createdAt": "2026-08-15T00:00:10.000Z",
-                      "updatedAt": "2026-08-15T00:00:11.000Z"
+                      "createdAt": "2026-08-15T12:00:00.007Z",
+                      "updatedAt": "2026-08-15T12:00:00.009Z"
                     },
                     {
-                      "id": "item_tool_result_golden",
-                      "turnId": "turn_golden",
-                      "runId": "run_golden",
-                      "ordinal": 4,
+                      "id": "item_00000000000000000000000000000009",
+                      "turnId": "turn_00000000000000000000000000000003",
+                      "runId": "run_00000000000000000000000000000004",
+                      "ordinal": 3,
                       "kind": "tool_result",
                       "role": "tool",
                       "status": "completed",
-                      "content": "golden",
+                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000006\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
                       "data": {
-                        "stepId": "step_golden",
-                        "callId": "call_golden",
-                        "toolCallItemId": "item_tool_call_golden",
+                        "stepId": "step_00000000000000000000000000000007",
+                        "callId": "call_00000000000000000000000000000006",
+                        "toolCallItemId": "item_00000000000000000000000000000008",
                         "toolName": "process_run",
                         "result": {
-                          "toolCallId": "call_golden",
+                          "toolCallId": "call_00000000000000000000000000000006",
                           "toolName": "process_run",
                           "ok": true,
-                          "output": "golden"
+                          "output": "golden-output",
+                          "cancelled": false,
+                          "stdout": "golden-output\n",
+                          "stderr": "",
+                          "cwd": "C:/golden-workspace",
+                          "exitCode": 0,
+                          "durationMs": 3,
+                          "timedOut": false,
+                          "truncated": false
                         }
                       },
-                      "createdAt": "2026-08-15T00:00:11.000Z",
-                      "updatedAt": "2026-08-15T00:00:11.000Z"
+                      "createdAt": "2026-08-15T12:00:00.009Z",
+                      "updatedAt": "2026-08-15T12:00:00.009Z"
+                    },
+                    {
+                      "id": "item_0000000000000000000000000000000a",
+                      "turnId": "turn_00000000000000000000000000000003",
+                      "runId": "run_00000000000000000000000000000004",
+                      "ordinal": 4,
+                      "kind": "message",
+                      "role": "assistant",
+                      "status": "completed",
+                      "content": "Command exited with code 0.\ngolden-output",
+                      "data": {},
+                      "createdAt": "2026-08-15T12:00:00.011Z",
+                      "updatedAt": "2026-08-15T12:00:00.014Z"
                     }
                   ]
                 }
@@ -185,7 +191,7 @@
           ],
           "nextCursor": null,
           "hasMore": false,
-          "snapshotSeq": 15
+          "snapshotSeq": 19
         }
       }
     },
@@ -239,28 +245,28 @@
         "method": "event",
         "params": {
           "seq": 1,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "thread.created",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
           "turnId": null,
           "runId": null,
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:00.000Z",
+          "timestamp": "2026-08-15T12:00:00.000Z",
           "payload": {
             "thread": {
-              "id": "thread_golden",
-              "title": null,
-              "defaultBranchId": "branch_golden",
+              "id": "thread_00000000000000000000000000000001",
+              "title": "Golden trace draft",
+              "defaultBranchId": "branch_00000000000000000000000000000002",
               "workspace": null,
-              "createdAt": "2026-08-15T00:00:00.000Z",
-              "updatedAt": "2026-08-15T00:00:00.000Z",
+              "createdAt": "2026-08-15T12:00:00.000Z",
+              "updatedAt": "2026-08-15T12:00:00.000Z",
               "archivedAt": null
             },
             "branch": {
-              "id": "branch_golden",
-              "threadId": "thread_golden",
-              "createdAt": "2026-08-15T00:00:00.000Z",
+              "id": "branch_00000000000000000000000000000002",
+              "threadId": "thread_00000000000000000000000000000001",
+              "createdAt": "2026-08-15T12:00:00.000Z",
               "isDefault": true
             }
           }
@@ -275,22 +281,22 @@
         "method": "event",
         "params": {
           "seq": 2,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "thread.renamed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
           "turnId": null,
           "runId": null,
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:01.000Z",
+          "timestamp": "2026-08-15T12:00:00.001Z",
           "payload": {
             "thread": {
-              "id": "thread_golden",
+              "id": "thread_00000000000000000000000000000001",
               "title": "Golden trace",
-              "defaultBranchId": "branch_golden",
+              "defaultBranchId": "branch_00000000000000000000000000000002",
               "workspace": null,
-              "createdAt": "2026-08-15T00:00:00.000Z",
-              "updatedAt": "2026-08-15T00:00:01.000Z",
+              "createdAt": "2026-08-15T12:00:00.000Z",
+              "updatedAt": "2026-08-15T12:00:00.001Z",
               "archivedAt": null
             }
           }
@@ -305,23 +311,23 @@
         "method": "event",
         "params": {
           "seq": 3,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "thread.archived",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
           "turnId": null,
           "runId": null,
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:02.000Z",
+          "timestamp": "2026-08-15T12:00:00.002Z",
           "payload": {
             "thread": {
-              "id": "thread_golden",
+              "id": "thread_00000000000000000000000000000001",
               "title": "Golden trace",
-              "defaultBranchId": "branch_golden",
+              "defaultBranchId": "branch_00000000000000000000000000000002",
               "workspace": null,
-              "createdAt": "2026-08-15T00:00:00.000Z",
-              "updatedAt": "2026-08-15T00:00:02.000Z",
-              "archivedAt": "2026-08-15T00:00:02.000Z"
+              "createdAt": "2026-08-15T12:00:00.000Z",
+              "updatedAt": "2026-08-15T12:00:00.002Z",
+              "archivedAt": "2026-08-15T12:00:00.002Z"
             }
           }
         }
@@ -335,22 +341,22 @@
         "method": "event",
         "params": {
           "seq": 4,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "thread.unarchived",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
           "turnId": null,
           "runId": null,
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:03.000Z",
+          "timestamp": "2026-08-15T12:00:00.003Z",
           "payload": {
             "thread": {
-              "id": "thread_golden",
+              "id": "thread_00000000000000000000000000000001",
               "title": "Golden trace",
-              "defaultBranchId": "branch_golden",
+              "defaultBranchId": "branch_00000000000000000000000000000002",
               "workspace": null,
-              "createdAt": "2026-08-15T00:00:00.000Z",
-              "updatedAt": "2026-08-15T00:00:03.000Z",
+              "createdAt": "2026-08-15T12:00:00.000Z",
+              "updatedAt": "2026-08-15T12:00:00.003Z",
               "archivedAt": null
             }
           }
@@ -365,53 +371,145 @@
         "method": "event",
         "params": {
           "seq": 5,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "item.completed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_user_golden",
-          "timestamp": "2026-08-15T00:00:04.000Z",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000005",
+          "timestamp": "2026-08-15T12:00:00.004Z",
           "payload": {
             "turn": {
-              "id": "turn_golden",
-              "threadId": "thread_golden",
-              "branchId": "branch_golden",
+              "id": "turn_00000000000000000000000000000003",
+              "threadId": "thread_00000000000000000000000000000001",
+              "branchId": "branch_00000000000000000000000000000002",
               "ordinal": 1,
               "status": "queued",
-              "createdAt": "2026-08-15T00:00:04.000Z",
-              "updatedAt": "2026-08-15T00:00:04.000Z"
+              "createdAt": "2026-08-15T12:00:00.004Z",
+              "updatedAt": "2026-08-15T12:00:00.004Z"
             },
             "run": {
-              "id": "run_golden",
-              "turnId": "turn_golden",
+              "id": "run_00000000000000000000000000000004",
+              "turnId": "turn_00000000000000000000000000000003",
               "providerId": "scripted",
               "modelId": "scripted-v1",
               "executionPolicy": "full_access",
               "status": "queued",
-              "createdAt": "2026-08-15T00:00:04.000Z",
+              "createdAt": "2026-08-15T12:00:00.004Z",
               "settledAt": null,
-              "skills": [],
-              "clientRequestId": "request_golden"
+              "skills": []
             },
             "item": {
-              "id": "item_user_golden",
-              "turnId": "turn_golden",
-              "runId": "run_golden",
+              "id": "item_00000000000000000000000000000005",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
               "ordinal": 1,
               "kind": "message",
               "role": "user",
               "status": "completed",
-              "content": "Run the golden command",
+              "content": "/process.run golden",
               "data": {},
-              "createdAt": "2026-08-15T00:00:04.000Z",
-              "updatedAt": "2026-08-15T00:00:04.000Z"
+              "createdAt": "2026-08-15T12:00:00.004Z",
+              "updatedAt": "2026-08-15T12:00:00.004Z"
             },
-            "clientRequestId": "request_golden",
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_user_golden"
+            "submissionFrame": {
+              "schemaVersion": 1,
+              "userItemId": "item_00000000000000000000000000000005",
+              "threadId": "thread_00000000000000000000000000000001",
+              "branchId": "branch_00000000000000000000000000000002",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "workspace": null,
+              "providerId": "scripted",
+              "modelId": "scripted-v1",
+              "publicProviderConfigFingerprint": "65741dfe5d43ccf1f8c288575327150253cfbca15f4817deb867b4cb33105ac5",
+              "executionPolicy": "full_access",
+              "skills": [],
+              "tools": [
+                {
+                  "name": "process_run",
+                  "description": "Run a command in the local operating system shell and capture its output. Commands default to the current Thread workspace when one is attached.",
+                  "inputSchema": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "command": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "cwd": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "timeoutMs": {
+                        "maximum": 600000,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "command"
+                    ],
+                    "type": "object"
+                  },
+                  "definitionSha256": "8b37624e85ff41f3a6cd05995cce845264599020a7c57477e33695449fc196dd"
+                }
+              ],
+              "instructions": {
+                "outputStyle": {
+                  "id": "output-style",
+                  "version": 1,
+                  "source": "ikaros-runtime:output-style-v1",
+                  "authority": "runtime_instruction",
+                  "scope": "global",
+                  "lifetime": "release",
+                  "content": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets."
+                },
+                "identityCore": null,
+                "skillCatalog": null
+              },
+              "contextData": {
+                "memory": []
+              },
+              "maxSteps": 2
+            },
+            "runManifest": {
+              "schemaVersion": 1,
+              "runId": "run_00000000000000000000000000000004",
+              "modelInputPlanVersion": 1,
+              "submissionFrameVersion": 1,
+              "contextSelectionVersion": "legacy-unbounded-v1",
+              "memoryContextVersion": 1,
+              "instructions": [
+                {
+                  "id": "output-style",
+                  "version": 1,
+                  "source": "ikaros-runtime:output-style-v1",
+                  "authority": "runtime_instruction",
+                  "scope": "global",
+                  "lifetime": "release",
+                  "characters": 315,
+                  "contentSha256": "31d6f8eaa858c3cc9648f97986897a8a1e7238677f3187cdd1150e2300703ecb"
+                }
+              ],
+              "skills": [],
+              "tools": [
+                {
+                  "definitionSha256": "8b37624e85ff41f3a6cd05995cce845264599020a7c57477e33695449fc196dd",
+                  "name": "process_run"
+                }
+              ],
+              "provider": {
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+                "publicProviderConfigFingerprint": "65741dfe5d43ccf1f8c288575327150253cfbca15f4817deb867b4cb33105ac5"
+              },
+              "executionPolicy": "full_access",
+              "maxSteps": 2
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000005"
           }
         }
       }
@@ -424,18 +522,18 @@
         "method": "event",
         "params": {
           "seq": 6,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "run.state_changed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:05.000Z",
+          "timestamp": "2026-08-15T12:00:00.004Z",
           "payload": {
             "status": "queued",
-            "turnId": "turn_golden",
-            "runId": "run_golden"
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
           }
         }
       }
@@ -448,119 +546,110 @@
         "method": "event",
         "params": {
           "seq": 7,
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "type": "run.state_changed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:06.000Z",
+          "timestamp": "2026-08-15T12:00:00.005Z",
           "payload": {
             "status": "running",
-            "turnId": "turn_golden",
-            "runId": "run_golden"
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
           }
         }
       }
     },
     {
-      "name": "assistant-item-started",
+      "name": "model-input-prepared",
       "kind": "notification",
       "envelope": {
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
           "seq": 8,
-          "schemaVersion": 2,
-          "type": "item.started",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_assistant_golden",
-          "timestamp": "2026-08-15T00:00:07.000Z",
+          "schemaVersion": 3,
+          "type": "model.input_prepared",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": null,
+          "timestamp": "2026-08-15T12:00:00.006Z",
           "payload": {
-            "item": {
-              "id": "item_assistant_golden",
-              "turnId": "turn_golden",
-              "runId": "run_golden",
-              "ordinal": 2,
-              "kind": "message",
-              "role": "assistant",
-              "status": "streaming",
-              "content": "",
-              "data": {},
-              "createdAt": "2026-08-15T00:00:07.000Z",
-              "updatedAt": "2026-08-15T00:00:07.000Z"
-            },
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_assistant_golden"
-          }
-        }
-      }
-    },
-    {
-      "name": "assistant-item-delta",
-      "kind": "notification",
-      "envelope": {
-        "jsonrpc": "2.0",
-        "method": "event",
-        "params": {
-          "seq": 9,
-          "schemaVersion": 2,
-          "type": "item.delta",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_assistant_golden",
-          "timestamp": "2026-08-15T00:00:08.000Z",
-          "payload": {
-            "delta": "I will run it.",
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_assistant_golden"
-          }
-        }
-      }
-    },
-    {
-      "name": "assistant-item-completed",
-      "kind": "notification",
-      "envelope": {
-        "jsonrpc": "2.0",
-        "method": "event",
-        "params": {
-          "seq": 10,
-          "schemaVersion": 2,
-          "type": "item.completed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_assistant_golden",
-          "timestamp": "2026-08-15T00:00:09.000Z",
-          "payload": {
-            "item": {
-              "id": "item_assistant_golden",
-              "turnId": "turn_golden",
-              "runId": "run_golden",
-              "ordinal": 2,
-              "kind": "message",
-              "role": "assistant",
-              "status": "completed",
-              "content": "I will run it.",
-              "data": {
-                "stepId": "step_golden"
+            "stepOrdinal": 1,
+            "preparedAt": "2026-08-15T12:00:00.006Z",
+            "contextSnapshot": {
+              "schemaVersion": 1,
+              "selectionVersion": "legacy-unbounded-v1",
+              "historyGroups": [
+                {
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "itemIds": [
+                    "item_00000000000000000000000000000005"
+                  ]
+                }
+              ],
+              "historyItems": [
+                {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "characters": 19
+                }
+              ],
+              "memory": [],
+              "budget": {
+                "mode": "legacy_unbounded",
+                "measurementVersion": "unicode-codepoints-canonical-json-v1",
+                "maximumCharacters": null,
+                "reservedCurrentRunCharacters": 0,
+                "instructionCharacters": 315,
+                "contextDataCharacters": 0,
+                "toolCharacters": 422,
+                "historyCharacters": 0,
+                "currentRunCharacters": 19,
+                "memoryCharacters": 0,
+                "totalCharacters": 756
               },
-              "createdAt": "2026-08-15T00:00:07.000Z",
-              "updatedAt": "2026-08-15T00:00:09.000Z"
+              "omissions": []
             },
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_assistant_golden"
+            "stepManifest": {
+              "schemaVersion": 1,
+              "stepOrdinal": 1,
+              "contextSnapshotVersion": 1,
+              "historyItems": [
+                {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "characters": 19
+                }
+              ],
+              "memory": [],
+              "budget": {
+                "mode": "legacy_unbounded",
+                "measurementVersion": "unicode-codepoints-canonical-json-v1",
+                "maximumCharacters": null,
+                "reservedCurrentRunCharacters": 0,
+                "instructionCharacters": 315,
+                "contextDataCharacters": 0,
+                "toolCharacters": 422,
+                "historyCharacters": 0,
+                "currentRunCharacters": 19,
+                "memoryCharacters": 0,
+                "totalCharacters": 756
+              },
+              "omissions": []
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
           }
         }
       }
@@ -572,39 +661,78 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 11,
-          "schemaVersion": 2,
+          "seq": 9,
+          "schemaVersion": 3,
           "type": "item.started",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_tool_call_golden",
-          "timestamp": "2026-08-15T00:00:10.000Z",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000008",
+          "timestamp": "2026-08-15T12:00:00.007Z",
           "payload": {
             "item": {
-              "id": "item_tool_call_golden",
-              "turnId": "turn_golden",
-              "runId": "run_golden",
-              "ordinal": 3,
+              "id": "item_00000000000000000000000000000008",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 2,
               "kind": "tool_call",
               "role": "assistant",
               "status": "running",
               "content": "",
               "data": {
-                "stepId": "step_golden",
-                "callId": "call_golden",
+                "stepId": "step_00000000000000000000000000000007",
+                "callId": "call_00000000000000000000000000000006",
                 "toolName": "process_run",
                 "arguments": {
-                  "command": "Write-Output golden"
+                  "command": "golden"
                 }
               },
-              "createdAt": "2026-08-15T00:00:10.000Z",
-              "updatedAt": "2026-08-15T00:00:10.000Z"
+              "createdAt": "2026-08-15T12:00:00.007Z",
+              "updatedAt": "2026-08-15T12:00:00.007Z"
             },
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_tool_call_golden"
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000008"
+          }
+        }
+      }
+    },
+    {
+      "name": "model-response-finished",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 10,
+          "schemaVersion": 3,
+          "type": "model.response_finished",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": null,
+          "timestamp": "2026-08-15T12:00:00.008Z",
+          "payload": {
+            "stepOrdinal": 1,
+            "providerId": "scripted",
+            "modelId": "scripted-v1",
+            "outcome": "completed",
+            "reasonCode": null,
+            "responseModelId": "scripted-v1",
+            "requestId": "request_golden_1",
+            "usage": {
+              "inputTokens": 11,
+              "cachedInputTokens": null,
+              "outputTokens": 5,
+              "reasoningOutputTokens": null,
+              "totalTokens": 16
+            },
+            "activityDate": "2026-08-15",
+            "finishedAt": "2026-08-15T12:00:00.008Z",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
           }
         }
       }
@@ -616,41 +744,41 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 12,
-          "schemaVersion": 2,
+          "seq": 11,
+          "schemaVersion": 3,
           "type": "item.completed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_tool_call_golden",
-          "timestamp": "2026-08-15T00:00:11.000Z",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000008",
+          "timestamp": "2026-08-15T12:00:00.009Z",
           "payload": {
             "item": {
-              "id": "item_tool_call_golden",
-              "turnId": "turn_golden",
-              "runId": "run_golden",
-              "ordinal": 3,
+              "id": "item_00000000000000000000000000000008",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 2,
               "kind": "tool_call",
               "role": "assistant",
               "status": "completed",
               "content": "",
               "data": {
-                "stepId": "step_golden",
-                "callId": "call_golden",
+                "stepId": "step_00000000000000000000000000000007",
+                "callId": "call_00000000000000000000000000000006",
                 "toolName": "process_run",
                 "arguments": {
-                  "command": "Write-Output golden"
+                  "command": "golden"
                 },
                 "outcome": "completed",
-                "durationMs": 8
+                "durationMs": 3
               },
-              "createdAt": "2026-08-15T00:00:10.000Z",
-              "updatedAt": "2026-08-15T00:00:11.000Z"
+              "createdAt": "2026-08-15T12:00:00.007Z",
+              "updatedAt": "2026-08-15T12:00:00.009Z"
             },
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_tool_call_golden"
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000008"
           }
         }
       }
@@ -662,78 +790,322 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 13,
-          "schemaVersion": 2,
+          "seq": 12,
+          "schemaVersion": 3,
           "type": "item.completed",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": "item_tool_result_golden",
-          "timestamp": "2026-08-15T00:00:11.000Z",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.009Z",
           "payload": {
             "item": {
-              "id": "item_tool_result_golden",
-              "turnId": "turn_golden",
-              "runId": "run_golden",
-              "ordinal": 4,
+              "id": "item_00000000000000000000000000000009",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 3,
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
-              "content": "golden",
+              "content": "{\"toolCallId\":\"call_00000000000000000000000000000006\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
               "data": {
-                "stepId": "step_golden",
-                "callId": "call_golden",
-                "toolCallItemId": "item_tool_call_golden",
+                "stepId": "step_00000000000000000000000000000007",
+                "callId": "call_00000000000000000000000000000006",
+                "toolCallItemId": "item_00000000000000000000000000000008",
                 "toolName": "process_run",
                 "result": {
-                  "toolCallId": "call_golden",
+                  "toolCallId": "call_00000000000000000000000000000006",
                   "toolName": "process_run",
                   "ok": true,
-                  "output": "golden"
+                  "output": "golden-output",
+                  "cancelled": false,
+                  "stdout": "golden-output\n",
+                  "stderr": "",
+                  "cwd": "C:/golden-workspace",
+                  "exitCode": 0,
+                  "durationMs": 3,
+                  "timedOut": false,
+                  "truncated": false
                 }
               },
-              "createdAt": "2026-08-15T00:00:11.000Z",
-              "updatedAt": "2026-08-15T00:00:11.000Z"
+              "createdAt": "2026-08-15T12:00:00.009Z",
+              "updatedAt": "2026-08-15T12:00:00.009Z"
             },
-            "turnId": "turn_golden",
-            "runId": "run_golden",
-            "itemId": "item_tool_result_golden"
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000009"
           }
         }
       }
     },
     {
-      "name": "model-usage-recorded",
+      "name": "model-input-prepared-step-2",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 13,
+          "schemaVersion": 3,
+          "type": "model.input_prepared",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": null,
+          "timestamp": "2026-08-15T12:00:00.010Z",
+          "payload": {
+            "stepOrdinal": 2,
+            "preparedAt": "2026-08-15T12:00:00.010Z",
+            "contextSnapshot": {
+              "schemaVersion": 1,
+              "selectionVersion": "legacy-unbounded-v1",
+              "historyGroups": [
+                {
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "itemIds": [
+                    "item_00000000000000000000000000000005"
+                  ]
+                }
+              ],
+              "historyItems": [
+                {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "characters": 19
+                }
+              ],
+              "memory": [],
+              "budget": {
+                "mode": "legacy_unbounded",
+                "measurementVersion": "unicode-codepoints-canonical-json-v1",
+                "maximumCharacters": null,
+                "reservedCurrentRunCharacters": 0,
+                "instructionCharacters": 315,
+                "contextDataCharacters": 0,
+                "toolCharacters": 422,
+                "historyCharacters": 0,
+                "currentRunCharacters": 19,
+                "memoryCharacters": 0,
+                "totalCharacters": 756
+              },
+              "omissions": []
+            },
+            "stepManifest": {
+              "schemaVersion": 1,
+              "stepOrdinal": 2,
+              "contextSnapshotVersion": 1,
+              "historyItems": [
+                {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "characters": 19
+                },
+                {
+                  "itemId": "item_00000000000000000000000000000008",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "characters": 20
+                },
+                {
+                  "itemId": "item_00000000000000000000000000000009",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "characters": 262
+                }
+              ],
+              "memory": [],
+              "budget": {
+                "mode": "legacy_unbounded",
+                "measurementVersion": "unicode-codepoints-canonical-json-v1",
+                "maximumCharacters": null,
+                "reservedCurrentRunCharacters": 0,
+                "instructionCharacters": 315,
+                "contextDataCharacters": 0,
+                "toolCharacters": 422,
+                "historyCharacters": 0,
+                "currentRunCharacters": 301,
+                "memoryCharacters": 0,
+                "totalCharacters": 1038
+              },
+              "omissions": []
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-started",
       "kind": "notification",
       "envelope": {
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
           "seq": 14,
-          "schemaVersion": 2,
-          "type": "model.usage_recorded",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
-          "itemId": null,
-          "timestamp": "2026-08-15T00:00:13.000Z",
+          "schemaVersion": 3,
+          "type": "item.started",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000a",
+          "timestamp": "2026-08-15T12:00:00.011Z",
           "payload": {
-            "stepOrdinal": 1,
+            "item": {
+              "id": "item_0000000000000000000000000000000a",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 4,
+              "kind": "message",
+              "role": "assistant",
+              "status": "streaming",
+              "content": "",
+              "data": {},
+              "createdAt": "2026-08-15T12:00:00.011Z",
+              "updatedAt": "2026-08-15T12:00:00.011Z"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000a"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-delta",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 15,
+          "schemaVersion": 3,
+          "type": "item.delta",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000a",
+          "timestamp": "2026-08-15T12:00:00.012Z",
+          "payload": {
+            "delta": "Command exit",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000a"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-delta-2",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 16,
+          "schemaVersion": 3,
+          "type": "item.delta",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000a",
+          "timestamp": "2026-08-15T12:00:00.013Z",
+          "payload": {
+            "delta": "ed with code 0.\ngolden-output",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000a"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 17,
+          "schemaVersion": 3,
+          "type": "item.completed",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000a",
+          "timestamp": "2026-08-15T12:00:00.014Z",
+          "payload": {
+            "item": {
+              "id": "item_0000000000000000000000000000000a",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 4,
+              "kind": "message",
+              "role": "assistant",
+              "status": "completed",
+              "content": "Command exited with code 0.\ngolden-output",
+              "data": {},
+              "createdAt": "2026-08-15T12:00:00.011Z",
+              "updatedAt": "2026-08-15T12:00:00.014Z"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000a"
+          }
+        }
+      }
+    },
+    {
+      "name": "model-response-finished-step-2",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 18,
+          "schemaVersion": 3,
+          "type": "model.response_finished",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": null,
+          "timestamp": "2026-08-15T12:00:00.015Z",
+          "payload": {
+            "stepOrdinal": 2,
             "providerId": "scripted",
             "modelId": "scripted-v1",
-            "activityDate": "2026-08-15",
-            "completedAt": "2026-08-15T00:00:13.000Z",
+            "outcome": "completed",
+            "reasonCode": null,
+            "responseModelId": "scripted-v1",
+            "requestId": "request_golden_2",
             "usage": {
               "inputTokens": 12,
               "cachedInputTokens": null,
-              "outputTokens": 5,
+              "outputTokens": 6,
               "reasoningOutputTokens": null,
-              "totalTokens": 17
+              "totalTokens": 18
             },
-            "turnId": "turn_golden",
-            "runId": "run_golden"
+            "activityDate": "2026-08-15",
+            "finishedAt": "2026-08-15T12:00:00.015Z",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
           }
         }
       }
@@ -745,20 +1117,20 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 15,
-          "schemaVersion": 2,
+          "seq": 19,
+          "schemaVersion": 3,
           "type": "run.settled",
-          "threadId": "thread_golden",
-          "branchId": "branch_golden",
-          "turnId": "turn_golden",
-          "runId": "run_golden",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T00:00:14.000Z",
+          "timestamp": "2026-08-15T12:00:00.016Z",
           "payload": {
             "status": "completed",
-            "settledAt": "2026-08-15T00:00:14.000Z",
-            "turnId": "turn_golden",
-            "runId": "run_golden"
+            "settledAt": "2026-08-15T12:00:00.016Z",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
           }
         }
       }

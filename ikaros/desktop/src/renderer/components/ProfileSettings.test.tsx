@@ -211,7 +211,7 @@ describe("ProfileSettings", () => {
     await screen.findByText("21.4B");
 
     act(() => {
-      emitEvent(runtimeEvent("model.usage_recorded"));
+      emitEvent(runtimeEvent("model.response_finished"));
       emitEvent(runtimeEvent("run.settled"));
     });
 
@@ -242,7 +242,7 @@ describe("ProfileSettings", () => {
     });
     render(<ProfileSettings />);
 
-    act(() => emitEvent(runtimeEvent("model.usage_recorded")));
+    act(() => emitEvent(runtimeEvent("model.response_finished")));
     expect(await screen.findByText("42B")).toBeInTheDocument();
     await act(async () => {
       resolveInitial({ ok: true, value: initial });

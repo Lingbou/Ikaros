@@ -31,7 +31,7 @@
     "event"
   ],
   "journal": {
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "eventTypes": [
       "thread.created",
       "thread.renamed",
@@ -41,7 +41,8 @@
       "item.started",
       "item.delta",
       "item.completed",
-      "model.usage_recorded",
+      "model.input_prepared",
+      "model.response_finished",
       "run.settled"
     ]
   },

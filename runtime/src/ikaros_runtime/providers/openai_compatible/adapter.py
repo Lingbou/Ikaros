@@ -23,6 +23,7 @@ from ..base import (
     ProviderMessage,
     ProviderRequest,
     ReasoningDelta,
+    ResponseMetadata,
     TextDelta,
 )
 from .streaming import (
@@ -190,6 +191,7 @@ class OpenAICompatibleAdapter:
         attempt = 0
         while True:
             body = self._request_body(request, include_usage=include_usage)
+            attempt_emitted = False
             try:
                 async for event in self._attempt(
                     url,
@@ -197,6 +199,7 @@ class OpenAICompatibleAdapter:
                     body,
                     cancellation=cancellation,
                 ):
+                    attempt_emitted = True
                     yield event
                 if self._provider.origin == "custom":
                     if include_usage:
@@ -212,6 +215,15 @@ class OpenAICompatibleAdapter:
                     fallback_without_usage = False
                     fallback_attempt = True
                     continue
+                if attempt_emitted:
+                    raise ProviderFailure(
+                        error.category,
+                        str(error),
+                        status_code=error.status_code,
+                        request_id=error.request_id,
+                        retryable=False,
+                        retry_after=error.retry_after,
+                    ) from None
                 if attempt >= self._max_retries or not error.retryable:
                     raise
                 delay = error.retry_after
@@ -259,11 +271,18 @@ class OpenAICompatibleAdapter:
             ) from None
 
         try:
+            request_id = _safe_request_id(response, self._provider)
             if response.status_code >= 400:
                 raise self._http_failure(response)
             content_type = response.headers.get("content-type", "")
             if not content_type.lower().startswith("text/event-stream"):
-                raise ProviderFailure("protocol", "provider returned a non-streaming response")
+                raise ProviderFailure(
+                    "protocol",
+                    "provider returned a non-streaming response",
+                    request_id=request_id,
+                )
+            if request_id is not None:
+                yield ResponseMetadata(request_id=request_id)
             assembler = ResponseAssembler(self._secrets)
             text_guard = ProtectedStreamGuard(self._secrets)
             reasoning_guard = ProtectedStreamGuard(self._secrets)
@@ -298,7 +317,7 @@ class OpenAICompatibleAdapter:
                 trailing_reasoning = reasoning_guard.finish()
                 if trailing_reasoning:
                     yield ReasoningDelta(trailing_reasoning)
-                for event in assembler.finish(done_seen=done_seen):
+                for event in assembler.finish(done_seen=done_seen, request_id=request_id):
                     yield event
             except RunCancelled:
                 raise
@@ -308,24 +327,32 @@ class OpenAICompatibleAdapter:
                 raise ProviderFailure(
                     "timeout",
                     "provider stream became idle",
+                    request_id=request_id,
                     retryable=not assembler.saw_output,
                 ) from None
             except httpx.TimeoutException:
                 raise ProviderFailure(
                     "timeout",
                     "provider stream timed out",
+                    request_id=request_id,
                     retryable=not assembler.saw_output,
                 ) from None
             except httpx.RequestError:
                 raise ProviderFailure(
                     "network",
                     "provider stream was interrupted",
+                    request_id=request_id,
                     retryable=not assembler.saw_output,
                 ) from None
             except ProviderFailure as error:
-                if assembler.saw_output and error.retryable:
-                    error.retryable = False
-                raise
+                raise ProviderFailure(
+                    error.category,
+                    str(error),
+                    status_code=error.status_code,
+                    request_id=error.request_id or request_id,
+                    retryable=error.retryable and not assembler.saw_output,
+                    retry_after=error.retry_after,
+                ) from None
         finally:
             with suppress(Exception):
                 await response.aclose()

@@ -18,6 +18,7 @@ from ..base import (
     ProviderEvent,
     ReasoningDelta,
     ResponseCompleted,
+    ResponseMetadata,
     TextDelta,
     ToolCallCompleted,
 )
@@ -41,12 +42,30 @@ class ResponseAssembler:
         self._tools: dict[int, ResponseToolAccumulator] = {}
         self._finish_reason: str | None = None
         self._usage: ModelUsage | None = None
+        self._model_id: str | None = None
         self._secrets = tuple(secrets)
         self.saw_output = False
 
     def consume(self, value: Any) -> tuple[ProviderEvent, ...]:
         if not isinstance(value, dict):
             raise protocol_failure()
+        events: list[ProviderEvent] = []
+        if "model" in value:
+            model_id = value["model"]
+            if (
+                not isinstance(model_id, str)
+                or not model_id
+                or len(model_id) > 200
+                or any(ord(character) < 32 or ord(character) == 127 for character in model_id)
+            ):
+                raise protocol_failure()
+            if contains_protected_value(model_id, self._secrets):
+                raise protected_response_failure()
+            if self._model_id is not None and self._model_id != model_id:
+                raise protocol_failure()
+            if self._model_id is None:
+                events.append(ResponseMetadata(model_id=model_id))
+            self._model_id = model_id
         if "usage" in value and value["usage"] is not None:
             usage = _parse_usage(value["usage"])
             if self._usage is not None and self._usage != usage:
@@ -57,7 +76,7 @@ class ResponseAssembler:
         if not isinstance(choices, list):
             raise protocol_failure()
         if not choices:
-            return ()
+            return tuple(events)
         choice = next(
             (
                 candidate
@@ -67,14 +86,13 @@ class ResponseAssembler:
             None,
         )
         if choice is None:
-            return ()
+            return tuple(events)
         delta = choice.get("delta")
         if delta is None:
             delta = {}
         if not isinstance(delta, dict):
             raise protocol_failure()
 
-        events: list[ProviderEvent] = []
         if "reasoning_content" in delta:
             reasoning = delta["reasoning_content"]
             if reasoning is not None and not isinstance(reasoning, str):
@@ -106,7 +124,12 @@ class ResponseAssembler:
             self._finish_reason = finish_reason
         return tuple(events)
 
-    def finish(self, *, done_seen: bool) -> tuple[ProviderEvent, ...]:
+    def finish(
+        self,
+        *,
+        done_seen: bool,
+        request_id: str | None = None,
+    ) -> tuple[ProviderEvent, ...]:
         if self._finish_reason is None and not done_seen:
             raise protocol_failure()
         events: list[ProviderEvent] = []
@@ -142,7 +165,7 @@ class ResponseAssembler:
                         )
                     )
                 )
-        events.append(ResponseCompleted(self._usage))
+        events.append(ResponseCompleted(self._usage, self._model_id, request_id))
         return tuple(events)
 
     def _consume_tool_fragment(self, value: Any) -> None:

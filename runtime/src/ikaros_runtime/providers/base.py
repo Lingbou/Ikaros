@@ -73,13 +73,25 @@ class ToolCallCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class ResponseMetadata:
+    """Provider response identity known before the response has completed."""
+
+    model_id: str | None = None
+    request_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ResponseCompleted:
     """The provider finished one response without further stream events."""
 
     usage: ModelUsage | None = None
+    model_id: str | None = None
+    request_id: str | None = None
 
 
-type ProviderEvent = TextDelta | ReasoningDelta | ToolCallCompleted | ResponseCompleted
+type ProviderEvent = (
+    TextDelta | ReasoningDelta | ToolCallCompleted | ResponseMetadata | ResponseCompleted
+)
 
 
 class ProviderAdapter(Protocol):

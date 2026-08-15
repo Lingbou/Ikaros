@@ -161,6 +161,37 @@ def test_custom_provider_supports_optional_key_headers_and_reload(tmp_path: Path
     assert "tenant-secret" not in repr(provider)
 
 
+def test_public_execution_fingerprint_ignores_credential_rotation(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_custom(
+        provider_id="local",
+        display_name="Local",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="first-api-secret",
+        headers={"X-Tenant": "first-header-secret"},
+        models=[model("local-model", "Local Model")],
+    )
+    first = store.execution_snapshot("local", "local-model")
+
+    store.configure_custom(
+        provider_id="local",
+        display_name="Local",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="second-api-secret",
+        headers={"X-Tenant": "second-header-secret"},
+        models=[model("local-model", "Local Model")],
+    )
+    second = store.execution_snapshot("local", "local-model")
+
+    assert second == first
+    assert second.fingerprint == first.fingerprint
+    serialized = repr(second)
+    assert "first-api-secret" not in serialized
+    assert "first-header-secret" not in serialized
+    assert "second-api-secret" not in serialized
+    assert "second-header-secret" not in serialized
+
+
 def test_credentials_cannot_overlap_public_provider_or_model_fields(tmp_path: Path) -> None:
     protected = "public-field-secret-sentinel"
     store = ConfigStore(tmp_path)

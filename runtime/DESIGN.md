@@ -5,11 +5,10 @@ Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
 current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
-The active next stage, covering `ModelInputPlanV1`, bounded history, Identity
-Core, and a separate long-term-Memory store, is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
-`ModelInputPlanV1` is implemented; the linked document's status table is the
-source of truth for the remaining strictly serial Gates.
+The active next stage is specified in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–2
+are implemented; Gate 3, `HistorySelectorV1`, is next. Identity Core and the
+separate long-term-Memory store remain later strictly serial Gates.
 
 ## Product boundary
 
@@ -138,7 +137,7 @@ must never be removed by a `state.db` reset.
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 5. A non-empty unversioned database or any different `user_version`
+version 6. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml`, `skills/`, Desktop
@@ -313,7 +312,9 @@ Turn in the public model.
 
 V1 has no separate Session entity; `Thread` is the product conversation
 boundary. `state.db` is the canonical record of what happened in a Thread,
-including its Branches, Turns, Runs, Items, usage, and sequenced Events.
+including its Branches, Turns, Runs, Items, Provider-Step outcomes, usage,
+sequenced Events, and the four persisted audit records: Submission Frame, Run
+Manifest, Context Snapshot, and per-Step Manifest.
 
 Durable cross-Thread Memory is not implemented. It is a different authority and
 lifecycle from Session history, History selection, History compaction,
@@ -326,21 +327,24 @@ An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
 client can resume from a cursor without guessing what it missed. Every
 persisted and wire Event also carries `schemaVersion`. The current Event schema
-is version 2. Readers require that exact version and reject unknown versions;
+is version 3. Readers require that exact version and reject unknown versions;
 there is no payload upcaster while the database itself follows the explicit
 development reset policy above.
 
-Representative event semantics are:
+The complete persisted Event vocabulary is:
 
 ```text
-item.started                    message or tool-call Item entered an active state
-item.delta                      bounded message streaming delta
-item.completed                  message, tool-call, or tool-result terminal snapshot
-run.state_changed
-run.settled
+thread.created
 thread.renamed
 thread.archived
 thread.unarchived
+run.state_changed
+item.started
+item.delta
+item.completed
+model.input_prepared
+model.response_finished
+run.settled
 ```
 
 V1 represents Tool lifecycle records as typed Items instead of maintaining a
@@ -546,29 +550,33 @@ first slice.
 
 ```text
 client submits user input
-  -> runtime appends Turn and Run
+  -> runtime atomically appends Turn, Run, SubmissionFrameV1, and RunManifestV1
   -> Scheduler reserves the persisted Run
   -> server attempts the command ACK
   -> Scheduler activates the Run
-  -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1
-     containing versioned Output Style and frozen Run Skill Catalog blocks,
-     persisted ContextItems, and separate Tool definitions
+  -> prepare_model_step freezes or reuses ContextSnapshotV1
+  -> Runtime persists StepManifestV1 and emits model.input_prepared
+  -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1 from
+     the frozen Submission Frame, versioned Output Style, frozen Skill Catalog,
+     frozen ContextItems, and separate Tool definitions
   -> ContextBuilder deterministically renders that Plan into ProviderRequest
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call
   -> ExecutionPolicy returns allow under FullAccessPolicy
   -> ToolExecutor runs the registered Tool and emits lifecycle events
   -> normalized ToolResult is appended and returned to the model
+  -> Runtime emits exactly one model.response_finished for the prepared Step;
+     any Provider-reported usage is projected only from this Event
   -> the model may continue another Step
   -> final assistant Item is completed
   -> Run emits exactly one settled terminal event
 ```
 
-`ModelInputPlanner` assigns authority/scope/lifetime metadata to the current
-Output Style and Skill Catalog blocks, but still receives the complete unbounded
-Branch context. It does not select or budget history, retrieve durable Memory,
-or produce a persistent input Manifest. Those are separately gated
-responsibilities in
+`ModelInputPlanner` consumes the frozen Submission Frame, while
+`ContextSnapshotV1`, `RunManifestV1`, and per-Step `StepManifestV1` provide the
+durable audit boundary. Selection is still `legacy-unbounded-v1`; the Runtime
+does not yet impose a hard history budget, retrieve durable Memory, or inject
+Identity Core. Those are separately gated responsibilities in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 The provider boundary must not leak provider-specific request or streaming
@@ -901,13 +909,17 @@ current operating-system user's authority. Skill scripts invoked through
 `process_run` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 5. Thread
+The current reset-only SQLite database schema is canonical version 6. Thread
 projections include optional `workspace_json`, nullable `archived_at`, and an
 indexed active/archived Thread Catalog ordering key; Run history hydration is
 indexed by `turn_id`. Each Run snapshots `execution_policy = full_access` and
 its enabled Skill descriptors, while each Item has structured `data_json` for
 Tool Call arguments and normalized results. Rebuilding projections from the
-journal restores these records and the provider context. A bounded Agent loop
+journal restores these records and the provider context. `run_inputs` stores
+one Submission Frame, Run Manifest, and nullable frozen Context Snapshot per
+Run. `model_steps` stores one Step Manifest plus exactly one optional terminal
+outcome record per prepared Step. Both tables are rebuilt from the append-only
+Journal. A bounded Agent loop
 persists all calls from a provider Step before serial execution, returns every
 result under the original provider call ID, and stops a provider that exceeds
 the maximum Step count.
@@ -930,7 +942,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
 | Skills settings | `skill.list` / `skill.set_enabled` catalog, diagnostics, and global enablement |
-| Profile Token metrics and activity | `usage.read` over exact Provider-reported per-Step usage; no text-based estimation |
+| Profile Token metrics and activity | `usage.read` over the `model_usages` projection rebuilt solely from Provider-reported usage in `model.response_finished`; no text-based estimation |
 | theme, language, username | client-only UI state |
 
 The runtime sends stable semantics and original content, never pretranslated
@@ -1052,6 +1064,9 @@ path. The following have been demonstrated end to end:
    descriptors into each Run, exposes the catalog through Desktop settings, and
    keeps full Skill bodies lazy. The most recently recorded live DeepSeek smoke
    verified that frozen descriptor path alongside the file-Tool chain.
+9. Gate 2 persists the four model-input audit objects, enforces Provider/Tool
+   drift checks, records actual response model/request IDs safely, and closes
+   every prepared Provider Step through `model.response_finished`.
 
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
@@ -1060,6 +1075,7 @@ This slice does not implement web search, browser or desktop control, durable
 memory, background or scheduled tasks, messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
-bounded model-input and durable-Memory subset is planned separately in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md) and is not
-claimed as current behavior.
+provider-neutral input plan and Gate 2 audit/freeze foundation are current.
+Bounded history selection, Identity Core, and durable Memory remain the later
+Gates documented in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

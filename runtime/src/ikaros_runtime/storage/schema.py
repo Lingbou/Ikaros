@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +82,43 @@ ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
 CREATE INDEX runs_turn_history_idx
 ON runs(turn_id, created_at ASC, id ASC);
 
+CREATE TABLE run_inputs (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    submission_frame_json TEXT NOT NULL,
+    run_manifest_json TEXT NOT NULL,
+    context_snapshot_json TEXT
+);
+
+CREATE TABLE model_steps (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_ordinal INTEGER NOT NULL CHECK (step_ordinal >= 1),
+    step_manifest_json TEXT NOT NULL,
+    prepared_at TEXT NOT NULL,
+    outcome TEXT CHECK (outcome IN ('completed', 'failed', 'cancelled')),
+    reason_code TEXT,
+    response_model_id TEXT,
+    request_id TEXT,
+    usage_json TEXT,
+    activity_date TEXT,
+    finished_at TEXT,
+    PRIMARY KEY(run_id, step_ordinal),
+    CHECK (
+        (outcome IS NULL AND reason_code IS NULL AND response_model_id IS NULL
+         AND request_id IS NULL AND usage_json IS NULL AND activity_date IS NULL
+         AND finished_at IS NULL)
+        OR
+        (outcome = 'completed' AND reason_code IS NULL AND finished_at IS NOT NULL)
+        OR
+        (outcome IN ('failed', 'cancelled') AND reason_code IS NOT NULL
+         AND finished_at IS NOT NULL)
+    ),
+    CHECK (
+        (usage_json IS NULL AND activity_date IS NULL)
+        OR
+        (outcome = 'completed' AND usage_json IS NOT NULL AND activity_date IS NOT NULL)
+    )
+);
+
 CREATE TABLE model_usages (
     thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
     turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
@@ -96,7 +133,9 @@ CREATE TABLE model_usages (
     total_tokens INTEGER NOT NULL CHECK (total_tokens >= 0),
     activity_date TEXT NOT NULL,
     completed_at TEXT NOT NULL,
-    PRIMARY KEY(run_id, step_ordinal)
+    PRIMARY KEY(run_id, step_ordinal),
+    FOREIGN KEY(run_id, step_ordinal)
+        REFERENCES model_steps(run_id, step_ordinal) ON DELETE CASCADE
 );
 
 CREATE INDEX model_usages_completed_at_idx
@@ -118,6 +157,9 @@ CREATE TABLE items (
     data_json TEXT NOT NULL DEFAULT '{}',
     UNIQUE(run_id, ordinal)
 );
+
+CREATE INDEX items_turn_context_idx
+ON items(turn_id, ordinal ASC);
 """
 
 _INCOMPATIBLE_MESSAGE = "state database schema is incompatible; reset required"

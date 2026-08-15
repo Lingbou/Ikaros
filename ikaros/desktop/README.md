@@ -85,12 +85,17 @@ The Runtime currently owns:
   `~/.ikaros/config.yaml` persistence;
 - the ScriptedProvider used by deterministic integration tests and real
   OpenAI-compatible streaming Providers used by normal conversations; and
-- `usage.read`, which supplies exact Provider-reported Token totals, longest
-  completed task duration, streaks, and daily buckets for the Profile page;
+- `usage.read`, backed only by Provider-reported usage from
+  `model.response_finished`, which supplies Token totals, longest completed task
+  duration, streaks, and daily buckets for the Profile page;
 - Runtime-backed Skills V0: safe catalog discovery and diagnostics,
   `skill.list` / `skill.set_enabled`, global enablement persisted in
   `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
   a lazily loaded Skills settings page;
+- Gate 2 audit DTOs and Events: Submission Frame and Run Manifest on Turn
+  creation, frozen Context Snapshot and Step Manifest on
+  `model.input_prepared`, and response metadata/usage on
+  `model.response_finished`;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
   V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
   command execution provides timeout, cancellation, bounded output, and
@@ -104,6 +109,11 @@ into the conversation UI. File cards expose bounded metadata such as path, line
 range, bytes written, and replacement count without displaying the full write
 or replacement arguments. It does not use `MockAgentClient` when the Electron
 Runtime bridge is available.
+
+Electron main strictly validates the Gate 2 audit DTO relationships before
+advancing the Event cursor. The renderer intentionally treats
+`model.input_prepared` and `model.response_finished` as non-visual audit Events;
+they do not create fake conversation cards.
 
 Conversation-history cold startup reads only the active Thread catalog and its
 sequence waterline; it does not replay the full Journal from sequence zero.
@@ -175,7 +185,7 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema version 5 and is
+Conversation persistence uses canonical SQLite schema version 6 and is
 intentionally reset-only during pre-release development. An incompatible
 `~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
 or Event upcaster is provided. After stopping the Runtime, an explicitly
@@ -184,7 +194,12 @@ Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
 conversation history and must be preserved, as must `skills/`, Desktop
 preferences, and the separately owned future `memory.db`.
 
-Durable cross-Thread Memory, Identity Core, bounded history selection, and
-input manifests are proposed rather than Runtime-backed. Their strict Gate
-plan is documented in
+The persisted Journal uses Event schema version 3 with 11 supported Event
+discriminators. Incompatible database or Event schemas still require the
+explicit reset-only path.
+
+Persistent input Frames/Manifests are Runtime-backed and validated at the
+Desktop wire boundary. Durable cross-Thread Memory, Identity Core, and bounded
+history selection remain proposed; Gate 3 is the next implementation step.
+Their strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

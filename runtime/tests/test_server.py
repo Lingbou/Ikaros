@@ -17,6 +17,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import InvalidStatus
 
+from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.bootstrap import RuntimeApplication
 from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, JournalEvent
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
@@ -25,7 +26,10 @@ from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.server.connection import handle_connection
 from ikaros_runtime.server.event_hub import EventHub
 from ikaros_runtime.server.host import _parent_is_alive
+from ikaros_runtime.services.turns import TurnService
 from ikaros_runtime.storage import SqliteRuntimeStore
+
+from .helpers import prepare_turn
 
 _HIDDEN_PROCESS_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
@@ -49,6 +53,212 @@ def test_thread_catalog_keys_have_fixed_security_provenance(protected: str) -> N
     }
 
     assert response_values_contain_protected_value(result, [protected]) is False
+
+
+def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential() -> None:
+    sha256 = "a" * 64
+    value = {
+        "payload": {
+            "submissionFrame": {
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+                "executionPolicy": "full_access",
+                "publicProviderConfigFingerprint": sha256,
+                "tools": [
+                    {
+                        "name": "runtime-owned-tool",
+                        "description": "Runtime owned Tool description",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        },
+                        "definitionSha256": sha256,
+                    }
+                ],
+                "instructions": {
+                    "outputStyle": {
+                        "id": "output-style",
+                        "authority": "runtime_instruction",
+                        "lifetime": "release",
+                        "content": "Runtime owned output style",
+                    },
+                    "identityCore": {
+                        "id": "identity-core",
+                        "authority": "runtime_identity",
+                        "lifetime": "release",
+                        "content": "Runtime owned identity",
+                    },
+                    "skillCatalog": None,
+                },
+                "contextData": {"memory": []},
+            },
+            "runManifest": {
+                "contextSelectionVersion": "legacy-unbounded-v1",
+                "instructions": [
+                    {
+                        "id": "output-style",
+                        "authority": "runtime_instruction",
+                        "contentSha256": sha256,
+                    }
+                ],
+                "tools": [
+                    {
+                        "name": "runtime-owned-tool",
+                        "definitionSha256": sha256,
+                    }
+                ],
+                "provider": {
+                    "providerId": "scripted",
+                    "modelId": "scripted-v1",
+                    "publicProviderConfigFingerprint": sha256,
+                },
+            },
+            "contextSnapshot": {
+                "selectionVersion": "legacy-unbounded-v1",
+                "budget": {
+                    "mode": "legacy_unbounded",
+                    "measurementVersion": "unicode-codepoints-canonical-json-v1",
+                },
+                "historyItems": [],
+                "memory": [],
+                "omissions": [],
+            },
+            "stepManifest": {
+                "budget": {
+                    "mode": "legacy_unbounded",
+                    "measurementVersion": "unicode-codepoints-canonical-json-v1",
+                },
+                "historyItems": [],
+                "memory": [],
+                "omissions": [],
+            },
+        }
+    }
+
+    for protected in (
+        "full_access",
+        "scripted-v1",
+        "runtime_instruction",
+        "runtime_identity",
+        "release",
+        "Runtime owned output style",
+        "Runtime owned identity",
+        "runtime-owned-tool",
+        "Runtime owned Tool description",
+        "object",
+        "properties",
+        "command",
+        "string",
+        "legacy-unbounded-v1",
+        "legacy_unbounded",
+        "unicode-codepoints-canonical-json-v1",
+        sha256,
+    ):
+        assert response_values_contain_protected_value(value, [protected]) is False
+
+
+@pytest.mark.parametrize(
+    "container",
+    (
+        {"payload": {"submissionFrame": {"tools": [{"description": "dynamic-secret"}]}}},
+        {
+            "params": {
+                "payload": {
+                    "contextSnapshot": {"historyItems": [{"kind": "dynamic-secret"}]}
+                }
+            }
+        },
+        {
+            "result": {
+                "events": [
+                    {"payload": {"stepManifest": {"omissions": ["dynamic-secret"]}}}
+                ]
+            }
+        },
+    ),
+)
+def test_model_input_snapshot_provenance_accepts_only_legal_roots(
+    container: object,
+) -> None:
+    assert response_values_contain_protected_value(container, ["dynamic-secret"]) is False
+
+
+def test_nested_model_input_lookalike_does_not_bypass_protected_value_scan() -> None:
+    value = {
+        "params": {
+            "payload": {
+                "item": {
+                    "data": {
+                        "result": {
+                            "payload": {
+                                "submissionFrame": {
+                                    "tools": [{"description": "dynamic-secret"}]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert response_values_contain_protected_value(value, ["dynamic-secret"]) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        {"payload": {"submissionFrame": {"workspace": {"name": "dynamic-secret"}}}},
+        {
+            "payload": {
+                "submissionFrame": {
+                    "skills": [
+                        {
+                            "name": "dynamic-secret",
+                            "description": "safe",
+                            "location": "C:/safe/SKILL.md",
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "payload": {
+                "submissionFrame": {
+                    "instructions": {"skillCatalog": {"content": "dynamic-secret"}}
+                }
+            }
+        },
+        {
+            "payload": {
+                "submissionFrame": {
+                    "providerId": "custom-provider",
+                    "modelId": "dynamic-secret",
+                }
+            }
+        },
+        {"responseModelId": "dynamic-secret"},
+        {"requestId": "dynamic-secret"},
+        {"baseUrl": "https://dynamic-secret.example/v1"},
+    ),
+)
+def test_model_input_and_provider_dynamic_values_remain_guarded(
+    value: object,
+) -> None:
+    assert response_values_contain_protected_value(value, ["dynamic-secret"]) is True
+
+
+def test_non_scripted_model_named_like_the_scripted_model_remains_guarded() -> None:
+    value = {
+        "payload": {
+            "submissionFrame": {
+                "providerId": "custom-provider",
+                "modelId": "scripted-v1",
+            }
+        }
+    }
+
+    assert response_values_contain_protected_value(value, ["scripted-v1"]) is True
 
 
 class AckFailingConnection:
@@ -1691,9 +1901,15 @@ async def test_openai_fake_endpoint_usage_reaches_journal_and_usage_read(
         )
         events = await _collect_run_events(connection, started["result"]["runId"])
 
-        usage_events = [event for event in events if event["type"] == "model.usage_recorded"]
+        usage_events = [
+            event
+            for event in events
+            if event["type"] == "model.response_finished"
+            and event["payload"]["usage"] is not None
+        ]
         assert len(usage_events) == 1
         assert usage_events[0]["payload"]["stepOrdinal"] == 1
+        assert usage_events[0]["payload"]["outcome"] == "completed"
         assert usage_events[0]["payload"]["usage"] == {
             "inputTokens": 7,
             "cachedInputTokens": None,
@@ -2058,6 +2274,15 @@ async def test_process_tool_cannot_publish_or_persist_provider_credentials(
         assert model_tool_result["role"] == "tool"
         assert json.loads(model_tool_result["content"])["errorCode"] == "protected_output"
 
+        live_database_files = [
+            tmp_path / "state.db",
+            tmp_path / "state.db-wal",
+            tmp_path / "state.db-shm",
+        ]
+        assert all(path.is_file() for path in live_database_files)
+        for protected in (api_key, header_secret):
+            assert all(protected.encode() not in path.read_bytes() for path in live_database_files)
+
         replay = await _rpc(connection, 5, "event.replay", {"afterSeq": 0, "limit": 1000})
         await _shutdown(connection, process, 6)
         assert process.stderr is not None
@@ -2278,7 +2503,8 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _event = store.create_thread("Active provider")
-    prepared = store.prepare_turn(
+    prepared = prepare_turn(
+        store,
         thread_id=thread.id,
         branch_id=thread.default_branch_id,
         content="hold configuration",
@@ -2326,7 +2552,8 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Retry after removal")
-    prepared = store.prepare_turn(
+    prepared = prepare_turn(
+        store,
         thread_id=thread.id,
         branch_id=thread.default_branch_id,
         content="stable content",
@@ -2369,7 +2596,9 @@ def test_kernel_rejects_config_credentials_already_present_in_the_journal(
 ) -> None:
     protected = "manual-config-journal-sentinel"
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    store.create_thread(protected)
+    thread, _ = store.create_thread(protected)
+    store.rename_thread(thread.id, "Current safe title")
+    assert store.list_thread_page(cursor=None, limit=50).threads[0].title == "Current safe title"
     config = ConfigStore(tmp_path)
     config.configure_deepseek(api_key=protected, models=[ModelInput("model", "Model")])
 
@@ -2379,6 +2608,96 @@ def test_kernel_rejects_config_credentials_already_present_in_the_journal(
         assert protected not in str(captured.value)
     finally:
         store.close()
+
+
+def test_online_provider_configuration_rejects_credentials_in_historical_events(
+    tmp_path: Path,
+) -> None:
+    protected = "online-historical-journal-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _ = store.create_thread(protected)
+    store.rename_thread(thread.id, "Current safe title")
+    config = ConfigStore(tmp_path)
+    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    before = config.path.read_bytes() if config.path.exists() else None
+
+    try:
+        with pytest.raises(InvalidParamsError, match="credentials conflict") as captured:
+            kernel.providers.configure_provider(
+                {
+                    "kind": "deepseek",
+                    "apiKey": protected,
+                    "models": [{"id": "model", "displayName": "Model"}],
+                }
+            )
+        assert protected not in str(captured.value)
+        assert (config.path.read_bytes() if config.path.exists() else None) == before
+        replayed, _ = store.replay_events(0, 100)
+        assert any(
+            event.type == "thread.created"
+            and event.payload["thread"]["title"] == protected
+            for event in replayed
+        )
+    finally:
+        store.close()
+
+
+def test_queued_submission_frame_preserves_exact_user_content_across_restart_and_rebuild(
+    tmp_path: Path,
+) -> None:
+    content = " \r\nuser-body-sentinel\nwith trailing space  "
+    database_path = tmp_path / "state.db"
+    store = SqliteRuntimeStore(database_path)
+
+    class ReserveOnlyScheduler:
+        def reserve(self, _run_id: str) -> None:
+            return None
+
+    service = TurnService(
+        store,
+        cast(AgentScheduler, ReserveOnlyScheduler()),
+        ConfigStore(tmp_path),
+        lambda _value: None,
+    )
+    thread, _ = store.create_thread("Exact queued input")
+    outcome = service.start_turn(
+        {
+            "threadId": thread.id,
+            "branchId": thread.default_branch_id,
+            "content": content,
+            "providerId": "scripted",
+            "modelId": "scripted-v1",
+        }
+    )
+    run_id = str(outcome.result["runId"])
+
+    def persisted_input(current: SqliteRuntimeStore) -> tuple[dict[str, object], str, str]:
+        row = current._connection.execute(
+            "SELECT run_manifest_json FROM run_inputs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        user = current._connection.execute(
+            "SELECT content FROM items WHERE run_id = ? AND role = 'user'",
+            (run_id,),
+        ).fetchone()
+        assert user is not None
+        return current.get_submission_frame(run_id).to_wire(), str(row[0]), str(user[0])
+
+    before = persisted_input(store)
+    assert before[2] == content
+    assert "user-body-sentinel" not in json.dumps(before[:2], ensure_ascii=False)
+    store.close()
+
+    reopened = SqliteRuntimeStore(database_path)
+    try:
+        assert reopened.run_status(run_id) == "queued"
+        assert persisted_input(reopened) == before
+        reopened.rebuild_projections()
+        assert reopened.run_status(run_id) == "queued"
+        assert persisted_input(reopened) == before
+    finally:
+        reopened.close()
 
 
 @pytest.mark.asyncio
@@ -2424,7 +2743,8 @@ async def test_startup_credential_conflict_fails_before_recovery_mutates_state(
     protected = "sk-startup-recovery-conflict-sentinel"
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread(protected)
-    prepared = store.prepare_turn(
+    prepared = prepare_turn(
+        store,
         thread_id=thread.id,
         branch_id=thread.default_branch_id,
         content="running before rejected startup",
@@ -3522,14 +3842,21 @@ async def test_scripted_provider_streams_two_contextual_turns_and_settles_once(
         first_run_id = first_started["result"]["runId"]
         first_events = await _collect_run_events(connection, first_run_id)
         first_types = [event["type"] for event in first_events]
-        assert first_types[:4] == [
+        assert first_types[:5] == [
             "item.completed",
             "run.state_changed",
             "run.state_changed",
+            "model.input_prepared",
             "item.started",
         ]
         assert first_types.count("item.delta") >= 2
-        assert first_types[-2:] == ["item.completed", "run.settled"]
+        assert first_types[-3:] == [
+            "item.completed",
+            "model.response_finished",
+            "run.settled",
+        ]
+        assert first_types.count("model.input_prepared") == 1
+        assert first_types.count("model.response_finished") == 1
         assert (
             sum(
                 event["type"] == "run.settled" and event["runId"] == first_run_id
@@ -4454,6 +4781,23 @@ async def test_runtime_restart_fails_running_run_and_resumes_queued_run(
             and event["runId"] == running_id
             and event["payload"].get("item", {}).get("role") == "assistant"
         )
+        prepared_steps = [
+            event
+            for event in replayed
+            if event["type"] == "model.input_prepared" and event["runId"] == running_id
+        ]
+        finished_steps = [
+            event
+            for event in replayed
+            if event["type"] == "model.response_finished" and event["runId"] == running_id
+        ]
+        assert len(prepared_steps) == 1
+        assert len(finished_steps) == 1
+        assert finished_steps[0]["payload"]["stepOrdinal"] == prepared_steps[0]["payload"][
+            "stepOrdinal"
+        ]
+        assert finished_steps[0]["payload"]["outcome"] == "failed"
+        assert finished_steps[0]["payload"]["reasonCode"] == "runtime_interrupted"
         assert len(running_settled) == 1
         assert running_settled[0]["payload"]["status"] == "failed"
         assert running_settled[0]["payload"]["reasonCode"] == "runtime_interrupted"

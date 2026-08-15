@@ -9,14 +9,16 @@ from typing import Any, cast
 import httpx
 import pytest
 
+from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
-from ikaros_runtime.domain import ModelUsage
+from ikaros_runtime.domain import JournalEvent, ModelUsage
 from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderMessage,
     ProviderRequest,
     ReasoningDelta,
     ResponseCompleted,
+    ResponseMetadata,
     TextDelta,
     ToolCallCompleted,
 )
@@ -33,7 +35,10 @@ from ikaros_runtime.providers.registry import (
     ProviderConfig,
     RuntimeProviderRegistry,
 )
+from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import ToolCall, ToolDefinition
+
+from .helpers import prepare_turn
 
 
 class ChunkStream(httpx.AsyncByteStream):
@@ -274,10 +279,14 @@ async def test_model_discovery_blocks_a_credential_in_remote_model_id() -> None:
 @pytest.mark.asyncio
 async def test_request_lowering_headers_and_text_stream() -> None:
     captured: dict[str, Any] = {}
+    first_chunk = text_chunk("Hel")
+    first_chunk["model"] = "upstream-model"
+    final_chunk = text_chunk("lo", finish_reason="stop")
+    final_chunk["model"] = "upstream-model"
     body = b"".join(
         [
-            sse(text_chunk("Hel")),
-            sse(text_chunk("lo", finish_reason="stop")),
+            sse(first_chunk),
+            sse(final_chunk),
             b"data: [DONE]\n\n",
         ]
     )
@@ -288,7 +297,10 @@ async def test_request_lowering_headers_and_text_stream() -> None:
         captured["body"] = json.loads(incoming.content)
         return httpx.Response(
             200,
-            headers={"content-type": "text/event-stream; charset=utf-8"},
+            headers={
+                "content-type": "text/event-stream; charset=utf-8",
+                "x-request-id": "request-123",
+            },
             stream=ChunkStream([body[:17], body[17:43], body[43:]]),
         )
 
@@ -318,7 +330,13 @@ async def test_request_lowering_headers_and_text_stream() -> None:
             ),
         )
 
-    assert events == [TextDelta("Hel"), TextDelta("lo"), ResponseCompleted()]
+    assert events == [
+        ResponseMetadata(request_id="request-123"),
+        ResponseMetadata(model_id="upstream-model"),
+        TextDelta("Hel"),
+        TextDelta("lo"),
+        ResponseCompleted(model_id="upstream-model", request_id="request-123"),
+    ]
     assert captured["url"] == "https://provider.invalid/v1/chat/completions"
     headers = cast(dict[str, str], captured["headers"])
     assert headers["authorization"] == "Bearer sk-provider-secret"
@@ -352,6 +370,27 @@ async def test_request_lowering_headers_and_text_stream() -> None:
         "content": '{"ok":true}',
     }
     assert lowered["tools"][0]["function"]["name"] == "process_run"
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_conflicting_upstream_model_ids() -> None:
+    first = text_chunk("one")
+    first["model"] = "model-a"
+    second = text_chunk("two", finish_reason="stop")
+    second["model"] = "model-b"
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream([sse(first), sse(second), b"data: [DONE]\n\n"]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailure) as captured:
+            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+
+    assert captured.value.category == "protocol"
 
 
 @pytest.mark.asyncio
@@ -1224,21 +1263,172 @@ async def test_midstream_failure_is_not_retried_after_first_delta() -> None:
         attempts += 1
         return httpx.Response(
             200,
-            headers={"content-type": "text/event-stream"},
+            headers={
+                "content-type": "text/event-stream",
+                "x-request-id": "midstream-request-123",
+            },
             stream=ChunkStream([sse(text_chunk("partial"))], error_after=1),
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = OpenAICompatibleAdapter(provider(), client=client)
         stream = adapter.stream(request(), cancellation=CancellationToken())
+        assert await anext(stream) == ResponseMetadata(request_id="midstream-request-123")
         assert await anext(stream) == TextDelta("partial")
         with pytest.raises(ProviderFailure) as captured:
             await anext(stream)
 
     assert captured.value.category == "network"
     assert captured.value.retryable is False
+    assert captured.value.request_id == "midstream-request-123"
     assert "upstream-body-must-not-leak" not in str(captured.value)
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_stream_failure_persists_early_response_metadata_without_secrets(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-partial-metadata-secret"
+    first = text_chunk("partial")
+    first["model"] = "upstream-partial-model"
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "x-request-id": "partial-request-123",
+            },
+            stream=ChunkStream([sse(first)], error_after=1),
+        )
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Partial Provider metadata")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Preserve partial response metadata",
+            provider_id="custom",
+            model_id="model",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = OpenAICompatibleAdapter(
+                provider(api_key=secret, headers=()),
+                client=client,
+                max_retries=0,
+            )
+            loop = AgentLoop(
+                store,
+                {"custom": adapter},
+                publish,
+                protected_values=lambda: (secret,),
+            )
+            await loop.run(prepared.run_id, CancellationToken())
+
+        finished = [event for event in events if event.type == "model.response_finished"]
+        assert len(finished) == 1
+        assert finished[0].payload["outcome"] == "failed"
+        assert finished[0].payload["responseModelId"] == "upstream-partial-model"
+        assert finished[0].payload["requestId"] == "partial-request-123"
+        row = store._connection.execute(
+            """
+            SELECT outcome, response_model_id, request_id
+            FROM model_steps WHERE run_id = ? AND step_ordinal = 1
+            """,
+            (prepared.run_id,),
+        ).fetchone()
+        assert tuple(row) == (
+            "failed",
+            "upstream-partial-model",
+            "partial-request-123",
+        )
+        assert not store.journal_contains_protected_values((secret,))
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_cancellation_persists_early_response_metadata_without_secrets(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-cancelled-metadata-secret"
+    first = text_chunk("partial")
+    first["model"] = "upstream-cancelled-model"
+    gate = asyncio.Event()
+    response_stream = ChunkStream([sse(first)], wait_before=1, gate=gate)
+
+    async def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "x-request-id": "cancelled-request-123",
+            },
+            stream=response_stream,
+        )
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Cancelled Provider metadata")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Preserve cancelled response metadata",
+            provider_id="custom",
+            model_id="model",
+        )
+        cancellation = CancellationToken()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = OpenAICompatibleAdapter(
+                provider(api_key=secret, headers=()),
+                client=client,
+            )
+            loop = AgentLoop(
+                store,
+                {"custom": adapter},
+                publish,
+                protected_values=lambda: (secret,),
+            )
+            task = asyncio.create_task(loop.run(prepared.run_id, cancellation))
+            await asyncio.wait_for(response_stream.waiting.wait(), timeout=1)
+            cancellation.cancel()
+            await asyncio.wait_for(task, timeout=1)
+
+        finished = [event for event in events if event.type == "model.response_finished"]
+        assert len(finished) == 1
+        assert finished[0].payload["outcome"] == "cancelled"
+        assert finished[0].payload["responseModelId"] == "upstream-cancelled-model"
+        assert finished[0].payload["requestId"] == "cancelled-request-123"
+        row = store._connection.execute(
+            """
+            SELECT outcome, response_model_id, request_id
+            FROM model_steps WHERE run_id = ? AND step_ordinal = 1
+            """,
+            (prepared.run_id,),
+        ).fetchone()
+        assert tuple(row) == (
+            "cancelled",
+            "upstream-cancelled-model",
+            "cancelled-request-123",
+        )
+        assert not store.journal_contains_protected_values((secret,))
+        assert response_stream.closed
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

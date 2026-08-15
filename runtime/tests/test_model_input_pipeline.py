@@ -21,6 +21,8 @@ from ikaros_runtime.tools.core import (
 )
 from ikaros_runtime.tools.policy import FullAccessPolicy
 
+from .helpers import prepare_turn
+
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model_input_plan_v1_openai_bodies.json"
 
 
@@ -154,7 +156,12 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _event = store.create_thread("Golden model input")
-        prepared = store.prepare_turn(
+        executor = ToolExecutor(
+            ToolRegistry((GoldenProcessTool(),)),
+            FullAccessPolicy(),
+        )
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="Run both commands.",
@@ -167,10 +174,7 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
                     location=r"C:\Users\example\.ikaros\skills\demo\SKILL.md",
                 ),
             ),
-        )
-        executor = ToolExecutor(
-            ToolRegistry((GoldenProcessTool(),)),
-            FullAccessPolicy(),
+            tools=executor.definitions,
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             adapter = OpenAICompatibleAdapter(configured, client=client, max_retries=0)

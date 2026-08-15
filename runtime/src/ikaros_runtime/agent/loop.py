@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JournalEvent, ModelUsage
-from ..errors import ProtectedValueError, ProviderFailure
+from ..errors import ProtectedValueError, ProviderFailure, RunInputDriftError
 from ..providers.base import (
     ProviderAdapter,
     ProviderRequest,
     ProviderResolver,
     ReasoningDelta,
     ResponseCompleted,
+    ResponseMetadata,
     TextDelta,
     ToolCallCompleted,
+)
+from ..run_input import (
+    EXECUTABLE_CONTEXT_SELECTION_VERSIONS,
+    ProviderExecutionSnapshotV1,
+    SubmissionFrameV1,
+    validate_tool_environment,
 )
 from ..security import (
     ProtectedStreamGuard,
@@ -29,6 +35,7 @@ from .model_input import ModelInputPlanner
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
 ProtectedValues = Callable[[], Sequence[str]]
+ProviderSnapshotResolver = Callable[[str, str], ProviderExecutionSnapshotV1]
 _LOGGER = logging.getLogger("ikaros_runtime.agent")
 _MAX_REASONING_CHARACTERS = 1_000_000
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
@@ -82,6 +89,7 @@ class AgentLoop:
         protected_values: ProtectedValues | None = None,
         context_builder: ContextBuilder | None = None,
         model_input_planner: ModelInputPlanner | None = None,
+        provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -97,11 +105,24 @@ class AgentLoop:
         self._model_input_planner = (
             model_input_planner if model_input_planner is not None else ModelInputPlanner()
         )
+        self._provider_snapshot_resolver = provider_snapshot_resolver
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
 
     async def run(self, run_id: str, cancellation: CancellationToken) -> None:
         try:
             cancellation.raise_if_cancelled()
             run = self._store.get_run(run_id)
+            frame = self._store.get_submission_frame(run_id)
+            manifest = self._store.get_run_manifest(run_id)
+            if (
+                manifest.context_selection_version
+                not in EXECUTABLE_CONTEXT_SELECTION_VERSIONS
+            ):
+                raise RunInputDriftError("model_input_unavailable")
+            self._validate_submission_environment(frame)
             provider = self._resolve_provider(run.provider_id)
             if provider is None:
                 raise ValueError(f"unknown provider: {run.provider_id}")
@@ -113,42 +134,59 @@ class AgentLoop:
                 raise RuntimeError("run execution policy is not available")
 
             await self._publish(self._store.mark_run_running(run_id))
-            for step_ordinal in range(1, self._max_steps + 1):
+            for step_ordinal in range(1, frame.max_steps + 1):
                 cancellation.raise_if_cancelled()
-                plan = self._model_input_planner.build_plan(
-                    model_id=run.model_id,
-                    items=self._store.context_items(
-                        run.branch_id,
-                        through_turn_id=run.turn_id,
-                    ),
-                    tools=(
-                        self._tool_executor.definitions if self._tool_executor is not None else ()
-                    ),
-                    skills=run.skills,
+                prepared_step = self._store.prepare_model_step(
+                    run_id,
+                    step_ordinal=step_ordinal,
                 )
-                request = self._context_builder.build_request(plan)
-                assistant_item_id, tool_calls, reasoning_content, step_id = (
-                    await self._provider_step(
-                        run_id,
-                        provider,
-                        request,
-                        cancellation,
-                        step_ordinal=step_ordinal,
+                try:
+                    await self._publish(prepared_step.event)
+                    cancellation.raise_if_cancelled()
+                    plan = self._model_input_planner.build_plan(
+                        frame=frame,
+                        items=prepared_step.items,
                     )
+                    request = self._context_builder.build_request(plan)
+                except RunCancelled:
+                    await self._publish_terminal_events(
+                        self._store.fail_provider_step(
+                            run_id,
+                            step_ordinal=step_ordinal,
+                            outcome="cancelled",
+                            reason_code="cancelled",
+                            assistant_item_id=None,
+                        )
+                    )
+                    raise
+                except Exception as error:
+                    await self._publish_terminal_events(
+                        self._store.fail_provider_step(
+                            run_id,
+                            step_ordinal=step_ordinal,
+                            outcome="failed",
+                            reason_code=_failure_reason_code(error),
+                            assistant_item_id=None,
+                        )
+                    )
+                    raise
+                tool_calls, tool_call_item_ids = await self._provider_step(
+                    run_id,
+                    provider,
+                    request,
+                    cancellation,
+                    step_ordinal=step_ordinal,
                 )
                 if tool_calls:
                     await self._execute_tool_calls(
-                        run_id,
                         tool_calls,
+                        tool_call_item_ids,
                         cancellation,
-                        default_cwd=(run.workspace.root_uri if run.workspace is not None else None),
-                        reasoning_content=reasoning_content,
-                        step_id=step_id,
-                        assistant_item_id=assistant_item_id,
+                        default_cwd=(
+                            frame.workspace.root_uri if frame.workspace is not None else None
+                        ),
                     )
                     continue
-                if assistant_item_id is None:
-                    raise RuntimeError("provider completed without text or a tool call")
                 cancellation.raise_if_cancelled()
                 await self._publish_terminal_events(
                     self._store.terminalize_run(run_id, "completed")
@@ -182,7 +220,7 @@ class AgentLoop:
         cancellation: CancellationToken,
         *,
         step_ordinal: int,
-    ) -> tuple[str | None, tuple[ToolCall, ...], str | None, str | None]:
+    ) -> tuple[tuple[ToolCall, ...], tuple[str, ...]]:
         assistant_item_id: str | None = None
         tool_calls: list[ToolCall] = []
         call_ids: set[str] = set()
@@ -195,6 +233,9 @@ class AgentLoop:
         text_batch = _TextDeltaBatch()
         completed = False
         response_usage: ModelUsage | None = None
+        response_model_id: str | None = None
+        request_id: str | None = None
+        step_finished = False
         try:
             async for event in provider.stream(request, cancellation=cancellation):
                 cancellation.raise_if_cancelled()
@@ -240,48 +281,102 @@ class AgentLoop:
                         raise RuntimeError("provider emitted a duplicate tool call ID")
                     call_ids.add(call.id)
                     tool_calls.append(call)
+                elif isinstance(event, ResponseMetadata):
+                    response_model_id, request_id = self._merge_response_metadata(
+                        response_model_id,
+                        request_id,
+                        model_id=event.model_id,
+                        request_id=event.request_id,
+                    )
                 elif isinstance(event, ResponseCompleted):
                     await self._publish_text_delta(assistant_item_id, text_batch.flush())
                     response_usage = event.usage
+                    if event.model_id is not None or event.request_id is not None:
+                        response_model_id, request_id = self._merge_response_metadata(
+                            response_model_id,
+                            request_id,
+                            model_id=event.model_id,
+                            request_id=event.request_id,
+                        )
                     completed = True
                 else:
                     raise RuntimeError("provider emitted an unknown event")
-        except Exception:
-            # Only text already released by ProtectedStreamGuard is buffered.
-            # Do not call finish() on an incomplete or cancelled stream.
+            self._assert_protected_values_unchanged(protected_values)
+            await self._publish_text_delta(assistant_item_id, text_batch.flush())
+            if not completed:
+                raise RuntimeError("provider stream ended without response.completed")
+            self._assert_protected_values_unchanged(protected_values)
+            trailing_text = text_guard.finish()
+            if trailing_text:
+                if assistant_item_id is None:
+                    assistant_item_id, started = self._store.create_assistant_item(run_id)
+                    await self._publish(started)
+                    self._assert_protected_values_unchanged(protected_values)
+                await self._publish_text_delta(
+                    assistant_item_id,
+                    text_batch.add(trailing_text, now=monotonic()),
+                )
+            await self._publish_text_delta(assistant_item_id, text_batch.flush())
+            trailing_reasoning = reasoning_guard.finish()
+            if trailing_reasoning:
+                reasoning_parts.append(trailing_reasoning)
+            reasoning_content = "".join(reasoning_parts) if reasoning_seen else None
+            if assistant_item_id is None and not tool_calls:
+                raise RuntimeError("provider completed without text or a tool call")
+            self._assert_tool_request_safe(tool_calls, reasoning_content)
+            self._assert_response_metadata_safe(response_model_id, request_id)
+            completion = self._store.complete_provider_step(
+                run_id,
+                step_ordinal=step_ordinal,
+                assistant_item_id=assistant_item_id,
+                tool_calls=tool_calls,
+                reasoning_content=reasoning_content,
+                usage=response_usage,
+                response_model_id=response_model_id,
+                request_id=request_id,
+            )
+            step_finished = True
+            await self._publish_terminal_events(completion.events)
+            return tuple(tool_calls), completion.tool_call_item_ids
+        except Exception as error:
+            if step_finished:
+                raise
+            # Only text already released by ProtectedStreamGuard is buffered.  Never
+            # call finish() on an incomplete/cancelled stream, because that could
+            # release a protected trailing prefix.
             if self._current_protected_values() == tuple(protected_values):
                 await self._publish_text_delta(assistant_item_id, text_batch.flush())
-            raise
-        self._assert_protected_values_unchanged(protected_values)
-        await self._publish_text_delta(assistant_item_id, text_batch.flush())
-        if not completed:
-            raise RuntimeError("provider stream ended without response.completed")
-        self._assert_protected_values_unchanged(protected_values)
-        trailing_text = text_guard.finish()
-        if trailing_text:
-            if assistant_item_id is None:
-                assistant_item_id, started = self._store.create_assistant_item(run_id)
-                await self._publish(started)
-                self._assert_protected_values_unchanged(protected_values)
-            await self._publish_text_delta(
-                assistant_item_id,
-                text_batch.add(trailing_text, now=monotonic()),
+            terminal_error = error
+            if isinstance(error, ProviderFailure) and error.request_id is not None:
+                try:
+                    response_model_id, request_id = self._merge_response_metadata(
+                        response_model_id,
+                        request_id,
+                        model_id=None,
+                        request_id=error.request_id,
+                    )
+                except RuntimeError as metadata_error:
+                    terminal_error = metadata_error
+            response_model_id, request_id = self._safe_response_metadata(
+                response_model_id,
+                request_id,
+                protected_snapshot=protected_values,
             )
-        await self._publish_text_delta(assistant_item_id, text_batch.flush())
-        trailing_reasoning = reasoning_guard.finish()
-        if trailing_reasoning:
-            reasoning_parts.append(trailing_reasoning)
-        reasoning_content = "".join(reasoning_parts) if reasoning_seen else None
-        if response_usage is not None:
-            await self._publish(
-                self._store.record_model_usage(
+            outcome = "cancelled" if isinstance(error, RunCancelled) else "failed"
+            await self._publish_terminal_events(
+                self._store.fail_provider_step(
                     run_id,
                     step_ordinal=step_ordinal,
-                    usage=response_usage,
+                    outcome=outcome,
+                    reason_code=_failure_reason_code(terminal_error),
+                    assistant_item_id=assistant_item_id,
+                    response_model_id=response_model_id,
+                    request_id=request_id,
                 )
             )
-        step_id = f"step_{uuid.uuid4().hex}" if tool_calls and assistant_item_id else None
-        return assistant_item_id, tuple(tool_calls), reasoning_content, step_id
+            if terminal_error is not error:
+                raise terminal_error from None
+            raise
 
     async def _publish_text_delta(self, item_id: str | None, delta: str | None) -> None:
         if delta is None:
@@ -292,42 +387,15 @@ class AgentLoop:
 
     async def _execute_tool_calls(
         self,
-        run_id: str,
         calls: Sequence[ToolCall],
+        item_ids: Sequence[str],
         cancellation: CancellationToken,
         *,
         default_cwd: str | None,
-        reasoning_content: str | None,
-        step_id: str | None,
-        assistant_item_id: str | None,
     ) -> None:
         executor = self._tool_executor
         if executor is None:
             raise RuntimeError("provider requested a tool but no ToolExecutor is available")
-        self._assert_tool_request_safe(calls, reasoning_content)
-        step_id = step_id or f"step_{uuid.uuid4().hex}"
-        item_ids: list[str] = []
-        for index, call in enumerate(calls):
-            item_id, started = self._store.create_tool_call_item(
-                run_id,
-                step_id=step_id,
-                call_id=call.id,
-                tool_name=call.name,
-                arguments=call.arguments,
-                reasoning_content=reasoning_content if index == 0 else None,
-            )
-            item_ids.append(item_id)
-            await self._publish(started)
-
-        if assistant_item_id is not None:
-            # Journal the calls first so a crash cannot leave a completed
-            # narrated tool step whose calls never existed.  The shared step
-            # identifier still lets context reconstruction fold both Items
-            # back into the original assistant response.
-            await self._publish(
-                self._store.complete_assistant_item(assistant_item_id, step_id=step_id)
-            )
-
         call_items = list(zip(calls, item_ids, strict=True))
         for index, (call, item_id) in enumerate(call_items):
             try:
@@ -388,6 +456,73 @@ class AgentLoop:
         }
         if json_contains_protected_value(value, protected_values):
             raise RuntimeError("provider tool request contained protected configuration data")
+
+    def _assert_response_metadata_safe(
+        self,
+        response_model_id: str | None,
+        request_id: str | None,
+    ) -> None:
+        values = self._current_protected_values()
+        for value in (response_model_id, request_id):
+            if value is None:
+                continue
+            if (
+                not value
+                or len(value) > 200
+                or any(ord(character) < 32 or ord(character) == 127 for character in value)
+                or contains_protected_value(value, values)
+            ):
+                raise RuntimeError("provider response metadata is unsafe")
+
+    def _merge_response_metadata(
+        self,
+        response_model_id: str | None,
+        response_request_id: str | None,
+        *,
+        model_id: str | None,
+        request_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        if model_id is None and request_id is None:
+            raise RuntimeError("provider emitted empty response metadata")
+        self._assert_response_metadata_safe(model_id, request_id)
+        if (
+            response_model_id is not None
+            and model_id is not None
+            and response_model_id != model_id
+        ):
+            raise RuntimeError("provider emitted conflicting response model IDs")
+        if (
+            response_request_id is not None
+            and request_id is not None
+            and response_request_id != request_id
+        ):
+            raise RuntimeError("provider emitted conflicting request IDs")
+        return model_id or response_model_id, request_id or response_request_id
+
+    def _safe_response_metadata(
+        self,
+        response_model_id: str | None,
+        request_id: str | None,
+        *,
+        protected_snapshot: Sequence[str],
+    ) -> tuple[str | None, str | None]:
+        protected_values = tuple(
+            dict.fromkeys((*protected_snapshot, *self._current_protected_values()))
+        )
+
+        def safe(value: str | None) -> str | None:
+            if value is None:
+                return None
+            if (
+                not value
+                or len(value) > 200
+                or any(ord(character) < 32 or ord(character) == 127 for character in value)
+                or contains_protected_value(value, protected_values)
+            ):
+                return None
+            return value
+
+        return safe(response_model_id), safe(request_id)
 
     def _safe_tool_result(
         self,
@@ -459,7 +594,46 @@ class AgentLoop:
             return self._providers.get(provider_id)
         return self._providers.resolve(provider_id)
 
+    def _validate_submission_environment(self, frame: SubmissionFrameV1) -> None:
+        resolver = self._provider_snapshot_resolver
+        try:
+            if resolver is None:
+                if not isinstance(self._providers, Mapping):
+                    raise RunInputDriftError("provider_configuration_changed")
+                current_provider = ProviderExecutionSnapshotV1(
+                    provider_id=frame.provider_id,
+                    origin="test",
+                    base_url=None,
+                    model_id=frame.model_id,
+                    supports_tools=True,
+                )
+            else:
+                current_provider = resolver(frame.provider_id, frame.model_id)
+        except RunInputDriftError:
+            raise
+        except Exception:
+            raise RunInputDriftError("provider_configuration_changed") from None
+        if current_provider.fingerprint != frame.public_provider_config_fingerprint:
+            raise RunInputDriftError("provider_configuration_changed")
+
+        definitions = (
+            self._tool_executor.definitions if self._tool_executor is not None else ()
+        )
+        if not validate_tool_environment(frame.tools, definitions):
+            raise RunInputDriftError("tool_definitions_changed")
+        current_policy = (
+            self._tool_executor.policy_name
+            if self._tool_executor is not None
+            else "full_access"
+        )
+        if frame.execution_policy != current_policy:
+            raise RunInputDriftError("execution_policy_changed")
+
 def _failure_reason_code(error: Exception) -> str:
+    if isinstance(error, RunCancelled):
+        return "cancelled"
+    if isinstance(error, RunInputDriftError):
+        return error.reason_code
     if isinstance(error, ProviderFailure):
         return f"provider_{error.category}"
     if isinstance(error, ProtectedValueError):

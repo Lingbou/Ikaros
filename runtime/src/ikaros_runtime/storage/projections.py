@@ -8,17 +8,26 @@ from datetime import date
 from typing import Any, cast
 
 from ..domain import (
-    JOURNAL_EVENT_SCHEMA_VERSION,
     ContextItem,
     JournalEvent,
     PreparedTurn,
     RunDescriptor,
-    SkillDescriptor,
     WorkspaceSummary,
     skill_descriptors_from_wire,
 )
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
+from ..run_input import (
+    ContextItemRecordV1,
+    ContextSnapshotV1,
+    RunManifestV1,
+    StepManifestV1,
+    SubmissionFrameV1,
+    build_context_snapshot,
+    build_step_manifest,
+    canonical_json,
+    validate_run_manifest,
+)
 from ..security import (
     contains_protected_value,
     json_contains_protected_value,
@@ -65,8 +74,12 @@ def contains_protected_projection_values(
         "SELECT provider_id, model_id, client_request_id FROM runs"
     ).fetchall():
         references = [row["client_request_id"]]
-        if row["provider_id"] != "scripted":
-            references.extend((row["provider_id"], row["model_id"]))
+        references.extend(
+            _dynamic_provider_model_references(
+                str(row["provider_id"]),
+                str(row["model_id"]),
+            )
+        )
         if json_contains_protected_value(references, values):
             return True
     for row in connection.execute("SELECT kind, content, data_json FROM items").fetchall():
@@ -96,7 +109,87 @@ def contains_protected_projection_values(
             data, values
         ):
             return True
+    for row in connection.execute(
+        """
+        SELECT submission_frame_json, run_manifest_json, context_snapshot_json
+        FROM run_inputs
+        """
+    ).fetchall():
+        frame = SubmissionFrameV1.from_wire(
+            json_loads(str(row["submission_frame_json"]))
+        )
+        manifest = validate_run_manifest(
+            json_loads(str(row["run_manifest_json"])),
+            frame,
+        )
+        if json_contains_protected_value(
+            _submission_frame_dynamic_values(frame),
+            values,
+        ) or json_contains_protected_value(
+            (
+                *_dynamic_provider_model_references(
+                    manifest.provider_id,
+                    manifest.model_id,
+                ),
+                *(skill["name"] for skill in manifest.skills),
+            ),
+            values,
+        ):
+            return True
+        context_snapshot = row["context_snapshot_json"]
+        if context_snapshot is not None:
+            # Context Snapshots contain only Runtime-generated references,
+            # controlled selectors, numeric budgets, hashes, and omission enums.
+            ContextSnapshotV1.from_wire(json_loads(str(context_snapshot)))
+    for row in connection.execute(
+        """
+        SELECT step_manifest_json, response_model_id, request_id, usage_json
+        FROM model_steps
+        """
+    ).fetchall():
+        # Step Manifests and usage contain no user/Provider text: only frozen
+        # references, controlled provenance, hashes, and numeric counters.
+        StepManifestV1.from_wire(json_loads(str(row["step_manifest_json"])))
+        usage_json = row["usage_json"]
+        if usage_json is not None:
+            json_loads(str(usage_json))
+        if json_contains_protected_value(
+            (row["response_model_id"], row["request_id"]),
+            values,
+        ):
+            return True
     return False
+
+
+def _dynamic_provider_model_references(
+    provider_id: str,
+    model_id: str,
+) -> tuple[str, ...]:
+    references: list[str] = []
+    if provider_id != "scripted":
+        references.append(provider_id)
+    if provider_id != "scripted" or model_id != "scripted-v1":
+        references.append(model_id)
+    return tuple(references)
+
+
+def _submission_frame_dynamic_values(frame: SubmissionFrameV1) -> tuple[object, ...]:
+    workspace = frame.workspace
+    skill_catalog_content = (
+        frame.skill_catalog.content if frame.skill_catalog is not None else None
+    )
+    return (
+        *_dynamic_provider_model_references(frame.provider_id, frame.model_id),
+        (
+            (workspace.id, workspace.name, workspace.root_uri)
+            if workspace is not None
+            else None
+        ),
+        tuple(
+            (skill.name, skill.description, skill.location) for skill in frame.skills
+        ),
+        skill_catalog_content,
+    )
 
 
 def find_turn_by_client_request_id(
@@ -153,7 +246,7 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunDescriptor:
     ).fetchone()
     if row is None:
         raise LookupError("run was not found")
-    skills = _run_skill_snapshot(connection, run_id)
+    skills = get_submission_frame(connection, run_id).skills
     return RunDescriptor(
         id=row["id"],
         turn_id=row["turn_id"],
@@ -167,32 +260,62 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunDescriptor:
     )
 
 
-def _run_skill_snapshot(
+def get_submission_frame(
     connection: sqlite3.Connection,
     run_id: str,
-) -> tuple[SkillDescriptor, ...]:
+) -> SubmissionFrameV1:
     row = connection.execute(
-        """
-        SELECT schema_version, payload_json
-        FROM events
-        WHERE run_id = ? AND event_type = 'item.completed'
-        ORDER BY seq ASC
-        LIMIT 1
-        """,
+        "SELECT submission_frame_json FROM run_inputs WHERE run_id = ?",
         (run_id,),
     ).fetchone()
-    if row is None or row["schema_version"] != JOURNAL_EVENT_SCHEMA_VERSION:
-        raise RuntimeError("Run Skill snapshot is unavailable or incompatible")
+    if row is None:
+        raise RuntimeError("Run Submission Frame is unavailable")
     try:
-        payload = json_loads(str(row["payload_json"]))
-        if not isinstance(payload, dict):
-            raise ValueError
-        run = payload.get("run")
-        if not isinstance(run, dict) or run.get("id") != run_id:
-            raise ValueError
-        return skill_descriptors_from_wire(run.get("skills"))
+        frame = SubmissionFrameV1.from_wire(json_loads(str(row["submission_frame_json"])))
     except (TypeError, ValueError):
-        raise RuntimeError("Run Skill snapshot is invalid") from None
+        raise RuntimeError("Run Submission Frame is invalid") from None
+    if frame.run_id != run_id:
+        raise RuntimeError("Run Submission Frame scope is invalid")
+    return frame
+
+
+def get_run_manifest(
+    connection: sqlite3.Connection,
+    run_id: str,
+) -> RunManifestV1:
+    row = connection.execute(
+        "SELECT submission_frame_json, run_manifest_json FROM run_inputs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Run Manifest is unavailable")
+    try:
+        frame = SubmissionFrameV1.from_wire(json_loads(str(row["submission_frame_json"])))
+        manifest = validate_run_manifest(json_loads(str(row["run_manifest_json"])), frame)
+    except (TypeError, ValueError):
+        raise RuntimeError("Run Manifest is invalid") from None
+    if manifest.run_id != run_id:
+        raise RuntimeError("Run Manifest scope is invalid")
+    return manifest
+
+
+def get_context_snapshot(
+    connection: sqlite3.Connection,
+    run_id: str,
+) -> ContextSnapshotV1 | None:
+    row = connection.execute(
+        "SELECT context_snapshot_json FROM run_inputs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Run input projection is unavailable")
+    value = row["context_snapshot_json"]
+    if value is None:
+        return None
+    try:
+        return ContextSnapshotV1.from_wire(json_loads(str(value)))
+    except (TypeError, ValueError):
+        raise RuntimeError("Run Context Snapshot is invalid") from None
 
 
 def run_status(connection: sqlite3.Connection, run_id: str) -> str:
@@ -233,6 +356,22 @@ def context_items(
     *,
     through_turn_id: str,
 ) -> list[ContextItem]:
+    return [
+        record.to_context_item()
+        for record in context_item_records(
+            connection,
+            branch_id,
+            through_turn_id=through_turn_id,
+        )
+    ]
+
+
+def context_item_records(
+    connection: sqlite3.Connection,
+    branch_id: str,
+    *,
+    through_turn_id: str,
+) -> list[ContextItemRecordV1]:
     boundary = connection.execute(
         "SELECT ordinal FROM turns WHERE id = ? AND branch_id = ?",
         (through_turn_id, branch_id),
@@ -241,7 +380,7 @@ def context_items(
         raise LookupError("context boundary turn was not found")
     rows = connection.execute(
         """
-        SELECT i.kind, i.role, i.content, i.data_json
+        SELECT i.id, i.turn_id, i.run_id, i.kind, i.role, i.content, i.data_json
         FROM items i JOIN turns t ON t.id = i.turn_id JOIN runs r ON r.id = i.run_id
         WHERE t.branch_id = ? AND t.ordinal <= ? AND (
           (i.kind = 'message' AND i.status = 'completed' AND i.role IN ('user', 'assistant'))
@@ -252,7 +391,10 @@ def context_items(
         (branch_id, int(boundary["ordinal"]), through_turn_id),
     ).fetchall()
     return [
-        ContextItem(
+        ContextItemRecordV1(
+            item_id=str(row["id"]),
+            turn_id=str(row["turn_id"]),
+            run_id=str(row["run_id"]),
             kind=str(row["kind"]),
             role=str(row["role"]) if row["role"] is not None else None,
             content=str(row["content"]),
@@ -260,6 +402,31 @@ def context_items(
         )
         for row in rows
     ]
+
+
+def context_item_records_for_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    snapshot: ContextSnapshotV1,
+) -> list[ContextItemRecordV1]:
+    run = get_run(connection, run_id)
+    current = context_item_records(
+        connection,
+        run.branch_id,
+        through_turn_id=run.turn_id,
+    )
+    frozen_ids = tuple(reference.item_id for reference in snapshot.history_items)
+    frozen_id_set = set(frozen_ids)
+    selected = [
+        record
+        for record in current
+        if record.item_id in frozen_id_set or record.run_id == run_id
+    ]
+    selected_ids = {record.item_id for record in selected}
+    if not frozen_id_set <= selected_ids:
+        raise RuntimeError("Run Context Snapshot references unavailable history")
+    return selected
 
 
 def workspace_to_json(workspace: WorkspaceSummary | None) -> str | None:
@@ -386,7 +553,16 @@ def apply_event(
     elif event_type == "item.completed" and "turn" in payload:
         _require_keys(
             payload,
-            {"turn", "run", "item", "turnId", "runId", "itemId"},
+            {
+                "turn",
+                "run",
+                "item",
+                "submissionFrame",
+                "runManifest",
+                "turnId",
+                "runId",
+                "itemId",
+            },
             {"clientRequestId"},
         )
         turn = _record(payload, "turn", _TURN_KEYS)
@@ -396,6 +572,11 @@ def apply_event(
         _validate_run(run)
         _validate_item(item)
         _validate_optional_client_request(payload)
+        try:
+            submission_frame = SubmissionFrameV1.from_wire(payload["submissionFrame"])
+            run_manifest = validate_run_manifest(payload["runManifest"], submission_frame)
+        except (TypeError, ValueError):
+            raise RuntimeError("initial Turn input snapshots are invalid") from None
         if (
             turn["status"] != "queued"
             or run["status"] != "queued"
@@ -427,6 +608,34 @@ def apply_event(
         _require_equal("run turn", run["turnId"], turn["id"])
         _require_equal("item turn", item["turnId"], turn["id"])
         _require_equal("item run", item["runId"], run["id"])
+        _require_equal("Frame User Item", submission_frame.user_item_id, item["id"])
+        _require_equal("Frame Thread", submission_frame.thread_id, turn["threadId"])
+        _require_equal("Frame Branch", submission_frame.branch_id, turn["branchId"])
+        _require_equal("Frame Turn", submission_frame.turn_id, turn["id"])
+        _require_equal("Frame Run", submission_frame.run_id, run["id"])
+        _require_equal("Manifest Run", run_manifest.run_id, run["id"])
+        _require_equal("Frame Provider", submission_frame.provider_id, run["providerId"])
+        _require_equal("Frame Model", submission_frame.model_id, run["modelId"])
+        _require_equal(
+            "Frame execution policy",
+            submission_frame.execution_policy,
+            run["executionPolicy"],
+        )
+        _require_equal(
+            "Frame Skills",
+            tuple(skill.to_wire() for skill in submission_frame.skills),
+            tuple(skill.to_wire() for skill in skill_descriptors_from_wire(run["skills"])),
+        )
+        _require_equal(
+            "Frame workspace",
+            submission_frame.workspace,
+            workspace_from_json(
+                connection.execute(
+                    "SELECT workspace_json FROM threads WHERE id = ?",
+                    (turn["threadId"],),
+                ).fetchone()["workspace_json"]
+            ),
+        )
         _require_initial_thread_scope(connection, event)
         _require_equal(
             "turn client request",
@@ -468,6 +677,18 @@ def apply_event(
             ),
         )
         insert_item(connection, item)
+        connection.execute(
+            """
+            INSERT INTO run_inputs(
+                run_id, submission_frame_json, run_manifest_json, context_snapshot_json
+            ) VALUES (?, ?, ?, NULL)
+            """,
+            (
+                run["id"],
+                canonical_json(submission_frame.to_wire()),
+                canonical_json(run_manifest.to_wire()),
+            ),
+        )
         updated = connection.execute(
             "UPDATE threads SET updated_at = ? WHERE id = ?",
             (turn["updatedAt"], turn["threadId"]),
@@ -478,43 +699,75 @@ def apply_event(
         _require_choice("Run state", payload["status"], {"queued", "running"})
         _require_payload_scope(payload, event, item_required=False)
         _require_existing_run_scope(connection, event)
-        if payload["status"] == "running":
-            updated_run = connection.execute(
-                "UPDATE runs SET status = ?, started_at = ? WHERE id = ?",
-                (payload["status"], event.timestamp, payload["runId"]),
-            )
-        else:
-            updated_run = connection.execute(
-                "UPDATE runs SET status = ? WHERE id = ?",
-                (payload["status"], payload["runId"]),
-            )
+        state_event_ordinal = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) FROM events
+                WHERE run_id = ? AND event_type = 'run.state_changed' AND seq <= ?
+                """,
+                (event.run_id, event.seq),
+            ).fetchone()[0]
+        )
+        current = connection.execute(
+            """
+            SELECT r.status AS run_status, r.started_at, r.created_at,
+                   t.status AS turn_status, t.updated_at AS turn_updated_at
+            FROM runs r JOIN turns t ON t.id = r.turn_id
+            WHERE r.id = ?
+            """,
+            (event.run_id,),
+        ).fetchone()
+        if current is None:
+            raise RuntimeError("Run state event has no existing Run")
+        if payload["status"] == "queued":
+            if (
+                state_event_ordinal != 1
+                or current["run_status"] != "queued"
+                or current["turn_status"] != "queued"
+                or current["started_at"] is not None
+                or current["created_at"] != event.timestamp
+                or current["turn_updated_at"] != event.timestamp
+            ):
+                raise RuntimeError("queued Run notification does not match initial state")
+            return
+        if (
+            state_event_ordinal != 2
+            or current["run_status"] != "queued"
+            or current["turn_status"] != "queued"
+            or current["started_at"] is not None
+        ):
+            raise RuntimeError("Run can only transition once from queued to running")
+        updated_run = connection.execute(
+            """
+            UPDATE runs SET status = 'running', started_at = ?
+            WHERE id = ? AND status = 'queued' AND started_at IS NULL
+            """,
+            (event.timestamp, payload["runId"]),
+        )
         _require_one_update(updated_run, event_type)
         updated_turn = connection.execute(
-            "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
-            (payload["status"], event.timestamp, payload["turnId"]),
+            """
+            UPDATE turns SET status = 'running', updated_at = ?
+            WHERE id = ? AND status = 'queued'
+            """,
+            (event.timestamp, payload["turnId"]),
         )
         _require_one_update(updated_turn, event_type)
-    elif event_type == "model.usage_recorded":
+    elif event_type == "model.input_prepared":
         _require_keys(
             payload,
             {
                 "stepOrdinal",
-                "providerId",
-                "modelId",
-                "activityDate",
-                "completedAt",
-                "usage",
+                "preparedAt",
+                "contextSnapshot",
+                "stepManifest",
                 "turnId",
                 "runId",
             },
         )
-        usage = _record(payload, "usage", _MODEL_USAGE_KEYS)
-        _validate_model_usage(payload["stepOrdinal"], usage)
-        _require_string("model usage providerId", payload["providerId"])
-        _require_string("model usage modelId", payload["modelId"])
-        _require_activity_date(payload["activityDate"])
-        _require_string("model usage completedAt", payload["completedAt"])
-        _require_equal("model usage completion time", payload["completedAt"], event.timestamp)
+        _require_positive_integer("model Step ordinal", payload["stepOrdinal"])
+        _require_string("model Step preparedAt", payload["preparedAt"])
+        _require_equal("model Step preparation time", payload["preparedAt"], event.timestamp)
         _require_payload_scope(payload, event, item_required=False)
         _require_event_scope(
             event,
@@ -526,40 +779,199 @@ def apply_event(
         )
         _require_existing_run_scope(connection, event)
         run = connection.execute(
+            "SELECT status FROM runs WHERE id = ?",
+            (event.run_id,),
+        ).fetchone()
+        if run is None or run["status"] != "running":
+            raise RuntimeError("model input preparation requires a running Run")
+        open_step = connection.execute(
+            "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
+            (event.run_id,),
+        ).fetchone()
+        if open_step is not None:
+            raise RuntimeError("Run already has an unfinished model Step")
+        expected_ordinal = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(step_ordinal), 0) + 1 FROM model_steps WHERE run_id = ?",
+                (event.run_id,),
+            ).fetchone()[0]
+        )
+        _require_equal("model Step ordinal", payload["stepOrdinal"], expected_ordinal)
+        try:
+            snapshot = ContextSnapshotV1.from_wire(payload["contextSnapshot"])
+            step_manifest = StepManifestV1.from_wire(payload["stepManifest"])
+        except (TypeError, ValueError):
+            raise RuntimeError("model input preparation snapshots are invalid") from None
+        _require_equal("Step Manifest ordinal", step_manifest.step_ordinal, expected_ordinal)
+        stored_snapshot = get_context_snapshot(connection, str(event.run_id))
+        if stored_snapshot is None:
+            submission_frame = get_submission_frame(connection, str(event.run_id))
+            run_manifest = get_run_manifest(connection, str(event.run_id))
+            records = context_item_records(
+                connection,
+                str(event.branch_id),
+                through_turn_id=str(event.turn_id),
+            )
+            expected_snapshot = build_context_snapshot(
+                records,
+                current_run_id=str(event.run_id),
+                frame=submission_frame,
+                selection_version=run_manifest.context_selection_version,
+            )
+            if snapshot != expected_snapshot:
+                raise RuntimeError("initial Context Snapshot is not canonical")
+            connection.execute(
+                "UPDATE run_inputs SET context_snapshot_json = ? WHERE run_id = ?",
+                (canonical_json(snapshot.to_wire()), event.run_id),
+            )
+        elif snapshot != stored_snapshot:
+            raise RuntimeError("model Step changes the frozen Context Snapshot")
+        records = context_item_records_for_snapshot(
+            connection,
+            run_id=str(event.run_id),
+            snapshot=snapshot,
+        )
+        expected_manifest = build_step_manifest(
+            expected_ordinal,
+            records,
+            snapshot,
+            current_run_id=str(event.run_id),
+            frame=get_submission_frame(connection, str(event.run_id)),
+        )
+        if step_manifest != expected_manifest:
+            raise RuntimeError("Step Manifest is not canonical")
+        connection.execute(
+            """
+            INSERT INTO model_steps(
+                run_id, step_ordinal, step_manifest_json, prepared_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                event.run_id,
+                expected_ordinal,
+                canonical_json(step_manifest.to_wire()),
+                payload["preparedAt"],
+            ),
+        )
+    elif event_type == "model.response_finished":
+        _require_keys(
+            payload,
+            {
+                "stepOrdinal",
+                "providerId",
+                "modelId",
+                "outcome",
+                "reasonCode",
+                "responseModelId",
+                "requestId",
+                "activityDate",
+                "usage",
+                "finishedAt",
+                "turnId",
+                "runId",
+            },
+        )
+        _require_positive_integer("model Step ordinal", payload["stepOrdinal"])
+        _require_string("model response providerId", payload["providerId"])
+        _require_string("model response modelId", payload["modelId"])
+        _require_choice(
+            "model response outcome",
+            payload["outcome"],
+            {"completed", "failed", "cancelled"},
+        )
+        _require_string("model response finishedAt", payload["finishedAt"])
+        _require_equal("model response finish time", payload["finishedAt"], event.timestamp)
+        _require_payload_scope(payload, event, item_required=False)
+        _require_existing_run_scope(connection, event)
+        run = connection.execute(
             "SELECT provider_id, model_id, status FROM runs WHERE id = ?",
             (event.run_id,),
         ).fetchone()
         if run is None or run["status"] != "running":
-            raise RuntimeError("model usage requires a running Run")
+            raise RuntimeError("model response completion requires a running Run")
         if (run["provider_id"], run["model_id"]) != (
             payload["providerId"],
             payload["modelId"],
         ):
-            raise RuntimeError("model usage Provider or Model does not match its Run")
-        connection.execute(
+            raise RuntimeError("model response Provider or Model does not match its Run")
+        step = connection.execute(
             """
-            INSERT INTO model_usages(
-                thread_id, turn_id, run_id, step_ordinal, provider_id, model_id,
-                input_tokens, cached_input_tokens, output_tokens,
-                reasoning_output_tokens, total_tokens, activity_date, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT outcome FROM model_steps
+            WHERE run_id = ? AND step_ordinal = ?
+            """,
+            (event.run_id, payload["stepOrdinal"]),
+        ).fetchone()
+        if step is None:
+            raise RuntimeError("model response has no prepared Step")
+        if step["outcome"] is not None:
+            raise RuntimeError("model response Step is already finished")
+        outcome = str(payload["outcome"])
+        reason_code = payload.get("reasonCode")
+        if outcome == "completed":
+            if reason_code is not None:
+                raise RuntimeError("completed model response has a failure reason")
+        else:
+            _require_string("model response reasonCode", reason_code)
+        response_model_id = payload.get("responseModelId")
+        request_id = payload.get("requestId")
+        _require_safe_response_identifier("response model ID", response_model_id)
+        _require_safe_response_identifier("request ID", request_id)
+        usage_value = payload.get("usage")
+        activity_date = payload.get("activityDate")
+        usage: dict[str, Any] | None = None
+        if usage_value is not None:
+            if outcome != "completed":
+                raise RuntimeError("failed model response cannot record Token usage")
+            usage = _record(payload, "usage", _MODEL_USAGE_KEYS)
+            _validate_model_usage(payload["stepOrdinal"], usage)
+            _require_activity_date(activity_date)
+        elif activity_date is not None:
+            raise RuntimeError("model response activity date has no Token usage")
+        updated = connection.execute(
+            """
+            UPDATE model_steps
+            SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
+                usage_json = ?, activity_date = ?, finished_at = ?
+            WHERE run_id = ? AND step_ordinal = ? AND outcome IS NULL
             """,
             (
-                event.thread_id,
-                event.turn_id,
+                outcome,
+                reason_code,
+                response_model_id,
+                request_id,
+                canonical_json(usage) if usage is not None else None,
+                activity_date,
+                payload["finishedAt"],
                 event.run_id,
                 payload["stepOrdinal"],
-                payload["providerId"],
-                payload["modelId"],
-                usage["inputTokens"],
-                usage["cachedInputTokens"],
-                usage["outputTokens"],
-                usage["reasoningOutputTokens"],
-                usage["totalTokens"],
-                payload["activityDate"],
-                payload["completedAt"],
             ),
         )
+        _require_one_update(updated, event_type)
+        if usage is not None:
+            connection.execute(
+                """
+                INSERT INTO model_usages(
+                    thread_id, turn_id, run_id, step_ordinal, provider_id, model_id,
+                    input_tokens, cached_input_tokens, output_tokens,
+                    reasoning_output_tokens, total_tokens, activity_date, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.thread_id,
+                    event.turn_id,
+                    event.run_id,
+                    payload["stepOrdinal"],
+                    payload["providerId"],
+                    payload["modelId"],
+                    usage["inputTokens"],
+                    usage["cachedInputTokens"],
+                    usage["outputTokens"],
+                    usage["reasoningOutputTokens"],
+                    usage["totalTokens"],
+                    activity_date,
+                    payload["finishedAt"],
+                ),
+            )
     elif event_type == "item.started":
         _require_keys(payload, {"item", "turnId", "runId", "itemId"})
         item = _record(payload, "item", _ITEM_KEYS)
@@ -646,8 +1058,39 @@ def apply_event(
             _require_string("Run reasonCode", payload["reasonCode"])
         _require_payload_scope(payload, event, item_required=False)
         _require_existing_run_scope(connection, event)
+        current = connection.execute(
+            """
+            SELECT r.status AS run_status, t.status AS turn_status
+            FROM runs r JOIN turns t ON t.id = r.turn_id
+            WHERE r.id = ?
+            """,
+            (event.run_id,),
+        ).fetchone()
+        if (
+            current is None
+            or current["run_status"] not in {"queued", "running"}
+            or current["turn_status"] != current["run_status"]
+        ):
+            raise RuntimeError("Run settlement requires a matching active Run and Turn")
+        if connection.execute(
+            "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
+            (event.run_id,),
+        ).fetchone() is not None:
+            raise RuntimeError("Run cannot settle with an unfinished model Step")
+        if connection.execute(
+            """
+            SELECT 1 FROM items
+            WHERE run_id = ? AND status IN ('streaming', 'running')
+            LIMIT 1
+            """,
+            (event.run_id,),
+        ).fetchone() is not None:
+            raise RuntimeError("Run cannot settle with an active Item")
         updated_run = connection.execute(
-            "UPDATE runs SET status = ?, settled_at = ?, reason_code = ? WHERE id = ?",
+            """
+            UPDATE runs SET status = ?, settled_at = ?, reason_code = ?
+            WHERE id = ? AND status IN ('queued', 'running')
+            """,
             (
                 payload["status"],
                 payload["settledAt"],
@@ -657,8 +1100,16 @@ def apply_event(
         )
         _require_one_update(updated_run, event_type)
         updated_turn = connection.execute(
-            "UPDATE turns SET status = ?, updated_at = ? WHERE id = ?",
-            (payload["status"], payload["settledAt"], payload["turnId"]),
+            """
+            UPDATE turns SET status = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                payload["status"],
+                payload["settledAt"],
+                payload["turnId"],
+                current["turn_status"],
+            ),
         )
         _require_one_update(updated_turn, event_type)
     else:
@@ -945,6 +1396,18 @@ def _require_activity_date(value: object) -> None:
         raise RuntimeError("journal event model usage activityDate is invalid") from None
     if parsed.isoformat() != value:
         raise RuntimeError("journal event model usage activityDate is invalid")
+
+
+def _require_safe_response_identifier(label: str, value: object) -> None:
+    if value is None:
+        return
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise RuntimeError(f"journal event {label} is invalid")
 
 
 def _require_choice(label: str, value: object, choices: set[str]) -> None:

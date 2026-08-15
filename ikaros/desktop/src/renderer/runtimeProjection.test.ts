@@ -344,6 +344,26 @@ function fileToolResultItem(
 }
 
 describe("Runtime event projection", () => {
+  it("keeps model audit events as explicit conversation and catalog no-ops", () => {
+    const initial = projectRuntimeThreads([summary]);
+    const auditEvents = [
+      event(2, "model.input_prepared", "turn-audit", "run-audit", null, {
+        stepOrdinal: 1,
+      }),
+      event(3, "model.response_finished", "turn-audit", "run-audit", null, {
+        stepOrdinal: 1,
+      }),
+    ];
+
+    expect(applyRuntimeCatalogEvent(initial, auditEvents[0] as RuntimeJournalEvent)).toBe(
+      initial,
+    );
+    expect(applyRuntimeCatalogEvent(initial, auditEvents[1] as RuntimeJournalEvent)).toBe(
+      initial,
+    );
+    expect(replayRuntimeEvents(initial, auditEvents)).toBe(initial);
+  });
+
   it("reduces streamed Items and settled Runs into the existing conversation UI model", () => {
     const events = [
       event(2, "item.completed", "turn-1", "run-1", "user-1", {

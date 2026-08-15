@@ -17,6 +17,8 @@ from .protocol.router import RuntimeRouter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
+from .providers.scripted import ScriptedProvider
+from .run_input import ProviderExecutionSnapshotV1
 from .security import RuntimeSecurity
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
@@ -70,12 +72,30 @@ class RuntimeApplication:
             ToolRegistry([ProcessRunTool(), ReadTool(), WriteTool(), EditTool()]),
             FullAccessPolicy(),
         )
+
+        def provider_execution_snapshot(
+            provider_id: str,
+            model_id: str,
+        ) -> ProviderExecutionSnapshotV1:
+            if provider_id == ScriptedProvider.id:
+                if model_id != ScriptedProvider.model_id:
+                    raise ValueError("scripted model is unavailable")
+                return ProviderExecutionSnapshotV1(
+                    provider_id=ScriptedProvider.id,
+                    origin="scripted",
+                    base_url=None,
+                    model_id=ScriptedProvider.model_id,
+                    supports_tools=True,
+                )
+            return self._config.execution_snapshot(provider_id, model_id)
+
         loop = AgentLoop(
             store,
             self._provider_registry,
             publish,
             tool_executor,
             protected_values=self.security.protected_values,
+            provider_snapshot_resolver=provider_execution_snapshot,
         )
         self._scheduler = AgentScheduler(loop)
         self._publish = publish
@@ -87,6 +107,9 @@ class RuntimeApplication:
             self._config,
             self.security.assert_request_safe,
             self.skills.enabled_descriptors,
+            lambda: tool_executor.definitions,
+            tool_executor.policy_name,
+            loop.max_steps,
         )
         self.providers = ProviderService(
             self._config,

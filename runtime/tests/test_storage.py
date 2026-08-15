@@ -7,14 +7,74 @@ from pathlib import Path
 import pytest
 
 import ikaros_runtime.storage.store as store_module
-from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, ModelUsage, WorkspaceSummary
+from ikaros_runtime.domain import (
+    JOURNAL_EVENT_SCHEMA_VERSION,
+    JournalEvent,
+    ModelUsage,
+    SkillDescriptor,
+    WorkspaceSummary,
+)
 from ikaros_runtime.errors import UnsupportedJournalEventVersionError
 from ikaros_runtime.json_codec import dumps as json_dumps
+from ikaros_runtime.json_codec import loads as json_loads
 from ikaros_runtime.storage import SqliteRuntimeStore
+from ikaros_runtime.tools.core import ToolDefinition
+
+from .helpers import prepare_turn
 
 
 def _utc_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _projection_snapshot(
+    store: SqliteRuntimeStore,
+) -> dict[str, tuple[tuple[object, ...], ...]]:
+    projection_tables = (
+        ("threads", "id"),
+        ("branches", "id"),
+        ("turns", "id"),
+        ("runs", "id"),
+        ("run_inputs", "run_id"),
+        ("items", "id"),
+        ("model_steps", "run_id, step_ordinal"),
+        ("model_usages", "run_id, step_ordinal"),
+    )
+    return {
+        table: tuple(
+            tuple(row)
+            for row in store._connection.execute(f"SELECT * FROM {table} ORDER BY {order}")
+        )
+        for table, order in projection_tables
+    }
+
+
+def _journal_snapshot(
+    store: SqliteRuntimeStore,
+) -> tuple[tuple[JournalEvent, ...], int]:
+    events, latest_seq = store.replay_events(0, 10_000)
+    return tuple(events), latest_seq
+
+
+def _finish_model_step_with_usage(
+    store: SqliteRuntimeStore,
+    run_id: str,
+    *,
+    step_ordinal: int,
+    usage: ModelUsage,
+) -> JournalEvent:
+    store.prepare_model_step(run_id, step_ordinal=step_ordinal)
+    completed = store.complete_provider_step(
+        run_id,
+        step_ordinal=step_ordinal,
+        assistant_item_id=None,
+        tool_calls=(),
+        reasoning_content=None,
+        usage=usage,
+        response_model_id=None,
+        request_id=None,
+    )
+    return completed.events[-1]
 
 
 def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> None:
@@ -35,11 +95,14 @@ def test_projections_can_be_rebuilt_from_the_event_journal(tmp_path: Path) -> No
         store.close()
 
 
-def test_model_usage_event_projection_and_rebuild_are_lossless(tmp_path: Path) -> None:
+def test_model_response_finished_usage_projection_and_rebuild_are_lossless(
+    tmp_path: Path,
+) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Usage projection")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="measure this step",
@@ -47,7 +110,8 @@ def test_model_usage_event_projection_and_rebuild_are_lossless(tmp_path: Path) -
             model_id="deepseek-chat",
         )
         store.mark_run_running(prepared.run_id)
-        event = store.record_model_usage(
+        event = _finish_model_step_with_usage(
+            store,
             prepared.run_id,
             step_ordinal=1,
             usage=ModelUsage(
@@ -58,9 +122,10 @@ def test_model_usage_event_projection_and_rebuild_are_lossless(tmp_path: Path) -
                 total_tokens=18,
             ),
         )
-        assert event.type == "model.usage_recorded"
+        assert event.type == "model.response_finished"
         assert event.payload["providerId"] == "deepseek"
         assert event.payload["modelId"] == "deepseek-chat"
+        assert event.payload["outcome"] == "completed"
         assert event.payload["usage"] == {
             "inputTokens": 13,
             "cachedInputTokens": 8,
@@ -92,11 +157,14 @@ def test_model_usage_event_projection_and_rebuild_are_lossless(tmp_path: Path) -
         store.close()
 
 
-def test_projection_rebuild_rejects_usage_recorded_after_run_settlement(tmp_path: Path) -> None:
+def test_projection_rebuild_rejects_model_response_after_run_settlement(
+    tmp_path: Path,
+) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Late usage")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="settle first",
@@ -104,13 +172,27 @@ def test_projection_rebuild_rejects_usage_recorded_after_run_settlement(tmp_path
             model_id="deepseek-chat",
         )
         store.mark_run_running(prepared.run_id)
+        store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        store.complete_provider_step(
+            prepared.run_id,
+            step_ordinal=1,
+            assistant_item_id=None,
+            tool_calls=(),
+            reasoning_content=None,
+            usage=None,
+            response_model_id=None,
+            request_id=None,
+        )
         settled_at = store.terminalize_run(prepared.run_id, "completed")[-1].timestamp
         payload = {
             "stepOrdinal": 1,
             "providerId": "deepseek",
             "modelId": "deepseek-chat",
+            "outcome": "completed",
+            "reasonCode": None,
+            "responseModelId": None,
+            "requestId": None,
             "activityDate": datetime.now().astimezone().date().isoformat(),
-            "completedAt": settled_at,
             "usage": {
                 "inputTokens": 1,
                 "cachedInputTokens": None,
@@ -118,6 +200,7 @@ def test_projection_rebuild_rejects_usage_recorded_after_run_settlement(tmp_path
                 "reasoningOutputTokens": None,
                 "totalTokens": 2,
             },
+            "finishedAt": settled_at,
             "turnId": prepared.turn_id,
             "runId": prepared.run_id,
         }
@@ -127,7 +210,7 @@ def test_projection_rebuild_rejects_usage_recorded_after_run_settlement(tmp_path
                 INSERT INTO events(
                     schema_version, event_type, thread_id, branch_id, turn_id, run_id,
                     created_at, payload_json
-                ) VALUES (?, 'model.usage_recorded', ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, 'model.response_finished', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     JOURNAL_EVENT_SCHEMA_VERSION,
@@ -140,17 +223,20 @@ def test_projection_rebuild_rejects_usage_recorded_after_run_settlement(tmp_path
                 ),
             )
 
-        with pytest.raises(RuntimeError, match="model usage requires a running Run"):
+        with pytest.raises(RuntimeError, match="model response completion requires a running Run"):
             store.rebuild_projections()
     finally:
         store.close()
 
 
-def test_model_usage_requires_a_running_run_and_unique_step_ordinal(tmp_path: Path) -> None:
+def test_model_step_state_machine_rejects_invalid_calls_without_appending_events(
+    tmp_path: Path,
+) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Usage lifecycle")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="measure once",
@@ -159,17 +245,206 @@ def test_model_usage_requires_a_running_run_and_unique_step_ordinal(tmp_path: Pa
         )
         usage = ModelUsage(input_tokens=2, output_tokens=1, total_tokens=3)
 
-        with pytest.raises(RuntimeError, match="model usage requires a running Run"):
-            store.record_model_usage(prepared.run_id, step_ordinal=1, usage=usage)
+        latest_seq = store.latest_sequence()
+        with pytest.raises(RuntimeError, match="input preparation requires a running Run"):
+            store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        assert store.latest_sequence() == latest_seq
 
         store.mark_run_running(prepared.run_id)
-        store.record_model_usage(prepared.run_id, step_ordinal=1, usage=usage)
-        with pytest.raises(RuntimeError, match="already recorded"):
-            store.record_model_usage(prepared.run_id, step_ordinal=1, usage=usage)
+        latest_seq = store.latest_sequence()
+        with pytest.raises(RuntimeError, match="no prepared Step"):
+            store.complete_provider_step(
+                prepared.run_id,
+                step_ordinal=1,
+                assistant_item_id=None,
+                tool_calls=(),
+                reasoning_content=None,
+                usage=usage,
+                response_model_id=None,
+                request_id=None,
+            )
+        assert store.latest_sequence() == latest_seq
+
+        with pytest.raises(RuntimeError, match="ordinal is not contiguous"):
+            store.prepare_model_step(prepared.run_id, step_ordinal=2)
+        assert store.latest_sequence() == latest_seq
+
+        store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        latest_seq = store.latest_sequence()
+        with pytest.raises(RuntimeError, match="unfinished model Step"):
+            store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        assert store.latest_sequence() == latest_seq
+
+        store.complete_provider_step(
+            prepared.run_id,
+            step_ordinal=1,
+            assistant_item_id=None,
+            tool_calls=(),
+            reasoning_content=None,
+            usage=usage,
+            response_model_id=None,
+            request_id=None,
+        )
+        latest_seq = store.latest_sequence()
+        with pytest.raises(RuntimeError, match="already finished"):
+            store.complete_provider_step(
+                prepared.run_id,
+                step_ordinal=1,
+                assistant_item_id=None,
+                tool_calls=(),
+                reasoning_content=None,
+                usage=usage,
+                response_model_id=None,
+                request_id=None,
+            )
+        assert store.latest_sequence() == latest_seq
 
         store.terminalize_run(prepared.run_id, "completed")
-        with pytest.raises(RuntimeError, match="model usage requires a running Run"):
-            store.record_model_usage(prepared.run_id, step_ordinal=2, usage=usage)
+        latest_seq = store.latest_sequence()
+        with pytest.raises(RuntimeError, match="input preparation requires a running Run"):
+            store.prepare_model_step(prepared.run_id, step_ordinal=2)
+        assert store.latest_sequence() == latest_seq
+    finally:
+        store.close()
+
+
+def test_projection_rebuild_accepts_queued_notification_then_single_running_transition(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Valid Run lifecycle")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="run once",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+
+        queued_projection = _projection_snapshot(store)
+        queued_journal = _journal_snapshot(store)
+        store.rebuild_projections()
+        assert _projection_snapshot(store) == queued_projection
+        assert _journal_snapshot(store) == queued_journal
+
+        store.mark_run_running(prepared.run_id)
+        running_projection = _projection_snapshot(store)
+        running_journal = _journal_snapshot(store)
+        store.rebuild_projections()
+        assert _projection_snapshot(store) == running_projection
+        assert _journal_snapshot(store) == running_journal
+        assert store.run_status(prepared.run_id) == "running"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("prior_state", "invalid_status", "message"),
+    (
+        ("queued", "queued", "queued Run notification does not match initial state"),
+        ("running", "queued", "queued Run notification does not match initial state"),
+        ("running", "running", "only transition once from queued to running"),
+        ("settled", "running", "only transition once from queued to running"),
+    ),
+)
+def test_projection_rebuild_rejects_invalid_run_state_transitions_atomically(
+    tmp_path: Path,
+    prior_state: str,
+    invalid_status: str,
+    message: str,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread(f"Invalid lifecycle {prior_state}")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="reject lifecycle corruption",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        if prior_state in {"running", "settled"}:
+            store.mark_run_running(prepared.run_id)
+        if prior_state == "settled":
+            store.terminalize_run(prepared.run_id, "completed")
+
+        timestamp = _utc_timestamp(datetime.now(UTC))
+        with store._connection:
+            store._append_event(
+                event_type="run.state_changed",
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                turn_id=prepared.turn_id,
+                run_id=prepared.run_id,
+                timestamp=timestamp,
+                payload={"status": invalid_status},
+            )
+        projection_before = _projection_snapshot(store)
+        journal_before = _journal_snapshot(store)
+
+        with pytest.raises(RuntimeError, match=message):
+            store.rebuild_projections()
+
+        assert _projection_snapshot(store) == projection_before
+        assert _journal_snapshot(store) == journal_before
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("active_item_kind", ("message", "tool_call"))
+def test_projection_rebuild_rejects_settlement_before_active_item_completion(
+    tmp_path: Path,
+    active_item_kind: str,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread(f"Active {active_item_kind}")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="do not synthesize completion",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        if active_item_kind == "message":
+            item_id, _ = store.create_assistant_item(prepared.run_id)
+        else:
+            item_id, _ = store.create_tool_call_item(
+                prepared.run_id,
+                step_id="step-active",
+                call_id="call-active",
+                tool_name="process_run",
+                arguments={"command": "echo active"},
+            )
+
+        timestamp = _utc_timestamp(datetime.now(UTC))
+        with store._connection:
+            store._append_event(
+                event_type="run.settled",
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                turn_id=prepared.turn_id,
+                run_id=prepared.run_id,
+                timestamp=timestamp,
+                payload={"status": "cancelled", "settledAt": timestamp},
+            )
+        projection_before = _projection_snapshot(store)
+        journal_before = _journal_snapshot(store)
+
+        with pytest.raises(RuntimeError, match="cannot settle with an active Item"):
+            store.rebuild_projections()
+
+        assert _projection_snapshot(store) == projection_before
+        assert _journal_snapshot(store) == journal_before
+        item_events = tuple(
+            event.type for event in journal_before[0] if event.item_id == item_id
+        )
+        assert item_events == ("item.started",)
     finally:
         store.close()
 
@@ -188,7 +463,8 @@ def test_usage_aggregation_uses_local_activity_dates_and_actual_run_start(
             zip(active_days, ((4,), (6,), (2, 8)), strict=True),
         ):
             thread, _ = store.create_thread(f"Usage day {index}")
-            prepared = store.prepare_turn(
+            prepared = prepare_turn(
+                store,
                 thread_id=thread.id,
                 branch_id=thread.default_branch_id,
                 content="measure",
@@ -204,7 +480,8 @@ def test_usage_aggregation_uses_local_activity_dates_and_actual_run_start(
             store.mark_run_running(prepared.run_id)
             for step_ordinal, tokens in enumerate(token_counts, start=1):
                 timestamp = _utc_timestamp(started_local + timedelta(seconds=step_ordinal))
-                store.record_model_usage(
+                _finish_model_step_with_usage(
+                    store,
                     prepared.run_id,
                     step_ordinal=step_ordinal,
                     usage=ModelUsage(
@@ -218,7 +495,8 @@ def test_usage_aggregation_uses_local_activity_dates_and_actual_run_start(
             store.terminalize_run(prepared.run_id, "completed")
 
         interrupted_thread, _ = store.create_thread("Interrupted startup recovery")
-        interrupted = store.prepare_turn(
+        interrupted = prepare_turn(
+            store,
             thread_id=interrupted_thread.id,
             branch_id=interrupted_thread.default_branch_id,
             content="do not count synthetic recovery time",
@@ -342,7 +620,8 @@ def test_projection_rebuild_rejects_completed_item_immutable_field_changes(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _created = store.create_thread("Item integrity")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="hello",
@@ -481,7 +760,8 @@ def test_archived_threads_cannot_start_turns_and_active_threads_cannot_be_archiv
         thread, _created_event = store.create_thread("Lifecycle")
         store.set_thread_archived(thread.id, archived=True)
         with pytest.raises(LookupError, match="thread is archived"):
-            store.prepare_turn(
+            prepare_turn(
+                store,
                 thread_id=thread.id,
                 branch_id=thread.default_branch_id,
                 content="must not run",
@@ -490,7 +770,8 @@ def test_archived_threads_cannot_start_turns_and_active_threads_cannot_be_archiv
             )
 
         restored, _restored_event = store.set_thread_archived(thread.id, archived=False)
-        store.prepare_turn(
+        prepare_turn(
+            store,
             thread_id=restored.id,
             branch_id=restored.default_branch_id,
             content="now run",
@@ -508,7 +789,8 @@ def test_run_descriptor_inherits_its_thread_workspace(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Workspace run", workspace=workspace)
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="use workspace",
@@ -529,7 +811,8 @@ def test_credential_conflict_scan_uses_dynamic_projections_not_fixed_schema(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Safe thread")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="safe user content",
@@ -588,6 +871,158 @@ def test_credential_conflict_scan_includes_thread_workspace(tmp_path: Path) -> N
         store.close()
 
 
+def test_credential_conflict_scan_ignores_runtime_owned_model_input_provenance(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Safe model input")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="safe user content",
+            provider_id="scripted",
+            model_id="scripted-v1",
+            tools=(
+                ToolDefinition(
+                    name="runtime-owned-tool",
+                    description="Runtime owned Tool description",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                    },
+                ),
+            ),
+        )
+        store.mark_run_running(prepared.run_id)
+        store.prepare_model_step(prepared.run_id, step_ordinal=1)
+
+        for protected in (
+            "full_access",
+            "runtime_instruction",
+            "release",
+            "output-style",
+            "legacy_unbounded",
+            "runtime-owned-tool",
+            "Runtime owned Tool description",
+            "object",
+            "command",
+            "string",
+        ):
+            assert store.journal_contains_protected_values((protected,)) is False
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "model_id", "protected"),
+    (
+        ("provider-credential-sentinel", "safe-model", "provider-credential-sentinel"),
+        ("safe-provider", "model-credential-sentinel", "model-credential-sentinel"),
+    ),
+)
+def test_credential_conflict_scan_includes_dynamic_provider_and_model_identifiers(
+    tmp_path: Path,
+    provider_id: str,
+    model_id: str,
+    protected: str,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Dynamic Provider")
+        prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="safe user content",
+            provider_id=provider_id,
+            model_id=model_id,
+        )
+
+        assert store.journal_contains_protected_values((protected,)) is True
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "skill",
+    (
+        SkillDescriptor("skill-credential-sentinel", "Safe description", "C:/safe/SKILL.md"),
+        SkillDescriptor(
+            "safe-skill",
+            "skill description credential sentinel",
+            "C:/safe/SKILL.md",
+        ),
+        SkillDescriptor(
+            "safe-skill",
+            "Safe description",
+            "C:/skill-location-credential-sentinel/SKILL.md",
+        ),
+    ),
+)
+def test_credential_conflict_scan_includes_dynamic_skill_catalog_values(
+    tmp_path: Path,
+    skill: SkillDescriptor,
+) -> None:
+    protected = next(
+        value
+        for value in (skill.name, skill.description, skill.location)
+        if "credential" in value
+    )
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Dynamic Skill")
+        prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="safe user content",
+            provider_id="scripted",
+            model_id="scripted-v1",
+            skills=(skill,),
+        )
+
+        assert store.journal_contains_protected_values((protected,)) is True
+    finally:
+        store.close()
+
+
+def test_credential_conflict_scan_includes_provider_response_identifiers(
+    tmp_path: Path,
+) -> None:
+    response_model_id = "response-model-credential-sentinel"
+    request_id = "request-id-credential-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Provider response")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="safe user content",
+            provider_id="safe-provider",
+            model_id="safe-model",
+        )
+        store.mark_run_running(prepared.run_id)
+        store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        store.complete_provider_step(
+            prepared.run_id,
+            step_ordinal=1,
+            assistant_item_id=None,
+            tool_calls=(),
+            reasoning_content=None,
+            usage=None,
+            response_model_id=response_model_id,
+            request_id=request_id,
+        )
+
+        assert store.journal_contains_protected_values((response_model_id,)) is True
+        assert store.journal_contains_protected_values((request_id,)) is True
+    finally:
+        store.close()
+
+
 def test_client_request_ids_make_thread_and_turn_creation_idempotent(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
@@ -605,7 +1040,8 @@ def test_client_request_ids_make_thread_and_turn_creation_idempotent(tmp_path: P
         assert repeated_thread == thread
         assert repeated_event == created_event
 
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="only one turn",
@@ -613,7 +1049,8 @@ def test_client_request_ids_make_thread_and_turn_creation_idempotent(tmp_path: P
             model_id="scripted-v1",
             client_request_id="turn-request",
         )
-        repeated = store.prepare_turn(
+        repeated = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="only one turn",
@@ -636,7 +1073,8 @@ def test_client_request_ids_make_thread_and_turn_creation_idempotent(tmp_path: P
             "Exactly once",
             "create-request",
         )
-        rebuilt_turn = store.prepare_turn(
+        rebuilt_turn = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="only one turn",
@@ -654,7 +1092,8 @@ def test_client_request_ids_make_thread_and_turn_creation_idempotent(tmp_path: P
         with pytest.raises(LookupError, match="different thread.create parameters"):
             store.create_thread_once("Different title", "create-request")
         with pytest.raises(LookupError, match="different turn.start parameters"):
-            store.prepare_turn(
+            prepare_turn(
+                store,
                 thread_id=thread.id,
                 branch_id=thread.default_branch_id,
                 content="different content",
@@ -670,7 +1109,8 @@ def test_agent_projections_rebuild_without_rewriting_the_journal(tmp_path: Path)
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Agent history")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="hello",
@@ -700,11 +1140,121 @@ def test_agent_projections_rebuild_without_rewriting_the_journal(tmp_path: Path)
         store.close()
 
 
+def test_projection_rebuild_rejects_corrupted_submission_instruction_slot(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Corrupt Submission Frame")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="preserve the canonical output slot",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        row = store._connection.execute(
+            """
+            SELECT seq, payload_json FROM events
+            WHERE run_id = ? AND event_type = 'item.completed'
+            ORDER BY seq ASC LIMIT 1
+            """,
+            (prepared.run_id,),
+        ).fetchone()
+        payload = json_loads(str(row["payload_json"]))
+        payload["submissionFrame"]["instructions"]["outputStyle"]["scope"] = "run"
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET payload_json = ? WHERE seq = ?",
+                (
+                    json_dumps(payload, separators=(",", ":"), ensure_ascii=False),
+                    row["seq"],
+                ),
+            )
+        journal_before = _journal_snapshot(store)
+
+        with pytest.raises(RuntimeError, match="initial Turn input snapshots are invalid"):
+            store.rebuild_projections()
+
+        assert _journal_snapshot(store) == journal_before
+        assert store.run_status(prepared.run_id) == "queued"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "context-group-ghost",
+        "context-budget-count",
+        "step-ordinal",
+        "step-budget-count",
+    ),
+)
+def test_projection_rebuild_rejects_corrupted_model_input_dto(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Corrupt model input DTO")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="preserve model input invariants",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        store.mark_run_running(prepared.run_id)
+        store.prepare_model_step(prepared.run_id, step_ordinal=1)
+        row = store._connection.execute(
+            """
+            SELECT seq, payload_json FROM events
+            WHERE run_id = ? AND event_type = 'model.input_prepared'
+            ORDER BY seq ASC LIMIT 1
+            """,
+            (prepared.run_id,),
+        ).fetchone()
+        payload = json_loads(str(row["payload_json"]))
+        if corruption == "context-group-ghost":
+            payload["contextSnapshot"]["historyGroups"][0]["itemIds"][0] = "item_ghost"
+        elif corruption == "context-budget-count":
+            budget = payload["contextSnapshot"]["budget"]
+            budget["currentRunCharacters"] += 1
+            budget["totalCharacters"] += 1
+        elif corruption == "step-ordinal":
+            payload["stepManifest"]["stepOrdinal"] = 0
+        else:
+            budget = payload["stepManifest"]["budget"]
+            budget["currentRunCharacters"] += 1
+            budget["totalCharacters"] += 1
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET payload_json = ? WHERE seq = ?",
+                (
+                    json_dumps(payload, separators=(",", ":"), ensure_ascii=False),
+                    row["seq"],
+                ),
+            )
+        journal_before = _journal_snapshot(store)
+
+        with pytest.raises(RuntimeError, match="model input preparation snapshots are invalid"):
+            store.rebuild_projections()
+
+        assert _journal_snapshot(store) == journal_before
+        assert store.run_status(prepared.run_id) == "running"
+    finally:
+        store.close()
+
+
 def test_terminalize_run_is_atomic_idempotent_and_uniquely_settled(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Atomic terminal state")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="keep partial output",
@@ -771,7 +1321,8 @@ def test_terminalize_run_cancels_a_running_tool_item_before_settling(tmp_path: P
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Cancel tool")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run a command",
@@ -822,7 +1373,8 @@ def test_tool_call_and_result_completion_is_atomic(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Atomic tool result")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run a command",
@@ -892,7 +1444,8 @@ def test_recovery_fails_running_runs_and_orders_queued_runs_by_event_seq(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Recovery")
-        running = store.prepare_turn(
+        running = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="running",
@@ -902,14 +1455,16 @@ def test_recovery_fails_running_runs_and_orders_queued_runs_by_event_seq(
         store.mark_run_running(running.run_id)
         item_id, _ = store.create_assistant_item(running.run_id)
         store.append_text_delta(item_id, "preserved partial")
-        first_queued = store.prepare_turn(
+        first_queued = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="first queued",
             provider_id="scripted",
             model_id="scripted-v1",
         )
-        second_queued = store.prepare_turn(
+        second_queued = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="second queued",
@@ -950,7 +1505,8 @@ def test_recovery_completes_an_interrupted_tool_with_a_matching_result(tmp_path:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Recover tool")
-        prepared = store.prepare_turn(
+        prepared = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="run before crash",
@@ -1001,14 +1557,16 @@ def test_context_does_not_include_later_queued_turns(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Queued context")
-        first = store.prepare_turn(
+        first = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="alpha",
             provider_id="scripted",
             model_id="scripted-v1",
         )
-        second = store.prepare_turn(
+        second = prepare_turn(
+            store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
             content="beta",
