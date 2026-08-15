@@ -5,6 +5,11 @@ Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
 current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
+The next proposed stage, including `ModelInputPlanV1`, bounded history,
+Identity Core, and a separate long-term-Memory store, is specified in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Those
+capabilities are not part of the implemented vertical slice described here.
+
 ## Product boundary
 
 Ikaros is a local, general-purpose Agent kernel. It is not a coding-agent
@@ -116,24 +121,31 @@ All Runtime-owned local files live below the current user's Ikaros home:
 
 ```text
 ~/.ikaros/
-  config.yaml          provider and model configuration, including API keys
+  config.yaml          provider/model configuration and Skill enablement
   state.db             canonical SQLite journal and projections
   runtime.lock         process-lifetime exclusive ownership of this home
   backups/             verified offline state snapshots, created on demand
-  skills/              created when user-installed Skills are supported
+  skills/              user-installed <name>/SKILL.md directories
   logs/                created only if persistent file logging is enabled
 ```
 
+A missing `skills/` directory is an empty Skill catalog. The proposed
+`memory.db` is deliberately absent from this current-state tree: when
+implemented, it will have a lifecycle independent from Session history and
+must never be removed by a `state.db` reset.
+
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 4. A non-empty unversioned database or any different `user_version`
+version 5. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
-only after the owning Runtime has stopped. `config.yaml` is independent and is
-not removed by a conversation-state reset. Every incompatible persistence or
-Event-payload change during this pre-release phase uses this destructive reset
-policy rather than a migration or upcaster. Durable release migrations remain
-a future compatibility commitment rather than a partial framework in V1.
+only after the owning Runtime has stopped. `config.yaml`, `skills/`, Desktop
+preferences, and the future separately owned `memory.db` are independent and
+are not removed by a conversation-state reset. Every incompatible persistence
+or Event-payload change during this pre-release phase uses this destructive
+reset policy rather than a migration or upcaster. Durable release migrations
+remain a future compatibility commitment rather than a partial framework in
+V1.
 
 Offline maintenance uses the same `runtime.lock` as the server and never starts
 the Runtime application or loads `config.yaml`. `storage check` and `storage
@@ -173,16 +185,18 @@ POSIX processes cannot accidentally lock different inodes. Operating-system
 handle cleanup makes the lock recoverable after a crash.
 
 V1 keeps the configuration surface intentionally small. `config.yaml` contains
-only a schema version and provider/model records that the user has actually
-added. There is no global default provider or model. Host, ephemeral port,
-launch token, and parent PID are launch arguments; global serial execution and
-`FullAccessPolicy` are fixed V1 behavior, not configuration switches. UI theme,
-language, layout, and username remain in Desktop-owned preferences.
+only a schema version, provider/model records that the user has actually added,
+and an optional `skills.disabled` list. There is no global default provider or
+model. Host, ephemeral port, launch token, and parent PID are launch arguments;
+global serial execution and `FullAccessPolicy` are fixed V1 behavior, not
+configuration switches. UI theme, language, layout, and username remain in
+Desktop-owned preferences.
 
 When no configuration has been saved, a missing `config.yaml` is equivalent to
-an empty provider map. The file is created on the first real Provider/model
-configuration write; the runtime does not prepopulate DeepSeek, Custom
-providers, or model rows.
+an empty provider map with no disabled Skills. The file is created on the first
+real Provider/model configuration write or the first persisted Skill-disable
+operation; the Runtime does not prepopulate DeepSeek, Custom providers, model
+rows, or Skill names.
 
 `config.yaml` is capped at 256 KiB on both read and write. A mutation is
 serialized and size-checked before its temporary file is atomically replaced;
@@ -217,6 +231,10 @@ providers:
         enabled: true
         supports_tools: true
     headers: {}          # optional, normally omitted
+
+skills:
+  disabled:
+    - <skill-name>
 ```
 
 Model records are explicit configuration and are never synthesized from
@@ -251,10 +269,12 @@ The implemented vertical slice makes the Runtime authoritative for:
 - `process_run`, `read`, `write`, and `edit` validation, serial execution,
   cancellation, and normalized results;
 - the fixed `FullAccessPolicy` execution-policy snapshot;
-- Provider/model configuration and selection; and
+- Provider/model configuration and selection;
+- safe Skill discovery and diagnostics, global enablement, and immutable
+  per-Run descriptor snapshots; and
 - canonical persisted Agent state.
 
-Additional Branch operations, Skills, and future Tool families must also be
+Additional Branch operations and future Tool families must also be
 Runtime-owned when they are implemented. They are not capabilities of the
 current vertical slice.
 
@@ -287,11 +307,24 @@ request plus the tool calls and results needed before the next model request.
 `Step` is an internal orchestration concept and does not replace the user's
 Turn in the public model.
 
+### Session history and durable Memory
+
+V1 has no separate Session entity; `Thread` is the product conversation
+boundary. `state.db` is the canonical record of what happened in a Thread,
+including its Branches, Turns, Runs, Items, usage, and sequenced Events.
+
+Durable cross-Thread Memory is not implemented. It is a different authority and
+lifecycle from Session history, History selection, History compaction,
+Identity Core, and Skills. The proposed `memory.db` must remain independent
+from Session reset and must not become a second conversation truth source.
+The detailed boundary and serial implementation Gates are defined in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
+
 An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
 client can resume from a cursor without guessing what it missed. Every
 persisted and wire Event also carries `schemaVersion`. The current Event schema
-is version 1. Readers require that exact version and reject unknown versions;
+is version 2. Readers require that exact version and reject unknown versions;
 there is no payload upcaster while the database itself follows the explicit
 development reset policy above.
 
@@ -515,7 +548,9 @@ client submits user input
   -> Scheduler reserves the persisted Run
   -> server attempts the command ACK
   -> Scheduler activates the Run
-  -> ContextBuilder builds provider-neutral context
+  -> ContextBuilder deterministically renders persisted ContextItems,
+     the fixed output-style instruction, frozen Run Skill descriptors,
+     and Tool definitions into ProviderRequest
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call
   -> ExecutionPolicy returns allow under FullAccessPolicy
@@ -525,6 +560,11 @@ client submits user input
   -> final assistant Item is completed
   -> Run emits exactly one settled terminal event
 ```
+
+`ContextBuilder` does not select or budget history, retrieve durable Memory,
+assign authority/scope/lifetime metadata, or produce an input Manifest. Those
+are proposed, separately gated responsibilities in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 The provider boundary must not leak provider-specific request or streaming
 formats into the domain or protocol.
@@ -792,29 +832,45 @@ under V1 Full access.
 Desktop projects their structured lifecycle and result summaries, but a file
 operation does not yet produce a first-class Artifact or file-change/diff Item.
 
-A future Skill integration treats a Skill as an instruction and resource bundle
-that may contain references, assets, and scripts. Loading a Skill will not
-import third-party Python into the long-lived runtime, and scripts will not be
-expanded into one model ToolDescriptor per file. Skill discovery, selection,
-and instruction injection are not implemented in the first Runtime slice.
+Skills V0 treats a Skill as an instruction and resource bundle that may contain
+references, assets, and scripts. The Runtime safely scans one directory level
+below `~/.ikaros/skills` for `<name>/SKILL.md`, validates bounded UTF-8 YAML
+frontmatter, rejects link-like or escaping paths, and returns both valid
+descriptors and bounded diagnostics through `skill.list`.
 
-When that integration is added, Skill instructions tell the Agent when and how
-to invoke a script via the same general process/command tool used elsewhere:
+Each descriptor contains only name, description, and canonical `SKILL.md`
+location. `skill.set_enabled` persists a global disabled-name list in
+`config.yaml`. At `turn.start`, the Runtime freezes every enabled descriptor
+into that Run. Each Provider Step receives this frozen catalog and an
+instruction to load a relevant `SKILL.md` through the ordinary `read` Tool.
+The Skill body, references, assets, and scripts are not copied into the
+descriptor snapshot or eagerly injected.
+
+Skill-owned Python is never imported into the long-lived Runtime and scripts
+are not expanded into one model ToolDescriptor per file. A loaded Skill may
+tell the Agent to invoke a script through the same general command Tool used
+elsewhere:
 
 ```text
-Skill discovery and selection
-  -> read and inject SKILL.md instructions
+safe Skill discovery and global enablement
+  -> freeze enabled descriptors into the Run
+  -> model uses read to load a relevant SKILL.md
   -> Agent requests the general command tool
   -> ToolExecutor starts the Skill script as a child process
   -> normalize stdout, stderr, exit status, and errors as ToolResult
   -> append the result and return it to the Agent loop
 ```
 
-Skill scripts will therefore share the implemented command executor's argument
+Skill scripts therefore share the implemented command executor's argument
 validation, working-directory and environment handling, timeouts, cancellation,
 process-tree cleanup, output truncation, lifecycle events, and error
-normalization. A future Runtime may attribute a script path back to its Skill
-for UI and audit records; that attribution does not create a separate executor.
+normalization.
+
+Skills V0 does not perform task-specific Skill selection, enforce a total
+catalog budget, automatically load full instructions or resources, create a
+dedicated Skill Tool/Item lifecycle, or attribute and aggregate script
+executions. Those are later refinements; Skill execution attribution would not
+create a separate executor.
 
 ## Execution policy
 
@@ -836,15 +892,15 @@ environment construction are execution-reliability requirements even under
 Full access; they are not deferred as part of the permission UI.
 
 Full access means `process_run`, `read`, `write`, and `edit` can exercise the
-current operating-system user's authority. Once Skill scripts are integrated
-through the same executor, they will inherit that authority as well. This is an
-explicit development-version trade-off, not a sandbox or security guarantee.
+current operating-system user's authority. Skill scripts invoked through
+`process_run` exercise that same authority. This is an explicit
+development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 4. Thread
+The current reset-only SQLite database schema is canonical version 5. Thread
 projections include optional `workspace_json`, nullable `archived_at`, and an
 indexed active/archived Thread Catalog ordering key; Run history hydration is
-indexed by `turn_id`. Each Run snapshots
-`execution_policy = full_access`, and each Item has structured `data_json` for
+indexed by `turn_id`. Each Run snapshots `execution_policy = full_access` and
+its enabled Skill descriptors, while each Item has structured `data_json` for
 Tool Call arguments and normalized results. Rebuilding projections from the
 journal restores these records and the provider context. A bounded Agent loop
 persists all calls from a provider Step before serial execution, returns every
@@ -868,6 +924,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | retry or recovery | mock-only UI; no Runtime retry/resume command yet |
 | artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
+| Skills settings | `skill.list` / `skill.set_enabled` catalog, diagnostics, and global enablement |
 | Profile Token metrics and activity | `usage.read` over exact Provider-reported per-Step usage; no text-based estimation |
 | theme, language, username | client-only UI state |
 
@@ -986,6 +1043,10 @@ path. The following have been demonstrated end to end:
    Stop propagates through Run and child-process-tree cancellation.
 7. The deterministic Provider covers the loop and event ordering without a
    network dependency, while the opt-in live test covers the real DeepSeek path.
+8. Skills V0 discovers and configures a real catalog, freezes enabled
+   descriptors into each Run, exposes the catalog through Desktop settings, and
+   keeps full Skill bodies lazy. The most recently recorded live DeepSeek smoke
+   verified that frozen descriptor path alongside the file-Tool chain.
 
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
@@ -993,4 +1054,7 @@ recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 This slice does not implement web search, browser or desktop control, durable
 memory, background or scheduled tasks, messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
-later general-Agent capability packs, not rejected product directions.
+later general-Agent capability packs, not rejected product directions. The
+bounded model-input and durable-Memory subset is planned separately in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md) and is not
+claimed as current behavior.

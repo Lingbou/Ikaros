@@ -87,6 +87,10 @@ The Runtime currently owns:
   OpenAI-compatible streaming Providers used by normal conversations; and
 - `usage.read`, which supplies exact Provider-reported Token totals, longest
   completed task duration, streaks, and daily buckets for the Profile page;
+- Runtime-backed Skills V0: safe catalog discovery and diagnostics,
+  `skill.list` / `skill.set_enabled`, global enablement persisted in
+  `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
+  a lazily loaded Skills settings page;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
   V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
   command execution provides timeout, cancellation, bounded output, and
@@ -145,8 +149,10 @@ The following UI surfaces are not production Runtime capabilities yet:
 
 - `MockAgentClient` and its five deterministic scenarios remain for tests and
   non-Electron renderer development only;
-- `/mock-1`, `/mock-2`, and `/mock-3` only insert placeholder text; Skills do
-  not yet have a loader, registry, RPC surface, or execution lifecycle;
+- `/mock-1`, `/mock-2`, and `/mock-3` only insert placeholder text. Runtime
+  Skills V0 is connected, but task-specific selection, automatic full-body
+  loading, dedicated Skill execution Items/attribution, and Skill statistics
+  are not implemented;
 - permission cards and Ask/Safe/Full choices belong to the mock prototype;
   Runtime V1 always uses `full_access` and emits no permission requests;
 - editing a message to fork history, multiple Branches, retry/resume recovery,
@@ -169,10 +175,16 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema version 4 and is
+Conversation persistence uses canonical SQLite schema version 5 and is
 intentionally reset-only during pre-release development. An incompatible
 `~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
 or Event upcaster is provided. After stopping the Runtime, an explicitly
 authorized development reset removes only `state.db` plus its WAL/SHM files.
 Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
-conversation history and must be preserved.
+conversation history and must be preserved, as must `skills/`, Desktop
+preferences, and the separately owned future `memory.db`.
+
+Durable cross-Thread Memory, Identity Core, bounded history selection, and
+input manifests are proposed rather than Runtime-backed. Their strict Gate
+plan is documented in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

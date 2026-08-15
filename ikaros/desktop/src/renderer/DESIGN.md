@@ -26,17 +26,22 @@ JSON-RPC.
 
 The connected surface is:
 
-- Thread list/create with optional workspace;
+- paginated active/archived Thread catalogs, Thread detail/history reads,
+  create, rename, archive, and unarchive, with optional workspace;
 - Turn start and Run cancel;
 - sequenced event notifications, paginated replay, reconnect catch-up, and
   Runtime-restart recovery;
-- streamed user/assistant Items, `process.run` Tool Call/Result Items, and Run
-  state projection;
+- streamed user/assistant Items, `process.run`, `read`, `write`, and `edit`
+  Tool Call/Result Items, and Run state projection;
 - Runtime-owned SQLite conversation state;
 - DeepSeek and Custom OpenAI-compatible Provider configuration and execution;
 - DeepSeek model discovery plus Provider/Model list, enable, disconnect, and
-  remove operations; and
-- fixed V1 `full_access` execution of the built-in `process.run` Tool.
+  remove operations;
+- `usage.read` backed Profile Token metrics and activity;
+- `skill.list` / `skill.set_enabled`, Skills catalog diagnostics, global
+  enablement, a real Skills settings page, and immutable enabled-descriptor
+  snapshots per Run; and
+- fixed V1 `full_access` execution of the four built-in Tools.
 
 ## Desktop-owned local state
 
@@ -60,13 +65,20 @@ messages and Stop to the Python Runtime.
 
 Still mock-only or unavailable:
 
-- the three `/mock-*` slash commands and every Skill statistic shown in Profile;
-- Skill discovery/loading/execution as a first-class capability;
+- the three `/mock-*` slash commands and deterministic scenario cards;
+- task-specific Skill selection, automatic full-body loading, dedicated Skill
+  execution Items/attribution, and Skill statistics. Skills catalog discovery,
+  diagnostics, global enablement, and descriptor injection are Runtime-backed;
 - permission decisions and the Ask/Safe access modes;
 - message-edit Branch creation and multiple Runtime Branches;
 - retry/resume recovery controls;
 - Artifact, file-change, generic status, and Branch-created events; and
 - attachments, tool selection, and response regeneration.
+
+Durable Memory management and recall, Identity Core, bounded history selection,
+and model-input manifests are planned but not connected. Their Runtime design
+is tracked in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](../../../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Protocol boundary
 

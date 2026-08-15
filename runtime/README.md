@@ -1,8 +1,11 @@
 # Ikaros Runtime
 
 The Ikaros Runtime is a long-lived local Python process supervised by the
-Electron main process. The architecture and first vertical-slice boundary are
-recorded in [DESIGN.md](DESIGN.md).
+Electron main process. The implemented architecture and current vertical-slice
+boundary are recorded in [DESIGN.md](DESIGN.md). The proposed, strictly serial
+model-input and long-term-Memory stage is specified separately in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md); that
+document is a plan, not a list of current capabilities.
 
 Ikaros Desktop starts one Runtime for the application lifetime and connects to
 it through authenticated loopback WebSocket JSON-RPC. Standard output carries
@@ -13,7 +16,7 @@ stdio.
 ## Protocol contract
 
 `src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
-version 1, the 19 post-initialize RPC methods, the 10 persisted Journal Event
+version 1, the 21 post-initialize RPC methods, the 10 persisted Journal Event
 types, capabilities, and provider-facing Tool IDs. The deterministic generator
 commits both `protocol/runtime-protocol.json` and Desktop's
 `src/shared/generated/runtimeProtocol.ts`; CI-style verification is available
@@ -49,6 +52,11 @@ The current Desktop/Runtime path provides:
 - exact Provider-reported model usage captured per Agent Step, persisted in the
   append-only Journal and a rebuildable SQLite projection, and aggregated by
   `usage.read` for the Desktop Profile metrics and 52-week activity chart;
+- Skills V0, including safe one-level discovery below
+  `~/.ikaros/skills/<name>/SKILL.md`, catalog diagnostics, global
+  enable/disable state, immutable enabled-descriptor snapshots per Run, and
+  provider context containing only each enabled Skill's name, description, and
+  location;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under
   V1's fixed `full_access` policy. Command execution has bounded output,
   timeout, cancellation, and child-process-tree cleanup; the file Tools provide
@@ -78,25 +86,39 @@ archive state is a no-op and does not append a duplicate Event.
 
 The current Runtime registers the provider-facing `process_run`, `read`,
 `write`, and `edit` Tools; Desktop maps `process_run` to the product label
-`process.run` and keeps the three file Tool names unchanged. It does not yet
-discover or inject Skills, provide
-web-search, browser, or attachment Tools, generate first-class
-Artifact/file-change records, fork Branches, retry or resume Runs, or implement
-interactive permission approval. Desktop's fixed scenario fixtures,
-slash-command examples, and permission/recovery/Artifact demonstrations
-therefore remain mock-only UI
+`process.run` and keeps the three file Tool names unchanged.
+
+Skills V0 discovers metadata, exposes catalog diagnostics and global
+enablement, freezes enabled descriptors into each Run, and injects that
+descriptor catalog. It does not yet select Skills per task, enforce a catalog
+budget, preload Skill bodies, produce a dedicated Skill execution Item, or
+attribute and aggregate Skill script executions. A relevant `SKILL.md` is read
+on demand through the ordinary `read` Tool, and a declared script is invoked
+through the ordinary `process_run` Tool rather than imported into the Runtime.
+
+The Runtime does not yet provide web-search, browser, or attachment Tools,
+generate first-class Artifact/file-change records, fork Branches, retry or
+resume Runs, or implement interactive permission approval. Desktop's fixed
+scenario fixtures, slash-command examples, and
+permission/recovery/Artifact demonstrations therefore remain mock-only UI
 surfaces rather than Runtime-backed capabilities. Provider health remains
 `unknown`, and automatic model discovery is DeepSeek-only; Custom
 OpenAI-compatible Provider models are entered manually.
 
 Providers that do not report stream usage remain usable, but their calls are
-not estimated or added to Token totals. Profile activity insights and Skills
-statistics are not exposed until those capabilities have real Runtime data.
+not estimated or added to Token totals. Profile metrics and activity include
+only Provider-reported usage. The Skills settings page exposes real catalog and
+enablement state, but no Skill execution statistics exist yet.
 
 `FullAccessPolicy` automatically permits registered Tools; it is not a sandbox
 or a security guarantee. The Runtime is tied to the Desktop application
 lifetime and is not yet a Windows Service, login item, or independently
 discoverable daemon.
+
+Durable cross-Thread Memory, Identity Core, input manifests, and bounded
+history selection are not implemented. Their boundaries and implementation
+order are defined in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development
 
@@ -121,15 +143,16 @@ standard error.
 Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
 `IKAROS_HOME`; normal Desktop launches do not override it. The Runtime creates
 `state.db` on startup, while `config.yaml` remains absent until the user saves a
-real provider/model configuration.
+real provider/model configuration or changes persisted Skill enablement.
 
 During pre-release development, conversation storage uses canonical SQLite
-schema version 4 and is intentionally reset-only. Incompatible `state.db`
+schema version 5 and is intentionally reset-only. Incompatible `state.db`
 schema versions fail with `reset required`; the Runtime does not carry
 old-schema migrations or silently delete data.
 After stopping the owning Runtime, developers may explicitly remove
 `state.db`, `state.db-wal`, and `state.db-shm` to create the current schema on
-the next start. This reset never includes `config.yaml`.
+the next start. This reset never includes `config.yaml`, `skills/`, Desktop
+preferences, or the separately owned future `memory.db`.
 
 ## Offline storage maintenance
 

@@ -6,8 +6,9 @@ authority for canonical conversations, tool execution, permissions, or Agent
 state.
 
 - `desktop/` is the Windows and Linux client. It now integrates the first real
-  Runtime vertical slice, including persistent Threads, streaming provider
-  turns, process execution, and workspace-backed project conversations.
+  Runtime vertical slice, including persistent multi-Turn Threads, restart
+  recovery, Provider-reported usage, process and file Tools, workspace-backed
+  project conversations, and Runtime-backed Skills catalog/enablement.
 - `cli/` is not implemented yet. A future CLI will reuse the same Runtime
   contract rather than introduce a separate execution path.
 
