@@ -4,62 +4,31 @@ from collections.abc import Sequence
 
 from ..domain import ContextItem
 from ..providers.base import ProviderMessage, ProviderRequest
-from ..tools.core import ToolCall, ToolDefinition
-
-type SystemMessageInput = str | ProviderMessage
-
-_OUTPUT_STYLE_SYSTEM_MESSAGE = ProviderMessage(
-    role="system",
-    content=(
-        "Use a restrained, professional response style. Do not use emoji or decorative "
-        "Unicode symbols unless the user explicitly asks for them. Never use them for "
-        "decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) "
-        "for ordinary unordered lists; the client will render them as simple round bullets."
-    ),
-)
+from ..tools.core import ToolCall
+from .model_input import ModelInputPlanV1
 
 
 class ContextBuilder:
-    """Build one provider request from persisted conversation context."""
+    """Render one provider-neutral model input plan into a Provider request."""
 
-    def build_request(
-        self,
-        *,
-        model_id: str,
-        items: Sequence[ContextItem],
-        tools: Sequence[ToolDefinition] = (),
-        extra_system: Sequence[SystemMessageInput] = (),
-    ) -> ProviderRequest:
-        """Build a request with stable system-message and conversation ordering.
+    def build_request(self, plan: ModelInputPlanV1) -> ProviderRequest:
+        """Lower ordered plan blocks without changing their content."""
 
-        ``extra_system`` is deliberately supplied per request rather than discovered here.
-        A caller can therefore freeze future Run-specific context, such as a Skill catalog,
-        once and reuse the same ordered fragments for every model step in that Run.
-        """
-
-        system_messages = tuple(_system_message(value) for value in extra_system)
+        if plan.context_data:
+            raise RuntimeError(
+                "context data lowering is not implemented for model input plan version 1"
+            )
         return ProviderRequest(
-            model_id=model_id,
+            model_id=plan.model_id,
             messages=(
-                _OUTPUT_STYLE_SYSTEM_MESSAGE,
-                *system_messages,
-                *_provider_messages(items),
+                *(
+                    ProviderMessage(role="system", content=block.content)
+                    for block in plan.instructions
+                ),
+                *_provider_messages(plan.messages),
             ),
-            tools=tuple(tools),
+            tools=plan.tools,
         )
-
-
-def _system_message(value: SystemMessageInput) -> ProviderMessage:
-    if isinstance(value, str):
-        return ProviderMessage(role="system", content=value)
-    if (
-        value.role != "system"
-        or value.tool_calls
-        or value.tool_call_id is not None
-        or value.reasoning_content is not None
-    ):
-        raise ValueError("extra system messages must be plain system messages")
-    return value
 
 
 def _provider_messages(items: Sequence[ContextItem]) -> tuple[ProviderMessage, ...]:

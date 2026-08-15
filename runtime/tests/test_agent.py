@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import ikaros_runtime.agent.loop as agent_loop_module
-from ikaros_runtime.agent.context import ContextBuilder
+from ikaros_runtime.agent import ContextBuilder, ModelInputPlanner
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
@@ -1062,10 +1062,11 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
             through_turn_id=prepared.turn_id,
         )
         assert rebuilt == before_rebuild
-        replayed = ContextBuilder().build_request(
+        replay_plan = ModelInputPlanner().build_plan(
             model_id="narrated-v1",
             items=rebuilt,
-        ).messages
+        )
+        replayed = ContextBuilder().build_request(replay_plan).messages
         assert replayed[2].content == "Let me demonstrate:"
         assert replayed[2].tool_calls[0].id == "call-narrated"
     finally:

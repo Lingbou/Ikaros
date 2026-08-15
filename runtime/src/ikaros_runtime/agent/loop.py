@@ -22,10 +22,10 @@ from ..security import (
     contains_protected_value,
     json_contains_protected_value,
 )
-from ..skills import build_skill_prompt
 from ..storage import SqliteRuntimeStore
 from ..tools.core import ToolCall, ToolExecutionCancelled, ToolExecutor, ToolResult
 from .context import ContextBuilder
+from .model_input import ModelInputPlanner
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
 ProtectedValues = Callable[[], Sequence[str]]
@@ -81,6 +81,7 @@ class AgentLoop:
         *,
         protected_values: ProtectedValues | None = None,
         context_builder: ContextBuilder | None = None,
+        model_input_planner: ModelInputPlanner | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -92,6 +93,9 @@ class AgentLoop:
         self._protected_values = protected_values or _empty_protected_values
         self._context_builder = (
             context_builder if context_builder is not None else ContextBuilder()
+        )
+        self._model_input_planner = (
+            model_input_planner if model_input_planner is not None else ModelInputPlanner()
         )
 
     async def run(self, run_id: str, cancellation: CancellationToken) -> None:
@@ -109,10 +113,9 @@ class AgentLoop:
                 raise RuntimeError("run execution policy is not available")
 
             await self._publish(self._store.mark_run_running(run_id))
-            skill_prompt = build_skill_prompt(run.skills)
             for step_ordinal in range(1, self._max_steps + 1):
                 cancellation.raise_if_cancelled()
-                request = self._context_builder.build_request(
+                plan = self._model_input_planner.build_plan(
                     model_id=run.model_id,
                     items=self._store.context_items(
                         run.branch_id,
@@ -121,8 +124,9 @@ class AgentLoop:
                     tools=(
                         self._tool_executor.definitions if self._tool_executor is not None else ()
                     ),
-                    extra_system=(skill_prompt,) if skill_prompt is not None else (),
+                    skills=run.skills,
                 )
+                request = self._context_builder.build_request(plan)
                 assistant_item_id, tool_calls, reasoning_content, step_id = (
                     await self._provider_step(
                         run_id,

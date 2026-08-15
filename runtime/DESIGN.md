@@ -5,10 +5,11 @@ Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
 current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
-The next proposed stage, including `ModelInputPlanV1`, bounded history,
-Identity Core, and a separate long-term-Memory store, is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Those
-capabilities are not part of the implemented vertical slice described here.
+The active next stage, covering `ModelInputPlanV1`, bounded history, Identity
+Core, and a separate long-term-Memory store, is specified in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
+`ModelInputPlanV1` is implemented; the linked document's status table is the
+source of truth for the remaining strictly serial Gates.
 
 ## Product boundary
 
@@ -69,6 +70,7 @@ loopback WebSocket JSON-RPC
 long-lived Python ikaros-runtime
         |- Scheduler and per-Branch queues
         |- TurnDriver / AgentLoop
+        |- ModelInputPlanner
         |- ContextBuilder
         |- ProviderRegistry
         |- ToolRegistry and ToolExecutor
@@ -548,9 +550,10 @@ client submits user input
   -> Scheduler reserves the persisted Run
   -> server attempts the command ACK
   -> Scheduler activates the Run
-  -> ContextBuilder deterministically renders persisted ContextItems,
-     the fixed output-style instruction, frozen Run Skill descriptors,
-     and Tool definitions into ProviderRequest
+  -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1
+     containing versioned Output Style and frozen Run Skill Catalog blocks,
+     persisted ContextItems, and separate Tool definitions
+  -> ContextBuilder deterministically renders that Plan into ProviderRequest
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call
   -> ExecutionPolicy returns allow under FullAccessPolicy
@@ -561,9 +564,11 @@ client submits user input
   -> Run emits exactly one settled terminal event
 ```
 
-`ContextBuilder` does not select or budget history, retrieve durable Memory,
-assign authority/scope/lifetime metadata, or produce an input Manifest. Those
-are proposed, separately gated responsibilities in
+`ModelInputPlanner` assigns authority/scope/lifetime metadata to the current
+Output Style and Skill Catalog blocks, but still receives the complete unbounded
+Branch context. It does not select or budget history, retrieve durable Memory,
+or produce a persistent input Manifest. Those are separately gated
+responsibilities in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 The provider boundary must not leak provider-specific request or streaming

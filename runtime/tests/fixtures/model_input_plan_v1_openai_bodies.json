@@ -1,0 +1,119 @@
+[
+  {
+    "model": "model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets."
+      },
+      {
+        "role": "system",
+        "content": "Skills provide optional instructions for specialized tasks. When a Skill is relevant, use the read tool to load its SKILL.md from the listed location before following it.\n<available_skills>\n  <skill>\n    <name>demo</name>\n    <description>Use the demo workflow.</description>\n    <location>C:\\Users\\example\\.ikaros\\skills\\demo\\SKILL.md</location>\n  </skill>\n</available_skills>"
+      },
+      {
+        "role": "user",
+        "content": "Run both commands."
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "process_run",
+          "description": "Run one deterministic test process.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  },
+  {
+    "model": "model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets."
+      },
+      {
+        "role": "system",
+        "content": "Skills provide optional instructions for specialized tasks. When a Skill is relevant, use the read tool to load its SKILL.md from the listed location before following it.\n<available_skills>\n  <skill>\n    <name>demo</name>\n    <description>Use the demo workflow.</description>\n    <location>C:\\Users\\example\\.ikaros\\skills\\demo\\SKILL.md</location>\n  </skill>\n</available_skills>"
+      },
+      {
+        "role": "user",
+        "content": "Run both commands."
+      },
+      {
+        "role": "assistant",
+        "content": "I will inspect both.",
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "type": "function",
+            "function": {
+              "name": "process_run",
+              "arguments": "{\"command\":\"first\"}"
+            }
+          },
+          {
+            "id": "call-2",
+            "type": "function",
+            "function": {
+              "name": "process_run",
+              "arguments": "{\"command\":\"second\"}"
+            }
+          }
+        ],
+        "reasoning_content": "choose two commands"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": "{\"toolCallId\":\"call-1\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"first-output\",\"cancelled\":false,\"durationMs\":0,\"truncated\":false}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call-2",
+        "content": "{\"toolCallId\":\"call-2\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"second-output\",\"cancelled\":false,\"durationMs\":0,\"truncated\":false}"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "process_run",
+          "description": "Run one deterministic test process.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ]
+  }
+]

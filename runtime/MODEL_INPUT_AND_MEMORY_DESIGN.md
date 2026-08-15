@@ -1,15 +1,15 @@
 # 模型输入与记忆基础设计
 
-状态：**PROPOSED（计划中，尚未实现）**
+状态：**IN PROGRESS（Gate 0–1 已完成，Gate 2–10 尚未实现）**
 
 审阅基线：`8e09f5c`（2026-08-16）。该提交只用于说明本文编写时核对的代码快照，
 不是永久的“当前版本”声明。已经落地的 Runtime 总体架构以
 [DESIGN.md](DESIGN.md) 为准；真实 DeepSeek 验证记录以
 [LIVE_VALIDATION.md](LIVE_VALIDATION.md) 为准。
 
-本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate。
-它不是完成清单，也不表示 `ModelInputPlanV1`、Identity Core、History Selector
-或长期 Memory 已经存在。
+本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
+并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
+能力才已存在；Identity Core、History Selector 和长期 Memory 仍未实现。
 
 ## 1. 阅读规则
 
@@ -116,8 +116,25 @@ flowchart LR
 当前
 [context_items](src/ikaros_runtime/storage/projections.py)
 仍会读取当前 Branch 截至本 Turn 的全部合格历史，并在每个 Tool Step 重新装配。
-因此 `ContextBuilder` 只是确定性渲染器，不是带 authority、scope、lifetime 和
-budget 的输入规划器。
+因此已实现的 `ModelInputPlanner` 目前仍保留无界历史行为；`ContextBuilder` 只是
+确定性渲染器，不负责选择历史或 Memory。
+
+### 3.3 Gate 1 实施增量
+
+Gate 1 在审阅基线之后增加了：
+
+- Provider-neutral、结构不可变的 `ModelInputPlanV1`；
+- 带 `authority`、`scope`、`lifetime` 和来源的 Output Style、Skill Catalog
+  Instruction Blocks；
+- 明确为空的 Context Data、Provider-default generation options 和
+  legacy-unbounded budget snapshot；
+- Gate 1 的 ContextBuilder 明确拒绝非空 Context Data，避免在 Gate 9 定义安全包装
+  前将普通数据提升成无包装的 System Instruction；
+- `AgentLoop -> ModelInputPlanner -> ContextBuilder -> ProviderRequest` 生产链；
+- 贯穿 SQLite、双 Tool Step、OpenAI-compatible Adapter 和最终 HTTP Body 的静态
+  Golden Test。
+
+这仍不包括持久 Frame、Manifest、Identity、Memory 或历史预算。
 
 ## 4. 概念边界
 
@@ -279,19 +296,19 @@ UI 只显示“来源记录不可用”。
 
 ## 6. 总体 Gate
 
-| Gate | 内容 | `state.db` 重置 |
-| --- | --- | --- |
-| 0 | 修正文档和固定架构不变量 | 否 |
-| 1 | `ModelInputPlanV1`，保持 Provider wire 不变 | 否 |
-| 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 是，仅这一次 |
-| 3 | `HistorySelectorV1`，限制无界历史 | 否 |
-| 4 | `identity-core-v1` 与 DeepSeek A/B | 否 |
-| 5 | 独立 `memory.db`，Create/List/Get | 不动 `state.db` |
-| 6 | Correction、Forget、Provenance、幂等 | 否 |
-| 7 | Memory Check、Backup、Export | 否 |
-| 8 | Desktop Memory 管理页面 | 否 |
-| 9 | Memory Read V1，有限召回并进入模型 | 否 |
-| 10 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 否 |
+| Gate | 内容 | 状态 | `state.db` 重置 |
+| --- | --- | --- | --- |
+| 0 | 修正文档和固定架构不变量 | 已完成 | 否 |
+| 1 | `ModelInputPlanV1`，保持 Provider wire 不变 | 已完成 | 否 |
+| 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 未开始 | 是，仅这一次 |
+| 3 | `HistorySelectorV1`，限制无界历史 | 未开始 | 否 |
+| 4 | `identity-core-v1` 与 DeepSeek A/B | 未开始 | 否 |
+| 5 | 独立 `memory.db`，Create/List/Get | 未开始 | 不动 `state.db` |
+| 6 | Correction、Forget、Provenance、幂等 | 未开始 | 否 |
+| 7 | Memory Check、Backup、Export | 未开始 | 否 |
+| 8 | Desktop Memory 管理页面 | 未开始 | 否 |
+| 9 | Memory Read V1，有限召回并进入模型 | 未开始 | 否 |
+| 10 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 未开始 | 否 |
 
 ## 7. Gate 0：文档和架构边界
 
@@ -311,6 +328,8 @@ UI 只显示“来源记录不可用”。
 - 没有把 Memory、Identity、History Budget 或 Manifest 写成当前能力。
 
 ## 8. Gate 1：`ModelInputPlanV1`
+
+状态：**CURRENT（已实现）**
 
 ### 目标
 
@@ -344,10 +363,13 @@ Gate 1 只建立结构：
 - Skill Catalog 成为 Run 级 Instruction Block；
 - `identity_core` 为空；
 - `memory_context` 为空；
+- ContextBuilder 在 Gate 9 定义版本化、安全的 Context Data 降级前拒绝非空
+  `context_data`；
 - Messages 和 Tools 保持独立；
 - ContextBuilder 继续渲染为现有 `ProviderRequest`；
 - Provider Adapter 的 wire 行为不变；
-- Plan 中集合不可变。
+- Plan 自有的有序集合在运行时防御性转换为 tuple，保持结构不可变；既有
+  `ContextItem.data`、Tool arguments 和 Tool schema 的递归快照属于 Gate 2。
 
 执行链：
 

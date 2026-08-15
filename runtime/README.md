@@ -2,10 +2,10 @@
 
 The Ikaros Runtime is a long-lived local Python process supervised by the
 Electron main process. The implemented architecture and current vertical-slice
-boundary are recorded in [DESIGN.md](DESIGN.md). The proposed, strictly serial
+boundary are recorded in [DESIGN.md](DESIGN.md). The active, strictly serial
 model-input and long-term-Memory stage is specified separately in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md); that
-document is a plan, not a list of current capabilities.
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md); its status
+table distinguishes completed Gates from proposed capabilities.
 
 Ikaros Desktop starts one Runtime for the application lifetime and connects to
 it through authenticated loopback WebSocket JSON-RPC. Standard output carries
@@ -52,6 +52,11 @@ The current Desktop/Runtime path provides:
 - exact Provider-reported model usage captured per Agent Step, persisted in the
   append-only Journal and a rebuildable SQLite projection, and aggregated by
   `usage.read` for the Desktop Profile metrics and 52-week activity chart;
+- a Provider-neutral `ModelInputPlanV1` between the Agent loop and
+  `ContextBuilder`, with versioned Output Style and frozen Run Skill Catalog
+  instruction blocks, explicit empty Context Data, Provider-default generation
+  options, and a legacy-unbounded budget snapshot; the resulting OpenAI wire
+  body remains locked by a two-Step Golden Test;
 - Skills V0, including safe one-level discovery below
   `~/.ikaros/skills/<name>/SKILL.md`, catalog diagnostics, global
   enable/disable state, immutable enabled-descriptor snapshots per Run, and
@@ -115,9 +120,9 @@ or a security guarantee. The Runtime is tied to the Desktop application
 lifetime and is not yet a Windows Service, login item, or independently
 discoverable daemon.
 
-Durable cross-Thread Memory, Identity Core, input manifests, and bounded
-history selection are not implemented. Their boundaries and implementation
-order are defined in
+Durable cross-Thread Memory, Identity Core, persistent input Frames/Manifests,
+and bounded history selection are not implemented. Their boundaries and
+implementation order are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development

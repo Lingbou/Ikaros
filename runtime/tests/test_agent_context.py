@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from ikaros_runtime.agent.context import ContextBuilder
+from ikaros_runtime.agent import ContextBuilder, ContextDataBlockV1, ModelInputPlanner
 from ikaros_runtime.domain import ContextItem
-from ikaros_runtime.providers.base import ProviderMessage
 from ikaros_runtime.tools.core import ToolCall, ToolDefinition
 
 
@@ -59,21 +60,16 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
         ),
     )
 
-    request = ContextBuilder().build_request(
+    plan = ModelInputPlanner().build_plan(
         model_id="model-1",
         items=items,
         tools=(tool,),
-        extra_system=(
-            "first frozen fragment",
-            ProviderMessage(role="system", content="second frozen fragment"),
-        ),
     )
+    request = ContextBuilder().build_request(plan)
 
     assert request.model_id == "model-1"
     assert request.tools == (tool,)
     assert [message.role for message in request.messages] == [
-        "system",
-        "system",
         "system",
         "user",
         "assistant",
@@ -81,23 +77,19 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
         "tool",
     ]
     assert "Markdown hyphen bullets (`- item`)" in request.messages[0].content
-    assert [message.content for message in request.messages[1:3]] == [
-        "first frozen fragment",
-        "second frozen fragment",
-    ]
-    assistant = request.messages[4]
+    assistant = request.messages[2]
     assert assistant.content == "I will run them."
     assert assistant.reasoning_content == "choose commands"
     assert assistant.tool_calls == (
         ToolCall("call-1", "process_run", {"command": "first"}),
         ToolCall("call-2", "process_run", {"command": "second"}),
     )
-    assert request.messages[5].tool_call_id == "call-1"
-    assert request.messages[6].tool_call_id == "call-2"
+    assert request.messages[3].tool_call_id == "call-1"
+    assert request.messages[4].tool_call_id == "call-2"
 
 
 def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls() -> None:
-    request = ContextBuilder().build_request(
+    plan = ModelInputPlanner().build_plan(
         model_id="model-1",
         items=(
             ContextItem(
@@ -109,6 +101,7 @@ def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls
             ContextItem(kind="message", role="user", content="continue", data={}),
         ),
     )
+    request = ContextBuilder().build_request(plan)
 
     assert [(message.role, message.content) for message in request.messages[1:]] == [
         ("assistant", "The interrupted narration remains visible."),
@@ -117,13 +110,25 @@ def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls
     assert request.messages[1].tool_calls == ()
 
 
-def test_context_builder_rejects_non_system_extra_message() -> None:
-    with pytest.raises(ValueError, match="plain system messages"):
-        ContextBuilder().build_request(
-            model_id="model-1",
-            items=(),
-            extra_system=(ProviderMessage(role="user", content="not a system message"),),
-        )
+def test_context_builder_rejects_context_data_until_safe_lowering_is_defined() -> None:
+    plan = ModelInputPlanner().build_plan(model_id="model-1", items=())
+    plan = replace(
+        plan,
+        context_data=(
+            ContextDataBlockV1(
+                id="future-memory",
+                version=1,
+                source="memory:example@1",
+                authority="contextual_data",
+                scope="global",
+                lifetime="run",
+                content="Untrusted context data",
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="context data lowering is not implemented"):
+        ContextBuilder().build_request(plan)
 
 
 def test_context_builder_rejects_duplicate_reasoning_for_one_tool_step() -> None:
@@ -155,4 +160,5 @@ def test_context_builder_rejects_duplicate_reasoning_for_one_tool_step() -> None
     )
 
     with pytest.raises(RuntimeError, match="duplicate reasoning context"):
-        ContextBuilder().build_request(model_id="model-1", items=items)
+        plan = ModelInputPlanner().build_plan(model_id="model-1", items=items)
+        ContextBuilder().build_request(plan)
