@@ -14,6 +14,8 @@ from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome
 from .identity import load_identity_core
+from .memory import SqliteMemoryStore
+from .paths import RuntimePaths
 from .protocol.router import RuntimeRouter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
@@ -24,6 +26,7 @@ from .security import RuntimeSecurity
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
+from .services.memories import MemoryService
 from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
 from .services.threads import ThreadService
@@ -44,24 +47,28 @@ class RuntimeApplication:
         store: SqliteRuntimeStore,
         publish: EventPublisher,
         *,
+        memory_store: SqliteMemoryStore,
         config_store: ConfigStore | None = None,
         model_discovery: ModelDiscovery = discover_openai_compatible_models,
         identity_core: InstructionBlockV1 | None = None,
     ) -> None:
         self._store = store
+        self._memory_store = memory_store
+        paths = RuntimePaths.from_home(store.database_path.parent)
         self._config = config_store or ConfigStore(
-            ConfigDocumentStore(store.database_path.parent)
+            ConfigDocumentStore(paths.home)
         )
         self.security = RuntimeSecurity(
             self._config.protected_values,
-            self._store.journal_contains_protected_values,
+            lambda values: self._store.journal_contains_protected_values(values)
+            or self._memory_store.contains_protected_values(tuple(values)),
         )
         self.security.assert_configuration_safe()
         self.identity_core = identity_core or load_identity_core()
 
         self.skills = SkillService(
             SkillCatalog(
-                self._config.document_store.path.parent / "skills",
+                paths.skills,
                 self.security.protected_values,
             ),
             self._config.document_store,
@@ -124,12 +131,17 @@ class RuntimeApplication:
             self.security.assert_credentials_safe,
         )
         self.usage = UsageService(store)
+        self.memories = MemoryService(
+            memory_store,
+            self.security.assert_request_safe,
+        )
         self.router = RuntimeRouter(
             self.threads,
             self.turns,
             self.providers,
             self.usage,
             self.skills,
+            self.memories,
         )
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
@@ -144,8 +156,11 @@ class RuntimeApplication:
             await self._scheduler.cancel(outcome.cancel_after_ack)
 
     async def close(self) -> None:
-        await self._scheduler.close()
-        await self._provider_registry.close()
+        try:
+            await self._scheduler.close()
+            await self._provider_registry.close()
+        finally:
+            self._memory_store.close()
 
 
 async def run_runtime_server(settings: ServerSettings) -> None:
@@ -154,17 +169,22 @@ async def run_runtime_server(settings: ServerSettings) -> None:
     settings.validate()
     runtime_lock = await RuntimeHomeLock.acquire(settings.runtime_home)
     store: SqliteRuntimeStore | None = None
+    memory_store: SqliteMemoryStore | None = None
     application: RuntimeApplication | None = None
     try:
         logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+        paths = RuntimePaths.from_home(settings.runtime_home)
         identity_core = load_identity_core()
-        config_document_store = ConfigDocumentStore(settings.runtime_home)
+        config_document_store = ConfigDocumentStore(paths.home)
         config_store = ConfigStore(config_document_store)
-        store = SqliteRuntimeStore(settings.runtime_home / "state.db")
+        store = SqliteRuntimeStore(paths.state_db)
+        opened_memory_store = SqliteMemoryStore(paths.memory_db)
+        memory_store = opened_memory_store
 
         pre_recovery_security = RuntimeSecurity(
             config_store.protected_values,
-            store.journal_contains_protected_values,
+            lambda values: store.journal_contains_protected_values(values)
+            or opened_memory_store.contains_protected_values(tuple(values)),
         )
         pre_recovery_security.assert_configuration_safe()
         recovery = store.recover_incomplete_runs()
@@ -173,9 +193,11 @@ async def run_runtime_server(settings: ServerSettings) -> None:
         application = RuntimeApplication(
             store,
             event_hub.publish,
+            memory_store=opened_memory_store,
             config_store=config_store,
             identity_core=identity_core,
         )
+        memory_store = None
         application.start(recovery.queued_run_ids)
 
         async def connection_handler(
@@ -195,6 +217,8 @@ async def run_runtime_server(settings: ServerSettings) -> None:
     finally:
         if application is not None:
             await application.close()
+        if memory_store is not None:
+            memory_store.close()
         if store is not None:
             store.close()
         runtime_lock.release()

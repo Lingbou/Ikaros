@@ -83,6 +83,14 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
             elif method == "turn.list":
                 assert isinstance(result["turns"], list)
                 assert isinstance(result["snapshotSeq"], int)
+            elif method == "memory.create":
+                assert isinstance(result["memoryId"], str)
+                assert result["resultingRevision"] == 1
+            elif method == "memory.list":
+                assert isinstance(result["memories"], list)
+                assert result["hasMore"] is False
+            elif method == "memory.get":
+                assert isinstance(result["memory"], dict)
         else:
             assert message["kind"] == "notification"
             assert envelope["method"] == EVENT_NOTIFICATION_METHOD
@@ -101,13 +109,16 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
 
     assert observed_methods == {
         INITIALIZE_METHOD,
+        "memory.create",
+        "memory.get",
+        "memory.list",
         "skill.list",
         "skill.set_enabled",
         "thread.list",
         "turn.list",
     }
     assert observed_event_types == JOURNAL_EVENT_TYPE_SET
-    assert len(RPC_METHODS) == 21
+    assert len(RPC_METHODS) == 24
 
 
 @pytest.mark.asyncio
@@ -119,7 +130,14 @@ async def test_committed_golden_session_trace_matches_the_production_agent_trace
         message
         for message in cast(list[dict[str, Any]], trace["messages"])
         if message["kind"] == "notification"
-        or message["name"] in {"thread-list-page", "turn-list-page"}
+        or message["name"]
+        in {
+            "memory-created",
+            "memory-list-page",
+            "memory-record",
+            "thread-list-page",
+            "turn-list-page",
+        }
     ]
 
     generated = await build_production_messages(tmp_path / "state.db")

@@ -10,6 +10,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   type RuntimeJournalEvent,
+  type RuntimeMemoryCreateResult,
+  type RuntimeMemoryGetResult,
+  type RuntimeMemoryListPage,
   type RuntimeReplayResult,
   type RuntimeThreadGetResult,
   type RuntimeTurnListPage,
@@ -508,6 +511,7 @@ describe("RuntimeHost integration", () => {
 
   it("owns one authenticated Runtime and preserves journal state across restart", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-host-"));
+    let durableMemoryId = "";
     try {
       const firstHost = new RuntimeHost({ runtimeRoot, runtimeHome });
       const events: RuntimeJournalEvent[] = [];
@@ -622,6 +626,41 @@ describe("RuntimeHost integration", () => {
           },
           dailyUsageBuckets: []
         });
+        const beforeMemory = await firstHost.request<RuntimeReplayResult>("event.replay", {
+          afterSeq: 0
+        });
+        const memoryParams = {
+          kind: "preference",
+          scope: { type: "global", key: null },
+          content: "The user prefers concise technical explanations.",
+          clientRequestId: "runtime-host-memory-create"
+        };
+        const memoryCreated = await firstHost.request<RuntimeMemoryCreateResult>(
+          "memory.create",
+          memoryParams
+        );
+        durableMemoryId = memoryCreated.memoryId;
+        expect(memoryCreated).toEqual({
+          memoryId: expect.stringMatching(/^memory_[0-9a-f]{32}$/),
+          resultingRevision: 1,
+          created: true
+        });
+        const memoryPage = await firstHost.request<RuntimeMemoryListPage>("memory.list", {
+          scope: memoryParams.scope,
+          limit: 25
+        });
+        expect(memoryPage.memories).toEqual([
+          expect.objectContaining({
+            id: durableMemoryId,
+            kind: "preference",
+            preview: memoryParams.content
+          })
+        ]);
+        const afterMemory = await firstHost.request<RuntimeReplayResult>("event.replay", {
+          afterSeq: 0
+        });
+        expect(afterMemory.latestSeq).toBe(beforeMemory.latestSeq);
+        expect(afterMemory.events).toEqual(beforeMemory.events);
       } finally {
         removeNotification();
         await firstHost.stop();
@@ -650,6 +689,31 @@ describe("RuntimeHost integration", () => {
         expect(replay.events.at(-1)).toEqual(
           expect.objectContaining({ type: "run.settled" })
         );
+        const memory = await secondHost.request<RuntimeMemoryGetResult>("memory.get", {
+          memoryId: durableMemoryId
+        });
+        expect(memory.memory).toEqual(
+          expect.objectContaining({
+            id: durableMemoryId,
+            content: "The user prefers concise technical explanations.",
+            revision: 1,
+            state: "active"
+          })
+        );
+        const repeated = await secondHost.request<RuntimeMemoryCreateResult>(
+          "memory.create",
+          {
+            kind: "preference",
+            scope: { type: "global", key: null },
+            content: "The user prefers concise technical explanations.",
+            clientRequestId: "runtime-host-memory-create"
+          }
+        );
+        expect(repeated).toEqual({
+          memoryId: durableMemoryId,
+          resultingRevision: 1,
+          created: false
+        });
       } finally {
         await secondHost.stop();
       }

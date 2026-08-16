@@ -145,11 +145,24 @@ def client_request_id_from(params: dict[str, Any]) -> str | None:
     value = params.get("clientRequestId")
     if value is None:
         return None
-    if not isinstance(value, str) or not value or len(value) > 200:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 200
+        or not _is_valid_utf8(value)
+    ):
         raise InvalidParamsError(
             "clientRequestId must be a non-empty string of at most 200 characters"
         )
     return value
+
+
+def _is_valid_utf8(value: str) -> bool:
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def record_id_from(value: object, *, name: str) -> str:

@@ -6,6 +6,7 @@ import os
 import secrets
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 from asyncio.subprocess import Process
@@ -23,6 +24,7 @@ from ikaros_runtime.bootstrap import RuntimeApplication
 from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, JournalEvent
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
 from ikaros_runtime.identity import IdentityResourceError, load_identity_core
+from ikaros_runtime.memory import MemoryScope, SqliteMemoryStore
 from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
 from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.server.connection import handle_connection
@@ -466,6 +468,7 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "models": True,
             "usage": True,
             "skills": True,
+            "memory": True,
             "tools": ["process_run", "read", "write", "edit"],
             "executionPolicy": "full_access",
         },
@@ -500,7 +503,7 @@ async def _discard_event(_event: JournalEvent) -> None:
 
 
 def _database_contents(runtime_home: Path) -> list[bytes]:
-    return [path.read_bytes() for path in runtime_home.glob("state.db*")]
+    return [path.read_bytes() for path in runtime_home.glob("*.db*")]
 
 
 class FakeOpenAIEndpoint:
@@ -1024,6 +1027,213 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
 
 
 @pytest.mark.asyncio
+async def test_memory_rpc_is_durable_idempotent_and_event_free(tmp_path: Path) -> None:
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    params = {
+        "kind": "preference",
+        "scope": {"type": "global", "key": None},
+        "content": "  用户希望技术说明简洁。🌸  ",
+        "clientRequestId": "desktop-memory-create-1",
+    }
+    memory_id = ""
+    try:
+        created = await _rpc(connection, 2, "memory.create", params)
+        assert created["result"]["created"] is True
+        assert created["result"]["resultingRevision"] == 1
+        memory_id = cast(str, created["result"]["memoryId"])
+
+        listed = await _rpc(
+            connection,
+            3,
+            "memory.list",
+            {"scope": {"type": "global", "key": None}},
+        )
+        assert listed["result"]["nextCursor"] is None
+        assert listed["result"]["hasMore"] is False
+        assert listed["result"]["memories"] == [
+            {
+                "id": memory_id,
+                "kind": "preference",
+                "scope": {"type": "global", "key": None},
+                "revision": 1,
+                "state": "active",
+                "preview": params["content"],
+                "createdAt": listed["result"]["memories"][0]["createdAt"],
+                "updatedAt": listed["result"]["memories"][0]["updatedAt"],
+                "forgottenAt": None,
+            }
+        ]
+
+        fetched = await _rpc(connection, 4, "memory.get", {"memoryId": memory_id})
+        memory = fetched["result"]["memory"]
+        assert memory["content"] == params["content"]
+        assert memory["provenance"] == {
+            "sourceKind": "user_explicit",
+            "threadId": None,
+            "turnId": None,
+            "itemId": None,
+            "status": "not_applicable",
+        }
+        replay = await _rpc(connection, 5, "event.replay", {"afterSeq": 0})
+        assert replay["result"]["events"] == []
+        protected = "sk-memory-online-credential-sentinel"
+        await _rpc(
+            connection,
+            6,
+            "memory.create",
+            {
+                "kind": "fact",
+                "scope": {"type": "global", "key": None},
+                "content": f"persisted prefix {protected} suffix",
+                "clientRequestId": "desktop-memory-credential-conflict",
+            },
+        )
+        rejected = await _rpc(
+            connection,
+            7,
+            "provider.configure",
+            {
+                "kind": "deepseek",
+                "apiKey": protected,
+                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+            },
+        )
+        assert rejected["error"]["code"] == -32602
+        assert "credentials conflict" in rejected["error"]["message"]
+        assert protected not in json.dumps(rejected)
+        assert not (tmp_path / "config.yaml").exists()
+        await _shutdown(connection, process, 8)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+    assert (tmp_path / "state.db").is_file()
+    assert (tmp_path / "memory.db").is_file()
+
+    restarted, readiness = await _start_runtime(token, tmp_path)
+    restarted_connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}",
+        token,
+    )
+    try:
+        repeated = await _rpc(restarted_connection, 2, "memory.create", params)
+        assert repeated["result"] == {
+            "memoryId": memory_id,
+            "resultingRevision": 1,
+            "created": False,
+        }
+        fetched = await _rpc(
+            restarted_connection,
+            3,
+            "memory.get",
+            {"memoryId": memory_id},
+        )
+        assert fetched["result"]["memory"]["content"] == params["content"]
+        await _shutdown(restarted_connection, restarted, 4)
+    finally:
+        if restarted.returncode is None:
+            await _stop_failed_process(restarted)
+
+
+@pytest.mark.asyncio
+async def test_memory_rpc_allows_credentials_equal_to_fixed_protocol_values(
+    tmp_path: Path,
+) -> None:
+    config = ConfigStore(tmp_path)
+    for index, protected in enumerate(("fact", "global", "active"), start=1):
+        config.configure_custom(
+            provider_id=f"fixed-vocabulary-{index}",
+            display_name=f"Fixed Vocabulary {index}",
+            base_url=f"http://127.0.0.1:{9000 + index}/v1",
+            api_key=protected,
+            headers=None,
+            models=[ModelInput(f"safe-model-{index}", f"Safe Model {index}")],
+        )
+
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}", token
+    )
+    try:
+        created = await _rpc(
+            connection,
+            2,
+            "memory.create",
+            {
+                "kind": "fact",
+                "scope": {"type": "global", "key": None},
+                "content": "Protocol vocabulary remains distinct from user Memory.",
+                "clientRequestId": "fixed-vocabulary-request",
+            },
+        )
+        assert "error" not in created
+        memory_id = cast(str, created["result"]["memoryId"])
+
+        listed = await _rpc(connection, 3, "memory.list", {"state": "active"})
+        assert [entry["id"] for entry in listed["result"]["memories"]] == [
+            memory_id
+        ]
+        fetched = await _rpc(
+            connection, 4, "memory.get", {"memoryId": memory_id}
+        )
+        assert fetched["result"]["memory"]["kind"] == "fact"
+        await _shutdown(connection, process, 5)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_memory_rpc_rejects_unencodable_unicode_with_stable_invalid_params(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}", token
+    )
+    try:
+        requests: tuple[tuple[str, dict[str, Any], str], ...] = (
+            (
+                "memory.create",
+                {
+                    "kind": "fact",
+                    "scope": {"type": "workspace", "key": "\ud800"},
+                    "content": "safe content",
+                    "clientRequestId": "safe-request-1",
+                },
+                "scope",
+            ),
+            (
+                "memory.create",
+                {
+                    "kind": "fact",
+                    "scope": {"type": "global", "key": None},
+                    "content": "safe content",
+                    "clientRequestId": "\ud800",
+                },
+                "clientRequestId",
+            ),
+            ("memory.get", {"memoryId": "\ud800"}, "memoryId"),
+        )
+        for request_id, (method, params, expected_message) in enumerate(
+            requests, start=2
+        ):
+            rejected = await _rpc(connection, request_id, method, params)
+            assert rejected["error"]["code"] == -32602
+            assert expected_message in rejected["error"]["message"]
+            assert "codec" not in rejected["error"]["message"]
+        await _shutdown(connection, process, 5)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
 async def test_provider_model_discovery_rpc_is_ephemeral_and_secret_guarded(
     tmp_path: Path,
 ) -> None:
@@ -1039,7 +1249,12 @@ async def test_provider_model_discovery_rpc_is_ephemeral_and_secret_guarded(
         )
 
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event, model_discovery=discover)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        model_discovery=discover,
+    )
     connection = AckFailingConnection(
         [
             {
@@ -1111,7 +1326,12 @@ async def test_provider_model_discovery_rejects_invalid_params(
         return ()
 
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event, model_discovery=discover)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        model_discovery=discover,
+    )
     try:
         with pytest.raises(InvalidParamsError):
             await kernel.providers.discover_provider_models(params)
@@ -2513,7 +2733,13 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
         provider_id="local",
         model_id="model",
     )
-    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=memory_store,
+        config_store=config,
+    )
     try:
         with pytest.raises(InvalidParamsError, match="Run is active"):
             kernel.providers.remove_provider({"providerId": "local"})
@@ -2539,6 +2765,7 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
         assert provider["configured"] is True
         assert kernel.providers.remove_provider({"providerId": "local"})["removed"] is True
     finally:
+        memory_store.close()
         store.close()
 
 
@@ -2564,7 +2791,13 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
         client_request_id="stable-turn-request",
     )
     store.terminalize_run(prepared.run_id, "cancelled")
-    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=memory_store,
+        config_store=config,
+    )
     params: dict[str, object] = {
         "threadId": thread.id,
         "branchId": thread.default_branch_id,
@@ -2590,6 +2823,7 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
             kernel.turns.start_turn({**params, "content": "different content"})
         assert store._connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     finally:
+        memory_store.close()
         store.close()
 
 
@@ -2604,11 +2838,18 @@ def test_kernel_rejects_config_credentials_already_present_in_the_journal(
     config = ConfigStore(tmp_path)
     config.configure_deepseek(api_key=protected, models=[ModelInput("model", "Model")])
 
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
     try:
         with pytest.raises(ConfigError, match="conflict") as captured:
-            RuntimeApplication(store, _discard_event, config_store=config)
+            RuntimeApplication(
+                store,
+                _discard_event,
+                memory_store=memory_store,
+                config_store=config,
+            )
         assert protected not in str(captured.value)
     finally:
+        memory_store.close()
         store.close()
 
 
@@ -2620,7 +2861,13 @@ def test_online_provider_configuration_rejects_credentials_in_historical_events(
     thread, _ = store.create_thread(protected)
     store.rename_thread(thread.id, "Current safe title")
     config = ConfigStore(tmp_path)
-    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=memory_store,
+        config_store=config,
+    )
     before = config.path.read_bytes() if config.path.exists() else None
 
     try:
@@ -2641,6 +2888,7 @@ def test_online_provider_configuration_rejects_credentials_in_historical_events(
             for event in replayed
         )
     finally:
+        memory_store.close()
         store.close()
 
 
@@ -2801,6 +3049,138 @@ async def test_startup_credential_conflict_fails_before_recovery_mutates_state(
 
 
 @pytest.mark.asyncio
+async def test_memory_credential_conflict_fails_before_recovery_mutates_state(
+    tmp_path: Path,
+) -> None:
+    protected = "sk-memory-startup-conflict-sentinel"
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _ = store.create_thread("Memory credential conflict")
+    prepared = prepare_turn(
+        store,
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content="running before Memory conflict",
+        provider_id="scripted",
+        model_id="scripted-v1",
+    )
+    store.mark_run_running(prepared.run_id)
+    before_events, before_latest_seq = store.replay_events(0, 1000)
+    store.close()
+
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    memory_store.create_memory_once(
+        kind="fact",
+        scope=MemoryScope("global", None),
+        content=f"persisted prefix {protected} suffix",
+        client_request_id="memory-startup-conflict",
+    )
+    memory_store.close()
+    config = ConfigStore(tmp_path)
+    config.configure_deepseek(
+        api_key=protected,
+        models=[ModelInput("deepseek-chat", "DeepSeek Chat")],
+    )
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "ikaros_runtime",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        f"--token={secrets.token_hex(32)}",
+        "--parent-pid",
+        str(os.getpid()),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "IKAROS_HOME": str(tmp_path)},
+        creationflags=_HIDDEN_PROCESS_FLAGS,
+    )
+
+    assert process.stdout is not None
+    assert await asyncio.wait_for(process.stdout.readline(), timeout=10) == b""
+    assert await asyncio.wait_for(process.wait(), timeout=10) != 0
+    assert process.stderr is not None
+    stderr = (await process.stderr.read()).decode(errors="replace")
+    assert protected not in stderr
+
+    reopened = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        after_events, after_latest_seq = reopened.replay_events(0, 1000)
+        assert reopened.run_status(prepared.run_id) == "running"
+        assert after_latest_seq == before_latest_seq
+        assert after_events == before_events
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_incompatible_memory_schema_fails_before_recovery_and_is_not_rewritten(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _ = store.create_thread("Incompatible Memory schema")
+    prepared = prepare_turn(
+        store,
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content="running before rejected Memory schema",
+        provider_id="scripted",
+        model_id="scripted-v1",
+    )
+    store.mark_run_running(prepared.run_id)
+    before_events, before_latest_seq = store.replay_events(0, 1000)
+    store.close()
+
+    memory_path = tmp_path / "memory.db"
+    connection = sqlite3.connect(memory_path)
+    connection.execute("CREATE TABLE foreign_data(value TEXT)")
+    connection.execute("PRAGMA user_version = 99")
+    connection.commit()
+    connection.close()
+    before_memory = memory_path.read_bytes()
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "ikaros_runtime",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        f"--token={secrets.token_hex(32)}",
+        "--parent-pid",
+        str(os.getpid()),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "IKAROS_HOME": str(tmp_path)},
+        creationflags=_HIDDEN_PROCESS_FLAGS,
+    )
+
+    assert process.stdout is not None
+    assert await asyncio.wait_for(process.stdout.readline(), timeout=10) == b""
+    assert await asyncio.wait_for(process.wait(), timeout=10) != 0
+    assert process.stderr is not None
+    stderr = (await process.stderr.read()).decode(errors="replace")
+    assert "memory database schema is incompatible" in stderr
+    assert memory_path.read_bytes() == before_memory
+    assert not await asyncio.to_thread(Path(f"{memory_path}-wal").exists)
+    assert not await asyncio.to_thread(Path(f"{memory_path}-shm").exists)
+
+    reopened = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        after_events, after_latest_seq = reopened.replay_events(0, 1000)
+        assert reopened.run_status(prepared.run_id) == "running"
+        assert after_latest_seq == before_latest_seq
+        assert after_events == before_events
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
 async def test_missing_identity_fails_before_recovery_mutates_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2889,7 +3269,12 @@ async def test_response_guard_replaces_an_unexpected_protected_payload(
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
     event_bus = EventHub(next_seq=1)
-    kernel = RuntimeApplication(store, event_bus.publish, config_store=config)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        config_store=config,
+    )
     connection = AckFailingConnection(
         [
             {
@@ -2942,7 +3327,11 @@ async def test_accepted_turn_runs_even_when_the_ack_connection_disconnects(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("ACK disconnect")
     event_bus = EventHub(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeApplication(store, event_bus.publish)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     kernel.start()
     connection = AckFailingConnection(
         [
@@ -3000,7 +3389,11 @@ async def test_accepted_cancel_runs_even_when_the_ack_connection_disconnects(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Cancel ACK disconnect")
     event_bus = EventHub(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeApplication(store, event_bus.publish)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     kernel.start()
     started = kernel.turns.start_turn(
         {
@@ -3070,7 +3463,11 @@ async def test_cancel_between_turn_prepare_and_activation_prevents_execution(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Cross-client cancellation")
     event_bus = EventHub(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeApplication(store, event_bus.publish)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     kernel.start()
 
     try:
@@ -3120,7 +3517,11 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Reverse ACK order")
     event_bus = EventHub(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeApplication(store, event_bus.publish)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     kernel.start()
     first_ack_gate = asyncio.Event()
     second_ack_gate = asyncio.Event()
@@ -3259,7 +3660,11 @@ async def test_natural_completion_can_win_after_cancel_is_accepted(
     store = SqliteRuntimeStore(tmp_path / "state.db")
     thread, _ = store.create_thread("Completion race")
     event_bus = EventHub(next_seq=store.latest_sequence() + 1)
-    kernel = RuntimeApplication(store, event_bus.publish)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     kernel.start()
 
     try:
@@ -3501,7 +3906,11 @@ async def test_thread_create_rejects_invalid_workspace(
     workspace: object,
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         with pytest.raises(InvalidParamsError, match="workspace"):
             kernel.threads.create({"title": "Invalid workspace", "workspace": workspace})
@@ -3533,7 +3942,11 @@ async def test_thread_list_rejects_invalid_pagination_params(
     params: dict[str, object],
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         routed = await kernel.router.dispatch(1, "thread.list", params)
 
@@ -3550,7 +3963,11 @@ async def test_usage_read_returns_exact_empty_shape_and_rejects_parameters(
     tmp_path: Path,
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         routed = await kernel.router.dispatch(1, "usage.read", {})
         assert routed.response == {
@@ -3585,7 +4002,11 @@ async def test_usage_read_returns_exact_empty_shape_and_rejects_parameters(
 @pytest.mark.asyncio
 async def test_thread_list_defaults_to_fifty_and_returns_next_page(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         for index in range(51):
             kernel.threads.create({"title": f"Thread {index}"})
@@ -3636,7 +4057,11 @@ async def test_thread_history_reads_reject_invalid_params(
     params: dict[str, object],
 ) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         routed = await kernel.router.dispatch(1, method, params)
 
@@ -3662,7 +4087,12 @@ async def test_thread_workspace_cannot_contain_configured_credentials(tmp_path: 
         models=[ModelInput("model", "Model")],
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event, config_store=config)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        config_store=config,
+    )
     try:
         with pytest.raises(InvalidParamsError, match="protected configuration"):
             kernel.threads.create(
@@ -3689,7 +4119,11 @@ async def test_thread_create_normalizes_workspace_root_and_list_survives_deletio
     root = tmp_path / "workspace" / "nested"
     root.mkdir(parents=True)
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    kernel = RuntimeApplication(store, _discard_event)
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         created = kernel.threads.create(
             {

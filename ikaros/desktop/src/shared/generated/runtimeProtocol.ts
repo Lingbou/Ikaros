@@ -24,6 +24,9 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "model.set_enabled",
     "skill.list",
     "skill.set_enabled",
+    "memory.create",
+    "memory.list",
+    "memory.get",
     "turn.start",
     "turn.list",
     "run.cancel",
@@ -60,6 +63,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "models": true,
     "usage": true,
     "skills": true,
+    "memory": true,
     "tools": [
       "process_run",
       "read",

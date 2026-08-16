@@ -82,3 +82,7 @@ class ContextBudgetExceededError(RuntimeError):
 
 class ModelInputUnavailableError(RuntimeError):
     """A provider-neutral input source is missing, corrupt, or no longer canonical."""
+
+
+class MemorySchemaIncompatibleError(RuntimeError):
+    """The durable Memory database cannot be opened by this Runtime release."""

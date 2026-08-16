@@ -26,6 +26,9 @@ function bridgeWithListThreads(
     setModelEnabled: vi.fn(),
     listSkills: vi.fn(),
     setSkillEnabled: vi.fn(),
+    createMemory: vi.fn(),
+    listMemories: vi.fn(),
+    getMemory: vi.fn(),
     readUsage: vi.fn(),
     onEvent: vi.fn(() => () => undefined)
   };
@@ -270,6 +273,37 @@ describe("RuntimeClient", () => {
       client.setSkillEnabled({ name: "demo", enabled: false })
     ).resolves.toEqual({ skill: { ...skill, enabled: false } });
     expect(bridge.setSkillEnabled).toHaveBeenCalledWith({ name: "demo", enabled: false });
+  });
+
+  it("forwards explicit Memory create, list, and lazy get without caching", async () => {
+    const bridge = bridgeWithListThreads(
+      vi.fn(async () => ({
+        ok: true as const,
+        value: { threads: [], nextCursor: null, hasMore: false, snapshotSeq: 0 }
+      }))
+    );
+    const memoryId = `memory_${"1".repeat(32)}`;
+    const scope = { type: "global" as const, key: null };
+    const createParams = {
+      kind: "preference" as const,
+      scope,
+      content: "The user prefers concise answers.",
+      clientRequestId: "desktop-memory-create"
+    };
+    const created = { memoryId, resultingRevision: 1, created: true };
+    const page = { memories: [], nextCursor: null, hasMore: false };
+    const record = { memory: { id: memoryId, content: createParams.content } };
+    bridge.createMemory = vi.fn(async () => ({ ok: true as const, value: created }));
+    bridge.listMemories = vi.fn(async () => ({ ok: true as const, value: page }));
+    bridge.getMemory = vi.fn(async () => ({ ok: true as const, value: record })) as never;
+    const client = new RuntimeClient(bridge);
+
+    await expect(client.createMemory(createParams)).resolves.toEqual(created);
+    await expect(client.listMemories({ scope, limit: 25 })).resolves.toEqual(page);
+    await expect(client.getMemory(memoryId)).resolves.toEqual(record);
+    expect(bridge.createMemory).toHaveBeenCalledWith(createParams);
+    expect(bridge.listMemories).toHaveBeenCalledWith({ scope, limit: 25 });
+    expect(bridge.getMemory).toHaveBeenCalledWith(memoryId);
   });
 
   it.each([

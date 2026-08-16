@@ -1,8 +1,8 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–4 已完成；Gate 5 是下一 Gate；Gate 5–10 尚未实现）**
+状态：**IN PROGRESS（Gate 0–5 已完成；Gate 6 是下一 Gate；Gate 6–10 尚未实现）**
 
-初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 4 的实施增量已分别
+初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 5 的实施增量已分别
 记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
 声明。已经落地的 Runtime 总体架构以
 [DESIGN.md](DESIGN.md) 为准；真实 DeepSeek 验证记录以
@@ -118,13 +118,18 @@ flowchart LR
 - Runtime 通过 `importlib.resources` 加载随包发布的只读
   `resources/IKAROS.md`，并在 `turn.start` 时把 version 1 Identity Core
   Instruction Block 冻结进 `SubmissionFrameV1`。每个模型 Step 都从该冻结
-  Frame 构造输入，不读取可变配置或 Memory。
+  Frame 构造输入，不读取可变配置或 Memory；
+- Memory V0 基础：独立的 `~/.ikaros/memory.db` schema version 1、
+  `memory.create/list/get`、Global/Workspace scope、稳定 cursor 分页、重启幂等，
+  以及贯穿认证 WebSocket、Electron main、preload 和 `RuntimeClient` 的 typed
+  bridge。该 bridge 尚未被 Renderer 页面消费，也没有进入模型输入。
 
 ### 3.2 `PROPOSED`
 
 当前尚未实现：
 
-- `memory.db`、Memory RPC、Memory UI 或 Memory 召回；
+- Memory Correction/Forget、Session provenance 写入、维护/导出、Memory UI 或
+  Memory 召回；
 - 任务级 Skill 选择和 Skill Catalog 总预算。
 
 当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
@@ -151,7 +156,8 @@ Gate 1 在审阅基线之后增加了：
 
 Gate 1 本身没有修改持久契约；持久 Frame、Context Snapshot、Run/Step
 Manifest 和响应元数据已由 Gate 2 实现，有界历史已由 Gate 3 实现，Identity
-Core 已由 Gate 4 实现。Memory 仍未实现。
+Core 已由 Gate 4 实现，独立 Memory V0 Store/RPC/typed client 已由 Gate 5
+实现；Memory 仍不会进入 Provider 输入。
 
 ## 4. 概念边界
 
@@ -320,8 +326,8 @@ UI 只显示“来源记录不可用”。
 | 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 已完成 | 是 |
 | 3 | `HistorySelectorV1`，限制无界历史 | 已完成 | 是，持久 selector 语义破坏性更新 |
 | 4 | `IKAROS.md` Identity Core 与 DeepSeek A/B | 已完成 | 否 |
-| 5 | 独立 `memory.db`，Create/List/Get | 下一 Gate（未开始） | 不动 `state.db` |
-| 6 | Correction、Forget、Provenance、幂等 | 未开始 | 否 |
+| 5 | 独立 `memory.db`，Create/List/Get | 已完成 | 不动 `state.db` |
+| 6 | Correction、Forget、Provenance、幂等 | 下一 Gate（未开始） | 否 |
 | 7 | Memory Check、Backup、Export | 未开始 | 否 |
 | 8 | Desktop Memory 管理页面 | 未开始 | 否 |
 | 9 | Memory Read V1，有限召回并进入模型 | 未开始 | 否 |
@@ -716,9 +722,9 @@ Coding Agent 专属规则或“无条件服从”描述。它不是 `config.yaml
 [LIVE_VALIDATION.md](LIVE_VALIDATION.md)，本设计文档不预写未经运行验证的次数或
 结果。
 
-## 12. Gate 5：Memory V0 基础链路
+## 12. Gate 5：Memory V0 基础链路（已实现）
 
-建议目录：
+实际目录：
 
 ```text
 runtime/src/ikaros_runtime/
@@ -727,20 +733,20 @@ runtime/src/ikaros_runtime/
 │  ├─ __init__.py
 │  ├─ domain.py
 │  ├─ schema.py
-│  ├─ store.py
-│  ├─ retrieval.py
-│  ├─ maintenance.py
-│  └─ export.py
+│  └─ store.py
 └─ services/
    └─ memories.py
 ```
+
+`retrieval.py`、Memory maintenance 和 export 没有以空模块提前创建；它们分别
+属于后续 Gate 9 与 Gate 7。
 
 `paths.py` 统一声明 `config.yaml`、`state.db`、`memory.db` 和 `skills/`，避免
 清理 Session 时误伤 Memory。
 
 ### 从第一天稳定的 Memory schema
 
-Gate 5 创建 `~/.ikaros/memory.db`。虽然 Gate 5 只开放 Create/List/Get，
+Gate 5 创建 `~/.ikaros/memory.db`。虽然只开放 Create/List/Get，
 数据库必须从一开始预留 Gate 6 的 revision/tombstone/provenance/idempotency
 字段，以及 Gate 9 所需索引，避免后续未计划的 Memory schema reset。
 
@@ -766,6 +772,7 @@ memory_revisions
 ├─ operation
 ├─ content?
 ├─ content_digest?
+├─ content_redacted_at?
 ├─ source_kind
 ├─ source_thread_id?
 ├─ source_turn_id?
@@ -796,7 +803,7 @@ V0 kind：
 
 不存在 `instruction` kind。单条正文上限初始为 2048 个 Unicode 字符。
 
-初始 RPC：
+已注册 RPC：
 
 ```text
 memory.create
@@ -805,7 +812,13 @@ memory.get
 ```
 
 `memory.list` 从 Gate 5 起支持 cursor 分页、scope/kind/state 筛选和稳定排序，
-默认只返回 active，单页最大 100。Desktop 不能启动时全量加载 Memory。
+默认只返回 active，默认单页 50、最大 100。List 只返回 metadata 和最多 160
+Unicode 字符的 preview；完整正文只能通过 `memory.get` 懒加载。Desktop 不能
+启动时全量加载 Memory。
+
+`memory.create` 强制接收 `kind`、严格的 `scope` 对象、原样正文和
+`clientRequestId`。同一 ID 和相同输入跨重启返回原 receipt 且 `created=false`；
+同一 ID 改变任一输入会明确失败，不创建第二条记录。
 
 链路：
 
@@ -819,7 +832,9 @@ Desktop Runtime Client
   -> list/get 仍存在
 ```
 
-Gate 5 不提供模型写入 Tool，也不把 Memory 注入模型。
+Desktop 已接通 DTO、严格 wire parser、可信 IPC、typed preload 与
+`RuntimeClient`，但没有 Memory 页面、Zustand Memory 状态或 i18n。Gate 5 不提供
+模型写入 Tool，也不把 Memory 注入模型。
 
 ### 验收
 
@@ -830,6 +845,9 @@ Gate 5 不提供模型写入 Tool，也不把 Memory 注入模型。
 - schema 不兼容明确失败，不自动删除；
 - Memory 内容通过 protected-value 检查；
 - Runtime home 仍只有一个进程写入。
+
+以上验收由 Store/Service、真实 Python Runtime JSON-RPC、Electron RuntimeHost
+重启链路、Python/Desktop Golden Trace 和 protected-value 回归测试覆盖。
 
 ## 13. Gate 6：Correction、Forget、Provenance 和幂等
 

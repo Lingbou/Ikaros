@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from .paths import RuntimePaths
 from .server.host import RuntimeHomeLock
 from .storage import SqliteRuntimeStore
 from .storage.maintenance import (
@@ -54,11 +55,11 @@ async def _with_offline_store[ReportT: (
     *,
     read_only: bool,
 ) -> ReportT:
-    runtime_home = _normalized_runtime_home(runtime_home)
-    lock = await RuntimeHomeLock.acquire(runtime_home, timeout_seconds=0)
+    paths = RuntimePaths.from_home(runtime_home)
+    lock = await RuntimeHomeLock.acquire(paths.home, timeout_seconds=0)
     store: SqliteRuntimeStore | None = None
     try:
-        state_path = _existing_state_path(runtime_home)
+        state_path = _existing_state_path(paths)
         store = SqliteRuntimeStore.open_existing(state_path, read_only=read_only)
         return operation(store)
     finally:
@@ -67,12 +68,8 @@ async def _with_offline_store[ReportT: (
         lock.release()
 
 
-def _normalized_runtime_home(runtime_home: Path) -> Path:
-    return runtime_home.expanduser().resolve()
-
-
-def _existing_state_path(runtime_home: Path) -> Path:
-    state_path = runtime_home / "state.db"
+def _existing_state_path(paths: RuntimePaths) -> Path:
+    state_path = paths.state_db
     if not state_path.is_file():
         raise FileNotFoundError(f"Runtime state database does not exist: {state_path}")
     return state_path

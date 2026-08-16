@@ -94,6 +94,10 @@ The Runtime currently owns:
   `skill.list` / `skill.set_enabled`, global enablement persisted in
   `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
   a lazily loaded Skills settings page;
+- Memory V0 typed client plumbing: strict DTO parsing and narrow IPC/preload
+  methods for `memory.create`, paginated `memory.list`, and lazy
+  `memory.get`. The data lives in Runtime-owned `~/.ikaros/memory.db`; no
+  Memory page or model recall is exposed yet;
 - Gate 2/3 audit DTOs and Events: Submission Frame and Run Manifest on Turn
   creation, frozen Context Snapshot and Step Manifest on
   `model.input_prepared`, and response metadata/usage on
@@ -182,7 +186,10 @@ The following UI surfaces are not production Runtime capabilities yet:
 - Provider health is currently reported as `unknown`; no health-check workflow
   is connected; and
 - automatic model discovery currently supports only DeepSeek. Custom
-  OpenAI-compatible Provider models are entered manually.
+  OpenAI-compatible Provider models are entered manually; and
+- Memory correction/forget, management UI, maintenance/export, and model recall
+  are unavailable. The typed Memory bridge is infrastructure, not a visible
+  feature or Mock data source.
 
 ## Architecture boundary
 
@@ -200,7 +207,8 @@ or Event upcaster is provided. After stopping the Runtime, an explicitly
 authorized development reset removes only `state.db` plus its WAL/SHM files.
 Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
 conversation history and must be preserved, as must `skills/`, Desktop
-preferences, and the separately owned future `memory.db`.
+preferences, and the separately owned `memory.db`. An incompatible Memory
+schema stops Runtime startup explicitly and is never silently reset.
 
 The persisted Journal uses Event schema version 4 with 11 supported Event
 discriminators. Incompatible database or Event schemas still require the
@@ -210,6 +218,7 @@ Persistent input Frames/Manifests, bounded history selection, and the frozen
 Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the
 Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
 Desktop exposes no Identity editor or budget control. Durable cross-Thread
-Memory remains unimplemented, and Gate 5 is the next implementation step. The
-strict Gate plan is documented in
+Memory has a Store/RPC/typed-client foundation but is not yet editable through
+the UI and is not part of model input. Gate 6 (Correction/Forget and provenance)
+is next. The strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

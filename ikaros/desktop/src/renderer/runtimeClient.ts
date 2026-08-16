@@ -5,6 +5,11 @@ import type {
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeHostStatus,
+  RuntimeMemoryCreateParams,
+  RuntimeMemoryCreateResult,
+  RuntimeMemoryGetResult,
+  RuntimeMemoryListPage,
+  RuntimeMemoryListParams,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -191,6 +196,18 @@ export class RuntimeClient implements IkarosRuntimeApi {
     params: RuntimeSkillSetEnabledParams
   ): Promise<RuntimeSkillSetEnabledResult> {
     return unwrapRuntimeInvocation(this.api.setSkillEnabled(params));
+  }
+
+  createMemory(params: RuntimeMemoryCreateParams): Promise<RuntimeMemoryCreateResult> {
+    return unwrapRuntimeInvocation(this.api.createMemory(params));
+  }
+
+  listMemories(params: RuntimeMemoryListParams = {}): Promise<RuntimeMemoryListPage> {
+    return unwrapRuntimeInvocation(this.api.listMemories(params));
+  }
+
+  getMemory(memoryId: string): Promise<RuntimeMemoryGetResult> {
+    return unwrapRuntimeInvocation(this.api.getMemory(memoryId));
   }
 
   readUsage(): Promise<RuntimeUsageReadResult> {

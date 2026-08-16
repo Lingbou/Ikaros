@@ -113,6 +113,16 @@ function desktopApiWithPreferences(
         setSkillEnabled: async () => {
           throw new Error("not used in preference settings tests");
         },
+        createMemory: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        listMemories: async () => ({
+          ok: true,
+          value: { memories: [], nextCursor: null, hasMore: false }
+        }),
+        getMemory: async () => {
+          throw new Error("not used in preference settings tests");
+        },
         readUsage: async () => ({
           ok: true,
           value: {

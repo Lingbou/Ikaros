@@ -57,6 +57,74 @@ export interface RuntimeSkillSetEnabledParams {
   enabled: boolean;
 }
 
+export type RuntimeMemoryKind =
+  | "fact"
+  | "preference"
+  | "relationship"
+  | "project";
+
+export type RuntimeMemoryState = "active" | "forgotten";
+
+export type RuntimeMemoryScope =
+  | { type: "global"; key: null }
+  | { type: "workspace"; key: string };
+
+export interface RuntimeMemoryProvenance {
+  sourceKind: "user_explicit" | "session_item";
+  threadId: string | null;
+  turnId: string | null;
+  itemId: string | null;
+  status: "not_applicable" | "available" | "unavailable";
+}
+
+export interface RuntimeMemorySummary {
+  id: string;
+  kind: RuntimeMemoryKind;
+  scope: RuntimeMemoryScope;
+  revision: number;
+  state: RuntimeMemoryState;
+  preview: string | null;
+  createdAt: string;
+  updatedAt: string;
+  forgottenAt: string | null;
+}
+
+export interface RuntimeMemoryRecord extends Omit<RuntimeMemorySummary, "preview"> {
+  content: string | null;
+  provenance: RuntimeMemoryProvenance;
+}
+
+export interface RuntimeMemoryCreateParams {
+  kind: RuntimeMemoryKind;
+  scope: RuntimeMemoryScope;
+  content: string;
+  clientRequestId: string;
+}
+
+export interface RuntimeMemoryCreateResult {
+  memoryId: string;
+  resultingRevision: number;
+  created: boolean;
+}
+
+export interface RuntimeMemoryListParams {
+  cursor?: string;
+  limit?: number;
+  scope?: RuntimeMemoryScope;
+  kind?: RuntimeMemoryKind;
+  state?: RuntimeMemoryState;
+}
+
+export interface RuntimeMemoryListPage {
+  memories: RuntimeMemorySummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface RuntimeMemoryGetResult {
+  memory: RuntimeMemoryRecord;
+}
+
 export interface RuntimeInitializeResult {
   protocolVersion: number;
   server: { name: string; version: string };
@@ -71,6 +139,7 @@ export interface RuntimeInitializeResult {
     models: true;
     usage: true;
     skills: true;
+    memory: true;
     tools: readonly string[];
     executionPolicy: "full_access";
   };
@@ -332,6 +401,9 @@ export interface IkarosRuntimeApi {
   setSkillEnabled(
     params: RuntimeSkillSetEnabledParams
   ): Promise<RuntimeSkillSetEnabledResult>;
+  createMemory(params: RuntimeMemoryCreateParams): Promise<RuntimeMemoryCreateResult>;
+  listMemories(params?: RuntimeMemoryListParams): Promise<RuntimeMemoryListPage>;
+  getMemory(memoryId: string): Promise<RuntimeMemoryGetResult>;
   readUsage(): Promise<RuntimeUsageReadResult>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
   onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
@@ -388,6 +460,15 @@ export interface IkarosRuntimeBridgeApi {
   setSkillEnabled(
     params: RuntimeSkillSetEnabledParams
   ): Promise<RuntimeInvocationResult<RuntimeSkillSetEnabledResult>>;
+  createMemory(
+    params: RuntimeMemoryCreateParams
+  ): Promise<RuntimeInvocationResult<RuntimeMemoryCreateResult>>;
+  listMemories(
+    params?: RuntimeMemoryListParams
+  ): Promise<RuntimeInvocationResult<RuntimeMemoryListPage>>;
+  getMemory(
+    memoryId: string
+  ): Promise<RuntimeInvocationResult<RuntimeMemoryGetResult>>;
   readUsage(): Promise<RuntimeInvocationResult<RuntimeUsageReadResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
   onStatus?(listener: (status: RuntimeHostStatus) => void): () => void;

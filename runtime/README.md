@@ -16,7 +16,7 @@ stdio.
 ## Protocol contract
 
 `src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
-version 1, Journal Event schema 4, the 21 post-initialize RPC methods, the 11
+version 1, Journal Event schema 4, the 24 post-initialize RPC methods, the 11
 persisted Journal Event types, capabilities, and provider-facing Tool IDs. The
 deterministic generator
 commits both `protocol/runtime-protocol.json` and Desktop's
@@ -86,6 +86,11 @@ The current Desktop/Runtime path provides:
   enable/disable state, immutable enabled-descriptor snapshots per Run, and
   provider context containing only each enabled Skill's name, description, and
   location;
+- Memory V0 foundation in independently durable `~/.ikaros/memory.db`: schema
+  version 1 records/revisions/idempotency receipts, Global/Workspace scopes,
+  `memory.create/list/get`, bounded preview pagination, authenticated JSON-RPC,
+  and a typed Desktop bridge. It is not injected into model input and has no
+  Renderer management page yet;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under
   V1's fixed `full_access` policy. Command execution has bounded output,
   timeout, cancellation, and child-process-tree cleanup; the file Tools provide
@@ -144,10 +149,11 @@ or a security guarantee. The Runtime is tied to the Desktop application
 lifetime and is not yet a Windows Service, login item, or independently
 discoverable daemon.
 
-Durable cross-Thread Memory is not implemented: there is no `memory.db`, Memory
-RPC/UI, or Memory recall in model input. Identity Core, persistent input
-Frames/Manifests, and `bounded-history-v1` are implemented; their boundaries and
-the remaining implementation order are defined in
+Durable cross-Thread Memory now has an explicit V0 Store/RPC foundation.
+Correction/Forget, Session provenance writes, Memory maintenance/export,
+Renderer UI, and model recall are not implemented. Identity Core, persistent
+input Frames/Manifests, and `bounded-history-v1` remain independent from Memory;
+their boundaries and the remaining implementation order are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development
@@ -172,8 +178,9 @@ standard error.
 
 Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
 `IKAROS_HOME`; normal Desktop launches do not override it. The Runtime creates
-`state.db` on startup, while `config.yaml` remains absent until the user saves a
-real provider/model configuration or changes persisted Skill enablement.
+independent `state.db` and `memory.db` databases on startup, while `config.yaml`
+remains absent until the user saves a real provider/model configuration or
+changes persisted Skill enablement.
 
 During pre-release development, conversation storage uses canonical SQLite
 schema version 7 and is intentionally reset-only. Incompatible `state.db`
@@ -182,7 +189,9 @@ old-schema migrations or silently delete data.
 After stopping the owning Runtime, developers may explicitly remove
 `state.db`, `state.db-wal`, and `state.db-shm` to create the current schema on
 the next start. This reset never includes `config.yaml`, `skills/`, Desktop
-preferences, or the separately owned future `memory.db`.
+preferences, or the separately owned `memory.db`. An incompatible Memory schema
+fails startup with `memory database schema is incompatible`; the Runtime does
+not migrate, reset, or delete it automatically.
 
 ## Offline storage maintenance
 

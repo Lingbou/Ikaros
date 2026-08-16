@@ -9,6 +9,11 @@ import type {
   RuntimeHostStatus,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeMemoryCreateParams,
+  RuntimeMemoryCreateResult,
+  RuntimeMemoryGetResult,
+  RuntimeMemoryListPage,
+  RuntimeMemoryListParams,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -152,6 +157,9 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
     DESKTOP_IPC_CHANNELS.runtime.skillList,
     DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
+    DESKTOP_IPC_CHANNELS.runtime.memoryCreate,
+    DESKTOP_IPC_CHANNELS.runtime.memoryList,
+    DESKTOP_IPC_CHANNELS.runtime.memoryGet,
     DESKTOP_IPC_CHANNELS.runtime.usageRead,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.preferences.get,
@@ -341,6 +349,36 @@ export function registerDesktopIpc(
         runtimeHost.request<RuntimeSkillSetEnabledResult>("skill.set_enabled", {
           ...params
         })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.memoryCreate,
+    async (event, params: RuntimeMemoryCreateParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeMemoryCreateResult>("memory.create", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.memoryList,
+    async (event, params: RuntimeMemoryListParams = {}) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeMemoryListPage>("memory.list", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.memoryGet,
+    async (event, memoryId: string) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeMemoryGetResult>("memory.get", { memoryId })
       );
     }
   );

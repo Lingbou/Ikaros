@@ -13,6 +13,7 @@ from typing import Any, Literal
 import yaml
 
 from .errors import ConfigError
+from .paths import RuntimePaths
 
 CONFIG_VERSION = 1
 MAX_CONFIG_BYTES = 256 * 1024
@@ -71,8 +72,9 @@ class ConfigDocumentStore:
     """
 
     def __init__(self, runtime_home: Path) -> None:
-        self._runtime_home = runtime_home
-        self._path = runtime_home / "config.yaml"
+        paths = RuntimePaths.from_home(runtime_home)
+        self._runtime_home = paths.home
+        self._path = paths.config
         self._sections = self._load()
 
     @property

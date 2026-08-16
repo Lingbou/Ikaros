@@ -32,6 +32,7 @@
             "models": true,
             "usage": true,
             "skills": true,
+            "memory": true,
             "tools": [
               "process_run",
               "read",
@@ -233,6 +234,101 @@
             "description": "Golden Skill",
             "location": "C:/Users/golden/.ikaros/skills/demo/SKILL.md",
             "enabled": false
+          }
+        }
+      }
+    },
+    {
+      "name": "memory-created",
+      "kind": "response",
+      "method": "memory.create",
+      "requestParams": {
+        "kind": "preference",
+        "scope": {
+          "type": "global",
+          "key": null
+        },
+        "content": "The user prefers concise technical explanations.",
+        "clientRequestId": "golden-memory-create"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "memoryId": "memory_0000000000000000000000000000000b",
+          "resultingRevision": 1,
+          "created": true
+        }
+      }
+    },
+    {
+      "name": "memory-list-page",
+      "kind": "response",
+      "method": "memory.list",
+      "requestParams": {
+        "limit": 25,
+        "scope": {
+          "type": "global",
+          "key": null
+        },
+        "state": "active"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "memories": [
+            {
+              "id": "memory_0000000000000000000000000000000b",
+              "kind": "preference",
+              "scope": {
+                "type": "global",
+                "key": null
+              },
+              "revision": 1,
+              "state": "active",
+              "preview": "The user prefers concise technical explanations.",
+              "createdAt": "2026-08-15T12:00:00.017Z",
+              "updatedAt": "2026-08-15T12:00:00.017Z",
+              "forgottenAt": null
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": false
+        }
+      }
+    },
+    {
+      "name": "memory-record",
+      "kind": "response",
+      "method": "memory.get",
+      "requestParams": {
+        "memoryId": "memory_0000000000000000000000000000000b"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "result": {
+          "memory": {
+            "id": "memory_0000000000000000000000000000000b",
+            "kind": "preference",
+            "scope": {
+              "type": "global",
+              "key": null
+            },
+            "revision": 1,
+            "state": "active",
+            "content": "The user prefers concise technical explanations.",
+            "provenance": {
+              "sourceKind": "user_explicit",
+              "threadId": null,
+              "turnId": null,
+              "itemId": null,
+              "status": "not_applicable"
+            },
+            "createdAt": "2026-08-15T12:00:00.017Z",
+            "updatedAt": "2026-08-15T12:00:00.017Z",
+            "forgottenAt": null
           }
         }
       }

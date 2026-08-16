@@ -178,7 +178,7 @@ describe("Runtime protocol Golden Trace", () => {
 
     expect(trace.fixtureVersion).toBe(1);
     expect([...observedEvents].sort()).toEqual([...RUNTIME_JOURNAL_EVENT_TYPES].sort());
-    expect(RUNTIME_RPC_METHODS).toHaveLength(21);
+    expect(RUNTIME_RPC_METHODS).toHaveLength(24);
     expect(RUNTIME_PROVIDER_TOOL_IDS).toContain("process_run");
     expect(RUNTIME_PROVIDER_TOOL_IDS).not.toContain("process.run");
   });
@@ -786,6 +786,92 @@ describe("Runtime protocol Golden Trace", () => {
     expect(() =>
       parseRuntimeMethodResult(response.method, response.result, response.requestParams)
     ).toThrow();
+  });
+
+  it("rejects malformed, over-broad, or scope-inconsistent Memory results", () => {
+    const created = cloneGoldenResponse("memory-created");
+    created.result.memoryId = "memory_invalid";
+    expect(() =>
+      parseRuntimeMethodResult(created.method, created.result, created.requestParams)
+    ).toThrow();
+
+    const listed = cloneGoldenResponse("memory-list-page");
+    const summaries = asWireArray(listed.result.memories, "Memory summaries");
+    asWireObject(summaries[0], "Memory summary").content = "full content must stay lazy";
+    expect(() =>
+      parseRuntimeMethodResult(listed.method, listed.result, listed.requestParams)
+    ).toThrow();
+
+    const overRequestedLimit = cloneGoldenResponse("memory-list-page");
+    overRequestedLimit.requestParams.limit = 1;
+    const overLimitSummaries = asWireArray(
+      overRequestedLimit.result.memories,
+      "Memory summaries"
+    );
+    const secondSummary = structuredClone(
+      asWireObject(overLimitSummaries[0], "Memory summary")
+    );
+    secondSummary.id = `memory_${"2".repeat(32)}`;
+    overLimitSummaries.push(secondSummary);
+    expect(() =>
+      parseRuntimeMethodResult(
+        overRequestedLimit.method,
+        overRequestedLimit.result,
+        overRequestedLimit.requestParams
+      )
+    ).toThrow();
+
+    const repeatedCursor = cloneGoldenResponse("memory-list-page");
+    repeatedCursor.result.hasMore = true;
+    repeatedCursor.result.nextCursor = "same-cursor";
+    repeatedCursor.requestParams.cursor = "same-cursor";
+    expect(() =>
+      parseRuntimeMethodResult(
+        repeatedCursor.method,
+        repeatedCursor.result,
+        repeatedCursor.requestParams
+      )
+    ).toThrow();
+
+    const invalidTimestamp = cloneGoldenResponse("memory-list-page");
+    asWireObject(
+      asWireArray(invalidTimestamp.result.memories, "Memory summaries")[0],
+      "Memory summary"
+    ).updatedAt = "2026-02-31T12:00:00.000Z";
+    expect(() =>
+      parseRuntimeMethodResult(
+        invalidTimestamp.method,
+        invalidTimestamp.result,
+        invalidTimestamp.requestParams
+      )
+    ).toThrow();
+
+    const wrongScope = cloneGoldenResponse("memory-list-page");
+    const wrongSummaries = asWireArray(wrongScope.result.memories, "Memory summaries");
+    asWireObject(asWireObject(wrongSummaries[0], "Memory summary").scope, "scope").type =
+      "workspace";
+    asWireObject(asWireObject(wrongSummaries[0], "Memory summary").scope, "scope").key =
+      "workspace-1";
+    expect(() =>
+      parseRuntimeMethodResult(wrongScope.method, wrongScope.result, wrongScope.requestParams)
+    ).toThrow();
+
+    const fetched = cloneGoldenResponse("memory-record");
+    const memory = asWireObject(fetched.result.memory, "Memory record");
+    asWireObject(memory.provenance, "Memory provenance").status = "available";
+    expect(() =>
+      parseRuntimeMethodResult(fetched.method, fetched.result, fetched.requestParams)
+    ).toThrow();
+  });
+
+  it("matches Python Unicode stripping for valid Memory content", () => {
+    const fetched = cloneGoldenResponse("memory-record");
+    const memory = asWireObject(fetched.result.memory, "Memory record");
+    memory.content = "\uFEFF";
+
+    expect(() =>
+      parseRuntimeMethodResult(fetched.method, fetched.result, fetched.requestParams)
+    ).not.toThrow();
   });
 
   it("rejects Token usage sub-counts larger than their parent counts", () => {

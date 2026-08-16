@@ -6,6 +6,7 @@ from typing import Any
 
 from ..domain import CommandOutcome
 from ..errors import InvalidParamsError, ProviderFailure
+from ..services.memories import MemoryService
 from ..services.providers import ProviderService
 from ..services.skills import SkillService
 from ..services.threads import ThreadService
@@ -40,12 +41,14 @@ class RuntimeRouter:
         providers: ProviderService,
         usage: UsageService,
         skills: SkillService,
+        memories: MemoryService,
     ) -> None:
         self._threads = threads
         self._turns = turns
         self._providers = providers
         self._usage = usage
         self._skills = skills
+        self._memories = memories
 
     async def dispatch(
         self,
@@ -94,6 +97,12 @@ class RuntimeRouter:
                 result = self._skills.list_skills(params)
             elif method == "skill.set_enabled":
                 result = self._skills.set_enabled(params)
+            elif method == "memory.create":
+                result = self._memories.create(params)
+            elif method == "memory.list":
+                result = self._memories.list(params)
+            elif method == "memory.get":
+                result = self._memories.get(params)
             elif method == "turn.start":
                 outcome = self._turns.start_turn(params)
                 result = outcome.result

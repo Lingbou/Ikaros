@@ -12,6 +12,7 @@ from ikaros_runtime.config import ConfigDocumentStore
 from ikaros_runtime.domain import JournalEvent, SkillDescriptor, WorkspaceSummary
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
 from ikaros_runtime.identity import load_identity_core
+from ikaros_runtime.memory import SqliteMemoryStore
 from ikaros_runtime.providers.registry import ConfigStore
 from ikaros_runtime.services.skills import SkillService
 from ikaros_runtime.services.turns import TurnService
@@ -405,7 +406,11 @@ async def _discard_event(_event: JournalEvent) -> None:
 async def test_runtime_router_exposes_skill_list_and_toggle(tmp_path: Path) -> None:
     _write_skill(tmp_path / "skills", "demo", "Router Skill")
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    application = RuntimeApplication(store, _discard_event)
+    application = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
     try:
         listed = await application.router.dispatch(1, "skill.list", {})
         listed_result = cast(dict[str, object], listed.response["result"])

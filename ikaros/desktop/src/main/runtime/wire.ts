@@ -14,6 +14,15 @@ import {
   type RuntimeItemHistory,
   type RuntimeJournalEvent,
   type RuntimeJournalEventType,
+  type RuntimeMemoryCreateResult,
+  type RuntimeMemoryGetResult,
+  type RuntimeMemoryKind,
+  type RuntimeMemoryListPage,
+  type RuntimeMemoryProvenance,
+  type RuntimeMemoryRecord,
+  type RuntimeMemoryScope,
+  type RuntimeMemoryState,
+  type RuntimeMemorySummary,
   type RuntimeModelSummary,
   type RuntimeProviderSummary,
   type RuntimeReplayResult,
@@ -120,6 +129,19 @@ const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYP
 const RUNTIME_PROVIDER_TOOL_ID_SET = new Set<string>(RUNTIME_PROVIDER_TOOL_IDS);
 const RUNTIME_RPC_METHOD_SET = new Set<string>(RUNTIME_RPC_METHODS);
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MEMORY_ID_PATTERN = /^memory_[0-9a-f]{32}$/;
+const MEMORY_KINDS = new Set<RuntimeMemoryKind>([
+  "fact",
+  "preference",
+  "relationship",
+  "project"
+]);
+const MEMORY_STATES = new Set<RuntimeMemoryState>(["active", "forgotten"]);
+const MEMORY_CONTENT_MAX_CHARACTERS = 2_048;
+const MEMORY_PREVIEW_MAX_CHARACTERS = 160;
+const MEMORY_LIST_DEFAULT_LIMIT = 50;
+const MEMORY_LIST_PAGE_LIMIT = 100;
+const MEMORY_CURSOR_MAX_LENGTH = 1_024;
 
 interface JsonRpcResultResponse {
   jsonrpc: "2.0";
@@ -1476,6 +1498,14 @@ function isCanonicalCalendarDate(value: unknown): value is string {
   );
 }
 
+function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    return false;
+  }
+  const timestamp = new Date(value);
+  return !Number.isNaN(timestamp.getTime()) && timestamp.toISOString() === value;
+}
+
 export function parseRuntimeUsageReadResult(value: unknown): RuntimeUsageReadResult {
   const invalidMessage = "Runtime returned an invalid usage result.";
   if (
@@ -2065,6 +2095,280 @@ function parseRuntimeSkillSetEnabledResult(value: unknown): RuntimeSkillSetEnabl
   return { skill: parseRuntimeSkillSummary(value.skill) };
 }
 
+function isMemoryId(value: unknown): value is string {
+  return typeof value === "string" && MEMORY_ID_PATTERN.test(value);
+}
+
+function isValidMemoryText(
+  value: unknown,
+  maximumCharacters: number,
+  requireNonBlank: boolean
+): value is string {
+  if (typeof value !== "string") return false;
+  const characters = Array.from(value);
+  if (
+    characters.length > maximumCharacters ||
+    (requireNonBlank && characters.every(isPythonWhitespace))
+  ) {
+    return false;
+  }
+  return characters.every((character) => {
+    const codePoint = character.codePointAt(0) as number;
+    return (
+      !((codePoint < 0x20 && codePoint !== 0x09 && codePoint !== 0x0a && codePoint !== 0x0d) ||
+        codePoint === 0x7f) &&
+      !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+    );
+  });
+}
+
+function isPythonWhitespace(character: string): boolean {
+  const codePoint = character.codePointAt(0) as number;
+  return (
+    (codePoint >= 0x09 && codePoint <= 0x0d) ||
+    (codePoint >= 0x1c && codePoint <= 0x20) ||
+    codePoint === 0x85 ||
+    codePoint === 0xa0 ||
+    codePoint === 0x1680 ||
+    (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
+    codePoint === 0x202f ||
+    codePoint === 0x205f ||
+    codePoint === 0x3000
+  );
+}
+
+function isPythonTrimmed(value: string): boolean {
+  const characters = Array.from(value);
+  return (
+    characters.length > 0 &&
+    !isPythonWhitespace(characters[0]) &&
+    !isPythonWhitespace(characters[characters.length - 1])
+  );
+}
+
+function parseRuntimeMemoryScope(
+  value: unknown,
+  method: "memory.list" | "memory.get"
+): RuntimeMemoryScope {
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, ["type", "key"]) ||
+    (value.type === "global"
+      ? value.key !== null
+      : value.type !== "workspace" ||
+        !isValidMemoryText(value.key, MAX_WIRE_IDENTIFIER_LENGTH, true) ||
+        !isPythonTrimmed(value.key))
+  ) {
+    throw invalidRuntimeMethodResult(method);
+  }
+  return value as unknown as RuntimeMemoryScope;
+}
+
+function parseRuntimeMemoryProvenance(value: unknown): RuntimeMemoryProvenance {
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, ["sourceKind", "threadId", "turnId", "itemId", "status"])
+  ) {
+    throw invalidRuntimeMethodResult("memory.get");
+  }
+  const references = [value.threadId, value.turnId, value.itemId];
+  const valid =
+    (value.sourceKind === "user_explicit" &&
+      value.status === "not_applicable" &&
+      references.every((reference) => reference === null)) ||
+    (value.sourceKind === "session_item" &&
+      (value.status === "available" || value.status === "unavailable") &&
+      references.every(isWireIdentifier));
+  if (!valid) {
+    throw invalidRuntimeMethodResult("memory.get");
+  }
+  return value as unknown as RuntimeMemoryProvenance;
+}
+
+function parseRuntimeMemorySummary(value: unknown): RuntimeMemorySummary {
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, [
+      "id",
+      "kind",
+      "scope",
+      "revision",
+      "state",
+      "preview",
+      "createdAt",
+      "updatedAt",
+      "forgottenAt"
+    ]) ||
+    !isMemoryId(value.id) ||
+    !MEMORY_KINDS.has(value.kind as RuntimeMemoryKind) ||
+    !isSafePositiveInteger(value.revision) ||
+    !MEMORY_STATES.has(value.state as RuntimeMemoryState) ||
+    !isCanonicalTimestamp(value.createdAt) ||
+    !isCanonicalTimestamp(value.updatedAt)
+  ) {
+    throw invalidRuntimeMethodResult("memory.list");
+  }
+  const scope = parseRuntimeMemoryScope(value.scope, "memory.list");
+  if (
+    (value.state === "active" &&
+      (!isValidMemoryText(value.preview, MEMORY_PREVIEW_MAX_CHARACTERS, false) ||
+        value.preview.length === 0 ||
+        value.forgottenAt !== null)) ||
+    (value.state === "forgotten" &&
+      (value.preview !== null || !isCanonicalTimestamp(value.forgottenAt)))
+  ) {
+    throw invalidRuntimeMethodResult("memory.list");
+  }
+  return {
+    id: value.id,
+    kind: value.kind as RuntimeMemoryKind,
+    scope,
+    revision: value.revision,
+    state: value.state as RuntimeMemoryState,
+    preview: value.preview as string | null,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    forgottenAt: value.forgottenAt as string | null
+  };
+}
+
+function parseRuntimeMemoryRecord(value: unknown): RuntimeMemoryRecord {
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, [
+      "id",
+      "kind",
+      "scope",
+      "revision",
+      "state",
+      "content",
+      "provenance",
+      "createdAt",
+      "updatedAt",
+      "forgottenAt"
+    ]) ||
+    !isMemoryId(value.id) ||
+    !MEMORY_KINDS.has(value.kind as RuntimeMemoryKind) ||
+    !isSafePositiveInteger(value.revision) ||
+    !MEMORY_STATES.has(value.state as RuntimeMemoryState) ||
+    !isCanonicalTimestamp(value.createdAt) ||
+    !isCanonicalTimestamp(value.updatedAt)
+  ) {
+    throw invalidRuntimeMethodResult("memory.get");
+  }
+  const scope = parseRuntimeMemoryScope(value.scope, "memory.get");
+  const provenance = parseRuntimeMemoryProvenance(value.provenance);
+  if (
+    (value.state === "active" &&
+      (!isValidMemoryText(value.content, MEMORY_CONTENT_MAX_CHARACTERS, true) ||
+        value.forgottenAt !== null)) ||
+    (value.state === "forgotten" &&
+      (value.content !== null || !isCanonicalTimestamp(value.forgottenAt)))
+  ) {
+    throw invalidRuntimeMethodResult("memory.get");
+  }
+  return {
+    id: value.id,
+    kind: value.kind as RuntimeMemoryKind,
+    scope,
+    revision: value.revision,
+    state: value.state as RuntimeMemoryState,
+    content: value.content as string | null,
+    provenance,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    forgottenAt: value.forgottenAt as string | null
+  };
+}
+
+export function parseRuntimeMemoryCreateResult(value: unknown): RuntimeMemoryCreateResult {
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, ["memoryId", "resultingRevision", "created"]) ||
+    !isMemoryId(value.memoryId) ||
+    value.resultingRevision !== 1 ||
+    typeof value.created !== "boolean"
+  ) {
+    throw invalidRuntimeMethodResult("memory.create");
+  }
+  return value as unknown as RuntimeMemoryCreateResult;
+}
+
+export function parseRuntimeMemoryListPage(
+  value: unknown,
+  params: Readonly<Record<string, unknown>> = {}
+): RuntimeMemoryListPage {
+  const requestedLimit = params.limit ?? MEMORY_LIST_DEFAULT_LIMIT;
+  if (
+    typeof requestedLimit !== "number" ||
+    !Number.isInteger(requestedLimit) ||
+    requestedLimit < 1 ||
+    requestedLimit > MEMORY_LIST_PAGE_LIMIT ||
+    !isWireObject(value) ||
+    !hasExactKeys(value, ["memories", "nextCursor", "hasMore"]) ||
+    !Array.isArray(value.memories) ||
+    value.memories.length > requestedLimit ||
+    typeof value.hasMore !== "boolean" ||
+    !(
+      value.nextCursor === null ||
+      (isNonEmptyString(value.nextCursor) &&
+        value.nextCursor.length <= MEMORY_CURSOR_MAX_LENGTH &&
+        /^[A-Za-z0-9_-]+$/.test(value.nextCursor))
+    ) ||
+    (value.hasMore && (value.nextCursor === null || value.memories.length === 0)) ||
+    (value.hasMore && params.cursor === value.nextCursor) ||
+    (!value.hasMore && value.nextCursor !== null)
+  ) {
+    throw invalidRuntimeMethodResult("memory.list");
+  }
+  const expectedScope =
+    params.scope === undefined
+      ? undefined
+      : parseRuntimeMemoryScope(params.scope, "memory.list");
+  const expectedKind = params.kind as RuntimeMemoryKind | undefined;
+  const expectedState = (params.state ?? "active") as RuntimeMemoryState;
+  const memories = value.memories.map(parseRuntimeMemorySummary);
+  const ids = new Set<string>();
+  for (let index = 0; index < memories.length; index += 1) {
+    const memory = memories[index];
+    const previous = memories[index - 1];
+    if (
+      ids.has(memory.id) ||
+      (expectedScope !== undefined &&
+        (memory.scope.type !== expectedScope.type || memory.scope.key !== expectedScope.key)) ||
+      (expectedKind !== undefined && memory.kind !== expectedKind) ||
+      memory.state !== expectedState ||
+      (previous !== undefined &&
+        (previous.updatedAt < memory.updatedAt ||
+          (previous.updatedAt === memory.updatedAt && previous.id >= memory.id)))
+    ) {
+      throw invalidRuntimeMethodResult("memory.list");
+    }
+    ids.add(memory.id);
+  }
+  return {
+    memories,
+    nextCursor: value.nextCursor as string | null,
+    hasMore: value.hasMore
+  };
+}
+
+export function parseRuntimeMemoryGetResult(
+  value: unknown,
+  expectedMemoryId?: string
+): RuntimeMemoryGetResult {
+  if (!isWireObject(value) || !hasExactKeys(value, ["memory"])) {
+    throw invalidRuntimeMethodResult("memory.get");
+  }
+  const memory = parseRuntimeMemoryRecord(value.memory);
+  if (expectedMemoryId !== undefined && memory.id !== expectedMemoryId) {
+    throw invalidRuntimeMethodResult("memory.get");
+  }
+  return { memory };
+}
+
 function parseRuntimeTurnStartResult(
   value: unknown
 ): { threadId: string; branchId: string; turnId: string; runId: string } {
@@ -2140,6 +2444,13 @@ const RUNTIME_RESULT_PARSERS = {
   "model.set_enabled": (value) => parseRuntimeModelSetEnabledResult(value),
   "skill.list": (value) => parseRuntimeSkillListResult(value),
   "skill.set_enabled": (value) => parseRuntimeSkillSetEnabledResult(value),
+  "memory.create": (value) => parseRuntimeMemoryCreateResult(value),
+  "memory.list": (value, params) => parseRuntimeMemoryListPage(value, params),
+  "memory.get": (value, params) =>
+    parseRuntimeMemoryGetResult(
+      value,
+      typeof params.memoryId === "string" ? params.memoryId : undefined
+    ),
   "turn.start": (value) => parseRuntimeTurnStartResult(value),
   "turn.list": (value, params) => {
     const expectedScope =

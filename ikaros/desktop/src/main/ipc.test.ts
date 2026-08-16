@@ -321,6 +321,36 @@ describe("desktop window controls", () => {
       providerId: "local"
     }],
     ["ikaros:runtime:model-list", [], "model.list", undefined],
+    [
+      "ikaros:runtime:memory-create",
+      [
+        {
+          kind: "preference",
+          scope: { type: "global", key: null },
+          content: "Concise answers",
+          clientRequestId: "memory-create-1"
+        }
+      ],
+      "memory.create",
+      {
+        kind: "preference",
+        scope: { type: "global", key: null },
+        content: "Concise answers",
+        clientRequestId: "memory-create-1"
+      }
+    ],
+    [
+      "ikaros:runtime:memory-list",
+      [{ scope: { type: "global", key: null }, limit: 25 }],
+      "memory.list",
+      { scope: { type: "global", key: null }, limit: 25 }
+    ],
+    [
+      "ikaros:runtime:memory-get",
+      [`memory_${"1".repeat(32)}`],
+      "memory.get",
+      { memoryId: `memory_${"1".repeat(32)}` }
+    ],
     ["ikaros:runtime:usage-read", [], "usage.read", undefined],
     [
       "ikaros:runtime:model-set-enabled",

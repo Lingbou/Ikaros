@@ -152,6 +152,37 @@ describe("preload Runtime bridge", () => {
     );
   });
 
+  it("exposes explicit Memory CRUD through three narrow IPC channels", async () => {
+    const expected = { ok: true as const, value: {} };
+    electron.ipcRenderer.invoke.mockResolvedValue(expected);
+    await import("./index");
+
+    const runtime = electron.exposedApi()?.runtime;
+    const memoryId = `memory_${"1".repeat(32)}`;
+    const createParams = {
+      kind: "preference" as const,
+      scope: { type: "global" as const, key: null },
+      content: "Concise answers",
+      clientRequestId: "memory-create-1"
+    };
+    await runtime?.createMemory(createParams);
+    await runtime?.listMemories({ scope: createParams.scope, limit: 25 });
+    await runtime?.getMemory(memoryId);
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:memory-create",
+      createParams
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:memory-list",
+      { scope: createParams.scope, limit: 25 }
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:memory-get",
+      memoryId
+    );
+  });
+
   it("exposes the native workspace directory picker through one narrow channel", async () => {
     const workspace = {
       id: "workspace-ikaros",

@@ -12,11 +12,13 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import ikaros_runtime.agent.loop as agent_loop_module
+import ikaros_runtime.memory.store as memory_store_module
 import ikaros_runtime.storage.store as store_module
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, ModelUsage
 from ikaros_runtime.identity import load_identity_core
+from ikaros_runtime.memory import SqliteMemoryStore
 from ikaros_runtime.protocol.spec import EVENT_NOTIFICATION_METHOD, JSONRPC_VERSION
 from ikaros_runtime.providers.base import (
     ProviderEvent,
@@ -28,6 +30,7 @@ from ikaros_runtime.run_input import (
     ProviderExecutionSnapshotV1,
     SubmissionFrameTemplateV1,
 )
+from ikaros_runtime.services.memories import MemoryService
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import (
     ToolCall,
@@ -267,10 +270,12 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
     with (
         patch.object(uuid, "uuid4", new=ids),
         patch.object(store_module, "utc_now", new=utc_now),
+        patch.object(memory_store_module, "utc_now", new=utc_now),
         patch.object(store_module, "local_activity_date", return_value="2026-08-15"),
         patch.object(agent_loop_module, "monotonic", new=monotonic),
     ):
         store = SqliteRuntimeStore(database_path)
+        memory_store = SqliteMemoryStore(database_path.with_name("memory.db"))
         try:
             thread, _created = store.create_thread("Golden trace draft")
             renamed, _renamed = store.rename_thread(thread.id, "Golden trace")
@@ -312,6 +317,21 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 "branchId": thread.default_branch_id,
                 "limit": 25,
             }
+            memory_service = MemoryService(memory_store, lambda _value: None)
+            memory_create_params = {
+                "kind": "preference",
+                "scope": {"type": "global", "key": None},
+                "content": "The user prefers concise technical explanations.",
+                "clientRequestId": "golden-memory-create",
+            }
+            memory_created = memory_service.create(memory_create_params)
+            memory_id = cast(str, memory_created["memoryId"])
+            memory_list_params = {
+                "limit": 25,
+                "scope": {"type": "global", "key": None},
+                "state": "active",
+            }
+            memory_get_params = {"memoryId": memory_id}
             return [
                 _response_message(
                     name="thread-list-page",
@@ -332,9 +352,31 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                         limit=25,
                     ).to_wire(),
                 ),
+                _response_message(
+                    name="memory-created",
+                    method="memory.create",
+                    request_id=4,
+                    request_params=memory_create_params,
+                    result=memory_created,
+                ),
+                _response_message(
+                    name="memory-list-page",
+                    method="memory.list",
+                    request_id=5,
+                    request_params=memory_list_params,
+                    result=memory_service.list(memory_list_params),
+                ),
+                _response_message(
+                    name="memory-record",
+                    method="memory.get",
+                    request_id=6,
+                    request_params=memory_get_params,
+                    result=memory_service.get(memory_get_params),
+                ),
                 *_notification_messages(events),
             ]
         finally:
+            memory_store.close()
             store.close()
 
 
@@ -363,6 +405,13 @@ async def _expected_trace(database_path: Path) -> dict[str, Any]:
         for message in cast(list[GoldenMessage], committed["messages"])
         if message.get("kind") == "response"
     ]
+    committed_response_names = {message["name"] for message in responses}
+    responses.extend(
+        message
+        for message in production_messages
+        if message["kind"] == "response"
+        and message["name"] not in committed_response_names
+    )
     return {
         "fixtureVersion": committed.get("fixtureVersion"),
         "messages": [

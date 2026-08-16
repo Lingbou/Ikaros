@@ -27,6 +27,9 @@ RPC_METHODS: Final = (
     "model.set_enabled",
     "skill.list",
     "skill.set_enabled",
+    "memory.create",
+    "memory.list",
+    "memory.get",
     "turn.start",
     "turn.list",
     "run.cancel",
@@ -67,6 +70,7 @@ CAPABILITY_FLAGS: Final = (
     ("models", True),
     ("usage", True),
     ("skills", True),
+    ("memory", True),
 )
 
 

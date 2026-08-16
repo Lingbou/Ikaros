@@ -166,10 +166,18 @@ def rpc_request_values_contain_protected_value(
 _FIXED_STATUSES = frozenset({"queued", "running", "streaming", "completed", "failed", "cancelled"})
 _FIXED_ROLES = frozenset({"user", "assistant", "tool"})
 _FIXED_KINDS = frozenset({"message", "tool_call", "tool_result"})
+_FIXED_MEMORY_KINDS = frozenset({"fact", "preference", "relationship", "project"})
+_FIXED_MEMORY_STATES = frozenset({"active", "forgotten"})
+_FIXED_MEMORY_SCOPE_TYPES = frozenset({"global", "workspace"})
+_FIXED_MEMORY_SOURCE_KINDS = frozenset({"user_explicit", "session_item"})
+_FIXED_MEMORY_PROVENANCE_STATUSES = frozenset(
+    {"not_applicable", "available", "unavailable"}
+)
 _GENERATED_ID_PREFIXES = {
     "branchId": "branch_",
     "defaultBranchId": "branch_",
     "itemId": "item_",
+    "memoryId": "memory_",
     "runId": "run_",
     "stepId": "step_",
     "threadId": "thread_",
@@ -184,6 +192,7 @@ _TIMESTAMP_KEYS = frozenset(
         "completedAt",
         "createdAt",
         "finishedAt",
+        "forgottenAt",
         "preparedAt",
         "settledAt",
         "startDate",
@@ -243,6 +252,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "inputTokens",
         "isDefault",
         "jsonrpc",
+        "key",
         "kind",
         "latestSeq",
         "lineEnd",
@@ -340,6 +350,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "definitionSha256",
         "descriptorSha256",
         "finishedAt",
+        "forgottenAt",
         "historyCharacters",
         "historyGroups",
         "historyItems",
@@ -356,13 +367,17 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "memoryCharacters",
         "memoryContextVersion",
         "memoryId",
+        "memories",
         "mode",
         "modelInputPlanVersion",
         "omissions",
         "outputStyle",
         "preparedAt",
+        "preview",
+        "provenance",
         "publicProviderConfigFingerprint",
         "requestId",
+        "resultingRevision",
         "responseModelId",
         "revision",
         "reservedCurrentRunCharacters",
@@ -371,8 +386,11 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "skillCatalog",
         "source",
         "sourceId",
+        "sourceKind",
         "sourceType",
         "stepManifest",
+        "scope",
+        "state",
         "submissionFrame",
         "submissionFrameVersion",
         "supportsTools",
@@ -480,6 +498,39 @@ def _is_fixed_response_value(
         return True
     if path and path[-1] == "kind" and value in _FIXED_KINDS:
         return True
+    if (
+        path
+        and path[-1] == "kind"
+        and value in _FIXED_MEMORY_KINDS
+        and _is_memory_record_container(container)
+    ):
+        return True
+    if (
+        path
+        and path[-1] == "state"
+        and value in _FIXED_MEMORY_STATES
+        and _is_memory_record_container(container)
+    ):
+        return True
+    if (
+        path[-2:] == ("scope", "type")
+        and value in _FIXED_MEMORY_SCOPE_TYPES
+        and container is not None
+        and set(container) == {"type", "key"}
+    ):
+        return True
+    if (
+        path[-2:] == ("provenance", "sourceKind")
+        and value in _FIXED_MEMORY_SOURCE_KINDS
+        and _is_memory_provenance_container(container)
+    ):
+        return True
+    if (
+        path[-2:] == ("provenance", "status")
+        and value in _FIXED_MEMORY_PROVENANCE_STATUSES
+        and _is_memory_provenance_container(container)
+    ):
+        return True
     if path and path[-1] == "providerId" and value == "scripted":
         return True
     if (
@@ -557,6 +608,8 @@ def _generated_record_id_prefix(path: tuple[str, ...]) -> str | None:
         "branches": "branch_",
         "item": "item_",
         "items": "item_",
+        "memory": "memory_",
+        "memories": "memory_",
         "run": "run_",
         "runs": "run_",
         "thread": "thread_",
@@ -564,6 +617,33 @@ def _generated_record_id_prefix(path: tuple[str, ...]) -> str | None:
         "turn": "turn_",
         "turns": "turn_",
     }.get(path[-2])
+
+
+def _is_memory_record_container(
+    container: Mapping[object, object] | None,
+) -> bool:
+    return container is not None and {
+        "id",
+        "kind",
+        "scope",
+        "revision",
+        "state",
+        "createdAt",
+        "updatedAt",
+        "forgottenAt",
+    }.issubset(container)
+
+
+def _is_memory_provenance_container(
+    container: Mapping[object, object] | None,
+) -> bool:
+    return container is not None and set(container) == {
+        "sourceKind",
+        "threadId",
+        "turnId",
+        "itemId",
+        "status",
+    }
 
 
 def _is_sha256(value: str) -> bool:

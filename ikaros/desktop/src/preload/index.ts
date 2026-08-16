@@ -10,6 +10,11 @@ import type {
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeHostStatus,
+  RuntimeMemoryCreateParams,
+  RuntimeMemoryCreateResult,
+  RuntimeMemoryGetResult,
+  RuntimeMemoryListPage,
+  RuntimeMemoryListParams,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -139,6 +144,21 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeSkillSetEnabledResult>>,
+    createMemory: (params: RuntimeMemoryCreateParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.memoryCreate,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeMemoryCreateResult>>,
+    listMemories: (params: RuntimeMemoryListParams = {}) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.memoryList,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeMemoryListPage>>,
+    getMemory: (memoryId: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.memoryGet,
+        memoryId
+      ) as Promise<RuntimeInvocationResult<RuntimeMemoryGetResult>>,
     readUsage: () =>
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.usageRead) as Promise<
         RuntimeInvocationResult<RuntimeUsageReadResult>

@@ -14,6 +14,9 @@ import type {
   RuntimeCancelRunResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeMemoryCreateResult,
+  RuntimeMemoryGetResult,
+  RuntimeMemoryListPage,
   RuntimeModelSetEnabledResult,
   RuntimeProviderConfigureResult,
   RuntimeProviderDiscoverModelsResult,
@@ -155,6 +158,18 @@ function runtimeBridge(
             ? TValue
             : never
         >("skill.set_enabled", { ...params }),
+      ),
+    createMemory: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeMemoryCreateResult>("memory.create", { ...params })
+      ),
+    listMemories: (params = {}) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeMemoryListPage>("memory.list", { ...params })
+      ),
+    getMemory: (memoryId) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeMemoryGetResult>("memory.get", { memoryId })
       ),
     readUsage: () =>
       bridgeInvocation(() => host.request<RuntimeUsageReadResult>("usage.read")),

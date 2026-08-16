@@ -7,9 +7,9 @@ future capabilities remain design direction rather than shipped behavior.
 
 The active next stage is specified in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–4
-are implemented, including the Runtime-owned `IKAROS.md` Identity Core. Gate 5,
-the separate long-term-Memory store, is next and remains a strictly serial
-future Gate.
+and Gate 5 are implemented, including the Runtime-owned `IKAROS.md` Identity
+Core and the independent Memory V0 Store/RPC/typed Desktop bridge. Gate 6,
+Correction/Forget and provenance completion, is the next strictly serial Gate.
 
 ## Product boundary
 
@@ -125,16 +125,19 @@ All Runtime-owned local files live below the current user's Ikaros home:
 ~/.ikaros/
   config.yaml          provider/model configuration and Skill enablement
   state.db             canonical SQLite journal and projections
+  memory.db            independent long-term Memory records and revisions
   runtime.lock         process-lifetime exclusive ownership of this home
   backups/             verified offline state snapshots, created on demand
   skills/              user-installed <name>/SKILL.md directories
   logs/                created only if persistent file logging is enabled
 ```
 
-A missing `skills/` directory is an empty Skill catalog. The proposed
-`memory.db` is deliberately absent from this current-state tree: when
-implemented, it will have a lifecycle independent from Session history and
-must never be removed by a `state.db` reset.
+A missing `skills/` directory is an empty Skill catalog. `memory.db` uses its
+own schema version 1, connection, transactions, revision records, and operation
+receipts. It shares only the Runtime-home process lock with `state.db`; it uses
+no SQLite `ATTACH`, cross-database foreign key, or two-phase commit. Startup
+requires both schema version 1 and the exact canonical table/index DDL; a
+same-version structural drift is rejected rather than silently accepted.
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
@@ -142,7 +145,7 @@ version 7. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml`, `skills/`, Desktop
-preferences, and the future separately owned `memory.db` are independent and
+preferences, and the separately owned `memory.db` are independent and
 are not removed by a conversation-state reset. Every incompatible persistence
 or Event-payload change during this pre-release phase uses this destructive
 reset policy rather than a migration or upcaster. Durable release migrations
@@ -324,11 +327,14 @@ selection for the Run, and records the first omitted Turn as a boundary. The
 UI continues to page the complete Thread history independently. Later Tool
 Steps reload frozen Items by ID and append only current-Run Items.
 
-Durable cross-Thread Memory is not implemented. It is a different authority and
-lifecycle from Session history, History selection, History compaction,
-Identity Core, and Skills. The proposed `memory.db` must remain independent
-from Session reset and must not become a second conversation truth source.
-The detailed boundary and serial implementation Gates are defined in
+Durable cross-Thread Memory has an explicit-management foundation: active
+records can be created idempotently and listed by scope/kind/state with keyset
+pagination, while full current content is loaded by ID. It remains a different
+authority and lifecycle from Session history, History selection, History
+compaction, Identity Core, and Skills. `memory.db` is independent from Session
+reset and is not a second conversation truth source. Correction, Forget,
+maintenance/export, UI management, and model recall remain later Gates. The
+detailed boundary and serial implementation Gates are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 An Event is not another conversation node. It describes a state transition of
@@ -593,8 +599,9 @@ with `importlib.resources`, freezes the version 1 `ikaros-identity` Instruction
 Block into each Submission Frame at `turn.start`, and reuses that frozen input
 for every Step in the Run. Recovery validates the frozen block against the
 current release Identity and fails on drift rather than silently substituting
-new content. It does not yet create, retrieve, or inject durable Memory; that
-remains a separately gated responsibility in
+new content. The Agent loop still does not retrieve or inject durable Memory;
+the separate V0 management path does not change Provider input. Recall remains
+a separately gated responsibility in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 Gate 4 requires no `state.db` schema reset. Completed pre-Gate-4 history whose
@@ -968,6 +975,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
 | Skills settings | `skill.list` / `skill.set_enabled` catalog, diagnostics, and global enablement |
+| Memory foundation | `memory.create` / `memory.list` / `memory.get` typed Desktop bridge; no Renderer page or model recall yet |
 | Profile Token metrics and activity | `usage.read` over the `model_usages` projection rebuilt solely from Provider-reported usage in `model.response_finished`; no text-based estimation |
 | theme, language, username | client-only UI state |
 
