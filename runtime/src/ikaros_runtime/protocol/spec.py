@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from typing import Final
 
-PROTOCOL_SPEC_SCHEMA_VERSION: Final = 1
-PROTOCOL_VERSION: Final = 1
+from ..errors import MEMORY_OPERATION_REASON_CODES
+
+PROTOCOL_SPEC_SCHEMA_VERSION: Final = 2
+PROTOCOL_VERSION: Final = 2
 JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
 EVENT_NOTIFICATION_METHOD: Final = "event"
 JOURNAL_EVENT_SCHEMA_VERSION: Final = 4
+MEMORY_OPERATION_ERROR_CODE: Final = -32020
+MEMORY_OPERATION_ERROR_MESSAGE: Final = "memory operation failed"
 
 RPC_METHODS: Final = (
     "runtime.shutdown",
@@ -28,6 +32,8 @@ RPC_METHODS: Final = (
     "skill.list",
     "skill.set_enabled",
     "memory.create",
+    "memory.correct",
+    "memory.forget",
     "memory.list",
     "memory.get",
     "turn.start",
@@ -94,6 +100,13 @@ def protocol_manifest() -> dict[str, object]:
             "schemaVersion": JOURNAL_EVENT_SCHEMA_VERSION,
             "eventTypes": list(JOURNAL_EVENT_TYPES),
         },
+        "errors": {
+            "memoryOperation": {
+                "code": MEMORY_OPERATION_ERROR_CODE,
+                "message": MEMORY_OPERATION_ERROR_MESSAGE,
+                "reasonCodes": list(MEMORY_OPERATION_REASON_CODES),
+            }
+        },
         "capabilities": initialize_capabilities(),
         "providerToolIds": list(PROVIDER_TOOL_IDS),
     }
@@ -108,6 +121,9 @@ __all__ = [
     "JOURNAL_EVENT_TYPES",
     "JOURNAL_EVENT_TYPE_SET",
     "JSONRPC_VERSION",
+    "MEMORY_OPERATION_ERROR_CODE",
+    "MEMORY_OPERATION_ERROR_MESSAGE",
+    "MEMORY_OPERATION_REASON_CODES",
     "PROTOCOL_SPEC_SCHEMA_VERSION",
     "PROTOCOL_VERSION",
     "PROVIDER_TOOL_IDS",

@@ -70,6 +70,7 @@ interface RuntimeReadyRecord {
 }
 
 interface PendingRequest {
+  method: string;
   resolve(value: unknown): void;
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout>;
@@ -252,6 +253,7 @@ class JsonRpcConnection {
         reject(new Error(`Runtime request ${method} timed out.`));
       }, timeoutMs);
       this.pending.set(id, {
+        method,
         resolve: (value) => resolvePromise(value as TResult),
         reject,
         timeout
@@ -308,7 +310,7 @@ class JsonRpcConnection {
     }
     let response: JsonRpcResponse;
     try {
-      response = parseRuntimeJsonRpcResponse(message);
+      response = parseRuntimeJsonRpcResponse(message, pending.method);
     } catch (error) {
       this.disconnect(error instanceof Error ? error : new Error(String(error)));
       this.socket.terminate();
@@ -317,7 +319,13 @@ class JsonRpcConnection {
     clearTimeout(pending.timeout);
     this.pending.delete(id);
     if ("error" in response) {
-      pending.reject(new RuntimeRpcError(response.error.code, response.error.message));
+      pending.reject(
+        new RuntimeRpcError(
+          response.error.code,
+          response.error.message,
+          response.error.reasonCode
+        )
+      );
     } else {
       pending.resolve(response.result);
     }

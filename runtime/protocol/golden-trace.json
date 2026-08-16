@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 1,
+          "protocolVersion": 2,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
@@ -249,7 +249,11 @@
           "key": null
         },
         "content": "The user prefers concise technical explanations.",
-        "clientRequestId": "golden-memory-create"
+        "clientRequestId": "golden-memory-create",
+        "source": {
+          "type": "session_item",
+          "itemId": "item_00000000000000000000000000000005"
+        }
       },
       "envelope": {
         "jsonrpc": "2.0",
@@ -320,6 +324,61 @@
             "state": "active",
             "content": "The user prefers concise technical explanations.",
             "provenance": {
+              "sourceKind": "session_item",
+              "threadId": "thread_00000000000000000000000000000001",
+              "turnId": "turn_00000000000000000000000000000003",
+              "itemId": "item_00000000000000000000000000000005",
+              "status": "available"
+            },
+            "createdAt": "2026-08-15T12:00:00.017Z",
+            "updatedAt": "2026-08-15T12:00:00.017Z",
+            "forgottenAt": null
+          }
+        }
+      }
+    },
+    {
+      "name": "memory-corrected",
+      "kind": "response",
+      "method": "memory.correct",
+      "requestParams": {
+        "memoryId": "memory_0000000000000000000000000000000b",
+        "expectedRevision": 1,
+        "content": "The user prefers precise, concise technical explanations.",
+        "clientRequestId": "golden-memory-correct"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {
+          "memoryId": "memory_0000000000000000000000000000000b",
+          "resultingRevision": 2,
+          "created": true
+        }
+      }
+    },
+    {
+      "name": "memory-corrected-record",
+      "kind": "response",
+      "method": "memory.get",
+      "requestParams": {
+        "memoryId": "memory_0000000000000000000000000000000b"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "result": {
+          "memory": {
+            "id": "memory_0000000000000000000000000000000b",
+            "kind": "preference",
+            "scope": {
+              "type": "global",
+              "key": null
+            },
+            "revision": 2,
+            "state": "active",
+            "content": "The user prefers precise, concise technical explanations.",
+            "provenance": {
               "sourceKind": "user_explicit",
               "threadId": null,
               "turnId": null,
@@ -327,8 +386,99 @@
               "status": "not_applicable"
             },
             "createdAt": "2026-08-15T12:00:00.017Z",
-            "updatedAt": "2026-08-15T12:00:00.017Z",
+            "updatedAt": "2026-08-15T12:00:00.018Z",
             "forgottenAt": null
+          }
+        }
+      }
+    },
+    {
+      "name": "memory-forgotten",
+      "kind": "response",
+      "method": "memory.forget",
+      "requestParams": {
+        "memoryId": "memory_0000000000000000000000000000000b",
+        "expectedRevision": 2,
+        "clientRequestId": "golden-memory-forget"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {
+          "memoryId": "memory_0000000000000000000000000000000b",
+          "resultingRevision": 3,
+          "created": true
+        }
+      }
+    },
+    {
+      "name": "memory-forgotten-list-page",
+      "kind": "response",
+      "method": "memory.list",
+      "requestParams": {
+        "limit": 25,
+        "scope": {
+          "type": "global",
+          "key": null
+        },
+        "state": "forgotten"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+          "memories": [
+            {
+              "id": "memory_0000000000000000000000000000000b",
+              "kind": "preference",
+              "scope": {
+                "type": "global",
+                "key": null
+              },
+              "revision": 3,
+              "state": "forgotten",
+              "preview": null,
+              "createdAt": "2026-08-15T12:00:00.017Z",
+              "updatedAt": "2026-08-15T12:00:00.019Z",
+              "forgottenAt": "2026-08-15T12:00:00.019Z"
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": false
+        }
+      }
+    },
+    {
+      "name": "memory-tombstone",
+      "kind": "response",
+      "method": "memory.get",
+      "requestParams": {
+        "memoryId": "memory_0000000000000000000000000000000b"
+      },
+      "envelope": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": {
+          "memory": {
+            "id": "memory_0000000000000000000000000000000b",
+            "kind": "preference",
+            "scope": {
+              "type": "global",
+              "key": null
+            },
+            "revision": 3,
+            "state": "forgotten",
+            "content": null,
+            "provenance": {
+              "sourceKind": "user_explicit",
+              "threadId": null,
+              "turnId": null,
+              "itemId": null,
+              "status": "not_applicable"
+            },
+            "createdAt": "2026-08-15T12:00:00.017Z",
+            "updatedAt": "2026-08-15T12:00:00.019Z",
+            "forgottenAt": "2026-08-15T12:00:00.019Z"
           }
         }
       }

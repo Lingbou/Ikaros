@@ -328,7 +328,8 @@ describe("desktop window controls", () => {
           kind: "preference",
           scope: { type: "global", key: null },
           content: "Concise answers",
-          clientRequestId: "memory-create-1"
+          clientRequestId: "memory-create-1",
+          source: { type: "session_item", itemId: `item_${"2".repeat(32)}` }
         }
       ],
       "memory.create",
@@ -336,7 +337,42 @@ describe("desktop window controls", () => {
         kind: "preference",
         scope: { type: "global", key: null },
         content: "Concise answers",
-        clientRequestId: "memory-create-1"
+        clientRequestId: "memory-create-1",
+        source: { type: "session_item", itemId: `item_${"2".repeat(32)}` }
+      }
+    ],
+    [
+      "ikaros:runtime:memory-correct",
+      [
+        {
+          memoryId: `memory_${"1".repeat(32)}`,
+          expectedRevision: 1,
+          content: "Prefer concise answers",
+          clientRequestId: "memory-correct-1"
+        }
+      ],
+      "memory.correct",
+      {
+        memoryId: `memory_${"1".repeat(32)}`,
+        expectedRevision: 1,
+        content: "Prefer concise answers",
+        clientRequestId: "memory-correct-1"
+      }
+    ],
+    [
+      "ikaros:runtime:memory-forget",
+      [
+        {
+          memoryId: `memory_${"1".repeat(32)}`,
+          expectedRevision: 2,
+          clientRequestId: "memory-forget-1"
+        }
+      ],
+      "memory.forget",
+      {
+        memoryId: `memory_${"1".repeat(32)}`,
+        expectedRevision: 2,
+        clientRequestId: "memory-forget-1"
       }
     ],
     [
@@ -444,6 +480,32 @@ describe("desktop window controls", () => {
         clientRequestId: "request-ambiguous",
       }),
     ).rejects.toBe(transportError);
+
+    const memoryHandler = electron.handlers.get("ikaros:runtime:memory-correct");
+    expect(memoryHandler).toBeDefined();
+    const memoryError = new RuntimeRpcError(
+      -32020,
+      "memory operation failed",
+      "memory_revision_conflict"
+    ) as RuntimeRpcError & { data?: unknown };
+    memoryError.data = { content: "must not cross IPC" };
+    electron.runtimeHost.request.mockRejectedValueOnce(memoryError);
+    await expect(
+      memoryHandler?.(event, {
+        memoryId: `memory_${"1".repeat(32)}`,
+        expectedRevision: 1,
+        content: "Updated",
+        clientRequestId: "memory-correct-conflict"
+      })
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: "json_rpc",
+        code: -32020,
+        message: "memory operation failed",
+        reasonCode: "memory_revision_conflict"
+      }
+    });
   });
 
   it("survives a webContents destruction race and continues broadcasting events", () => {

@@ -25,6 +25,7 @@ from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, JournalEvent
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
 from ikaros_runtime.identity import IdentityResourceError, load_identity_core
 from ikaros_runtime.memory import MemoryScope, SqliteMemoryStore
+from ikaros_runtime.protocol.spec import PROTOCOL_VERSION
 from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
 from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.server.connection import handle_connection
@@ -450,12 +451,12 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
         1,
         "initialize",
         {
-            "protocolVersion": 1,
+            "protocolVersion": PROTOCOL_VERSION,
             "client": {"name": "runtime-test", "version": "0.1.0"},
         },
     )
     assert initialized["result"] == {
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "server": {"name": "ikaros-runtime", "version": "0.1.0"},
         "capabilities": {
             "threads": True,
@@ -1139,6 +1140,213 @@ async def test_memory_rpc_is_durable_idempotent_and_event_free(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
+    tmp_path: Path,
+) -> None:
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(token, tmp_path)
+    connection = await _initialize(
+        f"ws://{readiness['host']}:{readiness['port']}", token
+    )
+    source_params: dict[str, Any]
+    source_memory_id = ""
+    mutation_memory_id = ""
+    try:
+        created_thread = await _rpc(
+            connection,
+            2,
+            "thread.create",
+            {"title": "Memory source", "clientRequestId": "memory-source-thread"},
+        )
+        thread = created_thread["result"]["thread"]
+        started = await _rpc(
+            connection,
+            3,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "Remember this exact Session Item.",
+                "providerId": "scripted",
+                "modelId": "scripted-v1",
+            },
+        )
+        run_id = cast(str, started["result"]["runId"])
+        events = await _collect_run_events(connection, run_id)
+        latest_seq = max(cast(int, event["seq"]) for event in events)
+        history = await _rpc(
+            connection,
+            4,
+            "turn.list",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "limit": 10,
+            },
+        )
+        items = history["result"]["turns"][0]["runs"][0]["items"]
+        source_item = next(
+            item
+            for item in items
+            if item["kind"] == "message" and item["role"] == "user"
+        )
+        source_params = {
+            "kind": "fact",
+            "scope": {"type": "global", "key": None},
+            "content": "A fact captured from a Session Item.",
+            "clientRequestId": "memory-source-create",
+            "source": {"type": "session_item", "itemId": source_item["id"]},
+        }
+        source_created = await _rpc(connection, 5, "memory.create", source_params)
+        source_memory_id = cast(str, source_created["result"]["memoryId"])
+        source_fetched = await _rpc(
+            connection,
+            6,
+            "memory.get",
+            {"memoryId": source_memory_id},
+        )
+        assert source_fetched["result"]["memory"]["provenance"] == {
+            "sourceKind": "session_item",
+            "threadId": thread["id"],
+            "turnId": history["result"]["turns"][0]["id"],
+            "itemId": source_item["id"],
+            "status": "available",
+        }
+
+        explicit_created = await _rpc(
+            connection,
+            7,
+            "memory.create",
+            {
+                "kind": "preference",
+                "scope": {"type": "global", "key": None},
+                "content": "old preference",
+                "clientRequestId": "memory-mutation-create",
+            },
+        )
+        mutation_memory_id = cast(str, explicit_created["result"]["memoryId"])
+        correction_params = {
+            "memoryId": mutation_memory_id,
+            "expectedRevision": 1,
+            "content": "corrected preference",
+            "clientRequestId": "memory-mutation-correct",
+        }
+        corrected = await _rpc(connection, 8, "memory.correct", correction_params)
+        assert corrected["result"] == {
+            "memoryId": mutation_memory_id,
+            "resultingRevision": 2,
+            "created": True,
+        }
+        repeated_correct = await _rpc(
+            connection, 9, "memory.correct", correction_params
+        )
+        assert repeated_correct["result"]["created"] is False
+        stale = await _rpc(
+            connection,
+            10,
+            "memory.correct",
+            {
+                **correction_params,
+                "content": "stale correction",
+                "clientRequestId": "memory-mutation-stale",
+            },
+        )
+        assert stale["error"] == {
+            "code": -32020,
+            "message": "memory operation failed",
+            "data": {"reasonCode": "memory_revision_conflict"},
+        }
+        forget_params = {
+            "memoryId": mutation_memory_id,
+            "expectedRevision": 2,
+            "clientRequestId": "memory-mutation-forget",
+        }
+        forgotten = await _rpc(connection, 11, "memory.forget", forget_params)
+        assert forgotten["result"] == {
+            "memoryId": mutation_memory_id,
+            "resultingRevision": 3,
+            "created": True,
+        }
+        active = await _rpc(connection, 12, "memory.list", {"state": "active"})
+        assert mutation_memory_id not in {
+            memory["id"] for memory in active["result"]["memories"]
+        }
+        tombstones = await _rpc(
+            connection, 13, "memory.list", {"state": "forgotten"}
+        )
+        assert tombstones["result"]["memories"] == [
+            {
+                **tombstones["result"]["memories"][0],
+                "id": mutation_memory_id,
+                "revision": 3,
+                "state": "forgotten",
+                "preview": None,
+            }
+        ]
+        tombstone = await _rpc(
+            connection, 14, "memory.get", {"memoryId": mutation_memory_id}
+        )
+        assert tombstone["result"]["memory"]["content"] is None
+        assert tombstone["result"]["memory"]["state"] == "forgotten"
+        no_memory_events = await _rpc(
+            connection,
+            15,
+            "event.replay",
+            {"afterSeq": latest_seq, "limit": 1000},
+        )
+        assert no_memory_events["result"]["events"] == []
+        await _shutdown(connection, process, 16)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+
+    memory_before_reset = (tmp_path / "memory.db").read_bytes()
+    for path in (
+        tmp_path / "state.db",
+        tmp_path / "state.db-wal",
+        tmp_path / "state.db-shm",
+    ):
+        if path.exists():
+            path.unlink()
+    assert (tmp_path / "memory.db").read_bytes() == memory_before_reset
+
+    restarted, restarted_readiness = await _start_runtime(token, tmp_path)
+    restarted_connection = await _initialize(
+        f"ws://{restarted_readiness['host']}:{restarted_readiness['port']}", token
+    )
+    try:
+        source_replayed = await _rpc(
+            restarted_connection, 2, "memory.create", source_params
+        )
+        assert source_replayed["result"] == {
+            "memoryId": source_memory_id,
+            "resultingRevision": 1,
+            "created": False,
+        }
+        source_after_reset = await _rpc(
+            restarted_connection,
+            3,
+            "memory.get",
+            {"memoryId": source_memory_id},
+        )
+        assert source_after_reset["result"]["memory"]["provenance"]["status"] == (
+            "unavailable"
+        )
+        forget_replayed = await _rpc(
+            restarted_connection, 4, "memory.forget", forget_params
+        )
+        assert forget_replayed["result"] == {
+            "memoryId": mutation_memory_id,
+            "resultingRevision": 3,
+            "created": False,
+        }
+        await _shutdown(restarted_connection, restarted, 5)
+    finally:
+        if restarted.returncode is None:
+            await _stop_failed_process(restarted)
+
+
+@pytest.mark.asyncio
 async def test_memory_rpc_allows_credentials_equal_to_fixed_protocol_values(
     tmp_path: Path,
 ) -> None:
@@ -1261,7 +1469,7 @@ async def test_provider_model_discovery_rpc_is_ephemeral_and_secret_guarded(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"protocolVersion": 1},
+                "params": {"protocolVersion": PROTOCOL_VERSION},
             },
             {
                 "jsonrpc": "2.0",
@@ -3281,7 +3489,7 @@ async def test_response_guard_replaces_an_unexpected_protected_payload(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"protocolVersion": 1},
+                "params": {"protocolVersion": PROTOCOL_VERSION},
             },
             {
                 "jsonrpc": "2.0",
@@ -3339,7 +3547,7 @@ async def test_accepted_turn_runs_even_when_the_ack_connection_disconnects(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"protocolVersion": 1},
+                "params": {"protocolVersion": PROTOCOL_VERSION},
             },
             {
                 "jsonrpc": "2.0",
@@ -3419,7 +3627,7 @@ async def test_accepted_cancel_runs_even_when_the_ack_connection_disconnects(
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "initialize",
-                    "params": {"protocolVersion": 1},
+                    "params": {"protocolVersion": PROTOCOL_VERSION},
                 },
                 {
                     "jsonrpc": "2.0",
@@ -3532,7 +3740,7 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"protocolVersion": 1},
+                "params": {"protocolVersion": PROTOCOL_VERSION},
             },
             {
                 "jsonrpc": "2.0",
@@ -3555,7 +3763,7 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"protocolVersion": 1},
+                "params": {"protocolVersion": PROTOCOL_VERSION},
             },
             {
                 "jsonrpc": "2.0",
@@ -3722,7 +3930,7 @@ async def test_cli_server_requires_authentication_and_completes_handshake(
 
     try:
         assert ready["type"] == "ikaros_runtime.ready"
-        assert ready["protocolVersion"] == 1
+        assert ready["protocolVersion"] == PROTOCOL_VERSION
         assert ready["host"] == "127.0.0.1"
         assert ready["port"] > 0
         assert ready["pid"] > 0

@@ -1,3 +1,7 @@
+import {
+  RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD,
+  RUNTIME_PROTOCOL_MANIFEST
+} from "../shared/runtime";
 import type {
   IkarosRuntimeApi,
   IkarosRuntimeBridgeApi,
@@ -5,11 +9,16 @@ import type {
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeHostStatus,
+  RuntimeMemoryCorrectParams,
   RuntimeMemoryCreateParams,
   RuntimeMemoryCreateResult,
+  RuntimeMemoryErrorReasonCode,
+  RuntimeMemoryForgetParams,
   RuntimeMemoryGetResult,
   RuntimeMemoryListPage,
   RuntimeMemoryListParams,
+  RuntimeMemoryMutationResult,
+  RuntimeMemoryRpcMethod,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -42,11 +51,23 @@ export class RuntimeRpcError extends Error {
 
   constructor(
     readonly code: number,
-    message: string
+    message: string,
+    readonly reasonCode?: RuntimeMemoryErrorReasonCode
   ) {
     super(message);
     this.name = "RuntimeRpcError";
   }
+}
+
+const MEMORY_ERROR_REASON_CODES = new Set<RuntimeMemoryErrorReasonCode>([
+  ...RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.reasonCodes
+]);
+
+function isMemoryErrorReasonCode(value: unknown): value is RuntimeMemoryErrorReasonCode {
+  return (
+    typeof value === "string" &&
+    MEMORY_ERROR_REASON_CODES.has(value as RuntimeMemoryErrorReasonCode)
+  );
 }
 
 export function isRuntimeRpcError(error: unknown): error is RuntimeRpcError {
@@ -56,7 +77,11 @@ export function isRuntimeRpcError(error: unknown): error is RuntimeRpcError {
     candidate.kind === "json_rpc" &&
     typeof candidate.code === "number" &&
     Number.isInteger(candidate.code) &&
-    typeof candidate.message === "string"
+    typeof candidate.message === "string" &&
+    (candidate.code === RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.code
+      ? candidate.message === RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.message &&
+        isMemoryErrorReasonCode(candidate.reasonCode)
+      : candidate.reasonCode === undefined)
   );
 }
 
@@ -69,7 +94,8 @@ function invalidBridgeResult(): Error {
 }
 
 async function unwrapRuntimeInvocation<TResult>(
-  invocation: Promise<RuntimeInvocationResult<TResult>>
+  invocation: Promise<RuntimeInvocationResult<TResult>>,
+  memoryMethod?: RuntimeMemoryRpcMethod
 ): Promise<TResult> {
   const result = await invocation;
   if (
@@ -83,7 +109,12 @@ async function unwrapRuntimeInvocation<TResult>(
   const candidate = result as {
     ok?: unknown;
     value?: unknown;
-    error?: { kind?: unknown; code?: unknown; message?: unknown };
+    error?: {
+      kind?: unknown;
+      code?: unknown;
+      message?: unknown;
+      reasonCode?: unknown;
+    };
   };
   if (candidate.ok === true) {
     if (!hasOwn(candidate, "value") || hasOwn(candidate, "error")) {
@@ -100,13 +131,38 @@ async function unwrapRuntimeInvocation<TResult>(
       candidate.error.kind !== "json_rpc" ||
       typeof candidate.error.code !== "number" ||
       !Number.isInteger(candidate.error.code) ||
-      typeof candidate.error.message !== "string"
+      typeof candidate.error.message !== "string" ||
+      Object.keys(candidate.error).some(
+        (key) => !["kind", "code", "message", "reasonCode"].includes(key)
+      ) ||
+      (candidate.error.code === RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.code
+        ? memoryMethod === undefined ||
+          candidate.error.message !==
+            RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.message ||
+          !isMemoryErrorReasonAllowed(memoryMethod, candidate.error.reasonCode)
+        : candidate.error.reasonCode !== undefined)
     ) {
       throw invalidBridgeResult();
     }
-    throw new RuntimeRpcError(candidate.error.code, candidate.error.message);
+    throw new RuntimeRpcError(
+      candidate.error.code,
+      candidate.error.message,
+      candidate.error.reasonCode as RuntimeMemoryErrorReasonCode | undefined
+    );
   }
   throw invalidBridgeResult();
+}
+
+function isMemoryErrorReasonAllowed(
+  method: RuntimeMemoryRpcMethod,
+  reasonCode: unknown
+): reasonCode is RuntimeMemoryErrorReasonCode {
+  return (
+    typeof reasonCode === "string" &&
+    (
+      RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD[method] as readonly string[]
+    ).includes(reasonCode)
+  );
 }
 
 export class RuntimeClient implements IkarosRuntimeApi {
@@ -199,15 +255,23 @@ export class RuntimeClient implements IkarosRuntimeApi {
   }
 
   createMemory(params: RuntimeMemoryCreateParams): Promise<RuntimeMemoryCreateResult> {
-    return unwrapRuntimeInvocation(this.api.createMemory(params));
+    return unwrapRuntimeInvocation(this.api.createMemory(params), "memory.create");
+  }
+
+  correctMemory(params: RuntimeMemoryCorrectParams): Promise<RuntimeMemoryMutationResult> {
+    return unwrapRuntimeInvocation(this.api.correctMemory(params), "memory.correct");
+  }
+
+  forgetMemory(params: RuntimeMemoryForgetParams): Promise<RuntimeMemoryMutationResult> {
+    return unwrapRuntimeInvocation(this.api.forgetMemory(params), "memory.forget");
   }
 
   listMemories(params: RuntimeMemoryListParams = {}): Promise<RuntimeMemoryListPage> {
-    return unwrapRuntimeInvocation(this.api.listMemories(params));
+    return unwrapRuntimeInvocation(this.api.listMemories(params), "memory.list");
   }
 
   getMemory(memoryId: string): Promise<RuntimeMemoryGetResult> {
-    return unwrapRuntimeInvocation(this.api.getMemory(memoryId));
+    return unwrapRuntimeInvocation(this.api.getMemory(memoryId), "memory.get");
   }
 
   readUsage(): Promise<RuntimeUsageReadResult> {

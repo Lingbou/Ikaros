@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 type ProviderFailureCategory = Literal[
     "authentication",
@@ -16,6 +16,21 @@ type ProviderFailureCategory = Literal[
     "protocol",
     "unknown",
 ]
+
+type MemoryOperationReasonCode = Literal[
+    "memory_not_found",
+    "memory_revision_conflict",
+    "memory_forgotten",
+    "memory_idempotency_conflict",
+    "memory_source_unavailable",
+]
+MEMORY_OPERATION_REASON_CODES: Final[tuple[MemoryOperationReasonCode, ...]] = (
+    "memory_not_found",
+    "memory_revision_conflict",
+    "memory_forgotten",
+    "memory_idempotency_conflict",
+    "memory_source_unavailable",
+)
 
 
 class RunCancelled(Exception):
@@ -86,3 +101,13 @@ class ModelInputUnavailableError(RuntimeError):
 
 class MemorySchemaIncompatibleError(RuntimeError):
     """The durable Memory database cannot be opened by this Runtime release."""
+
+
+class MemoryOperationError(RuntimeError):
+    """A stable, non-secret Memory mutation or provenance failure."""
+
+    def __init__(self, reason_code: MemoryOperationReasonCode) -> None:
+        if reason_code not in MEMORY_OPERATION_REASON_CODES:
+            raise ValueError("unsupported Memory operation reason code")
+        super().__init__(reason_code)
+        self.reason_code = reason_code

@@ -134,6 +134,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     skillList: "ikaros:runtime:skill-list",
     skillSetEnabled: "ikaros:runtime:skill-set-enabled",
     memoryCreate: "ikaros:runtime:memory-create",
+    memoryCorrect: "ikaros:runtime:memory-correct",
+    memoryForget: "ikaros:runtime:memory-forget",
     memoryList: "ikaros:runtime:memory-list",
     memoryGet: "ikaros:runtime:memory-get",
     usageRead: "ikaros:runtime:usage-read"

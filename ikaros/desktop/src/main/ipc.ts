@@ -9,11 +9,14 @@ import type {
   RuntimeHostStatus,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
+  RuntimeMemoryCorrectParams,
   RuntimeMemoryCreateParams,
   RuntimeMemoryCreateResult,
+  RuntimeMemoryForgetParams,
   RuntimeMemoryGetResult,
   RuntimeMemoryListPage,
   RuntimeMemoryListParams,
+  RuntimeMemoryMutationResult,
   RuntimeModelSetEnabledParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
@@ -61,7 +64,12 @@ async function invokeRuntime<TResult>(
     if (error instanceof RuntimeRpcError) {
       return {
         ok: false,
-        error: { kind: error.kind, code: error.code, message: error.message }
+        error: {
+          kind: error.kind,
+          code: error.code,
+          message: error.message,
+          ...(error.reasonCode === undefined ? {} : { reasonCode: error.reasonCode })
+        }
       };
     }
     throw error;
@@ -158,6 +166,8 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.skillList,
     DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
     DESKTOP_IPC_CHANNELS.runtime.memoryCreate,
+    DESKTOP_IPC_CHANNELS.runtime.memoryCorrect,
+    DESKTOP_IPC_CHANNELS.runtime.memoryForget,
     DESKTOP_IPC_CHANNELS.runtime.memoryList,
     DESKTOP_IPC_CHANNELS.runtime.memoryGet,
     DESKTOP_IPC_CHANNELS.runtime.usageRead,
@@ -359,6 +369,26 @@ export function registerDesktopIpc(
       trustPolicy.assertTrustedIpc(event);
       return invokeRuntime(() =>
         runtimeHost.request<RuntimeMemoryCreateResult>("memory.create", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.memoryCorrect,
+    async (event, params: RuntimeMemoryCorrectParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeMemoryMutationResult>("memory.correct", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.memoryForget,
+    async (event, params: RuntimeMemoryForgetParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeMemoryMutationResult>("memory.forget", { ...params })
       );
     }
   );

@@ -2,18 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from typing import Any, cast
 
 import pytest
 
 import ikaros_runtime.memory.store as memory_store_module
-from ikaros_runtime.errors import InvalidParamsError, MemorySchemaIncompatibleError
-from ikaros_runtime.memory import MemoryScope, SqliteMemoryStore
+from ikaros_runtime.errors import (
+    InvalidParamsError,
+    MemoryOperationError,
+    MemorySchemaIncompatibleError,
+)
+from ikaros_runtime.memory import MemoryScope, MemorySourceSnapshot, SqliteMemoryStore
 from ikaros_runtime.memory.domain import validate_memory_content
 from ikaros_runtime.memory.schema import MEMORY_SCHEMA_VERSION
 from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.services.memories import MemoryService
+from ikaros_runtime.storage import SqliteRuntimeStore
+
+from .helpers import prepare_turn
 
 
 def _create(
@@ -33,6 +42,29 @@ def _create(
     assert receipt.created is True
     assert receipt.resulting_revision == 1
     return receipt.memory_id
+
+
+def _create_session_item(
+    store: SqliteRuntimeStore,
+    *,
+    content: str = "Remember that the user prefers concise answers.",
+) -> tuple[str, str, str]:
+    thread, _event = store.create_thread("Memory provenance")
+    prepared = prepare_turn(
+        store,
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content=content,
+        provider_id="scripted",
+        model_id="scripted-v1",
+    )
+    item_id = prepared.initial_events[0].item_id
+    assert item_id is not None
+    return thread.id, prepared.turn_id, item_id
+
+
+def _assert_memory_error(error: pytest.ExceptionInfo[MemoryOperationError], reason: str) -> None:
+    assert error.value.reason_code == reason
 
 
 def test_memory_schema_is_independent_complete_and_wal_backed(tmp_path: Path) -> None:
@@ -260,14 +292,14 @@ def test_create_is_idempotent_across_restart_and_rejects_changed_input(
             "SELECT COUNT(*) FROM memory_operations"
         ).fetchone()[0] == 1
 
-        with pytest.raises(ValueError, match="memory_idempotency_conflict"):
+        with pytest.raises(MemoryOperationError, match="memory_idempotency_conflict"):
             reopened.create_memory_once(
                 kind="fact",
                 scope=MemoryScope("global", None),
                 content="The user prefers concise technical explanations.",
                 client_request_id="stable-request",
             )
-        with pytest.raises(ValueError, match="memory_idempotency_conflict"):
+        with pytest.raises(MemoryOperationError, match="memory_idempotency_conflict"):
             reopened.create_memory_once(
                 kind="preference",
                 scope=MemoryScope("global", None),
@@ -276,6 +308,252 @@ def test_create_is_idempotent_across_restart_and_rejects_changed_input(
             )
     finally:
         reopened.close()
+
+
+def test_correct_appends_revision_and_is_idempotent_across_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory.db"
+    store = SqliteMemoryStore(path)
+    memory_id = _create(store, "create-before-correct", content="original")
+    corrected = store.correct_memory_once(
+        memory_id=memory_id,
+        expected_revision=1,
+        content="corrected",
+        client_request_id="correct-once",
+    )
+    assert corrected.to_wire() == {
+        "memoryId": memory_id,
+        "resultingRevision": 2,
+        "created": True,
+    }
+    assert store.get_memory(memory_id).content == "corrected"
+    assert store.get_memory(memory_id).revision == 2
+    assert store._connection.execute(
+        "SELECT content FROM memory_revisions WHERE memory_id = ? AND revision = 1",
+        (memory_id,),
+    ).fetchone()[0] == "original"
+    store.close()
+
+    reopened = SqliteMemoryStore(path)
+    try:
+        repeated = reopened.correct_memory_once(
+            memory_id=memory_id,
+            expected_revision=1,
+            content="corrected",
+            client_request_id="correct-once",
+        )
+        assert repeated.resulting_revision == 2
+        assert repeated.created is False
+        with pytest.raises(MemoryOperationError) as stale:
+            reopened.correct_memory_once(
+                memory_id=memory_id,
+                expected_revision=1,
+                content="stale",
+                client_request_id="correct-stale",
+            )
+        _assert_memory_error(stale, "memory_revision_conflict")
+        with pytest.raises(MemoryOperationError) as changed_retry:
+            reopened.correct_memory_once(
+                memory_id=memory_id,
+                expected_revision=1,
+                content="changed retry",
+                client_request_id="correct-once",
+            )
+        _assert_memory_error(changed_retry, "memory_idempotency_conflict")
+    finally:
+        reopened.close()
+
+
+def test_forget_creates_tombstone_redacts_all_derived_content_and_replays(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory.db"
+    store = SqliteMemoryStore(path)
+    source = MemorySourceSnapshot(
+        thread_id="thread_" + "1" * 32,
+        turn_id="turn_" + "2" * 32,
+        item_id="item_" + "3" * 32,
+        item_digest="4" * 64,
+    )
+    created = store.create_memory_once(
+        kind="fact",
+        scope=MemoryScope("global", None),
+        content="sensitive original",
+        client_request_id="forget-create",
+        source=source,
+    )
+    memory_id = created.memory_id
+    store.correct_memory_once(
+        memory_id=memory_id,
+        expected_revision=1,
+        content="sensitive correction",
+        client_request_id="forget-correct",
+    )
+    forgotten = store.forget_memory_once(
+        memory_id=memory_id,
+        expected_revision=2,
+        client_request_id="forget-once",
+    )
+    assert forgotten.to_wire() == {
+        "memoryId": memory_id,
+        "resultingRevision": 3,
+        "created": True,
+    }
+    record = store.get_memory(memory_id)
+    assert record.state == "forgotten"
+    assert record.content is None
+    assert record.revision == 3
+    assert store.list_memories(
+        cursor=None,
+        limit=50,
+        scope=None,
+        kind=None,
+    ).memories == ()
+    forgotten_page = store.list_memories(
+        cursor=None,
+        limit=50,
+        scope=None,
+        kind=None,
+        state="forgotten",
+    )
+    assert len(forgotten_page.memories) == 1
+    assert forgotten_page.memories[0].preview is None
+    revisions = store._connection.execute(
+        """
+        SELECT revision, operation, content, content_digest, content_redacted_at,
+               source_thread_id, source_turn_id, source_item_id, source_item_digest
+        FROM memory_revisions WHERE memory_id = ? ORDER BY revision
+        """,
+        (memory_id,),
+    ).fetchall()
+    assert [(row["revision"], row["operation"]) for row in revisions] == [
+        (1, "create"),
+        (2, "correct"),
+        (3, "forget"),
+    ]
+    assert all(row["content"] is None for row in revisions)
+    assert all(row["content_digest"] is None for row in revisions)
+    assert all(row["source_item_digest"] is None for row in revisions)
+    assert all(row["content_redacted_at"] is not None for row in revisions[:2])
+    assert revisions[2]["content_redacted_at"] is None
+    assert tuple(revisions[0][key] for key in (
+        "source_thread_id",
+        "source_turn_id",
+        "source_item_id",
+    )) == (source.thread_id, source.turn_id, source.item_id)
+    store.close()
+
+    reopened = SqliteMemoryStore(path)
+    try:
+        repeated = reopened.forget_memory_once(
+            memory_id=memory_id,
+            expected_revision=2,
+            client_request_id="forget-once",
+        )
+        assert repeated.resulting_revision == 3
+        assert repeated.created is False
+        with pytest.raises(MemoryOperationError) as changed_forget_retry:
+            reopened.forget_memory_once(
+                memory_id=memory_id,
+                expected_revision=3,
+                client_request_id="forget-once",
+            )
+        _assert_memory_error(changed_forget_retry, "memory_idempotency_conflict")
+        with pytest.raises(MemoryOperationError) as cross_method_retry:
+            reopened.correct_memory_once(
+                memory_id=memory_id,
+                expected_revision=2,
+                content="must not cross methods",
+                client_request_id="forget-once",
+            )
+        _assert_memory_error(cross_method_retry, "memory_idempotency_conflict")
+        for request_id, operation in (
+            ("forget-create", "create"),
+            ("forget-correct", "correct"),
+        ):
+            with pytest.raises(MemoryOperationError) as old_retry:
+                if operation == "create":
+                    reopened.create_memory_once(
+                        kind="fact",
+                        scope=MemoryScope("global", None),
+                        content="sensitive original",
+                        client_request_id=request_id,
+                        source=source,
+                    )
+                else:
+                    reopened.correct_memory_once(
+                        memory_id=memory_id,
+                        expected_revision=1,
+                        content="sensitive correction",
+                        client_request_id=request_id,
+                    )
+            _assert_memory_error(old_retry, "memory_forgotten")
+        with pytest.raises(MemoryOperationError) as second_forget:
+            reopened.forget_memory_once(
+                memory_id=memory_id,
+                expected_revision=3,
+                client_request_id="another-forget",
+            )
+        _assert_memory_error(second_forget, "memory_forgotten")
+    finally:
+        reopened.close()
+
+
+def test_correct_and_forget_transactions_are_all_or_nothing(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    memory_id = _create(store, "atomic-mutations", content="before")
+    try:
+        store._connection.execute(
+            """
+            CREATE TEMP TRIGGER reject_correct_receipt
+            BEFORE INSERT ON memory_operations
+            WHEN NEW.method = 'memory.correct'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject correct');
+            END
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="reject correct"):
+            store.correct_memory_once(
+                memory_id=memory_id,
+                expected_revision=1,
+                content="should rollback",
+                client_request_id="atomic-correct",
+            )
+        assert store.get_memory(memory_id).revision == 1
+        assert store.get_memory(memory_id).content == "before"
+        store._connection.execute("DROP TRIGGER reject_correct_receipt")
+        store._connection.execute(
+            """
+            CREATE TEMP TRIGGER reject_forget_record
+            BEFORE UPDATE ON memory_records
+            WHEN NEW.state = 'forgotten'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject forget');
+            END
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="reject forget"):
+            store.forget_memory_once(
+                memory_id=memory_id,
+                expected_revision=1,
+                client_request_id="atomic-forget",
+            )
+        assert store.get_memory(memory_id).revision == 1
+        assert store.get_memory(memory_id).content == "before"
+        assert store._connection.execute(
+            "SELECT content_digest FROM memory_revisions WHERE memory_id = ?",
+            (memory_id,),
+        ).fetchone()[0] is not None
+        assert store._connection.execute(
+            """
+            SELECT COUNT(*) FROM memory_operations
+            WHERE client_request_id IN ('atomic-correct', 'atomic-forget')
+            """
+        ).fetchone()[0] == 0
+    finally:
+        store.close()
 
 
 def test_create_transaction_is_all_or_nothing(tmp_path: Path) -> None:
@@ -457,9 +735,25 @@ def test_memory_protected_value_probe_scans_only_persisted_user_data(
 ) -> None:
     store = SqliteMemoryStore(tmp_path / "memory.db")
     protected = "sk-memory-persisted-sentinel"
+    source = MemorySourceSnapshot(
+        thread_id="thread_" + "1" * 32,
+        turn_id="turn_" + "2" * 32,
+        item_id="item_" + "3" * 32,
+        item_digest="4" * 64,
+    )
     try:
         _create(store, "safe-id", content=f"prefix {protected} suffix", kind="fact")
+        store.create_memory_once(
+            kind="fact",
+            scope=MemoryScope("global", None),
+            content="safe provenance body",
+            client_request_id="source-provenance-probe",
+            source=source,
+        )
         assert store.contains_protected_values((protected,)) is True
+        assert store.contains_protected_values((source.thread_id,)) is False
+        assert store.contains_protected_values((source.turn_id[5:13],)) is False
+        assert store.contains_protected_values((source.item_id,)) is False
         assert store.contains_protected_values(("fact",)) is False
         assert store.contains_protected_values(("memory.create",)) is False
         assert store.contains_protected_values(()) is False
@@ -471,8 +765,9 @@ def test_memory_service_validates_params_scope_security_and_unknown_ids(
     tmp_path: Path,
 ) -> None:
     store = SqliteMemoryStore(tmp_path / "memory.db")
+    session_store = SqliteRuntimeStore(tmp_path / "state.db")
     observed: list[object] = []
-    service = MemoryService(store, observed.append)
+    service = MemoryService(store, observed.append, session_store)
     params: dict[str, object] = {
         "kind": "fact",
         "scope": {"type": "global", "key": None},
@@ -495,12 +790,14 @@ def test_memory_service_validates_params_scope_security_and_unknown_ids(
             service.create({**params, "scope": {"type": "global", "key": "bad"}})
         with pytest.raises(InvalidParamsError, match="kind"):
             service.create({**params, "kind": "instruction"})
-        with pytest.raises(InvalidParamsError, match="does not exist"):
+        with pytest.raises(MemoryOperationError, match="memory_not_found"):
             service.get({"memoryId": "memory_" + "0" * 32})
         with pytest.raises(InvalidParamsError, match="state"):
             service.list({"state": "all"})
         with pytest.raises(InvalidParamsError, match="memoryId"):
             service.get({"memoryId": "\ud800"})
+        with pytest.raises(InvalidParamsError, match="memoryId"):
+            service.get({"memoryId": "0" * 32})
         with pytest.raises(InvalidParamsError, match="scope"):
             service.create(
                 {
@@ -511,7 +808,233 @@ def test_memory_service_validates_params_scope_security_and_unknown_ids(
         with pytest.raises(InvalidParamsError, match="clientRequestId"):
             service.create({**params, "clientRequestId": "\ud800"})
     finally:
+        session_store.close()
         store.close()
+
+
+def test_session_item_provenance_is_derived_available_and_detects_drift(
+    tmp_path: Path,
+) -> None:
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    session_store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread_id, turn_id, item_id = _create_session_item(session_store)
+    service = MemoryService(memory_store, lambda _value: None, session_store)
+    params = {
+        "kind": "preference",
+        "scope": {"type": "global", "key": None},
+        "content": "The user prefers concise answers.",
+        "clientRequestId": "source-create",
+        "source": {"type": "session_item", "itemId": item_id},
+    }
+    try:
+        created = service.create(params)
+        memory_id = cast(str, created["memoryId"])
+        provenance = cast(dict[str, object], service.get({"memoryId": memory_id})["memory"])[
+            "provenance"
+        ]
+        assert provenance == {
+            "sourceKind": "session_item",
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": item_id,
+            "status": "available",
+        }
+        run_id = session_store._connection.execute(
+            "SELECT id FROM runs WHERE turn_id = ?",
+            (turn_id,),
+        ).fetchone()[0]
+        session_store.terminalize_run(run_id, "cancelled", reason_code="test")
+        session_store.set_thread_archived(thread_id, archived=True)
+        archived = cast(
+            dict[str, object], service.get({"memoryId": memory_id})["memory"]
+        )
+        assert cast(dict[str, object], archived["provenance"])["status"] == "available"
+        session_store._connection.execute(
+            "UPDATE items SET content = ? WHERE id = ?",
+            ("source changed", item_id),
+        )
+        session_store._connection.commit()
+        drifted = cast(
+            dict[str, object], service.get({"memoryId": memory_id})["memory"]
+        )
+        assert cast(dict[str, object], drifted["provenance"])["status"] == "unavailable"
+    finally:
+        session_store.close()
+        memory_store.close()
+
+
+def test_session_source_create_replays_after_state_reset_without_reading_source(
+    tmp_path: Path,
+) -> None:
+    memory_path = tmp_path / "memory.db"
+    state_path = tmp_path / "state.db"
+    memory_store = SqliteMemoryStore(memory_path)
+    session_store = SqliteRuntimeStore(state_path)
+    _thread_id, _turn_id, item_id = _create_session_item(session_store)
+    service = MemoryService(memory_store, lambda _value: None, session_store)
+    params = {
+        "kind": "fact",
+        "scope": {"type": "global", "key": None},
+        "content": "A durable fact from a Session Item.",
+        "clientRequestId": "source-reset-replay",
+        "source": {"type": "session_item", "itemId": item_id},
+    }
+    first = service.create(params)
+    memory_id = cast(str, first["memoryId"])
+    session_store.close()
+    memory_store.close()
+    before = hashlib.sha256(memory_path.read_bytes()).hexdigest()
+    for path in (state_path, Path(f"{state_path}-wal"), Path(f"{state_path}-shm")):
+        if path.exists():
+            path.unlink()
+
+    reset_session_store = SqliteRuntimeStore(state_path)
+    reopened_memory_store = SqliteMemoryStore(memory_path)
+    reset_service = MemoryService(
+        reopened_memory_store,
+        lambda _value: None,
+        reset_session_store,
+    )
+    try:
+        replayed = reset_service.create(params)
+        assert replayed == {
+            "memoryId": memory_id,
+            "resultingRevision": 1,
+            "created": False,
+        }
+        memory = cast(
+            dict[str, object], reset_service.get({"memoryId": memory_id})["memory"]
+        )
+        assert cast(dict[str, object], memory["provenance"])["status"] == "unavailable"
+    finally:
+        reset_session_store.close()
+        reopened_memory_store.close()
+    assert hashlib.sha256(memory_path.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize(
+    "column, value",
+    (
+        ("kind", "tool_call"),
+        ("role", "tool"),
+        ("status", "running"),
+    ),
+)
+def test_session_source_rejects_ineligible_items(
+    tmp_path: Path,
+    column: str,
+    value: str,
+) -> None:
+    memory_store = SqliteMemoryStore(tmp_path / f"memory-{column}.db")
+    session_store = SqliteRuntimeStore(tmp_path / f"state-{column}.db")
+    _thread_id, _turn_id, item_id = _create_session_item(session_store)
+    session_store._connection.execute(
+        f"UPDATE items SET {column} = ? WHERE id = ?",
+        (value, item_id),
+    )
+    session_store._connection.commit()
+    service = MemoryService(memory_store, lambda _value: None, session_store)
+    try:
+        with pytest.raises(MemoryOperationError) as unavailable:
+            service.create(
+                {
+                    "kind": "fact",
+                    "scope": {"type": "global", "key": None},
+                    "content": "must not persist",
+                    "clientRequestId": f"invalid-source-{column}",
+                    "source": {"type": "session_item", "itemId": item_id},
+                }
+            )
+        _assert_memory_error(unavailable, "memory_source_unavailable")
+        assert memory_store._connection.execute(
+            "SELECT COUNT(*) FROM memory_records"
+        ).fetchone()[0] == 0
+        assert memory_store._connection.in_transaction is False
+    finally:
+        session_store.close()
+        memory_store.close()
+
+
+def test_session_source_request_cannot_forge_thread_or_turn(tmp_path: Path) -> None:
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    session_store = SqliteRuntimeStore(tmp_path / "state.db")
+    _thread_id, _turn_id, item_id = _create_session_item(session_store)
+    service = MemoryService(memory_store, lambda _value: None, session_store)
+    try:
+        with pytest.raises(InvalidParamsError, match="source requires exactly"):
+            service.create(
+                {
+                    "kind": "fact",
+                    "scope": {"type": "global", "key": None},
+                    "content": "forged",
+                    "clientRequestId": "forged-source",
+                    "source": {
+                        "type": "session_item",
+                        "itemId": item_id,
+                        "threadId": "thread_" + "0" * 32,
+                    },
+                }
+            )
+        with pytest.raises(InvalidParamsError, match="source itemId"):
+            service.create(
+                {
+                    "kind": "fact",
+                    "scope": {"type": "global", "key": None},
+                    "content": "missing prefix",
+                    "clientRequestId": "missing-source-prefix",
+                    "source": {"type": "session_item", "itemId": "0" * 32},
+                }
+            )
+    finally:
+        session_store.close()
+        memory_store.close()
+
+
+def test_memory_mutations_serialize_across_independent_connections(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory.db"
+    initial = SqliteMemoryStore(path)
+    memory_id = _create(initial, "concurrent-create", content="before")
+    initial.close()
+
+    barrier = Barrier(2)
+
+    def correct(request_id: str, content: str) -> tuple[str, object]:
+        store = SqliteMemoryStore(path)
+        try:
+            barrier.wait()
+            receipt = store.correct_memory_once(
+                memory_id=memory_id,
+                expected_revision=1,
+                content=content,
+                client_request_id=request_id,
+            )
+            return "ok", receipt
+        except MemoryOperationError as error:
+            return "error", error.reason_code
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: correct(*args),
+                (("concurrent-a", "alpha"), ("concurrent-b", "beta")),
+            )
+        )
+    assert sum(status == "ok" for status, _value in results) == 1
+    assert ("error", "memory_revision_conflict") in results
+
+    final = SqliteMemoryStore(path)
+    try:
+        assert final.get_memory(memory_id).revision == 2
+        assert final._connection.execute(
+            "SELECT COUNT(*) FROM memory_revisions WHERE memory_id = ?",
+            (memory_id,),
+        ).fetchone()[0] == 2
+    finally:
+        final.close()
 
 
 def test_memory_wire_vocabulary_has_fixed_security_provenance() -> None:

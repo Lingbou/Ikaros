@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..domain import CommandOutcome
-from ..errors import InvalidParamsError, ProviderFailure
+from ..errors import InvalidParamsError, MemoryOperationError, ProviderFailure
 from ..services.memories import MemoryService
 from ..services.providers import ProviderService
 from ..services.skills import SkillService
@@ -13,7 +13,12 @@ from ..services.threads import ThreadService
 from ..services.turns import TurnService
 from ..services.usage import UsageService
 from .jsonrpc import jsonrpc_error
-from .spec import JSONRPC_VERSION, RPC_METHOD_SET
+from .spec import (
+    JSONRPC_VERSION,
+    MEMORY_OPERATION_ERROR_CODE,
+    MEMORY_OPERATION_ERROR_MESSAGE,
+    RPC_METHOD_SET,
+)
 
 _LOGGER = logging.getLogger("ikaros_runtime")
 
@@ -99,6 +104,10 @@ class RuntimeRouter:
                 result = self._skills.set_enabled(params)
             elif method == "memory.create":
                 result = self._memories.create(params)
+            elif method == "memory.correct":
+                result = self._memories.correct(params)
+            elif method == "memory.forget":
+                result = self._memories.forget(params)
             elif method == "memory.list":
                 result = self._memories.list(params)
             elif method == "memory.get":
@@ -119,6 +128,15 @@ class RuntimeRouter:
                 raise AssertionError(f"registered Runtime method is not dispatched: {method}")
         except InvalidParamsError as error:
             return RouteResult(jsonrpc_error(request_id, -32602, str(error)))
+        except MemoryOperationError as error:
+            return RouteResult(
+                jsonrpc_error(
+                    request_id,
+                    MEMORY_OPERATION_ERROR_CODE,
+                    MEMORY_OPERATION_ERROR_MESSAGE,
+                    data={"reasonCode": error.reason_code},
+                )
+            )
         except ProviderFailure as error:
             return RouteResult(jsonrpc_error(request_id, -32010, str(error)))
         except Exception:

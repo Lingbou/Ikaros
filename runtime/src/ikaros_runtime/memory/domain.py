@@ -166,7 +166,7 @@ class MemorySummary:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryCreateReceipt:
+class MemoryMutationReceipt:
     memory_id: str
     resulting_revision: int
     created: bool
@@ -177,6 +177,25 @@ class MemoryCreateReceipt:
             "resultingRevision": self.resulting_revision,
             "created": self.created,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySourceSnapshot:
+    """A soft Session reference captured before opening a Memory write transaction."""
+
+    thread_id: str
+    turn_id: str
+    item_id: str
+    item_digest: str
+
+    def __post_init__(self) -> None:
+        _validate_prefixed_id(self.thread_id, "thread_")
+        _validate_prefixed_id(self.turn_id, "turn_")
+        _validate_prefixed_id(self.item_id, "item_")
+        if len(self.item_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.item_digest
+        ):
+            raise ValueError("Memory source digest is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,10 +231,15 @@ def validate_memory_content(value: object) -> str:
 
 
 def _validate_memory_id(value: str) -> None:
-    prefix = "memory_"
+    _validate_prefixed_id(value, "memory_")
+
+
+def _validate_prefixed_id(value: str, prefix: str) -> None:
+    if not value.startswith(prefix):
+        raise ValueError("Runtime-owned ID is invalid")
     suffix = value.removeprefix(prefix)
     if len(suffix) != 32 or any(character not in "0123456789abcdef" for character in suffix):
-        raise ValueError("Memory ID is invalid")
+        raise ValueError("Runtime-owned ID is invalid")
 
 
 def _contains_invalid_control(value: str) -> bool:
@@ -240,7 +264,7 @@ __all__ = [
     "MEMORY_PREVIEW_MAX_CHARACTERS",
     "MEMORY_SCOPE_TYPES",
     "MEMORY_STATES",
-    "MemoryCreateReceipt",
+    "MemoryMutationReceipt",
     "MemoryKind",
     "MemoryListPage",
     "MemoryProvenance",
@@ -248,6 +272,7 @@ __all__ = [
     "MemoryScope",
     "MemoryScopeType",
     "MemorySourceKind",
+    "MemorySourceSnapshot",
     "MemoryState",
     "MemorySummary",
     "ProvenanceStatus",

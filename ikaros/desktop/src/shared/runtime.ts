@@ -99,13 +99,69 @@ export interface RuntimeMemoryCreateParams {
   scope: RuntimeMemoryScope;
   content: string;
   clientRequestId: string;
+  source?: RuntimeMemorySource;
 }
 
-export interface RuntimeMemoryCreateResult {
+export interface RuntimeMemorySource {
+  type: "session_item";
+  itemId: string;
+}
+
+export interface RuntimeMemoryCorrectParams {
+  memoryId: string;
+  expectedRevision: number;
+  content: string;
+  clientRequestId: string;
+}
+
+export interface RuntimeMemoryForgetParams {
+  memoryId: string;
+  expectedRevision: number;
+  clientRequestId: string;
+}
+
+export interface RuntimeMemoryMutationResult {
   memoryId: string;
   resultingRevision: number;
   created: boolean;
 }
+
+export type RuntimeMemoryCreateResult = RuntimeMemoryMutationResult;
+
+export type RuntimeMemoryErrorReasonCode =
+  (typeof RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.reasonCodes)[number];
+
+export type RuntimeMemoryRpcMethod =
+  | "memory.create"
+  | "memory.correct"
+  | "memory.forget"
+  | "memory.list"
+  | "memory.get";
+
+export const RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD = {
+  "memory.create": [
+    "memory_forgotten",
+    "memory_idempotency_conflict",
+    "memory_source_unavailable"
+  ],
+  "memory.correct": [
+    "memory_not_found",
+    "memory_revision_conflict",
+    "memory_forgotten",
+    "memory_idempotency_conflict"
+  ],
+  "memory.forget": [
+    "memory_not_found",
+    "memory_revision_conflict",
+    "memory_forgotten",
+    "memory_idempotency_conflict"
+  ],
+  "memory.list": [],
+  "memory.get": ["memory_not_found"]
+} as const satisfies Record<
+  RuntimeMemoryRpcMethod,
+  readonly RuntimeMemoryErrorReasonCode[]
+>;
 
 export interface RuntimeMemoryListParams {
   cursor?: string;
@@ -365,6 +421,7 @@ export interface RuntimeRpcFailure {
   kind: "json_rpc";
   code: number;
   message: string;
+  reasonCode?: RuntimeMemoryErrorReasonCode;
 }
 
 export type RuntimeInvocationResult<TResult> =
@@ -402,6 +459,8 @@ export interface IkarosRuntimeApi {
     params: RuntimeSkillSetEnabledParams
   ): Promise<RuntimeSkillSetEnabledResult>;
   createMemory(params: RuntimeMemoryCreateParams): Promise<RuntimeMemoryCreateResult>;
+  correctMemory(params: RuntimeMemoryCorrectParams): Promise<RuntimeMemoryMutationResult>;
+  forgetMemory(params: RuntimeMemoryForgetParams): Promise<RuntimeMemoryMutationResult>;
   listMemories(params?: RuntimeMemoryListParams): Promise<RuntimeMemoryListPage>;
   getMemory(memoryId: string): Promise<RuntimeMemoryGetResult>;
   readUsage(): Promise<RuntimeUsageReadResult>;
@@ -463,6 +522,12 @@ export interface IkarosRuntimeBridgeApi {
   createMemory(
     params: RuntimeMemoryCreateParams
   ): Promise<RuntimeInvocationResult<RuntimeMemoryCreateResult>>;
+  correctMemory(
+    params: RuntimeMemoryCorrectParams
+  ): Promise<RuntimeInvocationResult<RuntimeMemoryMutationResult>>;
+  forgetMemory(
+    params: RuntimeMemoryForgetParams
+  ): Promise<RuntimeInvocationResult<RuntimeMemoryMutationResult>>;
   listMemories(
     params?: RuntimeMemoryListParams
   ): Promise<RuntimeInvocationResult<RuntimeMemoryListPage>>;
@@ -475,6 +540,7 @@ export interface IkarosRuntimeBridgeApi {
 }
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  RUNTIME_PROTOCOL_MANIFEST,
   type RuntimeJournalEventType
 } from "./generated/runtimeProtocol";
 

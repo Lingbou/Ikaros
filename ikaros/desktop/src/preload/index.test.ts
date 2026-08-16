@@ -152,7 +152,7 @@ describe("preload Runtime bridge", () => {
     );
   });
 
-  it("exposes explicit Memory CRUD through three narrow IPC channels", async () => {
+  it("exposes explicit Memory lifecycle operations through five narrow IPC channels", async () => {
     const expected = { ok: true as const, value: {} };
     electron.ipcRenderer.invoke.mockResolvedValue(expected);
     await import("./index");
@@ -163,15 +163,37 @@ describe("preload Runtime bridge", () => {
       kind: "preference" as const,
       scope: { type: "global" as const, key: null },
       content: "Concise answers",
-      clientRequestId: "memory-create-1"
+      clientRequestId: "memory-create-1",
+      source: { type: "session_item" as const, itemId: `item_${"2".repeat(32)}` }
+    };
+    const correctParams = {
+      memoryId,
+      expectedRevision: 1,
+      content: "Prefer concise answers.",
+      clientRequestId: "memory-correct-1"
+    };
+    const forgetParams = {
+      memoryId,
+      expectedRevision: 2,
+      clientRequestId: "memory-forget-1"
     };
     await runtime?.createMemory(createParams);
+    await runtime?.correctMemory(correctParams);
+    await runtime?.forgetMemory(forgetParams);
     await runtime?.listMemories({ scope: createParams.scope, limit: 25 });
     await runtime?.getMemory(memoryId);
 
     expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
       "ikaros:runtime:memory-create",
       createParams
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:memory-correct",
+      correctParams
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:memory-forget",
+      forgetParams
     );
     expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
       "ikaros:runtime:memory-list",

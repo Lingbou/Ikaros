@@ -1,6 +1,6 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–5 已完成；Gate 6 是下一 Gate；Gate 6–10 尚未实现）**
+状态：**IN PROGRESS（Gate 0–6 已完成；Gate 7 是下一 Gate；Gate 7–10 尚未实现）**
 
 初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 5 的实施增量已分别
 记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
@@ -10,7 +10,8 @@
 
 本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
 并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
-能力才已存在；Runtime 内置 Identity Core 已实现，长期 Memory 仍未实现。
+能力才已存在；Runtime 内置 Identity Core 和显式管理的长期 Memory V0 已实现，
+Memory 维护、UI 管理和模型召回仍未实现。
 
 ## 1. 阅读规则
 
@@ -120,7 +121,9 @@ flowchart LR
   Instruction Block 冻结进 `SubmissionFrameV1`。每个模型 Step 都从该冻结
   Frame 构造输入，不读取可变配置或 Memory；
 - Memory V0 基础：独立的 `~/.ikaros/memory.db` schema version 1、
-  `memory.create/list/get`、Global/Workspace scope、稳定 cursor 分页、重启幂等，
+  `memory.create/correct/forget/list/get`、Global/Workspace scope、稳定 cursor
+  分页、乐观 revision、重启幂等、无正文 tombstone，以及仅由 `itemId` 发起、
+  Runtime 从 `state.db` 反查的 Session Item provenance，
   以及贯穿认证 WebSocket、Electron main、preload 和 `RuntimeClient` 的 typed
   bridge。该 bridge 尚未被 Renderer 页面消费，也没有进入模型输入。
 
@@ -128,8 +131,7 @@ flowchart LR
 
 当前尚未实现：
 
-- Memory Correction/Forget、Session provenance 写入、维护/导出、Memory UI 或
-  Memory 召回；
+- Memory 维护/导出、Memory UI 或 Memory 召回；
 - 任务级 Skill 选择和 Skill Catalog 总预算。
 
 当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
@@ -327,8 +329,8 @@ UI 只显示“来源记录不可用”。
 | 3 | `HistorySelectorV1`，限制无界历史 | 已完成 | 是，持久 selector 语义破坏性更新 |
 | 4 | `IKAROS.md` Identity Core 与 DeepSeek A/B | 已完成 | 否 |
 | 5 | 独立 `memory.db`，Create/List/Get | 已完成 | 不动 `state.db` |
-| 6 | Correction、Forget、Provenance、幂等 | 下一 Gate（未开始） | 否 |
-| 7 | Memory Check、Backup、Export | 未开始 | 否 |
+| 6 | Correction、Forget、Provenance、幂等 | 已完成 | 否 |
+| 7 | Memory Check、Backup、Export | 下一 Gate（未开始） | 否 |
 | 8 | Desktop Memory 管理页面 | 未开始 | 否 |
 | 9 | Memory Read V1，有限召回并进入模型 | 未开始 | 否 |
 | 10 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 未开始 | 否 |
@@ -803,7 +805,7 @@ V0 kind：
 
 不存在 `instruction` kind。单条正文上限初始为 2048 个 Unicode 字符。
 
-已注册 RPC：
+Gate 5 首次注册的 RPC：
 
 ```text
 memory.create
@@ -849,7 +851,7 @@ Desktop 已接通 DTO、严格 wire parser、可信 IPC、typed preload 与
 以上验收由 Store/Service、真实 Python Runtime JSON-RPC、Electron RuntimeHost
 重启链路、Python/Desktop Golden Trace 和 protected-value 回归测试覆盖。
 
-## 13. Gate 6：Correction、Forget、Provenance 和幂等
+## 13. Gate 6：Correction、Forget、Provenance 和幂等（已实现）
 
 新增：
 
@@ -857,6 +859,23 @@ Desktop 已接通 DTO、严格 wire parser、可信 IPC、typed preload 与
 memory.correct
 memory.forget
 ```
+
+`memory.create` 同时增加唯一可选来源：
+
+```json
+{
+  "source": {
+    "type": "session_item",
+    "itemId": "item_<32hex>"
+  }
+}
+```
+
+客户端不能提交 `threadId` 或 `turnId`。Runtime 只接受 completed 的
+user/assistant message Item，并从 `state.db` 派生 Thread/Turn 以及固定 version 1
+canonical source digest。首次来源不可用返回结构化
+`memory_source_unavailable`；`memory.get` 只在懒加载单条记录时验证软引用，
+`memory.list` 不执行逐条跨库查询。
 
 Correction：
 
@@ -875,9 +894,10 @@ Forget 也带 `expectedRevision`：
 
 1. 追加无正文 tombstone revision；
 2. 将 record 标记为 forgotten；
-3. 从所有 list/retrieval 结果排除；
+3. 从默认/active list 和所有模型召回结果排除；显式 `state=forgotten` 的管理
+   查询和 `memory.get` 仍返回无正文 tombstone；
 4. 清空旧 revision 的正文、正文 digest 和 source-content digest；
-5. 清除该 Memory 所有 content-derived idempotency fingerprint 或检索派生项；
+5. 不在 operation receipt 中保留正文或正文 digest；
 6. 保留 ID、revision、时间和无正文 provenance；
 7. 不提供 Restore。
 
@@ -893,16 +913,33 @@ idempotency receipt 只包含非正文参数。
 ### 跨库 provenance
 
 ```text
-读取 state.db 验证 Item
-  -> 计算来源完整性信息
-  -> 在 memory.db 独立事务写入
+memory.db receipt 只读预检查
+  -> 未命中才读取 state.db 验证 Item 并计算来源完整性信息
+  -> BEGIN IMMEDIATE memory.db
+  -> 再次检查 receipt
+  -> 写 record/revision/receipt
+  -> COMMIT
 ```
+
+receipt-first 顺序保证：如果首次写入已经提交但 ACK 丢失，随后 Session 被 reset，
+相同 `clientRequestId` 仍能从 `memory.db` 返回原 receipt，而不会先因来源消失失败。
+Memory 写事务期间不读取 `state.db`。
 
 不使用跨库外键。Session reset 后 Memory 仍有效，只把 provenance 标记为
 unavailable。
 
 每个 mutation 的 record、revision 和 operation receipt 在同一
 `BEGIN IMMEDIATE` 事务提交。任意语句间故障后要么全有，要么全无。
+
+Correct/Forget 共用结果 `{memoryId, resultingRevision, created}`。完全相同的重试
+跨 Runtime 重启返回原 revision 且 `created=false`；同一 request ID 改输入返回
+`memory_idempotency_conflict`。Memory domain error 统一使用 JSON-RPC `-32020`、
+固定 message 和枚举 `error.data.reasonCode`，Desktop 只扁平传递经过协议校验的
+reason code，不透传任意 `data`。
+
+Gate 6 已贯通 Python Store/Service、认证 WebSocket JSON-RPC、Electron main、
+preload 和 `RuntimeClient`。它没有增加 Journal Event、Renderer Memory 状态/UI、
+模型召回、自动提取或物理安全擦除承诺。
 
 ## 14. Gate 7：Memory 维护能力
 
@@ -1113,8 +1150,8 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 
 ## 18. 稳定失败语义
 
-已实现 Gate 使用下列稳定 reason code；Memory reason code 仍是后续 Gate 的计划，
-均不依赖 Provider 文案：
+已实现 Gate 使用下列稳定 reason code，均不依赖 Provider 文案。标为“后续”的
+Memory 输入错误只有在对应召回 Gate 完成后才是产品能力：
 
 | 错误 | 含义 |
 | --- | --- |
@@ -1124,10 +1161,13 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 | `tool_definitions_changed` | 当前 Tool definitions 与冻结 Frame 不一致 |
 | `execution_policy_changed` | 当前执行策略与冻结 Frame 不一致 |
 | `identity_core_changed` | 当前 release 的 `IKAROS.md` Identity 与冻结 Frame 不一致 |
-| `memory_conflict` | `expectedRevision` 已过时 |
+| `memory_not_found` | 合法 Memory ID 不存在 |
+| `memory_revision_conflict` | `expectedRevision` 已过时 |
 | `memory_forgotten` | 目标或历史幂等请求对应的 Memory 已忘记 |
-| `memory_snapshot_unavailable` | Run 冻结的 Memory revision 在新 Step 前已被忘记 |
-| `memory_retrieval_overflow` | scoped active 候选超过确定性检索上限 |
+| `memory_idempotency_conflict` | 相同 `clientRequestId` 被用于不同 mutation 输入 |
+| `memory_source_unavailable` | 首次创建时指定的 Session Item 不存在或不符合来源约束 |
+| `memory_snapshot_unavailable`（后续） | Run 冻结的 Memory revision 在新 Step 前已被忘记 |
+| `memory_retrieval_overflow`（后续） | scoped active 候选超过确定性检索上限 |
 | `memory_schema_incompatible` | `memory.db` schema 不兼容，需要先备份并由用户决定 |
 
 ## 19. 文档维护矩阵

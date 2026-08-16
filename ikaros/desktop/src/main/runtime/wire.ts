@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   RUNTIME_JOURNAL_EVENT_TYPES,
+  RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD,
   RUNTIME_PROTOCOL_MANIFEST,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_PROVIDER_TOOL_IDS,
@@ -15,11 +16,14 @@ import {
   type RuntimeJournalEvent,
   type RuntimeJournalEventType,
   type RuntimeMemoryCreateResult,
+  type RuntimeMemoryErrorReasonCode,
   type RuntimeMemoryGetResult,
   type RuntimeMemoryKind,
   type RuntimeMemoryListPage,
+  type RuntimeMemoryMutationResult,
   type RuntimeMemoryProvenance,
   type RuntimeMemoryRecord,
+  type RuntimeMemoryRpcMethod,
   type RuntimeMemoryScope,
   type RuntimeMemoryState,
   type RuntimeMemorySummary,
@@ -129,6 +133,9 @@ const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYP
 const RUNTIME_PROVIDER_TOOL_ID_SET = new Set<string>(RUNTIME_PROVIDER_TOOL_IDS);
 const RUNTIME_RPC_METHOD_SET = new Set<string>(RUNTIME_RPC_METHODS);
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const THREAD_ID_PATTERN = /^thread_[0-9a-f]{32}$/;
+const TURN_ID_PATTERN = /^turn_[0-9a-f]{32}$/;
+const ITEM_ID_PATTERN = /^item_[0-9a-f]{32}$/;
 const MEMORY_ID_PATTERN = /^memory_[0-9a-f]{32}$/;
 const MEMORY_KINDS = new Set<RuntimeMemoryKind>([
   "fact",
@@ -142,6 +149,8 @@ const MEMORY_PREVIEW_MAX_CHARACTERS = 160;
 const MEMORY_LIST_DEFAULT_LIMIT = 50;
 const MEMORY_LIST_PAGE_LIMIT = 100;
 const MEMORY_CURSOR_MAX_LENGTH = 1_024;
+const MEMORY_OPERATION_ERROR = RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation;
+const MEMORY_OPERATION_ERROR_CODE = MEMORY_OPERATION_ERROR.code;
 
 interface JsonRpcResultResponse {
   jsonrpc: "2.0";
@@ -152,7 +161,11 @@ interface JsonRpcResultResponse {
 interface JsonRpcErrorResponse {
   jsonrpc: "2.0";
   id: number;
-  error: { code: number; message: string };
+  error: {
+    code: number;
+    message: string;
+    reasonCode?: RuntimeMemoryErrorReasonCode;
+  };
 }
 
 export type JsonRpcResponse = JsonRpcResultResponse | JsonRpcErrorResponse;
@@ -162,7 +175,8 @@ export class RuntimeRpcError extends Error {
 
   constructor(
     readonly code: number,
-    message: string
+    message: string,
+    readonly reasonCode?: RuntimeMemoryErrorReasonCode
   ) {
     super(message);
     this.name = "RuntimeRpcError";
@@ -2180,7 +2194,12 @@ function parseRuntimeMemoryProvenance(value: unknown): RuntimeMemoryProvenance {
       references.every((reference) => reference === null)) ||
     (value.sourceKind === "session_item" &&
       (value.status === "available" || value.status === "unavailable") &&
-      references.every(isWireIdentifier));
+      typeof value.threadId === "string" &&
+      THREAD_ID_PATTERN.test(value.threadId) &&
+      typeof value.turnId === "string" &&
+      TURN_ID_PATTERN.test(value.turnId) &&
+      typeof value.itemId === "string" &&
+      ITEM_ID_PATTERN.test(value.itemId));
   if (!valid) {
     throw invalidRuntimeMethodResult("memory.get");
   }
@@ -2294,6 +2313,28 @@ export function parseRuntimeMemoryCreateResult(value: unknown): RuntimeMemoryCre
     throw invalidRuntimeMethodResult("memory.create");
   }
   return value as unknown as RuntimeMemoryCreateResult;
+}
+
+export function parseRuntimeMemoryMutationResult(
+  value: unknown,
+  params: Readonly<Record<string, unknown>>,
+  method: "memory.correct" | "memory.forget"
+): RuntimeMemoryMutationResult {
+  const expectedRevision = params.expectedRevision;
+  if (
+    !isWireObject(value) ||
+    !hasExactKeys(value, ["memoryId", "resultingRevision", "created"]) ||
+    !isMemoryId(params.memoryId) ||
+    !isSafePositiveInteger(expectedRevision) ||
+    expectedRevision >= Number.MAX_SAFE_INTEGER ||
+    value.memoryId !== params.memoryId ||
+    !isSafePositiveInteger(value.resultingRevision) ||
+    value.resultingRevision !== expectedRevision + 1 ||
+    typeof value.created !== "boolean"
+  ) {
+    throw invalidRuntimeMethodResult(method);
+  }
+  return value as unknown as RuntimeMemoryMutationResult;
 }
 
 export function parseRuntimeMemoryListPage(
@@ -2445,6 +2486,10 @@ const RUNTIME_RESULT_PARSERS = {
   "skill.list": (value) => parseRuntimeSkillListResult(value),
   "skill.set_enabled": (value) => parseRuntimeSkillSetEnabledResult(value),
   "memory.create": (value) => parseRuntimeMemoryCreateResult(value),
+  "memory.correct": (value, params) =>
+    parseRuntimeMemoryMutationResult(value, params, "memory.correct"),
+  "memory.forget": (value, params) =>
+    parseRuntimeMemoryMutationResult(value, params, "memory.forget"),
   "memory.list": (value, params) => parseRuntimeMemoryListPage(value, params),
   "memory.get": (value, params) =>
     parseRuntimeMemoryGetResult(
@@ -2479,7 +2524,10 @@ export function parseRuntimeMethodResult(
   return RUNTIME_RESULT_PARSERS[method](value, params);
 }
 
-export function parseRuntimeJsonRpcResponse(value: unknown): JsonRpcResponse {
+export function parseRuntimeJsonRpcResponse(
+  value: unknown,
+  pendingMethod?: string
+): JsonRpcResponse {
   if (typeof value !== "object" || value === null) {
     throw new Error("Runtime returned an invalid JSON-RPC response.");
   }
@@ -2504,20 +2552,56 @@ export function parseRuntimeJsonRpcResponse(value: unknown): JsonRpcResponse {
   }
   const error = candidate.error;
   if (
-    typeof error !== "object" ||
-    error === null ||
-    typeof (error as { code?: unknown }).code !== "number" ||
-    !Number.isInteger((error as { code: number }).code) ||
-    typeof (error as { message?: unknown }).message !== "string"
+    !isWireObject(error) ||
+    typeof error.code !== "number" ||
+    !Number.isInteger(error.code) ||
+    typeof error.message !== "string"
   ) {
+    throw new Error("Runtime returned an invalid JSON-RPC response.");
+  }
+  let reasonCode: RuntimeMemoryErrorReasonCode | undefined;
+  if (error.code === MEMORY_OPERATION_ERROR_CODE) {
+    if (
+      !hasExactKeys(error, ["code", "message", "data"]) ||
+      error.message !== MEMORY_OPERATION_ERROR.message ||
+      !isWireObject(error.data) ||
+      !hasExactKeys(error.data, ["reasonCode"]) ||
+      !isMemoryErrorReasonAllowed(pendingMethod, error.data.reasonCode)
+    ) {
+      throw new Error("Runtime returned an invalid JSON-RPC response.");
+    }
+    reasonCode = error.data.reasonCode as RuntimeMemoryErrorReasonCode;
+  } else if (!hasExactKeys(error, ["code", "message"])) {
     throw new Error("Runtime returned an invalid JSON-RPC response.");
   }
   return {
     jsonrpc: "2.0",
     id: candidate.id,
     error: {
-      code: (error as { code: number }).code,
-      message: (error as { message: string }).message
+      code: error.code,
+      message: error.message,
+      ...(reasonCode === undefined ? {} : { reasonCode })
     }
   };
+}
+
+function isMemoryErrorReasonAllowed(
+  method: string | undefined,
+  reasonCode: unknown
+): reasonCode is RuntimeMemoryErrorReasonCode {
+  if (
+    typeof reasonCode !== "string" ||
+    method === undefined ||
+    !Object.prototype.hasOwnProperty.call(
+      RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD,
+      method
+    )
+  ) {
+    return false;
+  }
+  return (
+    RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD[
+      method as RuntimeMemoryRpcMethod
+    ] as readonly string[]
+  ).includes(reasonCode);
 }

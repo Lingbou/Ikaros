@@ -317,21 +317,48 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 "branchId": thread.default_branch_id,
                 "limit": 25,
             }
-            memory_service = MemoryService(memory_store, lambda _value: None)
+            memory_service = MemoryService(memory_store, lambda _value: None, store)
             memory_create_params = {
                 "kind": "preference",
                 "scope": {"type": "global", "key": None},
                 "content": "The user prefers concise technical explanations.",
                 "clientRequestId": "golden-memory-create",
+                "source": {
+                    "type": "session_item",
+                    "itemId": prepared.initial_events[0].item_id,
+                },
             }
             memory_created = memory_service.create(memory_create_params)
             memory_id = cast(str, memory_created["memoryId"])
-            memory_list_params = {
+            memory_active_list_params = {
                 "limit": 25,
                 "scope": {"type": "global", "key": None},
                 "state": "active",
             }
             memory_get_params = {"memoryId": memory_id}
+            memory_active_list = memory_service.list(memory_active_list_params)
+            memory_source_record = memory_service.get(memory_get_params)
+            memory_correct_params = {
+                "memoryId": memory_id,
+                "expectedRevision": 1,
+                "content": "The user prefers precise, concise technical explanations.",
+                "clientRequestId": "golden-memory-correct",
+            }
+            memory_corrected = memory_service.correct(memory_correct_params)
+            memory_corrected_record = memory_service.get(memory_get_params)
+            memory_forget_params = {
+                "memoryId": memory_id,
+                "expectedRevision": 2,
+                "clientRequestId": "golden-memory-forget",
+            }
+            memory_forgotten = memory_service.forget(memory_forget_params)
+            memory_forgotten_list_params = {
+                "limit": 25,
+                "scope": {"type": "global", "key": None},
+                "state": "forgotten",
+            }
+            memory_forgotten_list = memory_service.list(memory_forgotten_list_params)
+            memory_tombstone = memory_service.get(memory_get_params)
             return [
                 _response_message(
                     name="thread-list-page",
@@ -363,15 +390,50 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                     name="memory-list-page",
                     method="memory.list",
                     request_id=5,
-                    request_params=memory_list_params,
-                    result=memory_service.list(memory_list_params),
+                    request_params=memory_active_list_params,
+                    result=memory_active_list,
                 ),
                 _response_message(
                     name="memory-record",
                     method="memory.get",
                     request_id=6,
                     request_params=memory_get_params,
-                    result=memory_service.get(memory_get_params),
+                    result=memory_source_record,
+                ),
+                _response_message(
+                    name="memory-corrected",
+                    method="memory.correct",
+                    request_id=7,
+                    request_params=memory_correct_params,
+                    result=memory_corrected,
+                ),
+                _response_message(
+                    name="memory-corrected-record",
+                    method="memory.get",
+                    request_id=8,
+                    request_params=memory_get_params,
+                    result=memory_corrected_record,
+                ),
+                _response_message(
+                    name="memory-forgotten",
+                    method="memory.forget",
+                    request_id=9,
+                    request_params=memory_forget_params,
+                    result=memory_forgotten,
+                ),
+                _response_message(
+                    name="memory-forgotten-list-page",
+                    method="memory.list",
+                    request_id=10,
+                    request_params=memory_forgotten_list_params,
+                    result=memory_forgotten_list,
+                ),
+                _response_message(
+                    name="memory-tombstone",
+                    method="memory.get",
+                    request_id=11,
+                    request_params=memory_get_params,
+                    result=memory_tombstone,
                 ),
                 *_notification_messages(events),
             ]

@@ -95,9 +95,11 @@ The Runtime currently owns:
   `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
   a lazily loaded Skills settings page;
 - Memory V0 typed client plumbing: strict DTO parsing and narrow IPC/preload
-  methods for `memory.create`, paginated `memory.list`, and lazy
-  `memory.get`. The data lives in Runtime-owned `~/.ikaros/memory.db`; no
-  Memory page or model recall is exposed yet;
+  methods for `memory.create`, `memory.correct`, `memory.forget`, paginated
+  `memory.list`, and lazy `memory.get`. Create can carry one Runtime-verified
+  Session Item source; mutation conflicts cross the bridge as a bounded
+  `reasonCode`, not arbitrary JSON-RPC data. The data lives in Runtime-owned
+  `~/.ikaros/memory.db`; no Memory page or model recall is exposed yet;
 - Gate 2/3 audit DTOs and Events: Submission Frame and Run Manifest on Turn
   creation, frozen Context Snapshot and Step Manifest on
   `model.input_prepared`, and response metadata/usage on
@@ -187,9 +189,9 @@ The following UI surfaces are not production Runtime capabilities yet:
   is connected; and
 - automatic model discovery currently supports only DeepSeek. Custom
   OpenAI-compatible Provider models are entered manually; and
-- Memory correction/forget, management UI, maintenance/export, and model recall
-  are unavailable. The typed Memory bridge is infrastructure, not a visible
-  feature or Mock data source.
+- Memory management UI, maintenance/export, and model recall are unavailable.
+  Create/Correct/Forget and provenance are real typed infrastructure, not a
+  visible feature or Mock data source.
 
 ## Architecture boundary
 
@@ -218,7 +220,7 @@ Persistent input Frames/Manifests, bounded history selection, and the frozen
 Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the
 Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
 Desktop exposes no Identity editor or budget control. Durable cross-Thread
-Memory has a Store/RPC/typed-client foundation but is not yet editable through
-the UI and is not part of model input. Gate 6 (Correction/Forget and provenance)
-is next. The strict Gate plan is documented in
+Memory has a Create/Correct/Forget/Provenance Store/RPC/typed-client foundation
+but is not yet editable through the UI and is not part of model input. Gate 7
+(Memory check/backup/export) is next. The strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

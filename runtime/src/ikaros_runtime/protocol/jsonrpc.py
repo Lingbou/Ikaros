@@ -11,11 +11,20 @@ from .spec import (
 )
 
 
-def jsonrpc_error(request_id: object, code: int, message: str) -> dict[str, object]:
+def jsonrpc_error(
+    request_id: object,
+    code: int,
+    message: str,
+    *,
+    data: dict[str, object] | None = None,
+) -> dict[str, object]:
+    error: dict[str, object] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
     return {
         "jsonrpc": JSONRPC_VERSION,
         "id": request_id,
-        "error": {"code": code, "message": message},
+        "error": error,
     }
 
 

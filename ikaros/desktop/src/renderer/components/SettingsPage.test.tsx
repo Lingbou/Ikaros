@@ -116,6 +116,12 @@ function desktopApiWithPreferences(
         createMemory: async () => {
           throw new Error("not used in preference settings tests");
         },
+        correctMemory: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        forgetMemory: async () => {
+          throw new Error("not used in preference settings tests");
+        },
         listMemories: async () => ({
           ok: true,
           value: { memories: [], nextCursor: null, hasMore: false }

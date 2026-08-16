@@ -14,6 +14,10 @@ from ikaros_runtime.protocol.spec import (
     JOURNAL_EVENT_SCHEMA_VERSION,
     JOURNAL_EVENT_TYPE_SET,
     JSONRPC_VERSION,
+    MEMORY_OPERATION_ERROR_CODE,
+    MEMORY_OPERATION_ERROR_MESSAGE,
+    MEMORY_OPERATION_REASON_CODES,
+    PROTOCOL_SPEC_SCHEMA_VERSION,
     PROTOCOL_VERSION,
     PROVIDER_TOOL_IDS,
     RPC_METHOD_SET,
@@ -110,6 +114,8 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
     assert observed_methods == {
         INITIALIZE_METHOD,
         "memory.create",
+        "memory.correct",
+        "memory.forget",
         "memory.get",
         "memory.list",
         "skill.list",
@@ -118,7 +124,7 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
         "turn.list",
     }
     assert observed_event_types == JOURNAL_EVENT_TYPE_SET
-    assert len(RPC_METHODS) == 24
+    assert len(RPC_METHODS) == 26
 
 
 @pytest.mark.asyncio
@@ -133,8 +139,13 @@ async def test_committed_golden_session_trace_matches_the_production_agent_trace
         or message["name"]
         in {
             "memory-created",
+            "memory-corrected",
+            "memory-corrected-record",
+            "memory-forgotten",
+            "memory-forgotten-list-page",
             "memory-list-page",
             "memory-record",
+            "memory-tombstone",
             "thread-list-page",
             "turn-list-page",
         }
@@ -189,6 +200,17 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
+    assert PROTOCOL_SPEC_SCHEMA_VERSION == 2
+    assert PROTOCOL_VERSION == 2
+    assert protocol_manifest()["errors"] == {
+        "memoryOperation": {
+            "code": MEMORY_OPERATION_ERROR_CODE,
+            "message": MEMORY_OPERATION_ERROR_MESSAGE,
+            "reasonCodes": list(MEMORY_OPERATION_REASON_CODES),
+        }
+    }
+    assert len(MEMORY_OPERATION_REASON_CODES) == len(set(MEMORY_OPERATION_REASON_CODES))
     assert len(RPC_METHODS) == len(RPC_METHOD_SET)
+    assert {"memory.correct", "memory.forget"} <= RPC_METHOD_SET
     assert "process_run" in PROVIDER_TOOL_IDS
     assert "process.run" not in PROVIDER_TOOL_IDS

@@ -134,6 +134,7 @@ class RuntimeApplication:
         self.memories = MemoryService(
             memory_store,
             self.security.assert_request_safe,
+            store,
         )
         self.router = RuntimeRouter(
             self.threads,

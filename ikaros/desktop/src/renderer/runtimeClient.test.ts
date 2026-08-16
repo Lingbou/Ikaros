@@ -27,6 +27,8 @@ function bridgeWithListThreads(
     listSkills: vi.fn(),
     setSkillEnabled: vi.fn(),
     createMemory: vi.fn(),
+    correctMemory: vi.fn(),
+    forgetMemory: vi.fn(),
     listMemories: vi.fn(),
     getMemory: vi.fn(),
     readUsage: vi.fn(),
@@ -275,7 +277,7 @@ describe("RuntimeClient", () => {
     expect(bridge.setSkillEnabled).toHaveBeenCalledWith({ name: "demo", enabled: false });
   });
 
-  it("forwards explicit Memory create, list, and lazy get without caching", async () => {
+  it("forwards explicit Memory lifecycle operations without caching", async () => {
     const bridge = bridgeWithListThreads(
       vi.fn(async () => ({
         ok: true as const,
@@ -288,22 +290,97 @@ describe("RuntimeClient", () => {
       kind: "preference" as const,
       scope,
       content: "The user prefers concise answers.",
-      clientRequestId: "desktop-memory-create"
+      clientRequestId: "desktop-memory-create",
+      source: { type: "session_item" as const, itemId: `item_${"2".repeat(32)}` }
     };
     const created = { memoryId, resultingRevision: 1, created: true };
+    const correctParams = {
+      memoryId,
+      expectedRevision: 1,
+      content: "The user prefers very concise answers.",
+      clientRequestId: "desktop-memory-correct"
+    };
+    const corrected = { memoryId, resultingRevision: 2, created: true };
+    const forgetParams = {
+      memoryId,
+      expectedRevision: 2,
+      clientRequestId: "desktop-memory-forget"
+    };
+    const forgotten = { memoryId, resultingRevision: 3, created: true };
     const page = { memories: [], nextCursor: null, hasMore: false };
     const record = { memory: { id: memoryId, content: createParams.content } };
     bridge.createMemory = vi.fn(async () => ({ ok: true as const, value: created }));
+    bridge.correctMemory = vi.fn(async () => ({ ok: true as const, value: corrected }));
+    bridge.forgetMemory = vi.fn(async () => ({ ok: true as const, value: forgotten }));
     bridge.listMemories = vi.fn(async () => ({ ok: true as const, value: page }));
     bridge.getMemory = vi.fn(async () => ({ ok: true as const, value: record })) as never;
     const client = new RuntimeClient(bridge);
 
     await expect(client.createMemory(createParams)).resolves.toEqual(created);
+    await expect(client.correctMemory(correctParams)).resolves.toEqual(corrected);
+    await expect(client.forgetMemory(forgetParams)).resolves.toEqual(forgotten);
     await expect(client.listMemories({ scope, limit: 25 })).resolves.toEqual(page);
     await expect(client.getMemory(memoryId)).resolves.toEqual(record);
     expect(bridge.createMemory).toHaveBeenCalledWith(createParams);
+    expect(bridge.correctMemory).toHaveBeenCalledWith(correctParams);
+    expect(bridge.forgetMemory).toHaveBeenCalledWith(forgetParams);
     expect(bridge.listMemories).toHaveBeenCalledWith({ scope, limit: 25 });
     expect(bridge.getMemory).toHaveBeenCalledWith(memoryId);
+  });
+
+  it("preserves a validated Memory failure reason without exposing arbitrary data", async () => {
+    const bridge = bridgeWithListThreads(vi.fn());
+    bridge.correctMemory = vi.fn(async () => ({
+      ok: false as const,
+      error: {
+        kind: "json_rpc" as const,
+        code: -32020,
+        message: "memory operation failed",
+        reasonCode: "memory_revision_conflict" as const
+      }
+    }));
+    const client = new RuntimeClient(bridge);
+    const params = {
+      memoryId: `memory_${"1".repeat(32)}`,
+      expectedRevision: 1,
+      content: "Updated",
+      clientRequestId: "memory-correct-conflict"
+    };
+
+    await expect(client.correctMemory(params)).rejects.toMatchObject({
+      kind: "json_rpc",
+      code: -32020,
+      message: "memory operation failed",
+      reasonCode: "memory_revision_conflict"
+    });
+  });
+
+  it.each([
+    { code: -32020, message: "memory operation failed" },
+    { code: -32020, message: "memory operation failed", reasonCode: "unknown" },
+    {
+      code: -32020,
+      message: "memory operation failed",
+      reasonCode: "memory_source_unavailable"
+    },
+    { code: -32602, message: "invalid params", reasonCode: "memory_not_found" },
+    {
+      code: -32020,
+      message: "memory operation failed",
+      reasonCode: "memory_not_found",
+      data: { secret: "must not cross IPC" }
+    }
+  ])("rejects a malformed Memory bridge failure as ambiguous: %o", async (error) => {
+    const bridge = bridgeWithListThreads(vi.fn());
+    bridge.getMemory = vi.fn(async () => ({
+      ok: false,
+      error: { kind: "json_rpc", ...error }
+    })) as IkarosRuntimeBridgeApi["getMemory"];
+    const client = new RuntimeClient(bridge);
+
+    await expect(client.getMemory(`memory_${"1".repeat(32)}`)).rejects.toEqual(
+      new Error("Runtime bridge returned an invalid invocation result.")
+    );
   });
 
   it.each([
@@ -313,6 +390,15 @@ describe("RuntimeClient", () => {
     { ok: true, value: { threads: [] }, error: { kind: "json_rpc", code: -1, message: "invalid" } },
     { ok: false, value: { threads: [] }, error: { kind: "json_rpc", code: -1, message: "invalid" } },
     { ok: false, error: { kind: "json_rpc", code: Number.NaN, message: "invalid" } },
+    {
+      ok: false,
+      error: {
+        kind: "json_rpc",
+        code: -32020,
+        message: "memory operation failed",
+        reasonCode: "memory_not_found"
+      }
+    }
   ])("keeps malformed bridge envelopes ambiguous: %o", async (envelope) => {
     const listThreads = vi.fn(async () => envelope) as unknown as
       IkarosRuntimeBridgeApi["listThreads"];

@@ -9,10 +9,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  RUNTIME_PROTOCOL_VERSION,
   type RuntimeJournalEvent,
   type RuntimeMemoryCreateResult,
   type RuntimeMemoryGetResult,
   type RuntimeMemoryListPage,
+  type RuntimeMemoryMutationResult,
   type RuntimeReplayResult,
   type RuntimeThreadGetResult,
   type RuntimeTurnListPage,
@@ -475,6 +477,16 @@ describe("RuntimeHost integration", () => {
     { jsonrpc: "2.0", id: 1, result: {}, error: { code: -32602, message: "no" } },
     { jsonrpc: "2.0", id: 1, error: { code: -32602 } },
     { jsonrpc: "2.0", id: 1, error: { code: 1.5, message: "no" } },
+    { jsonrpc: "2.0", id: 1, error: { code: -32020, message: "memory operation failed" } },
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      error: {
+        code: -32602,
+        message: "invalid params",
+        data: { reasonCode: "memory_not_found" }
+      }
+    }
   ])("rejects malformed matching JSON-RPC responses as protocol failures: %o", (response) => {
     let rejected: unknown;
     try {
@@ -484,6 +496,56 @@ describe("RuntimeHost integration", () => {
     }
     expect(rejected).toEqual(new Error("Runtime returned an invalid JSON-RPC response."));
     expect(rejected).not.toBeInstanceOf(RuntimeRpcError);
+  });
+
+  it("accepts only registered Memory domain reasons for a pending Memory method", () => {
+    const envelope = {
+      jsonrpc: "2.0",
+      id: 7,
+      error: {
+        code: -32020,
+        message: "memory operation failed",
+        data: { reasonCode: "memory_revision_conflict" }
+      }
+    };
+
+    expect(parseRuntimeJsonRpcResponse(envelope, "memory.correct")).toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      error: {
+        code: -32020,
+        message: "memory operation failed",
+        reasonCode: "memory_revision_conflict"
+      }
+    });
+    expect(() => parseRuntimeJsonRpcResponse(envelope)).toThrow();
+    expect(() => parseRuntimeJsonRpcResponse(envelope, "thread.create")).toThrow();
+    expect(() => parseRuntimeJsonRpcResponse(envelope, "memory.create")).toThrow();
+    expect(() => parseRuntimeJsonRpcResponse(envelope, "memory.list")).toThrow();
+    expect(() =>
+      parseRuntimeJsonRpcResponse(
+        {
+          ...envelope,
+          error: {
+            ...envelope.error,
+            data: { reasonCode: "memory_source_unavailable" }
+          }
+        },
+        "memory.forget"
+      )
+    ).toThrow();
+    expect(() =>
+      parseRuntimeJsonRpcResponse(
+        {
+          ...envelope,
+          error: {
+            ...envelope.error,
+            data: { reasonCode: "unknown", leaked: "no" }
+          }
+        },
+        "memory.correct"
+      )
+    ).toThrow();
   });
 
   it("preserves a definitive JSON-RPC error separately from transport failures", async () => {
@@ -528,7 +590,7 @@ describe("RuntimeHost integration", () => {
         expect(same).toEqual(first);
         expect(first).toEqual(
           expect.objectContaining({
-            protocolVersion: 1,
+            protocolVersion: RUNTIME_PROTOCOL_VERSION,
             host: "127.0.0.1",
             server: { name: "ikaros-runtime", version: "0.1.0" }
           })
@@ -721,6 +783,120 @@ describe("RuntimeHost integration", () => {
       await rm(runtimeHome, { recursive: true, force: true });
     }
   });
+
+  it("preserves Memory correction, forget, idempotency, and typed failures across restarts", async () => {
+    const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-memory-lifecycle-"));
+    const createParams = {
+      kind: "preference",
+      scope: { type: "global", key: null },
+      content: "Prefer concise answers.",
+      clientRequestId: "runtime-host-memory-lifecycle-create"
+    };
+    let memoryId = "";
+    try {
+      const firstHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      try {
+        const created = await firstHost.request<RuntimeMemoryCreateResult>(
+          "memory.create",
+          createParams
+        );
+        memoryId = created.memoryId;
+        const corrected = await firstHost.request<RuntimeMemoryMutationResult>(
+          "memory.correct",
+          {
+            memoryId,
+            expectedRevision: 1,
+            content: "Prefer very concise answers.",
+            clientRequestId: "runtime-host-memory-lifecycle-correct"
+          }
+        );
+        expect(corrected).toEqual({ memoryId, resultingRevision: 2, created: true });
+      } finally {
+        await firstHost.stop();
+      }
+
+      const secondHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      try {
+        const replayedCorrection = await secondHost.request<RuntimeMemoryMutationResult>(
+          "memory.correct",
+          {
+            memoryId,
+            expectedRevision: 1,
+            content: "Prefer very concise answers.",
+            clientRequestId: "runtime-host-memory-lifecycle-correct"
+          }
+        );
+        expect(replayedCorrection).toEqual({
+          memoryId,
+          resultingRevision: 2,
+          created: false
+        });
+        const forgotten = await secondHost.request<RuntimeMemoryMutationResult>(
+          "memory.forget",
+          {
+            memoryId,
+            expectedRevision: 2,
+            clientRequestId: "runtime-host-memory-lifecycle-forget"
+          }
+        );
+        expect(forgotten).toEqual({ memoryId, resultingRevision: 3, created: true });
+      } finally {
+        await secondHost.stop();
+      }
+
+      const thirdHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      try {
+        const replayedForget = await thirdHost.request<RuntimeMemoryMutationResult>(
+          "memory.forget",
+          {
+            memoryId,
+            expectedRevision: 2,
+            clientRequestId: "runtime-host-memory-lifecycle-forget"
+          }
+        );
+        expect(replayedForget).toEqual({
+          memoryId,
+          resultingRevision: 3,
+          created: false
+        });
+        const tombstone = await thirdHost.request<RuntimeMemoryGetResult>("memory.get", {
+          memoryId
+        });
+        expect(tombstone.memory).toEqual(
+          expect.objectContaining({
+            id: memoryId,
+            revision: 3,
+            state: "forgotten",
+            content: null,
+            forgottenAt: expect.any(String)
+          })
+        );
+
+        let rejected: unknown;
+        try {
+          await thirdHost.request("memory.correct", {
+            memoryId,
+            expectedRevision: 1,
+            content: "Prefer very concise answers.",
+            clientRequestId: "runtime-host-memory-lifecycle-correct"
+          });
+        } catch (error) {
+          rejected = error;
+        }
+        expect(rejected).toBeInstanceOf(RuntimeRpcError);
+        expect(rejected).toMatchObject({
+          kind: "json_rpc",
+          code: -32020,
+          message: "memory operation failed",
+          reasonCode: "memory_forgotten"
+        });
+      } finally {
+        await thirdHost.stop();
+      }
+    } finally {
+      await rm(runtimeHome, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("shares concurrent stop calls and rejects restart until shutdown settles", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-concurrent-stop-"));

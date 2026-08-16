@@ -66,6 +66,11 @@ from .projections import (
     workspace_to_json,
 )
 from .schema import initialize_schema, validate_existing_schema
+from .session_provenance import (
+    SessionItemProvenanceSnapshotV1,
+    capture_session_item_provenance,
+    session_item_provenance_is_available,
+)
 from .thread_catalog import ThreadCatalogPage, list_thread_page
 from .thread_history import (
     ThreadMetadata,
@@ -614,6 +619,18 @@ class SqliteRuntimeStore:
         through_turn_id: str,
     ) -> list[ContextItem]:
         return context_items(self._connection, branch_id, through_turn_id=through_turn_id)
+
+    def capture_session_item_provenance(
+        self,
+        item_id: str,
+    ) -> SessionItemProvenanceSnapshotV1:
+        return capture_session_item_provenance(self._connection, item_id)
+
+    def session_item_provenance_is_available(
+        self,
+        expected: SessionItemProvenanceSnapshotV1,
+    ) -> bool:
+        return session_item_provenance_is_available(self._connection, expected)
 
     def mark_run_running(self, run_id: str) -> JournalEvent:
         run = self.get_run(run_id)

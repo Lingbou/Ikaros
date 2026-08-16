@@ -178,7 +178,7 @@ describe("Runtime protocol Golden Trace", () => {
 
     expect(trace.fixtureVersion).toBe(1);
     expect([...observedEvents].sort()).toEqual([...RUNTIME_JOURNAL_EVENT_TYPES].sort());
-    expect(RUNTIME_RPC_METHODS).toHaveLength(24);
+    expect(RUNTIME_RPC_METHODS).toHaveLength(26);
     expect(RUNTIME_PROVIDER_TOOL_IDS).toContain("process_run");
     expect(RUNTIME_PROVIDER_TOOL_IDS).not.toContain("process.run");
   });
@@ -858,9 +858,153 @@ describe("Runtime protocol Golden Trace", () => {
 
     const fetched = cloneGoldenResponse("memory-record");
     const memory = asWireObject(fetched.result.memory, "Memory record");
-    asWireObject(memory.provenance, "Memory provenance").status = "available";
+    asWireObject(memory.provenance, "Memory provenance").status = "not_applicable";
     expect(() =>
       parseRuntimeMethodResult(fetched.method, fetched.result, fetched.requestParams)
+    ).toThrow();
+
+    const sessionSourced = cloneGoldenResponse("memory-record");
+    const sessionMemory = asWireObject(sessionSourced.result.memory, "Memory record");
+    const provenance = asWireObject(sessionMemory.provenance, "Memory provenance");
+    provenance.sourceKind = "session_item";
+    provenance.threadId = `thread_${"1".repeat(32)}`;
+    provenance.turnId = `turn_${"2".repeat(32)}`;
+    provenance.itemId = `item_${"3".repeat(32)}`;
+    provenance.status = "available";
+    expect(() =>
+      parseRuntimeMethodResult(
+        sessionSourced.method,
+        sessionSourced.result,
+        sessionSourced.requestParams
+      )
+    ).not.toThrow();
+    provenance.status = "unavailable";
+    expect(() =>
+      parseRuntimeMethodResult(
+        sessionSourced.method,
+        sessionSourced.result,
+        sessionSourced.requestParams
+      )
+    ).not.toThrow();
+    provenance.threadId = "thread-source";
+    expect(() =>
+      parseRuntimeMethodResult(
+        sessionSourced.method,
+        sessionSourced.result,
+        sessionSourced.requestParams
+      )
+    ).toThrow();
+    provenance.threadId = `thread_${"1".repeat(32)}`;
+    provenance.itemId = `item_${"g".repeat(32)}`;
+    expect(() =>
+      parseRuntimeMethodResult(
+        sessionSourced.method,
+        sessionSourced.result,
+        sessionSourced.requestParams
+      )
+    ).toThrow();
+    provenance.itemId = `item_${"3".repeat(32)}`;
+    provenance.turnId = null;
+    expect(() =>
+      parseRuntimeMethodResult(
+        sessionSourced.method,
+        sessionSourced.result,
+        sessionSourced.requestParams
+      )
+    ).toThrow();
+
+    const memoryId = `memory_${"3".repeat(32)}`;
+    const correctionParams = { memoryId, expectedRevision: 1 };
+    const corrected = { memoryId, resultingRevision: 2, created: true };
+    expect(
+      parseRuntimeMethodResult("memory.correct", corrected, correctionParams)
+    ).toEqual(corrected);
+    expect(() =>
+      parseRuntimeMethodResult(
+        "memory.correct",
+        { ...corrected, memoryId: `memory_${"4".repeat(32)}` },
+        correctionParams
+      )
+    ).toThrow();
+    expect(() =>
+      parseRuntimeMethodResult(
+        "memory.correct",
+        { ...corrected, resultingRevision: 3 },
+        correctionParams
+      )
+    ).toThrow();
+
+    const forgetParams = { memoryId, expectedRevision: 2 };
+    const forgotten = { memoryId, resultingRevision: 3, created: false };
+    expect(parseRuntimeMethodResult("memory.forget", forgotten, forgetParams)).toEqual(
+      forgotten
+    );
+    expect(() =>
+      parseRuntimeMethodResult(
+        "memory.forget",
+        { ...forgotten, unexpected: true },
+        forgetParams
+      )
+    ).toThrow();
+  });
+
+  it("accepts only the registered Memory application-error envelope", () => {
+    const envelope = {
+      jsonrpc: "2.0",
+      id: 20,
+      error: {
+        code: -32020,
+        message: "memory operation failed",
+        data: { reasonCode: "memory_forgotten" }
+      }
+    };
+
+    expect(parseRuntimeJsonRpcResponse(envelope, "memory.forget")).toEqual({
+      jsonrpc: "2.0",
+      id: 20,
+      error: {
+        code: -32020,
+        message: "memory operation failed",
+        reasonCode: "memory_forgotten"
+      }
+    });
+    expect(() => parseRuntimeJsonRpcResponse(envelope, "thread.get")).toThrow();
+    expect(() => parseRuntimeJsonRpcResponse(envelope, "memory.list")).toThrow();
+    expect(() =>
+      parseRuntimeJsonRpcResponse(
+        {
+          ...envelope,
+          error: {
+            ...envelope.error,
+            data: { reasonCode: "memory_source_unavailable" }
+          }
+        },
+        "memory.forget"
+      )
+    ).toThrow();
+    expect(() =>
+      parseRuntimeJsonRpcResponse(
+        {
+          ...envelope,
+          error: {
+            ...envelope.error,
+            data: { reasonCode: "memory_unknown" }
+          }
+        },
+        "memory.forget"
+      )
+    ).toThrow();
+    expect(() =>
+      parseRuntimeJsonRpcResponse(
+        {
+          ...envelope,
+          error: {
+            ...envelope.error,
+            data: { reasonCode: "memory_forgotten", memoryId: "leak" }
+          }
+        },
+        "memory.forget"
+      )
     ).toThrow();
   });
 

@@ -17,6 +17,7 @@ import type {
   RuntimeMemoryCreateResult,
   RuntimeMemoryGetResult,
   RuntimeMemoryListPage,
+  RuntimeMemoryMutationResult,
   RuntimeModelSetEnabledResult,
   RuntimeProviderConfigureResult,
   RuntimeProviderDiscoverModelsResult,
@@ -44,7 +45,12 @@ async function bridgeInvocation<TResult>(
     if (error instanceof RuntimeRpcError) {
       return {
         ok: false,
-        error: { kind: "json_rpc", code: error.code, message: error.message },
+        error: {
+          kind: "json_rpc",
+          code: error.code,
+          message: error.message,
+          ...(error.reasonCode === undefined ? {} : { reasonCode: error.reasonCode })
+        },
       };
     }
     throw error;
@@ -162,6 +168,14 @@ function runtimeBridge(
     createMemory: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeMemoryCreateResult>("memory.create", { ...params })
+      ),
+    correctMemory: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeMemoryMutationResult>("memory.correct", { ...params })
+      ),
+    forgetMemory: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeMemoryMutationResult>("memory.forget", { ...params })
       ),
     listMemories: (params = {}) =>
       bridgeInvocation(() =>

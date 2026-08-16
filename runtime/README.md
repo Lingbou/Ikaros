@@ -16,7 +16,7 @@ stdio.
 ## Protocol contract
 
 `src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
-version 1, Journal Event schema 4, the 24 post-initialize RPC methods, the 11
+version 2, Journal Event schema 4, the 26 post-initialize RPC methods, the 11
 persisted Journal Event types, capabilities, and provider-facing Tool IDs. The
 deterministic generator
 commits both `protocol/runtime-protocol.json` and Desktop's
@@ -86,10 +86,13 @@ The current Desktop/Runtime path provides:
   enable/disable state, immutable enabled-descriptor snapshots per Run, and
   provider context containing only each enabled Skill's name, description, and
   location;
-- Memory V0 foundation in independently durable `~/.ikaros/memory.db`: schema
-  version 1 records/revisions/idempotency receipts, Global/Workspace scopes,
-  `memory.create/list/get`, bounded preview pagination, authenticated JSON-RPC,
-  and a typed Desktop bridge. It is not injected into model input and has no
+- explicitly managed Memory V0 in independently durable `~/.ikaros/memory.db`:
+  schema version 1 records/revisions/idempotency receipts, Global/Workspace
+  scopes, `memory.create/correct/forget/list/get`, bounded preview pagination,
+  optional verified Session Item provenance, authenticated JSON-RPC, and a
+  typed Desktop bridge. Correct/Forget use optimistic revisions and durable
+  receipts; Forget removes stored content and derived digests while retaining
+  a queryable tombstone. Memory is not injected into model input and has no
   Renderer management page yet;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under
   V1's fixed `full_access` policy. Command execution has bounded output,
@@ -149,9 +152,10 @@ or a security guarantee. The Runtime is tied to the Desktop application
 lifetime and is not yet a Windows Service, login item, or independently
 discoverable daemon.
 
-Durable cross-Thread Memory now has an explicit V0 Store/RPC foundation.
-Correction/Forget, Session provenance writes, Memory maintenance/export,
-Renderer UI, and model recall are not implemented. Identity Core, persistent
+Durable cross-Thread Memory now supports explicit Create/Correct/Forget,
+Session Item provenance, restart-safe mutation receipts, and tombstone reads.
+Memory maintenance/export, Renderer UI, and model recall are not implemented.
+Identity Core, persistent
 input Frames/Manifests, and `bounded-history-v1` remain independent from Memory;
 their boundaries and the remaining implementation order are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

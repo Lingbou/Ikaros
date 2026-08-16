@@ -41,9 +41,10 @@ The connected surface is:
 - `skill.list` / `skill.set_enabled`, Skills catalog diagnostics, global
   enablement, a real Skills settings page, and immutable enabled-descriptor
   snapshots per Run;
-- typed `memory.create/list/get` Runtime client methods below the Renderer state
-  layer. They are intentionally not consumed by a page or Zustand projection in
-  Gate 5; and
+- typed `memory.create/correct/forget/list/get` Runtime client methods below the
+  Renderer state layer, including bounded mutation reason codes and Session
+  provenance. They are intentionally not consumed by a page or Zustand
+  projection in Gate 6; and
 - fixed V1 `full_access` execution of the four built-in Tools.
 
 ## Desktop-owned local state
@@ -81,8 +82,9 @@ Still mock-only or unavailable:
 Bounded history selection, model-input manifests, and the Runtime-owned
 `IKAROS.md` Identity Core are connected. Identity is frozen into each Run and
 is intentionally not a renderer setting or visible conversation card. The
-Memory Store and typed bridge are connected, but Memory management UI and model
-recall remain unavailable; their remaining Runtime design is tracked in
+Memory Store and typed Create/Correct/Forget/Provenance bridge are connected,
+but Memory management UI and model recall remain unavailable; their remaining
+Runtime design is tracked in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Protocol boundary

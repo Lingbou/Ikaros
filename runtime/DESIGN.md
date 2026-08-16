@@ -6,10 +6,10 @@ current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
 The active next stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–4
-and Gate 5 are implemented, including the Runtime-owned `IKAROS.md` Identity
-Core and the independent Memory V0 Store/RPC/typed Desktop bridge. Gate 6,
-Correction/Forget and provenance completion, is the next strictly serial Gate.
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–6
+are implemented, including the Runtime-owned `IKAROS.md` Identity Core and the
+independent, explicitly managed Memory V0 Store/RPC/typed Desktop bridge. Gate
+7, Memory check/backup/export, is the next strictly serial Gate.
 
 ## Product boundary
 
@@ -328,12 +328,16 @@ UI continues to page the complete Thread history independently. Later Tool
 Steps reload frozen Items by ID and append only current-Run Items.
 
 Durable cross-Thread Memory has an explicit-management foundation: active
-records can be created idempotently and listed by scope/kind/state with keyset
-pagination, while full current content is loaded by ID. It remains a different
+records can be created and corrected idempotently, forgotten through a
+content-redacting tombstone revision, and listed by scope/kind/state with
+keyset pagination, while full current content is loaded by ID. An optional
+Session Item source is verified in `state.db`; only its Item ID is accepted
+from clients, and unavailable or reset Session state degrades the soft
+provenance link without deleting Memory. It remains a different
 authority and lifecycle from Session history, History selection, History
 compaction, Identity Core, and Skills. `memory.db` is independent from Session
-reset and is not a second conversation truth source. Correction, Forget,
-maintenance/export, UI management, and model recall remain later Gates. The
+reset and is not a second conversation truth source. Maintenance/export, UI
+management, and model recall remain later Gates. The
 detailed boundary and serial implementation Gates are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
@@ -975,7 +979,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
 | Skills settings | `skill.list` / `skill.set_enabled` catalog, diagnostics, and global enablement |
-| Memory foundation | `memory.create` / `memory.list` / `memory.get` typed Desktop bridge; no Renderer page or model recall yet |
+| Memory foundation | `memory.create` / `memory.correct` / `memory.forget` / `memory.list` / `memory.get` typed Desktop bridge with structured conflicts and Session provenance; no Renderer page or model recall yet |
 | Profile Token metrics and activity | `usage.read` over the `model_usages` projection rebuilt solely from Provider-reported usage in `model.response_finished`; no text-based estimation |
 | theme, language, username | client-only UI state |
 
@@ -1113,11 +1117,12 @@ path. The following have been demonstrated end to end:
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
-This slice does not implement web search, browser or desktop control, durable
-memory, background or scheduled tasks, messaging channels, MCP/connectors,
+This slice does not implement web search, browser or desktop control,
+model-facing Memory recall, background or scheduled tasks, messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
 provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded
-history selection, and Gate 4 Identity Core are current. Durable Memory remains
-the next later Gate documented in
+history selection, Gate 4 Identity Core, and explicitly managed durable Memory
+are current. Memory maintenance, UI management, and model recall remain later
+Gates documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
