@@ -55,10 +55,22 @@ The current Desktop/Runtime path provides:
   `model_usages`, and aggregated by `usage.read` for the Desktop Profile metrics
   and 52-week activity chart;
 - a Provider-neutral `ModelInputPlanV1` between the Agent loop and
-  `ContextBuilder`, with versioned Output Style and frozen Run Skill Catalog
-  instruction blocks, explicit empty Context Data, Provider-default generation
-  options, and the actual bounded input budget; the resulting OpenAI wire
-  body remains locked by a two-Step Golden Test;
+  `ContextBuilder`, with versioned Output Style, Runtime-owned `IKAROS.md`
+  Identity Core, and frozen Run Skill Catalog instruction blocks, explicit
+  empty Context Data, Provider-default generation options, and the actual
+  bounded input budget; the resulting OpenAI wire body remains locked by a
+  two-Step Golden Test;
+- a bundled, read-only `src/ikaros_runtime/resources/IKAROS.md` loaded through
+  `importlib.resources`. `turn.start` freezes its version 1
+  `ikaros-identity`/`runtime_identity` Instruction Block into the Submission
+  Frame. Every Step uses the frozen block; recovery fails on release-Identity
+  drift instead of substituting mutable configuration or Memory;
+- Gate 4 requires no Session-schema reset. Completed pre-Gate-4 history with a
+  null `identityCore` stays readable, but unfinished legacy execution is not
+  resumed under a different identity: queued Runs fail with
+  `identity_core_changed` before a Provider call and running Runs settle through
+  the existing `runtime_interrupted` recovery path. No compatibility fallback
+  injects the current Identity into an old Run;
 - durable Gate 2 input auditing: `SubmissionFrameV1` and `RunManifestV1`
   persisted when a Turn is submitted, one frozen `ContextSnapshotV1` per Run,
   and one `StepManifestV1` plus terminal response metadata per Provider Step;
@@ -132,9 +144,10 @@ or a security guarantee. The Runtime is tied to the Desktop application
 lifetime and is not yet a Windows Service, login item, or independently
 discoverable daemon.
 
-Durable cross-Thread Memory and Identity Core are not implemented. Persistent
-input Frames/Manifests and `bounded-history-v1` are implemented; their
-boundaries and the remaining implementation order are defined in
+Durable cross-Thread Memory is not implemented: there is no `memory.db`, Memory
+RPC/UI, or Memory recall in model input. Identity Core, persistent input
+Frames/Manifests, and `bounded-history-v1` are implemented; their boundaries and
+the remaining implementation order are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development

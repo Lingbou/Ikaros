@@ -11,6 +11,7 @@ from ikaros_runtime.bootstrap import RuntimeApplication
 from ikaros_runtime.config import ConfigDocumentStore
 from ikaros_runtime.domain import JournalEvent, SkillDescriptor, WorkspaceSummary
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
+from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.providers.registry import ConfigStore
 from ikaros_runtime.services.skills import SkillService
 from ikaros_runtime.services.turns import TurnService
@@ -373,6 +374,7 @@ def test_client_request_retry_returns_before_rescanning_skills(tmp_path: Path) -
             cast(AgentScheduler, scheduler),
             ConfigStore(tmp_path),
             lambda _value: None,
+            load_identity_core(),
             snapshot,
         )
         params = {

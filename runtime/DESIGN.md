@@ -6,9 +6,10 @@ current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
 The active next stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–3
-are implemented; Gate 4, `identity-core-v1`, is next. Identity Core and the
-separate long-term-Memory store remain later strictly serial Gates.
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–4
+are implemented, including the Runtime-owned `IKAROS.md` Identity Core. Gate 5,
+the separate long-term-Memory store, is next and remains a strictly serial
+future Gate.
 
 ## Product boundary
 
@@ -565,8 +566,9 @@ client submits user input
      later Steps load frozen Item IDs plus current-Run Items
   -> Runtime persists StepManifestV1 and emits model.input_prepared
   -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1 from
-     the frozen Submission Frame, versioned Output Style, frozen Skill Catalog,
-     frozen ContextItems, and separate Tool definitions
+     the frozen Submission Frame, versioned Output Style, frozen IKAROS.md
+     Identity Core, frozen Skill Catalog, frozen ContextItems, and separate
+     Tool definitions
   -> ContextBuilder deterministically renders that Plan into ProviderRequest
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call
@@ -586,9 +588,22 @@ durable audit boundary. Selection uses `bounded-history-v1`: a 48,000 Unicode
 character total limit, a 12,000-character first-Step current-Run reserve,
 complete-Turn atomic selection, and deterministic omission metadata. Later
 Steps may use capacity beyond that reserve, but actual total input may never
-exceed 48,000 characters. The Runtime does not yet retrieve durable Memory or
-inject Identity Core. Those are separately gated responsibilities in
+exceed 48,000 characters. The Runtime loads its read-only `IKAROS.md` resource
+with `importlib.resources`, freezes the version 1 `ikaros-identity` Instruction
+Block into each Submission Frame at `turn.start`, and reuses that frozen input
+for every Step in the Run. Recovery validates the frozen block against the
+current release Identity and fails on drift rather than silently substituting
+new content. It does not yet create, retrieve, or inject durable Memory; that
+remains a separately gated responsibility in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
+
+Gate 4 requires no `state.db` schema reset. Completed pre-Gate-4 history whose
+frozen `identityCore` is null remains readable and replayable. It does not make
+unfinished legacy execution compatible: a queued null-Identity Run fails with
+`identity_core_changed` before any Provider call, while startup recovery settles
+an already-running Run as `runtime_interrupted`. The Runtime neither substitutes
+the current release Identity into those Runs nor provides a compatibility
+fallback.
 
 The provider boundary must not leak provider-specific request or streaming
 formats into the domain or protocol.
@@ -1083,6 +1098,9 @@ path. The following have been demonstrated end to end:
     recent Turns through paged reads, preserves Tool Call/Result atomicity,
     reloads later Steps through frozen IDs, and settles pre-Provider failures as
     `context_budget_exceeded` or `model_input_unavailable`.
+11. Gate 4 loads the packaged `resources/IKAROS.md` through
+    `importlib.resources`, freezes its versioned `runtime_identity` block into
+    every Run, and keeps Provider/model identity separate from Ikaros identity.
 
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
@@ -1091,7 +1109,7 @@ This slice does not implement web search, browser or desktop control, durable
 memory, background or scheduled tasks, messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
-provider-neutral input plan, Gate 2 audit/freeze foundation, and Gate 3 bounded
-history selection are current. Identity Core and durable Memory remain the
-later Gates documented in
+provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded
+history selection, and Gate 4 Identity Core are current. Durable Memory remains
+the next later Gate documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

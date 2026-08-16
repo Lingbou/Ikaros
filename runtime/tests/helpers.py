@@ -6,6 +6,7 @@ from ikaros_runtime.domain import PreparedTurn, SkillDescriptor, WorkspaceSummar
 from ikaros_runtime.run_input import (
     INPUT_BUDGET_MEASUREMENT_VERSION,
     InputBudgetRecordV1,
+    InstructionBlockV1,
     ProviderExecutionSnapshotV1,
     SubmissionFrameTemplateV1,
     SubmissionFrameV1,
@@ -20,6 +21,7 @@ def frame_template(
     *,
     tools: Sequence[ToolDefinition] = (),
     skills: Sequence[SkillDescriptor] = (),
+    identity_core: InstructionBlockV1 | None = None,
     max_steps: int = 16,
 ) -> SubmissionFrameTemplateV1:
     return SubmissionFrameTemplateV1.create(
@@ -33,6 +35,7 @@ def frame_template(
         execution_policy="full_access",
         skills=skills,
         tools=tools,
+        identity_core=identity_core,
         max_steps=max_steps,
     )
 
@@ -47,6 +50,7 @@ def prepare_turn(
     model_id: str,
     client_request_id: str | None = None,
     skills: Sequence[SkillDescriptor] = (),
+    identity_core: InstructionBlockV1 | None = None,
     tools: Sequence[ToolDefinition] = (),
     max_steps: int = 16,
 ) -> PreparedTurn:
@@ -59,6 +63,7 @@ def prepare_turn(
             model_id,
             tools=tools,
             skills=skills,
+            identity_core=identity_core,
             max_steps=max_steps,
         ),
         client_request_id=client_request_id,
@@ -71,6 +76,7 @@ def submission_frame(
     *,
     tools: Sequence[ToolDefinition] = (),
     skills: Sequence[SkillDescriptor] = (),
+    identity_core: InstructionBlockV1 | None = None,
     workspace: WorkspaceSummary | None = None,
     max_steps: int = 16,
 ) -> SubmissionFrameV1:
@@ -80,6 +86,7 @@ def submission_frame(
             model_id,
             tools=tools,
             skills=skills,
+            identity_core=identity_core,
             max_steps=max_steps,
         ),
         user_item_id="item_test",

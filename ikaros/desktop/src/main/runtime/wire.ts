@@ -755,7 +755,7 @@ function isSubmissionFrame(
       lifetime: "release",
       content: OUTPUT_STYLE_CONTENT
     }) ||
-    value.instructions.identityCore !== null ||
+    !isIdentityCoreBlock(value.instructions.identityCore) ||
     !isWireObject(value.contextData) ||
     !hasExactKeys(value.contextData, ["memory"]) ||
     !Array.isArray(value.contextData.memory) ||
@@ -798,6 +798,31 @@ function isSubmissionFrame(
         lifetime: "run",
         content: expectedSkillCatalog
       }))
+  );
+}
+
+function isIdentityCoreBlock(value: unknown): boolean {
+  if (value === null) return true;
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, [
+      "id",
+      "version",
+      "source",
+      "authority",
+      "scope",
+      "lifetime",
+      "content"
+    ]) &&
+    value.id === "ikaros-identity" &&
+    value.version === 1 &&
+    value.source === "ikaros-runtime:identity" &&
+    value.authority === "runtime_identity" &&
+    value.scope === "global" &&
+    value.lifetime === "release" &&
+    typeof value.content === "string" &&
+    value.content.trim().length > 0 &&
+    [...value.content].length <= 2048
   );
 }
 
@@ -852,8 +877,8 @@ function isRunManifest(value: unknown, frameValue: unknown): boolean {
     return false;
   }
   const instructionBlocks = [
-    frameValue.instructions.outputStyle,
     frameValue.instructions.identityCore,
+    frameValue.instructions.outputStyle,
     frameValue.instructions.skillCatalog
   ].filter((block) => block !== null);
   if (!instructionBlocks.every((block) => isWireObject(block))) {

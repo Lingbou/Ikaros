@@ -75,9 +75,11 @@ Still mock-only or unavailable:
 - Artifact, file-change, generic status, and Branch-created events; and
 - attachments, tool selection, and response regeneration.
 
-Durable Memory management and recall, Identity Core, bounded history selection,
-and model-input manifests are planned but not connected. Their Runtime design
-is tracked in
+Bounded history selection, model-input manifests, and the Runtime-owned
+`IKAROS.md` Identity Core are connected. Identity is frozen into each Run and
+is intentionally not a renderer setting or visible conversation card. Durable
+Memory management and recall remain unavailable; their Runtime design is
+tracked in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Protocol boundary

@@ -100,6 +100,10 @@ The Runtime currently owns:
   `model.response_finished`. Electron main strictly validates
   `bounded-history-v1`, its 48,000/12,000 budget constants, history groups, and
   omission metadata before advancing the Event cursor;
+- Gate 4 Identity Core: the Runtime freezes its packaged `IKAROS.md` version 1
+  `runtime_identity` Instruction Block into every Submission Frame. Desktop
+  transports and validates the resulting audit DTO but does not configure,
+  edit, or render the Identity content as a conversation card;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
   V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
   command execution provides timeout, cancellation, bounded output, and
@@ -202,9 +206,10 @@ The persisted Journal uses Event schema version 4 with 11 supported Event
 discriminators. Incompatible database or Event schemas still require the
 explicit reset-only path.
 
-Persistent input Frames/Manifests and bounded history selection are
-Runtime-backed and validated at the Desktop wire boundary. The Runtime owns
-selection and budget policy; Desktop does not expose a budget control. Durable
-cross-Thread Memory and Identity Core remain proposed, and Gate 4 is the next
-implementation step. Their strict Gate plan is documented in
+Persistent input Frames/Manifests, bounded history selection, and the frozen
+Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the
+Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
+Desktop exposes no Identity editor or budget control. Durable cross-Thread
+Memory remains unimplemented, and Gate 5 is the next implementation step. The
+strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

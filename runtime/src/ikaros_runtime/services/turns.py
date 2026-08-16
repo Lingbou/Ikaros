@@ -8,7 +8,11 @@ from ..domain import CommandOutcome, SkillDescriptor
 from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
 from ..providers.scripted import ScriptedProvider
-from ..run_input import ProviderExecutionSnapshotV1, SubmissionFrameTemplateV1
+from ..run_input import (
+    InstructionBlockV1,
+    ProviderExecutionSnapshotV1,
+    SubmissionFrameTemplateV1,
+)
 from ..storage import SqliteRuntimeStore
 from ..storage.thread_history import TURN_HISTORY_DEFAULT_LIMIT, TURN_HISTORY_MAX_LIMIT
 from ..tools.core import ToolDefinition
@@ -25,6 +29,7 @@ class TurnService:
         scheduler: AgentScheduler,
         config_store: ConfigStore,
         assert_request_safe: RequestSafetyCheck,
+        identity_core: InstructionBlockV1,
         skill_snapshot: SkillSnapshotSource | None = None,
         tool_definitions: ToolDefinitionSource | None = None,
         execution_policy: str = "full_access",
@@ -34,6 +39,7 @@ class TurnService:
         self._scheduler = scheduler
         self._config = config_store
         self._assert_request_safe = assert_request_safe
+        self._identity_core = identity_core
         self._skill_snapshot = skill_snapshot or _empty_skill_snapshot
         self._tool_definitions = tool_definitions or _empty_tool_definitions
         self._execution_policy = execution_policy
@@ -97,6 +103,7 @@ class TurnService:
             execution_policy=self._execution_policy,
             skills=skills,
             tools=self._tool_definitions(),
+            identity_core=self._identity_core,
             max_steps=self._max_steps,
         )
         try:

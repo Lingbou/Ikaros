@@ -10,6 +10,7 @@ import pytest
 import ikaros_runtime.run_input as run_input_module
 from ikaros_runtime.agent import ModelInputPlanner, ModelInputPlanV1
 from ikaros_runtime.domain import ContextItem, SkillDescriptor
+from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.run_input import (
     CONTEXT_SELECTION_VERSION,
     INPUT_BUDGET_MEASUREMENT_VERSION,
@@ -29,7 +30,7 @@ from ikaros_runtime.tools.core import ToolDefinition
 from .helpers import bounded_budget, submission_frame
 
 
-def test_model_input_plan_has_versioned_ordered_blocks_and_empty_future_slots(
+def test_model_input_plan_has_versioned_ordered_identity_style_and_skill_blocks(
     tmp_path: Path,
 ) -> None:
     skill_file = tmp_path / "skills" / "research" / "SKILL.md"
@@ -41,14 +42,24 @@ def test_model_input_plan_has_versioned_ordered_blocks_and_empty_future_slots(
         location=str(skill_file.resolve()),
     )
 
+    identity_core = load_identity_core()
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1", skills=(skill,)),
+        frame=submission_frame(
+            "provider",
+            "model-1",
+            skills=(skill,),
+            identity_core=identity_core,
+        ),
         items=(ContextItem(kind="message", role="user", content="hello", data={}),),
         budget_snapshot=bounded_budget(),
     )
 
     assert plan.version == 1
-    assert [block.id for block in plan.instructions] == ["output-style", "skill-catalog"]
+    assert [block.id for block in plan.instructions] == [
+        "ikaros-identity",
+        "output-style",
+        "skill-catalog",
+    ]
     assert (
         plan.instructions[0].version,
         plan.instructions[0].source,
@@ -57,24 +68,38 @@ def test_model_input_plan_has_versioned_ordered_blocks_and_empty_future_slots(
         plan.instructions[0].lifetime,
     ) == (
         1,
-        "ikaros-runtime:output-style-v1",
-        "runtime_instruction",
+        "ikaros-runtime:identity",
+        "runtime_identity",
         "global",
         "release",
     )
+    assert plan.instructions[0] == identity_core
     assert (
         plan.instructions[1].version,
         plan.instructions[1].source,
         plan.instructions[1].authority,
         plan.instructions[1].scope,
         plan.instructions[1].lifetime,
+    ) == (
+        1,
+        "ikaros-runtime:output-style-v1",
+        "runtime_instruction",
+        "global",
+        "release",
+    )
+    assert (
+        plan.instructions[2].version,
+        plan.instructions[2].source,
+        plan.instructions[2].authority,
+        plan.instructions[2].scope,
+        plan.instructions[2].lifetime,
     ) == (1, "run:skill-descriptors", "runtime_instruction", "run", "run")
-    assert "<name>research</name>" in plan.instructions[1].content
-    assert "Research &lt;carefully&gt; &amp; cite sources." in plan.instructions[1].content
-    assert str(skill_file.resolve()) in plan.instructions[1].content
-    assert "BODY-MUST-STAY-LAZY" not in plan.instructions[1].content
+    assert "<name>research</name>" in plan.instructions[2].content
+    assert "Research &lt;carefully&gt; &amp; cite sources." in plan.instructions[2].content
+    assert str(skill_file.resolve()) in plan.instructions[2].content
+    assert "BODY-MUST-STAY-LAZY" not in plan.instructions[2].content
     assert plan.context_data == ()
-    assert all(block.authority != "runtime_identity" for block in plan.instructions)
+    assert [block.authority for block in plan.instructions].count("runtime_identity") == 1
     assert plan.generation_options.mode == "provider_defaults"
     assert plan.budget_snapshot.mode == "bounded"
 
@@ -454,15 +479,7 @@ def test_submission_frame_rejects_instruction_slot_metadata_corruption(
     wire = submission_frame("provider", "model-1", skills=(skill,)).to_wire()
     instructions = cast(dict[str, Any], wire["instructions"])
     if slot == "identityCore":
-        instructions["identityCore"] = {
-            "id": "identity-core",
-            "version": 1,
-            "source": "ikaros-runtime:identity-core-v1",
-            "authority": "runtime_identity",
-            "scope": "global",
-            "lifetime": "release",
-            "content": "Ikaros identity",
-        }
+        instructions["identityCore"] = load_identity_core().to_wire()
     block = cast(dict[str, Any], instructions[slot])
     block[field] = replacement
 
@@ -470,20 +487,12 @@ def test_submission_frame_rejects_instruction_slot_metadata_corruption(
         run_input_module.SubmissionFrameV1.from_wire(wire)
 
 
-def test_submission_frame_rejects_future_identity_and_memory_slots() -> None:
-    wire = submission_frame("provider", "model-1").to_wire()
-    instructions = cast(dict[str, Any], wire["instructions"])
-    instructions["identityCore"] = {
-        "id": "identity-core",
-        "version": 1,
-        "source": "ikaros-runtime:identity-core-v1",
-        "authority": "runtime_identity",
-        "scope": "global",
-        "lifetime": "release",
-        "content": "Ikaros identity",
-    }
-    with pytest.raises(ValueError, match="identity core input is not available"):
-        run_input_module.SubmissionFrameV1.from_wire(wire)
+def test_submission_frame_accepts_identity_but_rejects_future_memory_slot() -> None:
+    identity_core = load_identity_core()
+    frame = submission_frame("provider", "model-1", identity_core=identity_core)
+    restored = run_input_module.SubmissionFrameV1.from_wire(frame.to_wire())
+    assert restored.identity_core == identity_core
+    assert restored.instructions[0] == identity_core
 
     wire = submission_frame("provider", "model-1").to_wire()
     context_data = cast(dict[str, Any], wire["contextData"])

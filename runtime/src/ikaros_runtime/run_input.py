@@ -36,6 +36,10 @@ INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1"
 MEMORY_CONTEXT_VERSION = 1
 MAXIMUM_INPUT_CHARACTERS_V1 = 48_000
 RESERVED_CURRENT_RUN_CHARACTERS_V1 = 12_000
+IKAROS_IDENTITY_ID = "ikaros-identity"
+IKAROS_IDENTITY_VERSION = 1
+IKAROS_IDENTITY_SOURCE = "ikaros-runtime:identity"
+IDENTITY_CORE_MAX_CHARACTERS_V1 = 2_048
 
 REGISTERED_CONTEXT_SELECTION_VERSIONS = frozenset({CONTEXT_SELECTION_VERSION})
 EXECUTABLE_CONTEXT_SELECTION_VERSIONS = frozenset({CONTEXT_SELECTION_VERSION})
@@ -292,8 +296,6 @@ class SubmissionFrameTemplateV1:
             raise ValueError("Skill descriptors require a Skill catalog instruction")
         if not self.skills and self.skill_catalog is not None:
             raise ValueError("Skill catalog instruction has no Skill descriptors")
-        if self.identity_core is not None:
-            raise ValueError("identity core input is not available in this Runtime version")
         if self.memory_context:
             raise ValueError("Memory context is not available in this Runtime version")
         _validate_skill_catalog_content(self.skills, self.skill_catalog)
@@ -306,6 +308,7 @@ class SubmissionFrameTemplateV1:
         execution_policy: str,
         skills: Sequence[SkillDescriptor],
         tools: Sequence[ToolDefinition],
+        identity_core: InstructionBlockV1 | None,
         max_steps: int,
     ) -> SubmissionFrameTemplateV1:
         from .skills import build_skill_prompt
@@ -326,7 +329,7 @@ class SubmissionFrameTemplateV1:
                 lifetime="release",
                 content=OUTPUT_STYLE_CONTENT,
             ),
-            identity_core=None,
+            identity_core=identity_core,
             skill_catalog=(
                 InstructionBlockV1(
                     id="skill-catalog",
@@ -397,8 +400,6 @@ class SubmissionFrameV1:
             identity_core=self.identity_core,
             skill_catalog=self.skill_catalog,
         )
-        if self.identity_core is not None:
-            raise ValueError("identity core input is not available in this Runtime version")
         if self.memory_context:
             raise ValueError("Memory context is not available in this Runtime version")
         _validate_skill_catalog_content(self.skills, self.skill_catalog)
@@ -439,7 +440,7 @@ class SubmissionFrameV1:
     def instructions(self) -> tuple[InstructionBlockV1, ...]:
         return tuple(
             block
-            for block in (self.output_style, self.identity_core, self.skill_catalog)
+            for block in (self.identity_core, self.output_style, self.skill_catalog)
             if block is not None
         )
 
@@ -1220,12 +1221,17 @@ def _validate_instruction_slots(
         _validate_instruction_slot(
             identity_core,
             label="identity core",
-            expected_id="identity-core",
-            expected_source="ikaros-runtime:identity-core-v1",
+            expected_id=IKAROS_IDENTITY_ID,
+            expected_source=IKAROS_IDENTITY_SOURCE,
             expected_authority="runtime_identity",
             expected_scope="global",
             expected_lifetime="release",
         )
+        if (
+            not identity_core.content.strip()
+            or len(identity_core.content) > IDENTITY_CORE_MAX_CHARACTERS_V1
+        ):
+            raise ValueError("identity core instruction content is invalid")
     if skill_catalog is not None:
         _validate_instruction_slot(
             skill_catalog,
@@ -1517,6 +1523,10 @@ _STEP_MANIFEST_KEYS = {
 __all__ = [
     "CONTEXT_SELECTION_VERSION",
     "EXECUTABLE_CONTEXT_SELECTION_VERSIONS",
+    "IDENTITY_CORE_MAX_CHARACTERS_V1",
+    "IKAROS_IDENTITY_ID",
+    "IKAROS_IDENTITY_SOURCE",
+    "IKAROS_IDENTITY_VERSION",
     "INPUT_BUDGET_MEASUREMENT_VERSION",
     "MAXIMUM_INPUT_CHARACTERS_V1",
     "REGISTERED_CONTEXT_SELECTION_VERSIONS",

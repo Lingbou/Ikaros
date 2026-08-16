@@ -17,15 +17,17 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import InvalidStatus
 
+import ikaros_runtime.bootstrap as bootstrap_module
 from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.bootstrap import RuntimeApplication
 from ikaros_runtime.domain import JOURNAL_EVENT_SCHEMA_VERSION, JournalEvent
 from ikaros_runtime.errors import ConfigError, InvalidParamsError
+from ikaros_runtime.identity import IdentityResourceError, load_identity_core
 from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
 from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.server.connection import handle_connection
 from ikaros_runtime.server.event_hub import EventHub
-from ikaros_runtime.server.host import _parent_is_alive
+from ikaros_runtime.server.host import ServerSettings, _parent_is_alive
 from ikaros_runtime.services.turns import TurnService
 from ikaros_runtime.storage import SqliteRuntimeStore
 
@@ -83,7 +85,7 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
                         "content": "Runtime owned output style",
                     },
                     "identityCore": {
-                        "id": "identity-core",
+                        "id": "ikaros-identity",
                         "authority": "runtime_identity",
                         "lifetime": "release",
                         "content": "Runtime owned identity",
@@ -2658,6 +2660,7 @@ def test_queued_submission_frame_preserves_exact_user_content_across_restart_and
         cast(AgentScheduler, ReserveOnlyScheduler()),
         ConfigStore(tmp_path),
         lambda _value: None,
+        load_identity_core(),
     )
     thread, _ = store.create_thread("Exact queued input")
     outcome = service.start_turn(
@@ -2786,6 +2789,50 @@ async def test_startup_credential_conflict_fails_before_recovery_mutates_state(
     assert process.stderr is not None
     stderr = (await process.stderr.read()).decode(errors="replace")
     assert protected not in stderr
+
+    reopened = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        after_events, after_latest_seq = reopened.replay_events(0, 1000)
+        assert reopened.run_status(prepared.run_id) == "running"
+        assert after_latest_seq == before_latest_seq
+        assert after_events == before_events
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_identity_fails_before_recovery_mutates_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    thread, _ = store.create_thread("Identity startup failure")
+    prepared = prepare_turn(
+        store,
+        thread_id=thread.id,
+        branch_id=thread.default_branch_id,
+        content="running before missing identity",
+        provider_id="scripted",
+        model_id="scripted-v1",
+    )
+    store.mark_run_running(prepared.run_id)
+    before_events, before_latest_seq = store.replay_events(0, 1000)
+    store.close()
+
+    def missing_identity() -> None:
+        raise IdentityResourceError("Ikaros identity resource is unavailable")
+
+    monkeypatch.setattr(bootstrap_module, "load_identity_core", missing_identity)
+    settings = ServerSettings(
+        host="127.0.0.1",
+        port=0,
+        token=secrets.token_hex(32),
+        parent_pid=os.getpid(),
+        runtime_home=tmp_path,
+    )
+
+    with pytest.raises(IdentityResourceError, match="resource is unavailable"):
+        await bootstrap_module.run_runtime_server(settings)
 
     reopened = SqliteRuntimeStore(tmp_path / "state.db")
     try:

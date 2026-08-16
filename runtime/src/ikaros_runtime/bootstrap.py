@@ -13,12 +13,13 @@ from .agent.loop import AgentLoop, EventPublisher
 from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome
+from .identity import load_identity_core
 from .protocol.router import RuntimeRouter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
 from .providers.scripted import ScriptedProvider
-from .run_input import ProviderExecutionSnapshotV1
+from .run_input import InstructionBlockV1, ProviderExecutionSnapshotV1
 from .security import RuntimeSecurity
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
@@ -45,6 +46,7 @@ class RuntimeApplication:
         *,
         config_store: ConfigStore | None = None,
         model_discovery: ModelDiscovery = discover_openai_compatible_models,
+        identity_core: InstructionBlockV1 | None = None,
     ) -> None:
         self._store = store
         self._config = config_store or ConfigStore(
@@ -55,6 +57,7 @@ class RuntimeApplication:
             self._store.journal_contains_protected_values,
         )
         self.security.assert_configuration_safe()
+        self.identity_core = identity_core or load_identity_core()
 
         self.skills = SkillService(
             SkillCatalog(
@@ -96,6 +99,7 @@ class RuntimeApplication:
             tool_executor,
             protected_values=self.security.protected_values,
             provider_snapshot_resolver=provider_execution_snapshot,
+            identity_core=self.identity_core,
         )
         self._scheduler = AgentScheduler(loop)
         self._publish = publish
@@ -106,6 +110,7 @@ class RuntimeApplication:
             self._scheduler,
             self._config,
             self.security.assert_request_safe,
+            self.identity_core,
             self.skills.enabled_descriptors,
             lambda: tool_executor.definitions,
             tool_executor.policy_name,
@@ -152,6 +157,7 @@ async def run_runtime_server(settings: ServerSettings) -> None:
     application: RuntimeApplication | None = None
     try:
         logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+        identity_core = load_identity_core()
         config_document_store = ConfigDocumentStore(settings.runtime_home)
         config_store = ConfigStore(config_document_store)
         store = SqliteRuntimeStore(settings.runtime_home / "state.db")
@@ -168,6 +174,7 @@ async def run_runtime_server(settings: ServerSettings) -> None:
             store,
             event_hub.publish,
             config_store=config_store,
+            identity_core=identity_core,
         )
         application.start(recovery.queued_run_ids)
 

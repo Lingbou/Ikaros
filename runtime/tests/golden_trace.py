@@ -16,6 +16,7 @@ import ikaros_runtime.storage.store as store_module
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, ModelUsage
+from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.protocol.spec import EVENT_NOTIFICATION_METHOD, JSONRPC_VERSION
 from ikaros_runtime.providers.base import (
     ProviderEvent,
@@ -258,6 +259,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
     utc_now = _DeterministicUtc()
     monotonic = _DeterministicMonotonic()
     snapshot = _provider_snapshot()
+    identity_core = load_identity_core()
     provider = _GoldenScriptedProvider()
     tool = _GoldenProcessTool()
     executor = ToolExecutor(ToolRegistry((tool,)), FullAccessPolicy())
@@ -279,6 +281,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 execution_policy=executor.policy_name,
                 skills=(),
                 tools=executor.definitions,
+                identity_core=identity_core,
                 max_steps=2,
             )
             prepared = store.prepare_turn(
@@ -293,6 +296,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 _discard_event,
                 executor,
                 provider_snapshot_resolver=_snapshot_resolver(snapshot),
+                identity_core=identity_core,
             )
             await loop.run(prepared.run_id, CancellationToken())
             if store.run_status(prepared.run_id) != "completed":

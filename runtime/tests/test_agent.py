@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.agent.scheduler import AgentScheduler
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
 from ikaros_runtime.domain import JournalEvent, ModelUsage, WorkspaceSummary
+from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderRequest,
@@ -948,6 +950,84 @@ async def test_agent_rejects_provider_configuration_drift_before_model_input(
         assert not any(event.type == "model.input_prepared" for event in events)
         assert events[-1].type == "run.settled"
         assert events[-1].payload["reasonCode"] == "provider_configuration_changed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_identity_drift_before_model_input(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        frozen_identity = load_identity_core()
+        thread, _ = store.create_thread("Identity drift")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="do not run under a different Runtime identity",
+            provider_id="identity-drift",
+            model_id="identity-model",
+            identity_core=frozen_identity,
+        )
+        loop = AgentLoop(
+            store,
+            {"identity-drift": ChunkedTextProvider(["must not run"])},
+            publish,
+            identity_core=replace(
+                frozen_identity,
+                content=f"{frozen_identity.content}\nchanged release identity",
+            ),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert not any(event.type == "model.input_prepared" for event in events)
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["status"] == "failed"
+        assert events[-1].payload["reasonCode"] == "identity_core_changed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_pre_gate4_null_identity_before_model_input(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Pre-Gate 4 null Identity")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="do not resume without the current release identity",
+            provider_id="legacy-identity",
+            model_id="legacy-model",
+            identity_core=None,
+        )
+        loop = AgentLoop(
+            store,
+            {"legacy-identity": ChunkedTextProvider(["must not run"])},
+            publish,
+            identity_core=load_identity_core(),
+        )
+
+        await loop.run(prepared.run_id, CancellationToken())
+
+        assert not any(event.type == "model.input_prepared" for event in events)
+        assert events[-1].type == "run.settled"
+        assert events[-1].payload["status"] == "failed"
+        assert events[-1].payload["reasonCode"] == "identity_core_changed"
     finally:
         store.close()
 

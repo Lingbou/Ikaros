@@ -25,6 +25,7 @@ from ..providers.base import (
 )
 from ..run_input import (
     EXECUTABLE_CONTEXT_SELECTION_VERSIONS,
+    InstructionBlockV1,
     ProviderExecutionSnapshotV1,
     SubmissionFrameV1,
     validate_tool_environment,
@@ -96,6 +97,7 @@ class AgentLoop:
         context_builder: ContextBuilder | None = None,
         model_input_planner: ModelInputPlanner | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
+        identity_core: InstructionBlockV1 | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -112,6 +114,7 @@ class AgentLoop:
             model_input_planner if model_input_planner is not None else ModelInputPlanner()
         )
         self._provider_snapshot_resolver = provider_snapshot_resolver
+        self._identity_core = identity_core
 
     @property
     def max_steps(self) -> int:
@@ -602,6 +605,9 @@ class AgentLoop:
         return self._providers.resolve(provider_id)
 
     def _validate_submission_environment(self, frame: SubmissionFrameV1) -> None:
+        if frame.identity_core != self._identity_core:
+            raise RunInputDriftError("identity_core_changed")
+
         resolver = self._provider_snapshot_resolver
         try:
             if resolver is None:

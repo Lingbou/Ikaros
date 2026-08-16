@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -91,6 +92,58 @@ function expectGoldenMutationRejected(
   const event = cloneGoldenNotification(name);
   mutate(event);
   expect(() => parseRuntimeEventNotification(event.envelope)).toThrow();
+}
+
+function attachTestIdentityCore(
+  event: ReturnType<typeof cloneGoldenNotification>,
+  content = "Ikaros test identity"
+): {
+  block: Record<string, unknown>;
+  manifest: Record<string, unknown>;
+} {
+  const block: Record<string, unknown> = {
+    id: "ikaros-identity",
+    version: 1,
+    source: "ikaros-runtime:identity",
+    authority: "runtime_identity",
+    scope: "global",
+    lifetime: "release",
+    content
+  };
+  const frame = asWireObject(event.payload.submissionFrame, "Submission Frame");
+  const instructions = asWireObject(frame.instructions, "Frame instructions");
+  instructions.identityCore = block;
+
+  const manifest: Record<string, unknown> = {
+    id: block.id,
+    version: block.version,
+    source: block.source,
+    authority: block.authority,
+    scope: block.scope,
+    lifetime: block.lifetime,
+    characters: [...content].length,
+    contentSha256: createHash("sha256")
+      .update(JSON.stringify(content), "utf8")
+      .digest("hex")
+  };
+  const runManifest = asWireObject(event.payload.runManifest, "Run Manifest");
+  const manifestInstructions = asWireArray(
+    runManifest.instructions,
+    "manifest instructions"
+  );
+  const existingIndex = manifestInstructions.findIndex(
+    (candidate) =>
+      typeof candidate === "object" &&
+      candidate !== null &&
+      !Array.isArray(candidate) &&
+      (candidate as Record<string, unknown>).id === "ikaros-identity"
+  );
+  if (existingIndex >= 0) {
+    manifestInstructions[existingIndex] = manifest;
+  } else {
+    manifestInstructions.splice(0, 0, manifest);
+  }
+  return { block, manifest };
 }
 
 describe("Runtime protocol Golden Trace", () => {
@@ -189,31 +242,53 @@ describe("Runtime protocol Golden Trace", () => {
     }
   });
 
-  it("rejects Gate 2 future input slots and an empty current-Run history", () => {
-    expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
-      const frame = asWireObject(payload.submissionFrame, "Submission Frame");
-      const instructions = asWireObject(frame.instructions, "Frame instructions");
-      instructions.identityCore = {
-        id: "identity-core",
-        version: 1,
-        source: "ikaros-runtime:identity-core-v1",
-        authority: "runtime_identity",
-        scope: "global",
-        lifetime: "release",
-        content: "Ikaros identity"
-      };
-      const manifest = asWireObject(payload.runManifest, "Run Manifest");
-      asWireArray(manifest.instructions, "manifest instructions").push({
-        id: "identity-core",
-        version: 1,
-        source: "ikaros-runtime:identity-core-v1",
-        authority: "runtime_identity",
-        scope: "global",
-        lifetime: "release",
-        characters: 15,
-        contentSha256: "c987864c48fd568bd0fa866ef1879f7db19ad7b36b1424be101125d1d6a75601"
+  it("accepts a valid non-empty Identity Core bound to its Run Manifest", () => {
+    const event = cloneGoldenNotification("initial-user-item-completed");
+    attachTestIdentityCore(event);
+
+    expect(() => parseRuntimeEventNotification(event.envelope)).not.toThrow();
+  });
+
+  it("rejects Identity Core metadata drift and empty content", () => {
+    const metadataMutations: Array<[string, unknown]> = [
+      ["id", "other-identity"],
+      ["version", 2],
+      ["source", "other-source"],
+      ["authority", "runtime_instruction"],
+      ["scope", "run"],
+      ["lifetime", "run"]
+    ];
+    for (const [field, replacement] of metadataMutations) {
+      expectGoldenMutationRejected("initial-user-item-completed", (event) => {
+        const { block, manifest } = attachTestIdentityCore(event);
+        block[field] = replacement;
+        manifest[field] = replacement;
       });
+    }
+
+    expectGoldenMutationRejected("initial-user-item-completed", (event) => {
+      attachTestIdentityCore(event, "");
     });
+    expectGoldenMutationRejected("initial-user-item-completed", (event) => {
+      attachTestIdentityCore(event, " \n\t");
+    });
+    expectGoldenMutationRejected("initial-user-item-completed", (event) => {
+      attachTestIdentityCore(event, "x".repeat(2049));
+    });
+  });
+
+  it("rejects Identity Core Manifest character and hash mismatches", () => {
+    expectGoldenMutationRejected("initial-user-item-completed", (event) => {
+      const { manifest } = attachTestIdentityCore(event);
+      manifest.characters = (manifest.characters as number) + 1;
+    });
+    expectGoldenMutationRejected("initial-user-item-completed", (event) => {
+      const { manifest } = attachTestIdentityCore(event);
+      manifest.contentSha256 = "b".repeat(64);
+    });
+  });
+
+  it("rejects the unavailable Memory slot and an empty current-Run history", () => {
 
     expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
       const frame = asWireObject(payload.submissionFrame, "Submission Frame");
@@ -263,7 +338,14 @@ describe("Runtime protocol Golden Trace", () => {
       expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
         const manifest = asWireObject(payload.runManifest, "Run Manifest");
         const instructions = asWireArray(manifest.instructions, "manifest instructions");
-        asWireObject(instructions[0], "output-style manifest")[field] = replacement;
+        const outputStyle = instructions.find(
+          (candidate) =>
+            typeof candidate === "object" &&
+            candidate !== null &&
+            !Array.isArray(candidate) &&
+            (candidate as Record<string, unknown>).id === "output-style"
+        );
+        asWireObject(outputStyle, "output-style manifest")[field] = replacement;
       });
     }
 
@@ -287,7 +369,13 @@ describe("Runtime protocol Golden Trace", () => {
       "manifest instructions"
     );
     const unicodeOutputStyle = asWireObject(
-      unicodeManifestInstructions[0],
+      unicodeManifestInstructions.find(
+        (candidate) =>
+          typeof candidate === "object" &&
+          candidate !== null &&
+          !Array.isArray(candidate) &&
+          (candidate as Record<string, unknown>).id === "output-style"
+      ),
       "output-style manifest"
     );
     unicodeOutputStyle.characters = 2;

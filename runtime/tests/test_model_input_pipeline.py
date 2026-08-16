@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, SkillDescriptor
+from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from ikaros_runtime.storage import SqliteRuntimeStore
@@ -155,6 +157,7 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
 
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
+        identity_core = load_identity_core()
         thread, _event = store.create_thread("Golden model input")
         executor = ToolExecutor(
             ToolRegistry((GoldenProcessTool(),)),
@@ -175,6 +178,7 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
                 ),
             ),
             tools=executor.definitions,
+            identity_core=identity_core,
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             adapter = OpenAICompatibleAdapter(configured, client=client, max_retries=0)
@@ -183,12 +187,23 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
                 {"custom": adapter},
                 publish,
                 tool_executor=executor,
+                identity_core=identity_core,
             ).run(prepared.run_id, CancellationToken())
 
         expected = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
         assert captured_bodies == expected
         message_payloads = [body["messages"] for body in captured_bodies]
         serialized_messages = json.dumps(message_payloads, ensure_ascii=False)
+        for body in captured_bodies:
+            messages = cast(list[object], body["messages"])
+            assert messages[0] == {"role": "system", "content": identity_core.content}
+            assert (
+                sum(
+                    message == {"role": "system", "content": identity_core.content}
+                    for message in messages
+                )
+                == 1
+            )
         assert "Run one deterministic test process." not in serialized_messages
         assert "additionalProperties" not in serialized_messages
         assert [event.payload["status"] for event in events if event.type == "run.settled"] == [

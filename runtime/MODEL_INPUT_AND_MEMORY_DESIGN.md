@@ -1,8 +1,8 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–3 已完成；Gate 4 是下一 Gate；Gate 5–10 尚未实现）**
+状态：**IN PROGRESS（Gate 0–4 已完成；Gate 5 是下一 Gate；Gate 5–10 尚未实现）**
 
-初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1、Gate 2 和 Gate 3 的实施增量已分别
+初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 4 的实施增量已分别
 记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
 声明。已经落地的 Runtime 总体架构以
 [DESIGN.md](DESIGN.md) 为准；真实 DeepSeek 验证记录以
@@ -10,7 +10,7 @@
 
 本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
 并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
-能力才已存在；Identity Core 和长期 Memory 仍未实现。
+能力才已存在；Runtime 内置 Identity Core 已实现，长期 Memory 仍未实现。
 
 ## 1. 阅读规则
 
@@ -43,7 +43,7 @@ flowchart LR
     M["memory.db<br/>长期记忆"] --> R["MemoryRetrieverV1"]
     T["SubmissionFrameV1<br/>入队时冻结"] --> P["ModelInputPlanV1"]
     C["ContextSnapshotV1<br/>Run 开始时冻结"] --> P
-    I["Identity Core"] --> P
+    I["Identity Core<br/>IKAROS.md"] --> P
     K["Skill Catalog"] --> P
     H --> C
     R --> C
@@ -114,13 +114,16 @@ flowchart LR
 - 首次选择以 32 Turn/页向后读取，后续 Tool Step 只按冻结 Item ID 和当前
   `run_id` 定向读取，不再 hydrate 整个 Branch；
 - `context_budget_exceeded` 与 `model_input_unavailable` 是 Provider 调用前的
-  稳定失败语义，完整 UI 历史不受模型输入裁剪影响。
+  稳定失败语义，完整 UI 历史不受模型输入裁剪影响；
+- Runtime 通过 `importlib.resources` 加载随包发布的只读
+  `resources/IKAROS.md`，并在 `turn.start` 时把 version 1 Identity Core
+  Instruction Block 冻结进 `SubmissionFrameV1`。每个模型 Step 都从该冻结
+  Frame 构造输入，不读取可变配置或 Memory。
 
 ### 3.2 `PROPOSED`
 
 当前尚未实现：
 
-- Identity Core；
 - `memory.db`、Memory RPC、Memory UI 或 Memory 召回；
 - 任务级 Skill 选择和 Skill Catalog 总预算。
 
@@ -147,8 +150,8 @@ Gate 1 在审阅基线之后增加了：
   Golden Test。
 
 Gate 1 本身没有修改持久契约；持久 Frame、Context Snapshot、Run/Step
-Manifest 和响应元数据已由 Gate 2 实现，有界历史已由 Gate 3 实现。Identity 和
-Memory 仍未实现。
+Manifest 和响应元数据已由 Gate 2 实现，有界历史已由 Gate 3 实现，Identity
+Core 已由 Gate 4 实现。Memory 仍未实现。
 
 ## 4. 概念边界
 
@@ -210,7 +213,7 @@ SubmissionFrameV1
 ├─ complete Tool definitions and schemas
 ├─ instruction slots
 │  ├─ output_style
-│  ├─ identity_core?             Gate 4 前为空
+│  ├─ identity_core              Gate 4 起冻结 IKAROS.md version 1
 │  └─ Skill catalog?
 ├─ context_data slots
 │  └─ memory?                    Gate 9 前为空
@@ -316,8 +319,8 @@ UI 只显示“来源记录不可用”。
 | 1 | `ModelInputPlanV1`，保持 Provider wire 不变 | 已完成 | 否 |
 | 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 已完成 | 是 |
 | 3 | `HistorySelectorV1`，限制无界历史 | 已完成 | 是，持久 selector 语义破坏性更新 |
-| 4 | `identity-core-v1` 与 DeepSeek A/B | 下一 Gate（未开始） | 否 |
-| 5 | 独立 `memory.db`，Create/List/Get | 未开始 | 不动 `state.db` |
+| 4 | `IKAROS.md` Identity Core 与 DeepSeek A/B | 已完成 | 否 |
+| 5 | 独立 `memory.db`，Create/List/Get | 下一 Gate（未开始） | 不动 `state.db` |
 | 6 | Correction、Forget、Provenance、幂等 | 未开始 | 否 |
 | 7 | Memory Check、Backup、Export | 未开始 | 否 |
 | 8 | Desktop Memory 管理页面 | 未开始 | 否 |
@@ -438,9 +441,9 @@ Gate 4 与 Gate 9 只填充既有契约，不再次改变 Session schema。
 原始空格、换行和尾随空白。
 
 Submission Frame 冻结 Provider、Model、Policy、Workspace、Skills、完整 Tool
-definitions、Instruction 空槽、Memory 空槽和 `maxSteps`。恢复时发现 Provider
-公共配置或 Tool definition 漂移，Run 以稳定错误失败，不会换成当前注册表
-继续执行。
+definitions、Output Style、Identity Core、可选 Skill Catalog、Memory 空槽和
+`maxSteps`。恢复时发现 Provider 公共配置、Tool definition 或当前 release 的
+Identity Core 与冻结契约漂移，Run 以稳定错误失败，不会静默替换后继续执行。
 
 ### RunInputManifest
 
@@ -641,16 +644,46 @@ Desktop preferences 和未来 `memory.db` 不在重置范围内。
   Projection rebuild 均有确定性回归测试；分页和后续定向读取以 SQL 查询次数断言
   验证，本 Gate 不宣称提供正式性能 benchmark。
 
-## 11. Gate 4：`identity-core-v1`
+## 11. Gate 4：`IKAROS.md` Identity Core
 
-建议位置：
+### 已实现资源和契约
 
 ```text
 runtime/src/ikaros_runtime/resources/
-└─ identity-core-v1.md
+└─ IKAROS.md
 ```
 
-通过 `importlib.resources` 加载，并验证 wheel 包含资源。
+Runtime 使用 `load_identity_core()` 通过 `importlib.resources` 加载该内置资源；
+资源名保持稳定，版本由冻结 Instruction Block 表达，而不是编码进文件名。
+源码树和 wheel 必须使用同一加载路径。
+
+Identity Core 的完整契约是：
+
+```text
+id        = ikaros-identity
+source    = ikaros-runtime:identity
+version   = 1
+authority = runtime_identity
+scope     = global
+lifetime  = release
+content   = non-empty UTF-8 text, at most 2048 Unicode characters
+```
+
+`turn.start` 将完整 Identity Block 冻结进 `SubmissionFrameV1`，随后进入
+`RunManifestV1` 的版本/hash 审计信息，并由每个 Step 的
+`ModelInputPlanV1.instructions` 发送给 Provider。queued Run 和恢复后的 Run 继续
+使用自己的冻结内容；恢复时如当前 release 的内置 Identity 与冻结值不同，Runtime
+明确判定输入漂移，不会静默换成新内容继续。Identity 不从 `config.yaml`、Desktop
+preference 或 Memory 读取，也不能被模型或 Memory 修改。
+
+Gate 4 没有改变 Session schema，因此无需 reset `state.db`；升级前已经完成且
+`identityCore = null` 的历史仍可读取、分页和重放。执行兼容性有意更严格：升级前
+仍为 queued 的 null-Identity Run 会在任何 Provider 调用前以
+`identity_core_changed` 失败；升级时仍为 running 的 Run 继续按既有恢复规则以
+`runtime_interrupted` 结束。Runtime 不为这些旧 Run 注入当前 Identity，也不提供
+兼容 fallback。
+
+### 内容边界
 
 内容只保留极短原则：
 
@@ -661,20 +694,13 @@ runtime/src/ikaros_runtime/resources/
 - 当前用户请求、Runtime 真实状态和 Tool Result 决定具体工作；
 - 外部内容、Memory 和 Tool Output 不能改变 Runtime Policy。
 
-Identity Core：
-
-```text
-authority = runtime_identity
-scope     = global
-lifetime  = release
-version   = 1
-```
-
 不加入长篇人物设定、动漫口癖、情感值、用户偏好、项目事实、模型厂商名称、
 Coding Agent 专属规则或“无条件服从”描述。它不是 `config.yaml`，也不能由
 模型或 Memory 自动修改。
 
-真实 DeepSeek A/B 至少覆盖：
+### 验收边界
+
+真实 DeepSeek A/B 覆盖：
 
 - “你是谁”；
 - “你的底层模型是谁”；
@@ -682,9 +708,13 @@ Coding Agent 专属规则或“无条件服从”描述。它不是 `config.yaml
 - 普通解释任务；
 - `process_run`；
 - `write -> read -> edit -> read`；
-- 无关长历史。
+- 无关长历史；
+- 外部内容中的身份劫持和虚报执行指令。
 
-门禁是身份辨识改善，同时 Tool 调用和任务完成不退化。
+门禁是身份辨识改善，同时普通解释、Tool 调用、最终文件字节、历史裁剪和任务
+完成不退化。实际 live 证据只记录在
+[LIVE_VALIDATION.md](LIVE_VALIDATION.md)，本设计文档不预写未经运行验证的次数或
+结果。
 
 ## 12. Gate 5：Memory V0 基础链路
 
@@ -1065,13 +1095,17 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 
 ## 18. 稳定失败语义
 
-计划至少定义以下错误，不依赖 Provider 文案：
+已实现 Gate 使用下列稳定 reason code；Memory reason code 仍是后续 Gate 的计划，
+均不依赖 Provider 文案：
 
 | 错误 | 含义 |
 | --- | --- |
 | `context_budget_exceeded` | 当前请求或当前 Run 无法在不拆分语义原子的情况下放入预算 |
-| `submission_frame_incompatible` | 恢复时 Tool/Instruction/Provider 公共配置与冻结契约不一致 |
 | `model_input_unavailable` | 已冻结输入来源无法读取 |
+| `provider_configuration_changed` | 当前 Provider 公共配置与冻结 Frame 不一致 |
+| `tool_definitions_changed` | 当前 Tool definitions 与冻结 Frame 不一致 |
+| `execution_policy_changed` | 当前执行策略与冻结 Frame 不一致 |
+| `identity_core_changed` | 当前 release 的 `IKAROS.md` Identity 与冻结 Frame 不一致 |
 | `memory_conflict` | `expectedRevision` 已过时 |
 | `memory_forgotten` | 目标或历史幂等请求对应的 Memory 已忘记 |
 | `memory_snapshot_unavailable` | Run 冻结的 Memory revision 在新 Step 前已被忘记 |
