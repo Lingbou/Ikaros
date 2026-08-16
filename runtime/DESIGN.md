@@ -5,13 +5,14 @@ Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
 current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
-The active next stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–8
-are implemented, including the Runtime-owned `IKAROS.md` Identity Core, the
+The completed model-input and Memory foundation stage is specified in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–9
+are complete, including the Runtime-owned `IKAROS.md` Identity Core, the
 independent explicitly managed Memory Store/RPC/typed Desktop bridge and its
-real Settings page, and deterministic bounded Memory recall. Gate 9 is the next
-strictly serial verification and audit Gate. No standalone Memory maintenance
-or transfer surface is part of the current stage.
+real Settings page, deterministic bounded Memory recall, and the final offline
+plus real-DeepSeek verification/audit Gate. No standalone Memory maintenance,
+Memory backup/export/import, or Memory transfer surface is part of the current
+stage; this does not remove the existing offline `state.db` safety backup.
 
 ## Product boundary
 
@@ -1128,6 +1129,10 @@ path. The following have been demonstrated end to end:
 12. Gate 8 deterministically recalls bounded Global/current-workspace Memory,
     freezes exact revisions, rejects cross-database transaction overlap, and
     stops unsent Steps after Forget without changing Tool definitions or Policy.
+13. Gate 9 revalidated the complete Desktop/Runtime path against real DeepSeek,
+    including a large Tool Result, bounded history, cross-Thread Global Memory,
+    Workspace isolation, Correction, Forget, hostile quoted Memory, body-free
+    audit manifests, Tool pairing, and credential containment.
 
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
@@ -1139,5 +1144,5 @@ later general-Agent capability packs, not rejected product directions. The
 provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded
 history selection, Gate 4 Identity Core, and explicitly managed durable Memory
 with its Desktop management page and deterministic recall are current. The
-remaining verification Gate is documented in
+completed Gate record and explicitly deferred capabilities are documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

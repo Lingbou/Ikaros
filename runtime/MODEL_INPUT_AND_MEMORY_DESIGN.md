@@ -1,6 +1,6 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–8 已完成；Gate 9 是下一 Gate）**
+状态：**COMPLETE（Gate 0–9 已完成）**
 
 初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 5 的实施增量已分别
 记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
@@ -8,11 +8,11 @@
 [DESIGN.md](DESIGN.md) 为准；真实 DeepSeek 验证记录以
 [LIVE_VALIDATION.md](LIVE_VALIDATION.md) 为准。
 
-本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
+本文定义并记录 Ikaros“模型输入与记忆基础”阶段的架构、边界和严格串行 Gate，
 并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
 能力才已存在；Runtime 内置 Identity Core、显式管理的长期 Memory、Desktop 管理
-页面以及有限的确定性模型召回已经实现。独立 Memory 维护或转移界面不属于当前
-阶段，也不作为召回链路的前置条件。
+页面、有限的确定性模型召回和最终真实 Provider 验收已经实现。独立 Memory
+维护或转移界面不属于当前阶段，也不作为召回链路的前置条件。
 
 ## 1. 阅读规则
 
@@ -143,11 +143,11 @@ flowchart LR
   wrapper，并把 Memory 作为不可信 contextual data 下发；任意其他 Context Data
   块、非规范 JSON 或越界记录都会在 Provider 调用前失败。
 
-### 3.2 `PROPOSED`
+### 3.2 `DEFERRED`
 
-当前尚未实现任务级 Skill 选择和 Skill Catalog 总预算。Gate 9 还需完成真实
-DeepSeek 验证和最终只读审计。当前启动路径严格校验 `memory.db` schema，不增加
-空维护模块或用户可见入口。
+本阶段没有未完成的 Gate。任务级 Skill 选择和 Skill Catalog 总预算仍未实现，
+属于后续能力阶段。当前启动路径严格校验 `memory.db` schema，不增加空维护模块、
+Memory backup/export/import 或用户可见转移入口。
 
 当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
 首次 Provider Step 冻结预算内的连续近期 Turn 后缀，后续 Tool Step 复用冻结历史，
@@ -348,7 +348,7 @@ UI 只显示“来源记录不可用”。
 | 6 | Correction、Forget、Provenance、幂等 | 已完成 | 否 |
 | 7 | Desktop Memory 管理页面 | 已完成 | 否 |
 | 8 | Memory Read V1，有限召回并进入模型 | 已完成 | 是，Memory audit wire 与协议破坏性更新 |
-| 9 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 下一 Gate（未开始） | 否 |
+| 9 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 已完成 | 否 |
 
 ## 7. Gate 0：文档和架构边界
 
@@ -1094,7 +1094,8 @@ V1 仍不提供 Provider-facing Memory Write Tool。
   发送，并稳定结算为 `memory_snapshot_unavailable`；
 - `state.db` 事务状态断言、无 Memory DB 的 Journal projection rebuild；
 - Prompt Injection、固定 wrapper、OpenAI-compatible 最终 HTTP body Golden；
-- Runtime 全量测试和 Desktop wire 正反契约测试。真实 DeepSeek A/B 留给 Gate 9。
+- Runtime 全量测试和 Desktop wire 正反契约测试；真实 DeepSeek 纵切已在 Gate 9
+  完成。
 
 ### 验收
 
@@ -1108,6 +1109,8 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 - Memory Prompt Injection 合成测试不能扩大实际 Tool 权限。
 
 ## 16. Gate 9：最终验证与收口
+
+状态：**CURRENT（已完成）**
 
 ### 离线门禁
 
@@ -1138,6 +1141,33 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 10. Forget 后不再召回；
 11. Memory Prompt Injection；
 12. Manifest、Journal、Memory、日志和输出的密钥扫描。
+
+### 完成证据
+
+Gate 9 在 2026-08-17 针对生产 Runtime commit
+`df528ddf496dbe0dcd3c02ec8bcb23a48e9593c8` 完成：
+
+- Ruff、strict mypy（101 个文件）、协议生成检查和 Golden trace 通过；
+- Runtime `654 passed, 5 skipped`；
+- Desktop TypeScript、Electron production build 通过，Vitest
+  `424 passed, 1 skipped`；
+- 本机重建后的空 `state.db` 通过只读 `storage check` 和内存投影重建，结果为
+  `latestSeq=0`、`eventCount=0`、`threadCount=0`、`turnCount=0`、
+  `itemCount=0`；
+- 隔离 Runtime home 中的真实 DeepSeek Desktop 纵切 `2 passed`，输出凭据扫描
+  `PASS`；
+- 真实纵切覆盖 13,000 字符 Tool Result、长历史裁剪、Global 跨 Thread、Workspace
+  隔离、Correction revision 2、Forget tombstone、Memory Prompt Injection 行为、
+  Snapshot/Manifest 一致性、Tool 配对和零 context overflow；
+- 全部 11 个上游 Step 报告 `deepseek-v4-flash`，合计 22,129 input、779 output、
+  13,440 cached input、22,908 total Tokens；
+- Git tracked/untracked 工作树对验证凭据的精确 canary 匹配数为 0；
+- 最终 Gate 9 diff 完成只读范围、正文暴露和凭据路径审计。
+
+详细的真实运行数据和“不把模型文案当确定性协议”的验收边界记录在
+[LIVE_VALIDATION.md](LIVE_VALIDATION.md)。本阶段到此收口；自动提取、Embedding、
+合并、衰减、History Compaction、关系/人格演化以及 Memory 数据转移仍明确不在
+当前能力中。
 
 验收记录至少包含：
 
@@ -1178,7 +1208,7 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 | --- | --- |
 | [README.md](README.md) | 当前 Runtime 能力、运行和维护入口 |
 | [DESIGN.md](DESIGN.md) | 当前总体架构和已经锁定的产品边界 |
-| 本文 | 模型输入与 Memory 的下一阶段详细 Gate |
+| 本文 | 模型输入与 Memory 基础阶段的已完成 Gate 与延期边界 |
 | [LIVE_VALIDATION.md](LIVE_VALIDATION.md) | 某个代码快照真实 Provider 纵切的证据 |
 | [Desktop README](../ikaros/desktop/README.md) | 当前 Desktop 接线和 Mock/placeholder 边界 |
 | [Renderer DESIGN](../ikaros/desktop/src/renderer/DESIGN.md) | Renderer 投影和交互所有权 |

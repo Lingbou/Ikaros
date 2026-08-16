@@ -2,10 +2,11 @@
 
 The Ikaros Runtime is a long-lived local Python process supervised by the
 Electron main process. The implemented architecture and current vertical-slice
-boundary are recorded in [DESIGN.md](DESIGN.md). The active, strictly serial
+boundary are recorded in [DESIGN.md](DESIGN.md). The completed, strictly serial
 model-input and long-term-Memory stage is specified separately in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md); its status
-table distinguishes completed Gates from proposed capabilities.
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md); Gates 0–9
+are complete there, and the document separates the implemented foundation from
+explicitly deferred capabilities.
 
 Ikaros Desktop starts one Runtime for the application lifetime and connects to
 it through authenticated loopback WebSocket JSON-RPC. Standard output carries
@@ -163,13 +164,14 @@ revisions within a 6,000-character body budget; every unsent Provider Step
 re-materializes those exact revisions, so Correction only affects new Runs and
 Forget stops the current Run with `memory_snapshot_unavailable` rather than
 silently switching revisions. Memory bodies enter Provider input only through a
-Runtime-owned canonical JSON context-data wrapper and never enter `state.db`, the
-Journal, or public Manifests. No standalone Memory maintenance or transfer UI is
-part of this stage.
+Runtime-owned canonical JSON context-data wrapper. The source records are not
+copied into `state.db` or public Manifests; a model may still quote recalled data
+in its ordinary assistant message, which is then normal conversation history.
+No standalone Memory maintenance or transfer UI is part of this stage.
 
 Identity Core, persistent input Frames/Manifests, and `bounded-history-v1`
-remain separate authorities from Memory; their boundaries and the remaining
-verification order are defined in
+remain separate authorities from Memory; their boundaries, completed Gate
+record, and deferred capabilities are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development

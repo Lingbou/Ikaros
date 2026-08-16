@@ -228,6 +228,7 @@ Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
 Desktop exposes no Identity editor or budget control. Durable cross-Thread
 Memory has a Create/Correct/Forget/Provenance Store/RPC/typed-client foundation,
 a real Settings management page, and deterministic bounded recall through a
-Runtime-owned contextual-data wrapper. Gate 9 verification and audit is next.
-The strict Gate plan is documented in
+Runtime-owned contextual-data wrapper. Gate 9 has completed the offline gates,
+real DeepSeek recall/tool/history vertical slice, credential containment checks,
+and final scope audit. The completed Gate record is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

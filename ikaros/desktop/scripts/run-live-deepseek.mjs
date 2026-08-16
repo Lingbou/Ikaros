@@ -33,13 +33,18 @@ if (
 const vitestCli = join(process.cwd(), "node_modules", "vitest", "vitest.mjs");
 const completed = spawnSync(
   process.execPath,
-  [vitestCli, "run", "src/renderer/runtimeStore.live.test.ts"],
+  [
+    vitestCli,
+    "run",
+    "--disableConsoleIntercept",
+    "src/renderer/runtimeStore.live.test.ts",
+  ],
   {
     cwd: process.cwd(),
     env: { ...process.env, IKAROS_LIVE_DEEPSEEK_SMOKE: "1" },
     encoding: "buffer",
     maxBuffer: 16 * 1024 * 1024,
-    timeout: 360_000,
+    timeout: 540_000,
     windowsHide: true,
   },
 );
@@ -48,14 +53,13 @@ const stderr = completed.stderr ?? Buffer.alloc(0);
 const secret = Buffer.from(credential, "utf8");
 if (stdout.indexOf(secret) >= 0 || stderr.indexOf(secret) >= 0) {
   process.stderr.write("LIVE_SMOKE_OUTPUT_SECRET_SCAN=FAIL\n");
-  process.exit(97);
-}
-
-process.stdout.write("LIVE_SMOKE_OUTPUT_SECRET_SCAN=PASS\n");
-process.stdout.write(stdout);
-process.stderr.write(stderr);
-if (completed.error) {
+  process.exitCode = 97;
+} else if (completed.error) {
   process.stderr.write("The live smoke runner failed to execute or timed out.\n");
-  process.exit(completed.error.code === "ETIMEDOUT" ? 124 : 1);
+  process.exitCode = completed.error.code === "ETIMEDOUT" ? 124 : 1;
+} else {
+  process.stdout.write("LIVE_SMOKE_OUTPUT_SECRET_SCAN=PASS\n");
+  process.stdout.write(stdout);
+  process.stderr.write(stderr);
+  process.exitCode = completed.status ?? 1;
 }
-process.exit(completed.status ?? 1);
