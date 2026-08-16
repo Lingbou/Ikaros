@@ -423,6 +423,31 @@ describe("Runtime protocol Golden Trace", () => {
     asWireObject(foreignItems[1], "extra Step Item").runId = "run_other";
     expect(() => parseRuntimeEventNotification(foreignExtraItem.envelope)).toThrow();
 
+    const beyondReserve = structuredClone(secondStep);
+    const beyondReserveManifest = asWireObject(
+      beyondReserve.payload.stepManifest,
+      "Step Manifest"
+    );
+    const beyondReserveItems = asWireArray(
+      beyondReserveManifest.historyItems,
+      "Step history Items"
+    );
+    const addedCharacters = 12_001;
+    const lastItem = asWireObject(
+      beyondReserveItems[beyondReserveItems.length - 1],
+      "last Step history Item"
+    );
+    lastItem.characters = (lastItem.characters as number) + addedCharacters;
+    const beyondReserveBudget = asWireObject(
+      beyondReserveManifest.budget,
+      "Step budget"
+    );
+    beyondReserveBudget.currentRunCharacters =
+      (beyondReserveBudget.currentRunCharacters as number) + addedCharacters;
+    beyondReserveBudget.totalCharacters =
+      (beyondReserveBudget.totalCharacters as number) + addedCharacters;
+    expect(() => parseRuntimeEventNotification(beyondReserve.envelope)).not.toThrow();
+
     expectGoldenMutationRejected("model-input-prepared", ({ payload }) => {
       const changedManifest = asWireObject(payload.stepManifest, "Step Manifest");
       changedManifest.memory = [
@@ -485,6 +510,78 @@ describe("Runtime protocol Golden Trace", () => {
       budget.instructionCharacters = (budget.instructionCharacters as number) + 1;
       budget.totalCharacters = (budget.totalCharacters as number) + 1;
     });
+  });
+
+  it("accepts one omission boundary and rejects selected or over-budget boundaries", () => {
+    const omitted = cloneGoldenNotification("model-input-prepared");
+    const snapshot = asWireObject(omitted.payload.contextSnapshot, "Context Snapshot");
+    const manifest = asWireObject(omitted.payload.stepManifest, "Step Manifest");
+    const omission = {
+      sourceType: "history",
+      sourceId: "turn_omitted_boundary",
+      reason: "omitted_by_budget"
+    };
+    snapshot.omissions = [omission];
+    manifest.omissions = [structuredClone(omission)];
+    expect(() => parseRuntimeEventNotification(omitted.envelope)).not.toThrow();
+
+    const selectedBoundary = structuredClone(omitted);
+    const selectedSnapshot = asWireObject(
+      selectedBoundary.payload.contextSnapshot,
+      "Context Snapshot"
+    );
+    const selectedManifest = asWireObject(
+      selectedBoundary.payload.stepManifest,
+      "Step Manifest"
+    );
+    const selectedGroups = asWireArray(selectedSnapshot.historyGroups, "history groups");
+    const selectedTurnId = asWireObject(selectedGroups[0], "selected history group").turnId;
+    asWireObject(
+      asWireArray(selectedSnapshot.omissions, "Snapshot omissions")[0],
+      "Snapshot omission"
+    ).sourceId = selectedTurnId;
+    asWireObject(
+      asWireArray(selectedManifest.omissions, "Step omissions")[0],
+      "Step omission"
+    ).sourceId = selectedTurnId;
+    expect(() => parseRuntimeEventNotification(selectedBoundary.envelope)).toThrow();
+
+    const exhaustedReserve = structuredClone(omitted);
+    const exhaustedSnapshot = asWireObject(
+      exhaustedReserve.payload.contextSnapshot,
+      "Context Snapshot"
+    );
+    const exhaustedManifest = asWireObject(
+      exhaustedReserve.payload.stepManifest,
+      "Step Manifest"
+    );
+    const snapshotBudget = asWireObject(exhaustedSnapshot.budget, "Context budget");
+    const stepBudget = asWireObject(exhaustedManifest.budget, "Step budget");
+    const invalidMaximum =
+      (snapshotBudget.totalCharacters as number) +
+      (snapshotBudget.reservedCurrentRunCharacters as number) -
+      1;
+    snapshotBudget.maximumCharacters = invalidMaximum;
+    stepBudget.maximumCharacters = invalidMaximum;
+    expect(() => parseRuntimeEventNotification(exhaustedReserve.envelope)).toThrow();
+
+    const alternateLimits = structuredClone(omitted);
+    const alternateSnapshot = asWireObject(
+      alternateLimits.payload.contextSnapshot,
+      "Context Snapshot"
+    );
+    const alternateManifest = asWireObject(
+      alternateLimits.payload.stepManifest,
+      "Step Manifest"
+    );
+    for (const budget of [
+      asWireObject(alternateSnapshot.budget, "Context budget"),
+      asWireObject(alternateManifest.budget, "Step budget")
+    ]) {
+      budget.maximumCharacters = 47_000;
+      budget.reservedCurrentRunCharacters = 11_000;
+    }
+    expect(() => parseRuntimeEventNotification(alternateLimits.envelope)).toThrow();
   });
 
   it("rejects empty Context Snapshot history groups", () => {

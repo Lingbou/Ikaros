@@ -77,7 +77,9 @@ The Runtime currently owns:
   nullable `archivedAt` field;
 - `thread.rename`, `thread.archive`, and `thread.unarchive`, with sequenced
   lifecycle events persisted and projected through SQLite;
-- `turn.start`, streamed Item events, multi-Turn context, and settled Run state;
+- `turn.start`, streamed Item events, bounded multi-Turn model context, and
+  settled Run state. Runtime selects complete recent Turns under its fixed
+  48,000-character V1 budget while Desktop continues to page full UI history;
 - `run.cancel`, event replay, sequence-based reconnect catch-up, and SQLite
   recovery across Runtime restarts;
 - DeepSeek and Custom OpenAI-compatible Provider configuration, real DeepSeek
@@ -92,10 +94,12 @@ The Runtime currently owns:
   `skill.list` / `skill.set_enabled`, global enablement persisted in
   `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
   a lazily loaded Skills settings page;
-- Gate 2 audit DTOs and Events: Submission Frame and Run Manifest on Turn
+- Gate 2/3 audit DTOs and Events: Submission Frame and Run Manifest on Turn
   creation, frozen Context Snapshot and Step Manifest on
   `model.input_prepared`, and response metadata/usage on
-  `model.response_finished`;
+  `model.response_finished`. Electron main strictly validates
+  `bounded-history-v1`, its 48,000/12,000 budget constants, history groups, and
+  omission metadata before advancing the Event cursor;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
   V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
   command execution provides timeout, cancellation, bounded output, and
@@ -185,7 +189,7 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema version 6 and is
+Conversation persistence uses canonical SQLite schema version 7 and is
 intentionally reset-only during pre-release development. An incompatible
 `~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
 or Event upcaster is provided. After stopping the Runtime, an explicitly
@@ -194,12 +198,13 @@ Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
 conversation history and must be preserved, as must `skills/`, Desktop
 preferences, and the separately owned future `memory.db`.
 
-The persisted Journal uses Event schema version 3 with 11 supported Event
+The persisted Journal uses Event schema version 4 with 11 supported Event
 discriminators. Incompatible database or Event schemas still require the
 explicit reset-only path.
 
-Persistent input Frames/Manifests are Runtime-backed and validated at the
-Desktop wire boundary. Durable cross-Thread Memory, Identity Core, and bounded
-history selection remain proposed; Gate 3 is the next implementation step.
-Their strict Gate plan is documented in
+Persistent input Frames/Manifests and bounded history selection are
+Runtime-backed and validated at the Desktop wire boundary. The Runtime owns
+selection and budget policy; Desktop does not expose a budget control. Durable
+cross-Thread Memory and Identity Core remain proposed, and Gate 4 is the next
+implementation step. Their strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

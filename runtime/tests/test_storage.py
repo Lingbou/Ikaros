@@ -903,7 +903,7 @@ def test_credential_conflict_scan_ignores_runtime_owned_model_input_provenance(
             "runtime_instruction",
             "release",
             "output-style",
-            "legacy_unbounded",
+            "bounded",
             "runtime-owned-tool",
             "Runtime owned Tool description",
             "object",

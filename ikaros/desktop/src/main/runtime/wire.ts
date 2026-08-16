@@ -54,7 +54,9 @@ const ITEM_STATUSES = new Set([
 ]);
 const ITEM_KINDS = new Set(["message", "tool_call", "tool_result"]);
 const INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1";
-const INPUT_BUDGET_MODES = new Set(["legacy_unbounded"]);
+const INPUT_BUDGET_MODES = new Set(["bounded"]);
+const MAXIMUM_INPUT_CHARACTERS_V1 = 48_000;
+const RESERVED_CURRENT_RUN_CHARACTERS_V1 = 12_000;
 const OUTPUT_STYLE_CONTENT =
   "Use a restrained, professional response style. Do not use emoji or decorative " +
   "Unicode symbols unless the user explicitly asks for them. Never use them for " +
@@ -821,7 +823,7 @@ function isRunManifest(value: unknown, frameValue: unknown): boolean {
     value.runId !== frameValue.runId ||
     value.modelInputPlanVersion !== 1 ||
     value.submissionFrameVersion !== 1 ||
-    value.contextSelectionVersion !== "legacy-unbounded-v1" ||
+    value.contextSelectionVersion !== "bounded-history-v1" ||
     value.memoryContextVersion !== 1 ||
     value.executionPolicy !== frameValue.executionPolicy ||
     value.maxSteps !== frameValue.maxSteps ||
@@ -987,7 +989,7 @@ function isInputBudget(
 ): value is Record<string, unknown> & {
   mode: string;
   measurementVersion: string;
-  maximumCharacters: number | null;
+  maximumCharacters: number;
   reservedCurrentRunCharacters: number;
   instructionCharacters: number;
   contextDataCharacters: number;
@@ -1014,10 +1016,9 @@ function isInputBudget(
     ]) &&
     INPUT_BUDGET_MODES.has(value.mode as string) &&
     value.measurementVersion === INPUT_BUDGET_MEASUREMENT_VERSION &&
-    (value.maximumCharacters === null || isSafePositiveInteger(value.maximumCharacters)) &&
-    value.maximumCharacters === null &&
-    isSafeNonNegativeInteger(value.reservedCurrentRunCharacters) &&
-    value.reservedCurrentRunCharacters === 0 &&
+    isSafePositiveInteger(value.maximumCharacters) &&
+    isSafePositiveInteger(value.reservedCurrentRunCharacters) &&
+    value.reservedCurrentRunCharacters < value.maximumCharacters &&
     isSafeNonNegativeInteger(value.instructionCharacters) &&
     isSafeNonNegativeInteger(value.contextDataCharacters) &&
     isSafeNonNegativeInteger(value.toolCharacters) &&
@@ -1031,7 +1032,8 @@ function isInputBudget(
         value.toolCharacters +
         value.historyCharacters +
         value.currentRunCharacters +
-        value.memoryCharacters
+        value.memoryCharacters &&
+    value.totalCharacters <= value.maximumCharacters
   );
 }
 
@@ -1049,7 +1051,7 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
       "omissions"
     ]) ||
     value.schemaVersion !== 1 ||
-    value.selectionVersion !== "legacy-unbounded-v1" ||
+    value.selectionVersion !== "bounded-history-v1" ||
     !Array.isArray(value.historyGroups) ||
     value.historyGroups.length === 0 ||
     !Array.isArray(value.historyItems) ||
@@ -1059,11 +1061,16 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
     !Array.isArray(value.memory) ||
     value.memory.length !== 0 ||
     !isInputBudget(value.budget) ||
+    value.budget.maximumCharacters !== MAXIMUM_INPUT_CHARACTERS_V1 ||
+    value.budget.reservedCurrentRunCharacters !== RESERVED_CURRENT_RUN_CHARACTERS_V1 ||
     !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
     value.budget.memoryCharacters !== 0 ||
     value.budget.contextDataCharacters !== 0 ||
     !Array.isArray(value.omissions) ||
-    value.omissions.length !== 0
+    value.omissions.length > 1 ||
+    !value.omissions.every(isHistoryOmission) ||
+    value.budget.totalCharacters + value.budget.reservedCurrentRunCharacters >
+      value.budget.maximumCharacters
   ) {
     return false;
   }
@@ -1093,6 +1100,15 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
     const typedGroup = group as { turnId: string; itemIds: string[] };
     return typedGroup.itemIds.map((itemId) => ({ itemId, turnId: typedGroup.turnId }));
   });
+  const selectedTurnIds = new Set(groupTurnIds as string[]);
+  if (
+    value.omissions.some(
+      (omission) =>
+        isWireObject(omission) && selectedTurnIds.has(omission.sourceId as string)
+    )
+  ) {
+    return false;
+  }
   return (
     groupedItems.length === historyItems.length &&
     groupedItems.every((grouped, index) => {
@@ -1153,12 +1169,26 @@ function isStepManifest(
     value.budget.historyCharacters !== contextSnapshot.budget.historyCharacters ||
     value.budget.memoryCharacters !== contextSnapshot.budget.memoryCharacters ||
     !Array.isArray(value.omissions) ||
-    value.omissions.length !== 0 ||
+    !value.omissions.every(isHistoryOmission) ||
     !sameWireValue(value.omissions, contextSnapshot.omissions)
   ) {
     return false;
   }
-  return true;
+  const snapshotBudget = contextSnapshot.budget;
+  return (
+    isInputBudget(snapshotBudget) &&
+    value.budget.currentRunCharacters >= snapshotBudget.currentRunCharacters
+  );
+}
+
+function isHistoryOmission(value: unknown): boolean {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, ["sourceType", "sourceId", "reason"]) &&
+    value.sourceType === "history" &&
+    isWireIdentifier(value.sourceId) &&
+    value.reason === "omitted_by_budget"
+  );
 }
 
 function hasUniqueHistoryItemIds(items: unknown[]): boolean {

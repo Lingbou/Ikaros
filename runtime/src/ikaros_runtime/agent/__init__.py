@@ -1,6 +1,7 @@
 """Agent execution loop and serial scheduler."""
 
 from .context import ContextBuilder
+from .history import HistorySelectionV1, HistorySelectorV1
 from .loop import AgentLoop, EventPublisher, ProtectedValues
 from .model_input import (
     ContextDataBlockV1,
@@ -22,6 +23,8 @@ __all__ = [
     "ContextBuilder",
     "EventPublisher",
     "GenerationOptionsV1",
+    "HistorySelectionV1",
+    "HistorySelectorV1",
     "InputAuthority",
     "InputBudgetSnapshotV1",
     "InputLifetime",

@@ -74,3 +74,11 @@ class RunInputDriftError(RuntimeError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+class ContextBudgetExceededError(RuntimeError):
+    """The current Run cannot fit the frozen provider-neutral input budget."""
+
+
+class ModelInputUnavailableError(RuntimeError):
+    """A provider-neutral input source is missing, corrupt, or no longer canonical."""

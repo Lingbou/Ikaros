@@ -33,7 +33,7 @@ from ikaros_runtime.tools.core import (
 )
 from ikaros_runtime.tools.policy import FullAccessPolicy
 
-from .helpers import prepare_turn
+from .helpers import bounded_budget, prepare_turn
 
 
 class FailingProvider:
@@ -1495,6 +1495,7 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
         replay_plan = ModelInputPlanner().build_plan(
             frame=store.get_submission_frame(prepared.run_id),
             items=rebuilt,
+            budget_snapshot=bounded_budget(),
         )
         replayed = ContextBuilder().build_request(replay_plan).messages
         assert replayed[2].content == "Let me demonstrate:"

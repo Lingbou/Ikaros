@@ -10,6 +10,7 @@ from ..domain import ContextItem
 from ..run_input import (
     ContextDataBlockV1,
     InputAuthority,
+    InputBudgetRecordV1,
     InputLifetime,
     InstructionAuthority,
     InstructionBlockV1,
@@ -25,11 +26,7 @@ class GenerationOptionsV1:
     mode: Literal["provider_defaults"] = "provider_defaults"
 
 
-@dataclass(frozen=True, slots=True)
-class InputBudgetSnapshotV1:
-    """Gate 1 records that the legacy, unbounded history behavior is retained."""
-
-    mode: Literal["legacy_unbounded"] = "legacy_unbounded"
+InputBudgetSnapshotV1 = InputBudgetRecordV1
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -66,6 +63,7 @@ class ModelInputPlanner:
         *,
         frame: SubmissionFrameV1,
         items: Sequence[ContextItem],
+        budget_snapshot: InputBudgetRecordV1,
     ) -> ModelInputPlanV1:
         return ModelInputPlanV1(
             model_id=frame.model_id,
@@ -74,7 +72,7 @@ class ModelInputPlanner:
             messages=tuple(items),
             tools=frame.tool_definitions,
             generation_options=GenerationOptionsV1(),
-            budget_snapshot=InputBudgetSnapshotV1(),
+            budget_snapshot=budget_snapshot,
         )
 
 

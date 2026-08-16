@@ -8,7 +8,7 @@ from ikaros_runtime.agent import ContextBuilder, ContextDataBlockV1, ModelInputP
 from ikaros_runtime.domain import ContextItem
 from ikaros_runtime.tools.core import ToolCall, ToolDefinition
 
-from .helpers import submission_frame
+from .helpers import bounded_budget, submission_frame
 
 
 def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
@@ -65,6 +65,7 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
     plan = ModelInputPlanner().build_plan(
         frame=submission_frame("provider", "model-1", tools=(tool,)),
         items=items,
+        budget_snapshot=bounded_budget(),
     )
     request = ContextBuilder().build_request(plan)
 
@@ -101,6 +102,7 @@ def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls
             ),
             ContextItem(kind="message", role="user", content="continue", data={}),
         ),
+        budget_snapshot=bounded_budget(),
     )
     request = ContextBuilder().build_request(plan)
 
@@ -115,6 +117,7 @@ def test_context_builder_rejects_context_data_until_safe_lowering_is_defined() -
     plan = ModelInputPlanner().build_plan(
         frame=submission_frame("provider", "model-1"),
         items=(),
+        budget_snapshot=bounded_budget(),
     )
     plan = replace(
         plan,
@@ -167,5 +170,6 @@ def test_context_builder_rejects_duplicate_reasoning_for_one_tool_step() -> None
         plan = ModelInputPlanner().build_plan(
             frame=submission_frame("provider", "model-1"),
             items=items,
+            budget_snapshot=bounded_budget(),
         )
         ContextBuilder().build_request(plan)

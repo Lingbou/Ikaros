@@ -27,12 +27,12 @@ from ..run_input import (
     RunManifestV1,
     SubmissionFrameTemplateV1,
     SubmissionFrameV1,
-    build_context_snapshot,
     build_step_manifest,
     canonical_json,
 )
 from ..security import response_values_contain_protected_value
 from ..tools.core import ToolCall
+from .context_history import load_context_for_snapshot, select_context_snapshot
 from .journal import (
     append_event,
     event_from_row,
@@ -50,8 +50,6 @@ from .maintenance import (
 )
 from .projections import (
     contains_protected_projection_values,
-    context_item_records,
-    context_item_records_for_snapshot,
     context_items,
     context_messages,
     find_turn_by_client_request_id,
@@ -652,24 +650,34 @@ class SqliteRuntimeStore:
     ) -> PreparedModelStepV1:
         if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
             raise ValueError("model Step ordinal must be a positive integer")
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            return self._prepare_model_step_in_transaction(
+                run_id,
+                step_ordinal=step_ordinal,
+            )
+
+    def _prepare_model_step_in_transaction(
+        self,
+        run_id: str,
+        *,
+        step_ordinal: int,
+    ) -> PreparedModelStepV1:
         run = self.get_run(run_id)
         frame = get_submission_frame(self._connection, run_id)
         run_manifest = get_run_manifest(self._connection, run_id)
         snapshot = get_context_snapshot(self._connection, run_id)
         if snapshot is None:
-            records = context_item_records(
+            snapshot, records = select_context_snapshot(
                 self._connection,
-                run.branch_id,
-                through_turn_id=run.turn_id,
-            )
-            snapshot = build_context_snapshot(
-                records,
-                current_run_id=run_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run_id,
                 frame=frame,
-                selection_version=run_manifest.context_selection_version,
+                manifest=run_manifest,
             )
         else:
-            records = context_item_records_for_snapshot(
+            records = load_context_for_snapshot(
                 self._connection,
                 run_id=run_id,
                 snapshot=snapshot,
@@ -682,64 +690,63 @@ class SqliteRuntimeStore:
             frame=frame,
         )
         timestamp = utc_now()
-        with self._connection:
-            status = self._connection.execute(
-                "SELECT status FROM runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if status is None or status["status"] != "running":
-                raise RuntimeError("model input preparation requires a running Run")
-            if self._connection.execute(
-                "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
-                (run_id,),
-            ).fetchone() is not None:
-                raise RuntimeError("Run already has an unfinished model Step")
-            expected_ordinal = int(
-                self._connection.execute(
-                    """
-                    SELECT COALESCE(MAX(step_ordinal), 0) + 1
-                    FROM model_steps WHERE run_id = ?
-                    """,
-                    (run_id,),
-                ).fetchone()[0]
-            )
-            if step_ordinal != expected_ordinal:
-                raise RuntimeError("model Step ordinal is not contiguous")
-            stored_snapshot = get_context_snapshot(self._connection, run_id)
-            if stored_snapshot is None:
-                self._connection.execute(
-                    "UPDATE run_inputs SET context_snapshot_json = ? WHERE run_id = ?",
-                    (canonical_json(snapshot.to_wire()), run_id),
-                )
-            elif stored_snapshot != snapshot:
-                raise RuntimeError("model Step changes the frozen Context Snapshot")
+        status = self._connection.execute(
+            "SELECT status FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if status is None or status["status"] != "running":
+            raise RuntimeError("model input preparation requires a running Run")
+        if self._connection.execute(
+            "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
+            (run_id,),
+        ).fetchone() is not None:
+            raise RuntimeError("Run already has an unfinished model Step")
+        expected_ordinal = int(
             self._connection.execute(
                 """
-                INSERT INTO model_steps(
-                    run_id, step_ordinal, step_manifest_json, prepared_at
-                ) VALUES (?, ?, ?, ?)
+                SELECT COALESCE(MAX(step_ordinal), 0) + 1
+                FROM model_steps WHERE run_id = ?
                 """,
-                (
-                    run_id,
-                    step_ordinal,
-                    canonical_json(step_manifest.to_wire()),
-                    timestamp,
-                ),
+                (run_id,),
+            ).fetchone()[0]
+        )
+        if step_ordinal != expected_ordinal:
+            raise RuntimeError("model Step ordinal is not contiguous")
+        stored_snapshot = get_context_snapshot(self._connection, run_id)
+        if stored_snapshot is None:
+            self._connection.execute(
+                "UPDATE run_inputs SET context_snapshot_json = ? WHERE run_id = ?",
+                (canonical_json(snapshot.to_wire()), run_id),
             )
-            event = self._append_event(
-                event_type="model.input_prepared",
-                thread_id=run.thread_id,
-                branch_id=run.branch_id,
-                turn_id=run.turn_id,
-                run_id=run.id,
-                timestamp=timestamp,
-                payload={
-                    "stepOrdinal": step_ordinal,
-                    "preparedAt": timestamp,
-                    "contextSnapshot": snapshot.to_wire(),
-                    "stepManifest": step_manifest.to_wire(),
-                },
-            )
+        elif stored_snapshot != snapshot:
+            raise RuntimeError("model Step changes the frozen Context Snapshot")
+        self._connection.execute(
+            """
+            INSERT INTO model_steps(
+                run_id, step_ordinal, step_manifest_json, prepared_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                step_ordinal,
+                canonical_json(step_manifest.to_wire()),
+                timestamp,
+            ),
+        )
+        event = self._append_event(
+            event_type="model.input_prepared",
+            thread_id=run.thread_id,
+            branch_id=run.branch_id,
+            turn_id=run.turn_id,
+            run_id=run.id,
+            timestamp=timestamp,
+            payload={
+                "stepOrdinal": step_ordinal,
+                "preparedAt": timestamp,
+                "contextSnapshot": snapshot.to_wire(),
+                "stepManifest": step_manifest.to_wire(),
+            },
+        )
         return PreparedModelStepV1(
             context_snapshot=snapshot,
             step_manifest=step_manifest,

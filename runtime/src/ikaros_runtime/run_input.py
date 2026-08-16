@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from .domain import ContextItem, JournalEvent, JsonObject, SkillDescriptor, WorkspaceSummary
+from .errors import ContextBudgetExceededError, ModelInputUnavailableError
 from .json_codec import dumps as json_dumps
 from .json_codec import loads as json_loads
 from .tools.core import ToolDefinition
@@ -30,13 +31,15 @@ SUBMISSION_FRAME_SCHEMA_VERSION = 1
 RUN_MANIFEST_SCHEMA_VERSION = 1
 CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
 STEP_MANIFEST_SCHEMA_VERSION = 1
-CONTEXT_SELECTION_VERSION = "legacy-unbounded-v1"
+CONTEXT_SELECTION_VERSION = "bounded-history-v1"
 INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1"
 MEMORY_CONTEXT_VERSION = 1
+MAXIMUM_INPUT_CHARACTERS_V1 = 48_000
+RESERVED_CURRENT_RUN_CHARACTERS_V1 = 12_000
 
 REGISTERED_CONTEXT_SELECTION_VERSIONS = frozenset({CONTEXT_SELECTION_VERSION})
 EXECUTABLE_CONTEXT_SELECTION_VERSIONS = frozenset({CONTEXT_SELECTION_VERSION})
-REGISTERED_INPUT_BUDGET_MODES = frozenset({"legacy_unbounded"})
+REGISTERED_INPUT_BUDGET_MODES = frozenset({"bounded"})
 
 OUTPUT_STYLE_CONTENT = (
     "Use a restrained, professional response style. Do not use emoji or decorative "
@@ -801,11 +804,12 @@ class InputBudgetRecordV1:
             or self.maximum_characters < 1
         ):
             raise ValueError("input budget maximum is invalid")
-        if self.mode == "legacy_unbounded" and (
-            self.maximum_characters is not None
-            or self.reserved_current_run_characters != 0
+        if self.mode == "bounded" and (
+            self.maximum_characters is None
+            or self.reserved_current_run_characters == 0
+            or self.reserved_current_run_characters >= self.maximum_characters
         ):
-            raise ValueError("legacy input budget limits are invalid")
+            raise ValueError("bounded input budget limits are invalid")
         counts = (
             self.reserved_current_run_characters,
             self.instruction_characters,
@@ -824,6 +828,11 @@ class InputBudgetRecordV1:
         actual_parts = counts[1:7]
         if self.total_characters != sum(actual_parts):
             raise ValueError("input budget total is invalid")
+        if (
+            self.maximum_characters is not None
+            and self.total_characters > self.maximum_characters
+        ):
+            raise ValueError("input budget exceeds its maximum")
 
     def to_wire(self) -> JsonObject:
         return {
@@ -870,6 +879,11 @@ class OmissionRecordV1:
     source_id: str
     reason: str
 
+    def __post_init__(self) -> None:
+        if self.source_type != "history" or self.reason != "omitted_by_budget":
+            raise ValueError("history omission record is invalid")
+        _nonempty("history omission boundary Turn ID", self.source_id)
+
     def to_wire(self) -> JsonObject:
         return {
             "sourceType": self.source_type,
@@ -906,11 +920,25 @@ class ContextSnapshotV1:
         object.__setattr__(self, "omissions", tuple(self.omissions))
         _validate_history_groups(self.history_groups, self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
-        _validate_legacy_future_slots(
+        _validate_gate3_future_slots(
             memory=self.memory,
             omissions=self.omissions,
             budget=self.budget,
+            selected_turn_ids=tuple(group.turn_id for group in self.history_groups),
         )
+        maximum = self.budget.maximum_characters
+        if (
+            maximum != MAXIMUM_INPUT_CHARACTERS_V1
+            or self.budget.reserved_current_run_characters
+            != RESERVED_CURRENT_RUN_CHARACTERS_V1
+        ):
+            raise ValueError("Context Snapshot bounded-history-v1 limits are invalid")
+        if (
+            self.budget.total_characters
+            + self.budget.reserved_current_run_characters
+            > maximum
+        ):
+            raise ValueError("Context Snapshot does not preserve current Run capacity")
 
     def to_wire(self) -> JsonObject:
         return {
@@ -964,11 +992,18 @@ class StepManifestV1:
         object.__setattr__(self, "omissions", tuple(self.omissions))
         _validate_unique_history_items(self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
-        _validate_legacy_future_slots(
+        _validate_gate3_future_slots(
             memory=self.memory,
             omissions=self.omissions,
             budget=self.budget,
+            selected_turn_ids=(),
         )
+        if (
+            self.budget.maximum_characters != MAXIMUM_INPUT_CHARACTERS_V1
+            or self.budget.reserved_current_run_characters
+            != RESERVED_CURRENT_RUN_CHARACTERS_V1
+        ):
+            raise ValueError("Step Manifest bounded-history-v1 limits are invalid")
 
     def to_wire(self) -> JsonObject:
         return {
@@ -1020,6 +1055,9 @@ def build_context_snapshot(
     current_run_id: str,
     frame: SubmissionFrameV1,
     selection_version: str,
+    maximum_characters: int,
+    reserved_current_run_characters: int,
+    omissions: Sequence[OmissionRecordV1],
 ) -> ContextSnapshotV1:
     if selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
         raise ValueError("Context selection version is unsupported")
@@ -1051,10 +1089,10 @@ def build_context_snapshot(
         history_items=references,
         memory=(),
         budget=InputBudgetRecordV1(
-            mode="legacy_unbounded",
+            mode="bounded",
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
-            maximum_characters=None,
-            reserved_current_run_characters=0,
+            maximum_characters=maximum_characters,
+            reserved_current_run_characters=reserved_current_run_characters,
             instruction_characters=_instruction_characters(frame),
             context_data_characters=0,
             tool_characters=_tool_definition_characters(frame),
@@ -1068,7 +1106,7 @@ def build_context_snapshot(
                 + current_run_characters
             ),
         ),
-        omissions=(),
+        omissions=tuple(omissions),
     )
 
 
@@ -1080,35 +1118,56 @@ def build_step_manifest(
     current_run_id: str,
     frame: SubmissionFrameV1,
 ) -> StepManifestV1:
-    references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
+    try:
+        references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
+    except (TypeError, ValueError):
+        raise ModelInputUnavailableError("model_input_unavailable") from None
+    frozen = snapshot.history_items
+    if len(references) < len(frozen) or references[: len(frozen)] != frozen:
+        raise ModelInputUnavailableError("model_input_unavailable")
+    if any(reference.run_id != current_run_id for reference in references[len(frozen) :]):
+        raise ModelInputUnavailableError("model_input_unavailable")
     history_characters = sum(
         reference.characters for reference in references if reference.run_id != current_run_id
     )
     current_run_characters = sum(
         reference.characters for reference in references if reference.run_id == current_run_id
     )
+    if history_characters != snapshot.budget.history_characters:
+        raise ModelInputUnavailableError("model_input_unavailable")
+    if (
+        _instruction_characters(frame) != snapshot.budget.instruction_characters
+        or _tool_definition_characters(frame) != snapshot.budget.tool_characters
+    ):
+        raise ModelInputUnavailableError("model_input_unavailable")
+    maximum_characters = snapshot.budget.maximum_characters
+    total_characters = (
+        snapshot.budget.instruction_characters
+        + snapshot.budget.context_data_characters
+        + snapshot.budget.tool_characters
+        + history_characters
+        + current_run_characters
+        + snapshot.budget.memory_characters
+    )
+    if maximum_characters is None or total_characters > maximum_characters:
+        raise ContextBudgetExceededError("context_budget_exceeded")
     return StepManifestV1(
         step_ordinal=step_ordinal,
         context_snapshot_version=snapshot.schema_version,
         history_items=references,
         memory=snapshot.memory,
         budget=InputBudgetRecordV1(
-            mode="legacy_unbounded",
+            mode=snapshot.budget.mode,
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
-            maximum_characters=None,
-            reserved_current_run_characters=0,
-            instruction_characters=_instruction_characters(frame),
-            context_data_characters=0,
-            tool_characters=_tool_definition_characters(frame),
+            maximum_characters=maximum_characters,
+            reserved_current_run_characters=snapshot.budget.reserved_current_run_characters,
+            instruction_characters=snapshot.budget.instruction_characters,
+            context_data_characters=snapshot.budget.context_data_characters,
+            tool_characters=snapshot.budget.tool_characters,
             history_characters=history_characters,
             current_run_characters=current_run_characters,
-            memory_characters=0,
-            total_characters=(
-                _instruction_characters(frame)
-                + _tool_definition_characters(frame)
-                + history_characters
-                + current_run_characters
-            ),
+            memory_characters=snapshot.budget.memory_characters,
+            total_characters=total_characters,
         ),
         omissions=snapshot.omissions,
     )
@@ -1261,16 +1320,22 @@ def _validate_skill_catalog_content(
         raise ValueError("Skill catalog instruction content is invalid")
 
 
-def _validate_legacy_future_slots(
+def _validate_gate3_future_slots(
     *,
     memory: Sequence[MemoryReferenceV1],
     omissions: Sequence[OmissionRecordV1],
     budget: InputBudgetRecordV1,
+    selected_turn_ids: Sequence[str],
 ) -> None:
     if memory or budget.memory_characters != 0 or budget.context_data_characters != 0:
         raise ValueError("Memory context is not available in this Runtime version")
-    if omissions:
-        raise ValueError("legacy history selection cannot omit input sources")
+    if budget.mode != "bounded":
+        raise ValueError("history selection budget mode is invalid")
+    if len(omissions) > 1:
+        raise ValueError("history selection has multiple omission boundaries")
+    selected = set(selected_turn_ids)
+    if omissions and omissions[0].source_id in selected:
+        raise ValueError("history omission boundary is selected")
 
 
 def _instruction_characters(frame: SubmissionFrameV1) -> int:
@@ -1290,6 +1355,12 @@ def _tool_definition_characters(frame: SubmissionFrameV1) -> int:
         )
         for tool in frame.tools
     )
+
+
+def frame_input_character_counts(frame: SubmissionFrameV1) -> tuple[int, int]:
+    """Return canonical Instruction and Tool-definition character counts."""
+
+    return _instruction_characters(frame), _tool_definition_characters(frame)
 
 
 def _skill_snapshot(skills: Sequence[SkillDescriptor]) -> tuple[SkillDescriptor, ...]:
@@ -1447,8 +1518,10 @@ __all__ = [
     "CONTEXT_SELECTION_VERSION",
     "EXECUTABLE_CONTEXT_SELECTION_VERSIONS",
     "INPUT_BUDGET_MEASUREMENT_VERSION",
+    "MAXIMUM_INPUT_CHARACTERS_V1",
     "REGISTERED_CONTEXT_SELECTION_VERSIONS",
     "REGISTERED_INPUT_BUDGET_MODES",
+    "RESERVED_CURRENT_RUN_CHARACTERS_V1",
     "CompletedProviderStepV1",
     "ContextDataBlockV1",
     "ContextItemRecordV1",
@@ -1473,6 +1546,7 @@ __all__ = [
     "canonical_json",
     "canonical_sha256",
     "deep_frozen_json_object",
+    "frame_input_character_counts",
     "validate_run_manifest",
     "validate_tool_environment",
 ]

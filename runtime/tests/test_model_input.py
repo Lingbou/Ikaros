@@ -26,7 +26,7 @@ from ikaros_runtime.run_input import (
 )
 from ikaros_runtime.tools.core import ToolDefinition
 
-from .helpers import submission_frame
+from .helpers import bounded_budget, submission_frame
 
 
 def test_model_input_plan_has_versioned_ordered_blocks_and_empty_future_slots(
@@ -44,6 +44,7 @@ def test_model_input_plan_has_versioned_ordered_blocks_and_empty_future_slots(
     plan = ModelInputPlanner().build_plan(
         frame=submission_frame("provider", "model-1", skills=(skill,)),
         items=(ContextItem(kind="message", role="user", content="hello", data={}),),
+        budget_snapshot=bounded_budget(),
     )
 
     assert plan.version == 1
@@ -75,7 +76,7 @@ def test_model_input_plan_has_versioned_ordered_blocks_and_empty_future_slots(
     assert plan.context_data == ()
     assert all(block.authority != "runtime_identity" for block in plan.instructions)
     assert plan.generation_options.mode == "provider_defaults"
-    assert plan.budget_snapshot.mode == "legacy_unbounded"
+    assert plan.budget_snapshot.mode == "bounded"
 
 
 def test_model_input_plan_owns_immutable_sequence_structure() -> None:
@@ -92,6 +93,7 @@ def test_model_input_plan_owns_immutable_sequence_structure() -> None:
     plan = ModelInputPlanner().build_plan(
         frame=submission_frame("provider", "model-1", tools=tools, skills=skills),
         items=items,
+        budget_snapshot=bounded_budget(),
     )
     items.append(ContextItem(kind="message", role="user", content="late", data={}))
     tools.clear()
@@ -120,8 +122,12 @@ def test_model_input_plan_is_deterministic_for_equal_inputs() -> None:
     planner = ModelInputPlanner()
     frame = submission_frame("provider", "model-1", tools=tools)
 
-    first = planner.build_plan(frame=frame, items=items)
-    second = planner.build_plan(frame=frame, items=items)
+    first = planner.build_plan(
+        frame=frame, items=items, budget_snapshot=bounded_budget()
+    )
+    second = planner.build_plan(
+        frame=frame, items=items, budget_snapshot=bounded_budget()
+    )
 
     assert isinstance(first, ModelInputPlanV1)
     assert first == second
@@ -131,6 +137,7 @@ def test_model_input_plan_constructor_defensively_copies_runtime_sequences() -> 
     baseline = ModelInputPlanner().build_plan(
         frame=submission_frame("provider", "model-1"),
         items=(),
+        budget_snapshot=bounded_budget(),
     )
     instructions = list(baseline.instructions)
     context_data = list(baseline.context_data)
@@ -158,7 +165,7 @@ def test_model_input_plan_constructor_defensively_copies_runtime_sequences() -> 
     assert plan.tools == ()
 
 
-def test_legacy_context_snapshot_accounts_for_all_actual_input_parts() -> None:
+def test_bounded_context_snapshot_accounts_for_all_actual_input_parts() -> None:
     tool = ToolDefinition(
         name="process_run",
         description="Run a process.",
@@ -191,6 +198,9 @@ def test_legacy_context_snapshot_accounts_for_all_actual_input_parts() -> None:
         current_run_id=frame.run_id,
         frame=frame,
         selection_version=CONTEXT_SELECTION_VERSION,
+        maximum_characters=48_000,
+        reserved_current_run_characters=12_000,
+        omissions=(),
     )
     budget = snapshot.budget
     expected_instructions = sum(len(block.content) for block in frame.instructions)
@@ -204,10 +214,10 @@ def test_legacy_context_snapshot_accounts_for_all_actual_input_parts() -> None:
         )
     )
 
-    assert budget.mode == "legacy_unbounded"
+    assert budget.mode == "bounded"
     assert budget.measurement_version == INPUT_BUDGET_MEASUREMENT_VERSION
-    assert budget.maximum_characters is None
-    assert budget.reserved_current_run_characters == 0
+    assert budget.maximum_characters == 48_000
+    assert budget.reserved_current_run_characters == 12_000
     assert budget.instruction_characters == expected_instructions
     assert budget.context_data_characters == 0
     assert budget.tool_characters == expected_tools
@@ -320,15 +330,15 @@ def test_context_item_character_measurement_rejects_non_provider_shapes(
 
 @pytest.mark.parametrize(
     ("maximum_characters", "reserved_current_run_characters"),
-    ((1, 0), (None, 1)),
+    ((None, 0), (100, 0), (1, 1), (1, 2)),
 )
-def test_legacy_input_budget_rejects_bounded_fields(
+def test_bounded_input_budget_rejects_missing_or_invalid_limits(
     maximum_characters: int | None,
     reserved_current_run_characters: int,
 ) -> None:
-    with pytest.raises(ValueError, match="legacy input budget"):
+    with pytest.raises(ValueError, match="bounded input budget"):
         InputBudgetRecordV1(
-            mode="legacy_unbounded",
+            mode="bounded",
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
             maximum_characters=maximum_characters,
             reserved_current_run_characters=reserved_current_run_characters,
@@ -395,7 +405,7 @@ def test_run_manifest_validation_uses_persisted_registered_selector(
 
     manifest = validate_run_manifest(persisted, frame)
 
-    assert manifest.context_selection_version == "legacy-unbounded-v1"
+    assert manifest.context_selection_version == "bounded-history-v1"
 
 
 def test_run_manifest_validation_rejects_unregistered_persisted_selector() -> None:
@@ -520,6 +530,9 @@ def _context_snapshot_fixture() -> tuple[
         current_run_id=frame.run_id,
         frame=frame,
         selection_version=CONTEXT_SELECTION_VERSION,
+        maximum_characters=48_000,
+        reserved_current_run_characters=12_000,
+        omissions=(),
     )
     return frame, records, snapshot
 
@@ -563,7 +576,7 @@ def test_context_snapshot_rejects_non_bijective_or_misordered_history_groups() -
             ContextSnapshotV1.from_wire(corrupted)
 
 
-def test_context_snapshot_rejects_empty_history_and_legacy_future_slots() -> None:
+def test_context_snapshot_rejects_empty_history_and_unavailable_memory() -> None:
     _frame, _records, snapshot = _context_snapshot_fixture()
 
     empty = snapshot.to_wire()
@@ -594,12 +607,75 @@ def test_context_snapshot_rejects_empty_history_and_legacy_future_slots() -> Non
     with pytest.raises(ValueError, match="Memory context is not available"):
         ContextSnapshotV1.from_wire(memory)
 
+
+
+def test_context_snapshot_accepts_one_unselected_budget_boundary() -> None:
+    _frame, _records, snapshot = _context_snapshot_fixture()
     omitted = snapshot.to_wire()
     omitted["omissions"] = [
-        {"sourceType": "history", "sourceId": "turn_old", "reason": "omitted_by_budget"}
+        {
+            "sourceType": "history",
+            "sourceId": "turn_older_boundary",
+            "reason": "omitted_by_budget",
+        }
     ]
-    with pytest.raises(ValueError, match="legacy history selection"):
-        ContextSnapshotV1.from_wire(omitted)
+
+    parsed = ContextSnapshotV1.from_wire(omitted)
+
+    assert parsed.omissions[0].source_id == "turn_older_boundary"
+
+
+def test_context_snapshot_rejects_noncanonical_bounded_history_limits() -> None:
+    _frame, _records, snapshot = _context_snapshot_fixture()
+    wire = snapshot.to_wire()
+    budget = cast(dict[str, Any], wire["budget"])
+    budget["maximumCharacters"] = 47_000
+    budget["reservedCurrentRunCharacters"] = 11_000
+
+    with pytest.raises(ValueError, match="bounded-history-v1 limits"):
+        ContextSnapshotV1.from_wire(wire)
+
+
+@pytest.mark.parametrize(
+    "omissions",
+    (
+        [
+            {
+                "sourceType": "history",
+                "sourceId": "turn_old",
+                "reason": "omitted_by_budget",
+            }
+        ],
+        [
+            {
+                "sourceType": "history",
+                "sourceId": "turn_a",
+                "reason": "omitted_by_budget",
+            },
+            {
+                "sourceType": "history",
+                "sourceId": "turn_b",
+                "reason": "omitted_by_budget",
+            },
+        ],
+        [
+            {
+                "sourceType": "history_suffix",
+                "sourceId": "turn_boundary",
+                "reason": "omitted_by_budget",
+            }
+        ],
+    ),
+)
+def test_context_snapshot_rejects_invalid_budget_boundaries(
+    omissions: list[dict[str, str]],
+) -> None:
+    _frame, _records, snapshot = _context_snapshot_fixture()
+    wire = snapshot.to_wire()
+    wire["omissions"] = omissions
+
+    with pytest.raises(ValueError, match="omission"):
+        ContextSnapshotV1.from_wire(wire)
 
 
 @pytest.mark.parametrize("budget_field", ["historyCharacters", "currentRunCharacters"])
@@ -657,7 +733,25 @@ def test_step_manifest_rejects_budget_counts_that_disagree_with_items() -> None:
         StepManifestV1.from_wire(wire)
 
 
-def test_step_manifest_rejects_legacy_future_slots() -> None:
+def test_step_manifest_rejects_noncanonical_bounded_history_limits() -> None:
+    frame, records, snapshot = _context_snapshot_fixture()
+    manifest = build_step_manifest(
+        1,
+        records,
+        snapshot,
+        current_run_id=frame.run_id,
+        frame=frame,
+    )
+    wire = manifest.to_wire()
+    budget = cast(dict[str, Any], wire["budget"])
+    budget["maximumCharacters"] = 47_000
+    budget["reservedCurrentRunCharacters"] = 11_000
+
+    with pytest.raises(ValueError, match="bounded-history-v1 limits"):
+        StepManifestV1.from_wire(wire)
+
+
+def test_step_manifest_rejects_unavailable_memory() -> None:
     frame, records, snapshot = _context_snapshot_fixture()
     manifest = build_step_manifest(
         1,
@@ -681,10 +775,3 @@ def test_step_manifest_rejects_legacy_future_slots() -> None:
     memory_budget["totalCharacters"] = cast(int, memory_budget["totalCharacters"]) + 1
     with pytest.raises(ValueError, match="Memory context is not available"):
         StepManifestV1.from_wire(memory)
-
-    omitted = manifest.to_wire()
-    omitted["omissions"] = [
-        {"sourceType": "history", "sourceId": "turn_old", "reason": "omitted_by_budget"}
-    ]
-    with pytest.raises(ValueError, match="legacy history selection"):
-        StepManifestV1.from_wire(omitted)

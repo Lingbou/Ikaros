@@ -6,8 +6,8 @@ current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
 The active next stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–2
-are implemented; Gate 3, `HistorySelectorV1`, is next. Identity Core and the
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–3
+are implemented; Gate 4, `identity-core-v1`, is next. Identity Core and the
 separate long-term-Memory store remain later strictly serial Gates.
 
 ## Product boundary
@@ -137,7 +137,7 @@ must never be removed by a `state.db` reset.
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 6. A non-empty unversioned database or any different `user_version`
+version 7. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml`, `skills/`, Desktop
@@ -316,6 +316,13 @@ including its Branches, Turns, Runs, Items, Provider-Step outcomes, usage,
 sequenced Events, and the four persisted audit records: Submission Frame, Run
 Manifest, Context Snapshot, and per-Step Manifest.
 
+Provider context is a bounded projection of that complete Session history, not
+the history itself. `HistorySelectorV1` walks prior Turns newest-first in pages
+of 32, keeps only a contiguous suffix of complete Turn groups, freezes that
+selection for the Run, and records the first omitted Turn as a boundary. The
+UI continues to page the complete Thread history independently. Later Tool
+Steps reload frozen Items by ID and append only current-Run Items.
+
 Durable cross-Thread Memory is not implemented. It is a different authority and
 lifecycle from Session history, History selection, History compaction,
 Identity Core, and Skills. The proposed `memory.db` must remain independent
@@ -327,7 +334,7 @@ An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
 client can resume from a cursor without guessing what it missed. Every
 persisted and wire Event also carries `schemaVersion`. The current Event schema
-is version 3. Readers require that exact version and reject unknown versions;
+is version 4. Readers require that exact version and reject unknown versions;
 there is no payload upcaster while the database itself follows the explicit
 development reset policy above.
 
@@ -554,7 +561,8 @@ client submits user input
   -> Scheduler reserves the persisted Run
   -> server attempts the command ACK
   -> Scheduler activates the Run
-  -> prepare_model_step freezes or reuses ContextSnapshotV1
+  -> first prepare_model_step pages backward and freezes bounded ContextSnapshotV1;
+     later Steps load frozen Item IDs plus current-Run Items
   -> Runtime persists StepManifestV1 and emits model.input_prepared
   -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1 from
      the frozen Submission Frame, versioned Output Style, frozen Skill Catalog,
@@ -574,9 +582,12 @@ client submits user input
 
 `ModelInputPlanner` consumes the frozen Submission Frame, while
 `ContextSnapshotV1`, `RunManifestV1`, and per-Step `StepManifestV1` provide the
-durable audit boundary. Selection is still `legacy-unbounded-v1`; the Runtime
-does not yet impose a hard history budget, retrieve durable Memory, or inject
-Identity Core. Those are separately gated responsibilities in
+durable audit boundary. Selection uses `bounded-history-v1`: a 48,000 Unicode
+character total limit, a 12,000-character first-Step current-Run reserve,
+complete-Turn atomic selection, and deterministic omission metadata. Later
+Steps may use capacity beyond that reserve, but actual total input may never
+exceed 48,000 characters. The Runtime does not yet retrieve durable Memory or
+inject Identity Core. Those are separately gated responsibilities in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 The provider boundary must not leak provider-specific request or streaming
@@ -909,7 +920,7 @@ current operating-system user's authority. Skill scripts invoked through
 `process_run` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 6. Thread
+The current reset-only SQLite database schema is canonical version 7. Thread
 projections include optional `workspace_json`, nullable `archived_at`, and an
 indexed active/archived Thread Catalog ordering key; Run history hydration is
 indexed by `turn_id`. Each Run snapshots `execution_policy = full_access` and
@@ -1046,7 +1057,8 @@ path. The following have been demonstrated end to end:
 2. Desktop connects through the versioned WebSocket JSON-RPC protocol, restores
    persisted Threads, and replays the sequenced event journal.
 3. The same conversation completes at least two sequential user Turns, and the
-   later Provider request receives the prior completed conversation context.
+   later Provider request receives the selected prior completed conversation
+   context within the frozen bounded-history budget.
 4. The built-in DeepSeek profile and configured Custom OpenAI-compatible
    profiles share one streaming adapter and receive the `process_run`, `read`,
    `write`, and `edit` Tool definitions.
@@ -1067,6 +1079,10 @@ path. The following have been demonstrated end to end:
 9. Gate 2 persists the four model-input audit objects, enforces Provider/Tool
    drift checks, records actual response model/request IDs safely, and closes
    every prepared Provider Step through `model.response_finished`.
+10. Gate 3 bounds model input without changing UI history: it selects complete
+    recent Turns through paged reads, preserves Tool Call/Result atomicity,
+    reloads later Steps through frozen IDs, and settles pre-Provider failures as
+    `context_budget_exceeded` or `model_input_unavailable`.
 
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
@@ -1075,7 +1091,7 @@ This slice does not implement web search, browser or desktop control, durable
 memory, background or scheduled tasks, messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
-provider-neutral input plan and Gate 2 audit/freeze foundation are current.
-Bounded history selection, Identity Core, and durable Memory remain the later
-Gates documented in
+provider-neutral input plan, Gate 2 audit/freeze foundation, and Gate 3 bounded
+history selection are current. Identity Core and durable Memory remain the
+later Gates documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

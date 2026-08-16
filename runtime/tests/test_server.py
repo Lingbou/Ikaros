@@ -93,7 +93,7 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
                 "contextData": {"memory": []},
             },
             "runManifest": {
-                "contextSelectionVersion": "legacy-unbounded-v1",
+                "contextSelectionVersion": "bounded-history-v1",
                 "instructions": [
                     {
                         "id": "output-style",
@@ -114,9 +114,9 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
                 },
             },
             "contextSnapshot": {
-                "selectionVersion": "legacy-unbounded-v1",
+                "selectionVersion": "bounded-history-v1",
                 "budget": {
-                    "mode": "legacy_unbounded",
+                    "mode": "bounded",
                     "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 },
                 "historyItems": [],
@@ -125,7 +125,7 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
             },
             "stepManifest": {
                 "budget": {
-                    "mode": "legacy_unbounded",
+                    "mode": "bounded",
                     "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 },
                 "historyItems": [],
@@ -149,8 +149,8 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
         "properties",
         "command",
         "string",
-        "legacy-unbounded-v1",
-        "legacy_unbounded",
+        "bounded-history-v1",
+        "bounded",
         "unicode-codepoints-canonical-json-v1",
         sha256,
     ):

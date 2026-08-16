@@ -4,6 +4,8 @@ from collections.abc import Sequence
 
 from ikaros_runtime.domain import PreparedTurn, SkillDescriptor, WorkspaceSummary
 from ikaros_runtime.run_input import (
+    INPUT_BUDGET_MEASUREMENT_VERSION,
+    InputBudgetRecordV1,
     ProviderExecutionSnapshotV1,
     SubmissionFrameTemplateV1,
     SubmissionFrameV1,
@@ -89,4 +91,20 @@ def submission_frame(
     )
 
 
-__all__ = ["frame_template", "prepare_turn", "submission_frame"]
+def bounded_budget() -> InputBudgetRecordV1:
+    return InputBudgetRecordV1(
+        mode="bounded",
+        measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
+        maximum_characters=48_000,
+        reserved_current_run_characters=12_000,
+        instruction_characters=0,
+        context_data_characters=0,
+        tool_characters=0,
+        history_characters=0,
+        current_run_characters=0,
+        memory_characters=0,
+        total_characters=0,
+    )
+
+
+__all__ = ["bounded_budget", "frame_template", "prepare_turn", "submission_frame"]

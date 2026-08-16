@@ -1,16 +1,16 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–2 已完成；Gate 3 是下一 Gate；Gate 4–10 尚未实现）**
+状态：**IN PROGRESS（Gate 0–3 已完成；Gate 4 是下一 Gate；Gate 5–10 尚未实现）**
 
-初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 和 Gate 2 的实施增量已记录在
-本文及同一原子提交的代码和测试中；该初始基线不是永久的“当前版本”
+初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1、Gate 2 和 Gate 3 的实施增量已分别
+记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
 声明。已经落地的 Runtime 总体架构以
 [DESIGN.md](DESIGN.md) 为准；真实 DeepSeek 验证记录以
 [LIVE_VALIDATION.md](LIVE_VALIDATION.md) 为准。
 
 本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
 并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
-能力才已存在；Identity Core、History Selector 和长期 Memory 仍未实现。
+能力才已存在；Identity Core 和长期 Memory 仍未实现。
 
 ## 1. 阅读规则
 
@@ -18,7 +18,7 @@
 
 | 标记 | 含义 |
 | --- | --- |
-| `CURRENT` | 已在审阅基线中实现，并由代码或测试支撑 |
+| `CURRENT` | 已在当前实现中落地，并由代码或测试支撑 |
 | `PROPOSED` | 本阶段计划实现，当前不能作为产品能力宣传 |
 | `DEFERRED` | 明确不在本阶段实现 |
 
@@ -76,18 +76,18 @@ flowchart LR
 - 复杂审批系统；
 - 多 Provider 原生 Prompt 矩阵。
 
-## 3. 审阅基线
+## 3. 当前实现状态
 
 ### 3.1 `CURRENT`
 
 当前实现已经具备：
 
 - `Thread -> Branch -> Turn -> Run -> Item` 的 SQLite Journal 与可重建投影；
-- SQLite schema 6、Journal Event schema 3、Protocol version 1；
+- SQLite schema 7、Journal Event schema 4、Protocol version 1；
 - 21 个初始化后 RPC 和 11 种持久 Journal Event；
 - 独立的
   [ContextBuilder](src/ikaros_runtime/agent/context.py)，负责把固定输出样式、
-  额外 system fragment、完整 Branch 历史和 Tool definitions 渲染成
+  额外 system fragment、已选中的冻结 ContextItems 和 Tool definitions 渲染成
   `ProviderRequest`；
 - Provider-neutral 的
   [ProviderRequest](src/ikaros_runtime/providers/base.py)，以及
@@ -108,21 +108,28 @@ flowchart LR
   生命周期，崩溃恢复会以 `runtime_interrupted` 关闭悬空 Step；
 - Provider 实际 model/request ID 和 Provider-reported usage 经过安全检查后
   持久化；`model.response_finished` 是唯一 usage Journal 真源。
+- `HistorySelectorV1` 使用 48,000 Unicode 字符总上限，并在首次 Step 为当前
+  Run 预留 12,000 字符；过去历史按完整 Turn 从新到旧选择，第一个放不下的
+  Turn 成为唯一 omission boundary；
+- 首次选择以 32 Turn/页向后读取，后续 Tool Step 只按冻结 Item ID 和当前
+  `run_id` 定向读取，不再 hydrate 整个 Branch；
+- `context_budget_exceeded` 与 `model_input_unavailable` 是 Provider 调用前的
+  稳定失败语义，完整 UI 历史不受模型输入裁剪影响。
 
 ### 3.2 `PROPOSED`
 
 当前尚未实现：
 
-- 历史预算和分页 History Selector；
 - Identity Core；
 - `memory.db`、Memory RPC、Memory UI 或 Memory 召回；
 - 任务级 Skill 选择和 Skill Catalog 总预算。
 
-当前 `ContextSnapshotV1` 仍使用 `legacy-unbounded-v1`：Run 首次 Provider
-Step 会冻结截至当前 Turn 的全部合格历史。后续 Tool Step 复用冻结历史，只加入
-当前 Run 新产生的 Item，并用各自的 `StepManifestV1` 记录实际输入。因此历史已有
-稳定冻结边界，但仍没有 Gate 3 要实现的硬预算和确定性裁剪；
-`ContextBuilder` 仍只是确定性渲染器，不负责选择历史或 Memory。
+当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
+首次 Provider Step 冻结预算内的连续近期 Turn 后缀，后续 Tool Step 复用冻结历史，
+只加入当前 Run 新产生的 Item，并用各自的 `StepManifestV1` 记录实际输入。12,000
+字符是首次选择为 Tool loop 留出的容量，不是后续增长的第二个硬上限；后续 Step
+只在实际总输入超过 48,000 字符时失败。`ContextBuilder` 仍只是确定性渲染器，
+不负责选择历史或 Memory。
 
 ### 3.3 Gate 1 实施增量
 
@@ -131,8 +138,8 @@ Gate 1 在审阅基线之后增加了：
 - Provider-neutral、结构不可变的 `ModelInputPlanV1`；
 - 带 `authority`、`scope`、`lifetime` 和来源的 Output Style、Skill Catalog
   Instruction Blocks；
-- 明确为空的 Context Data、Provider-default generation options 和
-  legacy-unbounded budget snapshot；
+- 明确为空的 Context Data、Provider-default generation options，以及当时用于
+  建立边界、后来由 Gate 3 替换的 legacy-unbounded budget snapshot；
 - Gate 1 的 ContextBuilder 明确拒绝非空 Context Data，避免在 Gate 9 定义安全包装
   前将普通数据提升成无包装的 System Instruction；
 - `AgentLoop -> ModelInputPlanner -> ContextBuilder -> ProviderRequest` 生产链；
@@ -140,7 +147,8 @@ Gate 1 在审阅基线之后增加了：
   Golden Test。
 
 Gate 1 本身没有修改持久契约；持久 Frame、Context Snapshot、Run/Step
-Manifest 和响应元数据已由 Gate 2 实现。Identity、Memory 和有界历史仍未实现。
+Manifest 和响应元数据已由 Gate 2 实现，有界历史已由 Gate 3 实现。Identity 和
+Memory 仍未实现。
 
 ## 4. 概念边界
 
@@ -306,9 +314,9 @@ UI 只显示“来源记录不可用”。
 | --- | --- | --- | --- |
 | 0 | 修正文档和固定架构不变量 | 已完成 | 否 |
 | 1 | `ModelInputPlanV1`，保持 Provider wire 不变 | 已完成 | 否 |
-| 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 已完成 | 是，仅这一次 |
-| 3 | `HistorySelectorV1`，限制无界历史 | 下一 Gate（未开始） | 否 |
-| 4 | `identity-core-v1` 与 DeepSeek A/B | 未开始 | 否 |
+| 2 | Submission Frame、Context Snapshot、Manifest 与响应元数据 | 已完成 | 是 |
+| 3 | `HistorySelectorV1`，限制无界历史 | 已完成 | 是，持久 selector 语义破坏性更新 |
+| 4 | `identity-core-v1` 与 DeepSeek A/B | 下一 Gate（未开始） | 否 |
 | 5 | 独立 `memory.db`，Create/List/Get | 未开始 | 不动 `state.db` |
 | 6 | Correction、Forget、Provenance、幂等 | 未开始 | 否 |
 | 7 | Memory Check、Backup、Export | 未开始 | 否 |
@@ -409,7 +417,7 @@ ModelInputPlanner
 
 状态：**CURRENT（已实现）**
 
-这是本阶段唯一一次修改现有 Session 持久契约的 Gate。Gate 2 已将
+这是本阶段首次修改现有 Session 持久契约的 Gate。Gate 2 已将
 SQLite schema 从 5 升至 6，Journal Event schema 从 2 升至 3。按照 reset-only
 政策，本次只在停止 Runtime 后显式重建：
 
@@ -458,8 +466,8 @@ Step Manifest
 └─ total character count
 ```
 
-预算记录从 Gate 2 起固定为完整结构，Gate 3 只会启用有界模式，不再改变持久
-Event 形状：
+预算记录从 Gate 2 起固定为完整结构；Gate 3 启用了有界模式，没有改变持久
+Event 的字段形状：
 
 ```text
 InputBudgetRecordV1
@@ -476,10 +484,13 @@ InputBudgetRecordV1
 └─ totalCharacters
 ```
 
-当前 `legacy_unbounded` 强制 `maximumCharacters = null`、
-`reservedCurrentRunCharacters = 0`。`totalCharacters` 必须严格等于 Instruction、
-Context Data、Tool schema、过去历史、当前 Run 和 Memory 六部分之和；Tool schema
-按完整冻结定义的 canonical JSON 计量，而不是只统计名称或描述。
+当前 `bounded` 强制正整数 `maximumCharacters = 48000`、
+`reservedCurrentRunCharacters = 12000`，且 reserve 小于 maximum。首次 Snapshot
+必须满足 `totalCharacters + reservedCurrentRunCharacters <= maximumCharacters`；
+后续 Step 只要求实际 `totalCharacters <= maximumCharacters`。`totalCharacters`
+必须严格等于 Instruction、Context Data、Tool schema、过去历史、当前 Run 和
+Memory 六部分之和；Tool schema 按完整冻结定义的 canonical JSON 计量，而不是只
+统计名称或描述。
 
 History Item 使用 Provider-neutral 内容计量：普通 User/Assistant Item 只计算正文
 一次；Tool Call 计算 arguments 的 canonical JSON，并另计实际发送的 reasoning
@@ -540,15 +551,18 @@ Journal 真源。`model_usages` 只是由该事件重建的查询投影，不会
 
 ## 10. Gate 3：`HistorySelectorV1`
 
+状态：**CURRENT（已实现）**
+
 ### 目标
 
 替换每个 Tool Step 无界读取整个 Branch 历史的行为，使任何 Session 长度下的
 模型输入都有可解释的硬上界。
 
-建议新增：
+实际新增：
 
 ```text
 runtime/src/ikaros_runtime/agent/history.py
+runtime/src/ikaros_runtime/storage/context_history.py
 ```
 
 ### 选择原子
@@ -575,7 +589,7 @@ TurnGroup
 6. 不截断单条 User、Assistant、Tool 或 Memory 内容。
 7. 选择的过去历史在 Run 开始时冻结；后续 Step 只追加当前 Run 的内容。
 8. 必须从总预算中预留当前 Run 的 Tool-loop 增长空间，不能让第一 Step 的旧历史
-   占满全部预算。
+   占满全部预算；该 reserve 只约束首次选择，后续以实际总上限为准。
 
 V1 使用可验证的字符预算，不声称等于 Provider Token 上限：
 
@@ -593,6 +607,29 @@ V1 使用可验证的字符预算，不声称等于 Provider Token 上限：
   -> 恢复时间顺序
 ```
 
+当前常量与持久语义为：
+
+```text
+selectionVersion                  = bounded-history-v1
+budget.mode                       = bounded
+maximumCharacters                 = 48000
+reservedCurrentRunCharacters      = 12000
+measurementVersion                = unicode-codepoints-canonical-json-v1
+history page size                 = 32 Turns
+frozen Item lookup chunk          = 256 IDs
+```
+
+首次 Step 的分页选择、Context Snapshot 冻结和 `model.input_prepared` 写入位于同一
+`BEGIN IMMEDIATE` 事务。后续 Step 按冻结 Item ID 分块读取，再按当前 `run_id`
+读取新增 Item；不会重跑历史选择或扫描整个 Branch。omission 只记录第一个放不下的
+Turn，语义是该 Turn 及其之前的所有历史均未选择。Tool Call/Result 以
+`(runId, stepId, callId)` 配对，避免不同 Step 合法复用 Provider call ID 时误判。
+
+Gate 3 将 SQLite schema 提升到 7、Journal Event schema 提升到 4。字段形状没有
+增加，但 selector/budget 的持久取值与 Gate 2 不兼容；按照预发布期 reset-only
+政策，不保留 legacy 双读路径，旧 `state.db` 必须在停机后显式重建。配置、Skills、
+Desktop preferences 和未来 `memory.db` 不在重置范围内。
+
 ### 验收
 
 - 大预算时与当前 `context_items` 的过滤和排序语义等价；
@@ -601,7 +638,8 @@ V1 使用可验证的字符预算，不声称等于 Provider Token 上限：
 - UI 完整历史不受影响；
 - Manifest 能解释 selected/omitted；
 - 1000 Turn、16 Tool Step、大 Tool Result、CJK/Unicode、多 Tool Call、取消和
-  Projection rebuild 均有测试和基准。
+  Projection rebuild 均有确定性回归测试；分页和后续定向读取以 SQL 查询次数断言
+  验证，本 Gate 不宣称提供正式性能 benchmark。
 
 ## 11. Gate 4：`identity-core-v1`
 

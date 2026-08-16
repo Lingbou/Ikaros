@@ -23,7 +23,6 @@ from ..run_input import (
     RunManifestV1,
     StepManifestV1,
     SubmissionFrameV1,
-    build_context_snapshot,
     build_step_manifest,
     canonical_json,
     validate_run_manifest,
@@ -33,6 +32,7 @@ from ..security import (
     json_contains_protected_value,
     json_values_contain_protected_value,
 )
+from .context_history import load_context_for_snapshot, select_context_snapshot
 
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
 
@@ -340,10 +340,12 @@ def context_messages(
     rows = connection.execute(
         """
         SELECT i.role, i.content
-        FROM items i JOIN turns t ON t.id = i.turn_id
+        FROM items i
+        JOIN turns t ON t.id = i.turn_id
+        JOIN runs r ON r.id = i.run_id
         WHERE t.branch_id = ? AND t.ordinal <= ? AND i.kind = 'message'
           AND i.status = 'completed' AND i.role IN ('user', 'assistant')
-        ORDER BY t.ordinal, i.ordinal
+        ORDER BY t.ordinal, r.created_at, r.id, i.ordinal, i.id
         """,
         (branch_id, int(boundary["ordinal"])),
     ).fetchall()
@@ -386,7 +388,7 @@ def context_item_records(
           (i.kind = 'message' AND i.status = 'completed' AND i.role IN ('user', 'assistant'))
           OR (i.kind IN ('tool_call', 'tool_result') AND i.status IN ('completed', 'failed')
               AND (t.id = ? OR r.status = 'completed'))
-        ) ORDER BY t.ordinal, i.ordinal
+        ) ORDER BY t.ordinal, r.created_at, r.id, i.ordinal, i.id
         """,
         (branch_id, int(boundary["ordinal"]), through_turn_id),
     ).fetchall()
@@ -410,23 +412,7 @@ def context_item_records_for_snapshot(
     run_id: str,
     snapshot: ContextSnapshotV1,
 ) -> list[ContextItemRecordV1]:
-    run = get_run(connection, run_id)
-    current = context_item_records(
-        connection,
-        run.branch_id,
-        through_turn_id=run.turn_id,
-    )
-    frozen_ids = tuple(reference.item_id for reference in snapshot.history_items)
-    frozen_id_set = set(frozen_ids)
-    selected = [
-        record
-        for record in current
-        if record.item_id in frozen_id_set or record.run_id == run_id
-    ]
-    selected_ids = {record.item_id for record in selected}
-    if not frozen_id_set <= selected_ids:
-        raise RuntimeError("Run Context Snapshot references unavailable history")
-    return selected
+    return list(load_context_for_snapshot(connection, run_id=run_id, snapshot=snapshot))
 
 
 def workspace_to_json(workspace: WorkspaceSummary | None) -> str | None:
@@ -807,16 +793,13 @@ def apply_event(
         if stored_snapshot is None:
             submission_frame = get_submission_frame(connection, str(event.run_id))
             run_manifest = get_run_manifest(connection, str(event.run_id))
-            records = context_item_records(
+            expected_snapshot, _records = select_context_snapshot(
                 connection,
-                str(event.branch_id),
-                through_turn_id=str(event.turn_id),
-            )
-            expected_snapshot = build_context_snapshot(
-                records,
-                current_run_id=str(event.run_id),
+                branch_id=str(event.branch_id),
+                turn_id=str(event.turn_id),
+                run_id=str(event.run_id),
                 frame=submission_frame,
-                selection_version=run_manifest.context_selection_version,
+                manifest=run_manifest,
             )
             if snapshot != expected_snapshot:
                 raise RuntimeError("initial Context Snapshot is not canonical")

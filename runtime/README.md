@@ -16,8 +16,9 @@ stdio.
 ## Protocol contract
 
 `src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
-version 1, the 21 post-initialize RPC methods, the 11 persisted Journal Event
-types, capabilities, and provider-facing Tool IDs. The deterministic generator
+version 1, Journal Event schema 4, the 21 post-initialize RPC methods, the 11
+persisted Journal Event types, capabilities, and provider-facing Tool IDs. The
+deterministic generator
 commits both `protocol/runtime-protocol.json` and Desktop's
 `src/shared/generated/runtimeProtocol.ts`; CI-style verification is available
 without rewriting either file:
@@ -56,13 +57,18 @@ The current Desktop/Runtime path provides:
 - a Provider-neutral `ModelInputPlanV1` between the Agent loop and
   `ContextBuilder`, with versioned Output Style and frozen Run Skill Catalog
   instruction blocks, explicit empty Context Data, Provider-default generation
-  options, and a legacy-unbounded budget snapshot; the resulting OpenAI wire
+  options, and the actual bounded input budget; the resulting OpenAI wire
   body remains locked by a two-Step Golden Test;
 - durable Gate 2 input auditing: `SubmissionFrameV1` and `RunManifestV1`
   persisted when a Turn is submitted, one frozen `ContextSnapshotV1` per Run,
   and one `StepManifestV1` plus terminal response metadata per Provider Step;
   `model.input_prepared` / `model.response_finished` form the persisted Step
   lifecycle;
+- Gate 3 bounded history selection: complete prior Turns are read newest-first
+  in 32-Turn pages under a 48,000-character limit, with 12,000 characters
+  reserved during the first Step for current-Run growth. The first Turn that
+  does not fit becomes the omission boundary; later Steps load frozen Item IDs
+  plus current-Run Items instead of scanning the Branch;
 - Skills V0, including safe one-level discovery below
   `~/.ikaros/skills/<name>/SKILL.md`, catalog diagnostics, global
   enable/disable state, immutable enabled-descriptor snapshots per Run, and
@@ -126,10 +132,9 @@ or a security guarantee. The Runtime is tied to the Desktop application
 lifetime and is not yet a Windows Service, login item, or independently
 discoverable daemon.
 
-Durable cross-Thread Memory, Identity Core, and bounded history selection are
-not implemented. Persistent input Frames/Manifests are implemented, but still
-record `legacy-unbounded-v1` history selection until Gate 3. Their boundaries
-and implementation order are defined in
+Durable cross-Thread Memory and Identity Core are not implemented. Persistent
+input Frames/Manifests and `bounded-history-v1` are implemented; their
+boundaries and the remaining implementation order are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development
@@ -158,7 +163,7 @@ Runtime-owned state defaults to `~/.ikaros`. Tests pass an isolated
 real provider/model configuration or changes persisted Skill enablement.
 
 During pre-release development, conversation storage uses canonical SQLite
-schema version 6 and is intentionally reset-only. Incompatible `state.db`
+schema version 7 and is intentionally reset-only. Incompatible `state.db`
 schema versions fail with `reset required`; the Runtime does not carry
 old-schema migrations or silently delete data.
 After stopping the owning Runtime, developers may explicitly remove

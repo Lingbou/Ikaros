@@ -8,7 +8,7 @@ JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
 EVENT_NOTIFICATION_METHOD: Final = "event"
-JOURNAL_EVENT_SCHEMA_VERSION: Final = 3
+JOURNAL_EVENT_SCHEMA_VERSION: Final = 4
 
 RPC_METHODS: Final = (
     "runtime.shutdown",

@@ -6,7 +6,13 @@ from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JournalEvent, ModelUsage
-from ..errors import ProtectedValueError, ProviderFailure, RunInputDriftError
+from ..errors import (
+    ContextBudgetExceededError,
+    ModelInputUnavailableError,
+    ProtectedValueError,
+    ProviderFailure,
+    RunInputDriftError,
+)
 from ..providers.base import (
     ProviderAdapter,
     ProviderRequest,
@@ -146,6 +152,7 @@ class AgentLoop:
                     plan = self._model_input_planner.build_plan(
                         frame=frame,
                         items=prepared_step.items,
+                        budget_snapshot=prepared_step.step_manifest.budget,
                     )
                     request = self._context_builder.build_request(plan)
                 except RunCancelled:
@@ -634,6 +641,10 @@ def _failure_reason_code(error: Exception) -> str:
         return "cancelled"
     if isinstance(error, RunInputDriftError):
         return error.reason_code
+    if isinstance(error, ContextBudgetExceededError):
+        return "context_budget_exceeded"
+    if isinstance(error, ModelInputUnavailableError):
+        return "model_input_unavailable"
     if isinstance(error, ProviderFailure):
         return f"provider_{error.category}"
     if isinstance(error, ProtectedValueError):
