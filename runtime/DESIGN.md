@@ -6,10 +6,12 @@ current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
 The active next stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–6
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–7
 are implemented, including the Runtime-owned `IKAROS.md` Identity Core and the
-independent, explicitly managed Memory V0 Store/RPC/typed Desktop bridge. Gate
-7, Memory check/backup/export, is the next strictly serial Gate.
+independent, explicitly managed Memory V0 Store/RPC/typed Desktop bridge and its
+real Settings management page. Gate 8, deterministic bounded Memory recall, is
+the next strictly serial Gate;
+standalone Memory maintenance, backup, and import/export are deferred.
 
 ## Product boundary
 
@@ -1123,6 +1125,6 @@ Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
 provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded
 history selection, Gate 4 Identity Core, and explicitly managed durable Memory
-are current. Memory maintenance, UI management, and model recall remain later
-Gates documented in
+with its Desktop management page are current. Model-facing Memory recall remains
+a later Gate documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

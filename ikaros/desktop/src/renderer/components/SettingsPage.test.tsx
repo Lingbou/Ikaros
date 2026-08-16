@@ -22,7 +22,11 @@ const initialState = useAppStore.getState();
 
 function desktopApiWithPreferences(
   updateImplementation?: (patch: UiPreferencesPatch) => Promise<UiPreferences>
-): { api: IkarosDesktopApi; update: ReturnType<typeof vi.fn> } {
+): {
+  api: IkarosDesktopApi;
+  update: ReturnType<typeof vi.fn>;
+  listMemories: ReturnType<typeof vi.fn>;
+} {
   let current = cloneUiPreferences(DEFAULT_UI_PREFERENCES);
   const update = vi.fn(
     updateImplementation ??
@@ -31,9 +35,14 @@ function desktopApiWithPreferences(
         return cloneUiPreferences(current);
       })
   );
+  const listMemories = vi.fn(async () => ({
+    ok: true as const,
+    value: { memories: [], nextCursor: null, hasMore: false }
+  }));
 
   return {
     update,
+    listMemories,
     api: {
       runtime: {
         listThreads: async () => ({
@@ -122,10 +131,7 @@ function desktopApiWithPreferences(
         forgetMemory: async () => {
           throw new Error("not used in preference settings tests");
         },
-        listMemories: async () => ({
-          ok: true,
-          value: { memories: [], nextCursor: null, hasMore: false }
-        }),
+        listMemories,
         getMemory: async () => {
           throw new Error("not used in preference settings tests");
         },
@@ -255,6 +261,47 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("switch", { name: "Translucent sidebar" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Providers" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Models" })).toBeTruthy();
+  });
+
+  it("lazy-loads Memory only after navigation and keeps the stable Workspace ID", async () => {
+    const { api, listMemories } = desktopApiWithPreferences();
+    Object.defineProperty(window, "ikarosDesktop", {
+      configurable: true,
+      value: api
+    });
+    useAppStore.setState({
+      projects: [
+        {
+          id: "workspace-stable-id",
+          name: "Ikaros",
+          color: "#ffffff",
+          rootUri: "C:/Workspace/github/Ikaros"
+        }
+      ],
+      selectedThreadId: null,
+      newThreadWorkspace: {
+        id: "workspace-stable-id",
+        name: "Ikaros",
+        rootUri: "C:/Workspace/github/Ikaros"
+      }
+    });
+
+    render(<SettingsPage />);
+    expect(listMemories).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("Search settings..."), {
+      target: { value: "memory" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Memory" })).toBeTruthy();
+    await waitFor(() =>
+      expect(listMemories).toHaveBeenCalledWith({ limit: 25, state: "active" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add memory" }));
+    expect((screen.getByLabelText("Scope") as HTMLSelectElement).value).toBe(
+      "workspace:workspace-stable-id"
+    );
   });
 
   it("requires an explicit model and configures DeepSeek without retaining its secret", async () => {

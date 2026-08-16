@@ -83,8 +83,9 @@ Bounded history selection, model-input manifests, and the Runtime-owned
 `IKAROS.md` Identity Core are connected. Identity is frozen into each Run and
 is intentionally not a renderer setting or visible conversation card. The
 Memory Store and typed Create/Correct/Forget/Provenance bridge are connected,
-but Memory management UI and model recall remain unavailable; their remaining
-Runtime design is tracked in
+and Settings now exposes a real lazy-loaded Memory management page with filters,
+pagination, provenance verification, correction, and Forget confirmation.
+Model recall remains unavailable; its Runtime design is tracked in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Protocol boundary

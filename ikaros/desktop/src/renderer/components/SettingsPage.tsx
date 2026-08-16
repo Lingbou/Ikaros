@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Archive,
   BookOpen,
+  Brain,
   Cable,
   Check,
   ChevronDown,
@@ -36,6 +37,7 @@ import { useTranslation } from "../i18n";
 import { useAppStore } from "../store";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { ArchivedThreadsDialog } from "./ArchivedThreadsDialog";
+import { MemorySettings } from "./MemorySettings";
 import { ProfileSettings } from "./ProfileSettings";
 import {
   ModelsSettings,
@@ -51,7 +53,8 @@ type SettingsSection =
   | "appearance"
   | "providers"
   | "models"
-  | "skills";
+  | "skills"
+  | "memory";
 
 function GeneralSettings({
   preferences,
@@ -179,6 +182,10 @@ export function SettingsPage() {
   const skillDiagnostics = useAppStore((state) => state.skillDiagnostics);
   const loadSkillCatalog = useAppStore((state) => state.loadSkillCatalog);
   const setSkillEnabled = useAppStore((state) => state.setSkillEnabled);
+  const projects = useAppStore((state) => state.projects);
+  const threads = useAppStore((state) => state.threads);
+  const selectedThreadId = useAppStore((state) => state.selectedThreadId);
+  const newThreadWorkspace = useAppStore((state) => state.newThreadWorkspace);
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [query, setQuery] = useState("");
   const [preferences, setPreferences] = useState<UiPreferences>(() =>
@@ -325,7 +332,8 @@ export function SettingsPage() {
       { id: "appearance" as const, label: t("settings.appearance"), Icon: Palette },
       { id: "providers" as const, label: t("settings.providers.title"), Icon: Cable },
       { id: "models" as const, label: t("settings.models.title"), Icon: Sparkles },
-      { id: "skills" as const, label: t("settings.skills.title"), Icon: BookOpen }
+      { id: "skills" as const, label: t("settings.skills.title"), Icon: BookOpen },
+      { id: "memory" as const, label: t("settings.memory.title"), Icon: Brain }
     ],
     [t]
   );
@@ -333,6 +341,18 @@ export function SettingsPage() {
   const visibleNavigation = normalizedQuery
     ? navigation.filter((item) => item.label.toLocaleLowerCase().includes(normalizedQuery))
     : navigation;
+  const memoryWorkspaces = useMemo(
+    () =>
+      projects.map((project) => ({
+        id: project.id,
+        name: project.name
+      })),
+    [projects]
+  );
+  const preferredMemoryWorkspaceId =
+    threads.find((thread) => thread.id === selectedThreadId)?.projectId ??
+    newThreadWorkspace?.id ??
+    null;
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[var(--canvas)]">
@@ -438,7 +458,7 @@ export function SettingsPage() {
                 setModelEnabled({ providerId, modelId, enabled })
               }
             />
-          ) : (
+          ) : activeSection === "skills" ? (
             <SkillsSettings
               skills={skills}
               diagnostics={skillDiagnostics}
@@ -446,6 +466,11 @@ export function SettingsPage() {
               catalogError={skillCatalogError}
               onRefresh={loadSkillCatalog}
               onSetEnabled={(name, enabled) => setSkillEnabled({ name, enabled })}
+            />
+          ) : (
+            <MemorySettings
+              workspaces={memoryWorkspaces}
+              preferredWorkspaceId={preferredMemoryWorkspaceId}
             />
           )}
           <p aria-live="polite" className="mt-2 min-h-4 px-1 text-[11px] leading-4 text-[#e08b8b]">

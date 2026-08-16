@@ -154,7 +154,10 @@ discoverable daemon.
 
 Durable cross-Thread Memory now supports explicit Create/Correct/Forget,
 Session Item provenance, restart-safe mutation receipts, and tombstone reads.
-Memory maintenance/export, Renderer UI, and model recall are not implemented.
+The Desktop Settings page provides real lazy-loaded filters, cursor pagination,
+provenance status, correction conflict handling, and Forget confirmation.
+Model recall is not implemented. Standalone Memory maintenance, backup, and
+import/export are deferred rather than prerequisites.
 Identity Core, persistent
 input Frames/Manifests, and `bounded-history-v1` remain independent from Memory;
 their boundaries and the remaining implementation order are defined in

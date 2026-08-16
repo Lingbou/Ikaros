@@ -94,12 +94,15 @@ The Runtime currently owns:
   `skill.list` / `skill.set_enabled`, global enablement persisted in
   `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
   a lazily loaded Skills settings page;
-- Memory V0 typed client plumbing: strict DTO parsing and narrow IPC/preload
+- Memory V0 management: strict DTO parsing and narrow IPC/preload
   methods for `memory.create`, `memory.correct`, `memory.forget`, paginated
   `memory.list`, and lazy `memory.get`. Create can carry one Runtime-verified
   Session Item source; mutation conflicts cross the bridge as a bounded
   `reasonCode`, not arbitrary JSON-RPC data. The data lives in Runtime-owned
-  `~/.ikaros/memory.db`; no Memory page or model recall is exposed yet;
+  `~/.ikaros/memory.db`. A lazy Settings page provides active/forgotten,
+  kind, Global/exact-Workspace filters, cursor pagination, per-record provenance
+  verification, Create/Correct/Forget, and conflict-safe refresh. Model recall
+  is not exposed yet;
 - Gate 2/3 audit DTOs and Events: Submission Frame and Run Manifest on Turn
   creation, frozen Context Snapshot and Step Manifest on
   `model.input_prepared`, and response metadata/usage on
@@ -189,9 +192,9 @@ The following UI surfaces are not production Runtime capabilities yet:
   is connected; and
 - automatic model discovery currently supports only DeepSeek. Custom
   OpenAI-compatible Provider models are entered manually; and
-- Memory management UI, maintenance/export, and model recall are unavailable.
-  Create/Correct/Forget and provenance are real typed infrastructure, not a
-  visible feature or Mock data source.
+- Memory model recall is unavailable. The visible Memory management page is
+  Runtime-backed rather than a Mock. Standalone Memory maintenance, backup, and
+  import/export are intentionally deferred.
 
 ## Architecture boundary
 
@@ -221,6 +224,6 @@ Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the
 Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
 Desktop exposes no Identity editor or budget control. Durable cross-Thread
 Memory has a Create/Correct/Forget/Provenance Store/RPC/typed-client foundation
-but is not yet editable through the UI and is not part of model input. Gate 7
-(Memory check/backup/export) is next. The strict Gate plan is documented in
+and a real Settings management page, but is not part of model input. Gate 8
+(deterministic bounded Memory recall) is next. The strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

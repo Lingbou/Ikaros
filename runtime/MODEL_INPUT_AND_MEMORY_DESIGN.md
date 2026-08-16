@@ -1,6 +1,6 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–6 已完成；Gate 7 是下一 Gate；Gate 7–10 尚未实现）**
+状态：**IN PROGRESS（Gate 0–7 已完成；Gate 8 是下一 Gate；Gate 8–9 尚未实现）**
 
 初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 5 的实施增量已分别
 记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
@@ -10,8 +10,9 @@
 
 本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
 并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
-能力才已存在；Runtime 内置 Identity Core 和显式管理的长期 Memory V0 已实现，
-Memory 维护、UI 管理和模型召回仍未实现。
+能力才已存在；Runtime 内置 Identity Core、显式管理的长期 Memory V0 和 Desktop
+管理页面已实现，模型召回仍未实现。独立 Memory 维护、备份和导入导出明确延期，
+不作为模型召回的前置条件。
 
 ## 1. 阅读规则
 
@@ -25,7 +26,7 @@ Memory 维护、UI 管理和模型召回仍未实现。
 
 实施约束：
 
-1. Gate 0 到 Gate 10 严格串行。
+1. Gate 0 到 Gate 9 严格串行。
 2. 一个 Gate 必须形成真实可运行链路并通过自己的门禁，才能进入下一个。
 3. 每个 Gate 形成一个原子 commit；不并行铺模块，不提交空实现、`TODO` 或提前
    开发后续能力。
@@ -74,6 +75,7 @@ flowchart LR
 - 人格演化、情感状态机或关系数值系统；
 - Subagents 或后台自治任务；
 - Provider-facing Memory Write Tool；
+- 独立 Memory check/repair、备份或导入导出命令；
 - 复杂审批系统；
 - 多 Provider 原生 Prompt 矩阵。
 
@@ -84,8 +86,8 @@ flowchart LR
 当前实现已经具备：
 
 - `Thread -> Branch -> Turn -> Run -> Item` 的 SQLite Journal 与可重建投影；
-- SQLite schema 7、Journal Event schema 4、Protocol version 1；
-- 21 个初始化后 RPC 和 11 种持久 Journal Event；
+- SQLite schema 7、Journal Event schema 4、Protocol version 2；
+- 26 个初始化后 RPC 和 11 种持久 Journal Event；
 - 独立的
   [ContextBuilder](src/ikaros_runtime/agent/context.py)，负责把固定输出样式、
   额外 system fragment、已选中的冻结 ContextItems 和 Tool definitions 渲染成
@@ -125,14 +127,21 @@ flowchart LR
   分页、乐观 revision、重启幂等、无正文 tombstone，以及仅由 `itemId` 发起、
   Runtime 从 `state.db` 反查的 Session Item provenance，
   以及贯穿认证 WebSocket、Electron main、preload 和 `RuntimeClient` 的 typed
-  bridge。该 bridge 尚未被 Renderer 页面消费，也没有进入模型输入。
+  bridge；
+- Desktop Settings 中真实、懒加载的 Memory 管理页面：active/forgotten、kind 和
+  精确 Global/Workspace scope 筛选，cursor 分页，Create/Correct/Forget、逐条
+  `memory.get` provenance 核验、revision 冲突锁定，以及中英文固定 UI 文案。
+  Renderer 不持久化 Memory 副本，用户正文保持原文。Memory 仍没有进入模型输入。
 
 ### 3.2 `PROPOSED`
 
 当前尚未实现：
 
-- Memory 维护/导出、Memory UI 或 Memory 召回；
+- Memory 召回；
 - 任务级 Skill 选择和 Skill Catalog 总预算。
+
+独立 Memory check/repair、备份和导入导出不属于本阶段 Gate；当前启动路径仍会
+严格校验 `memory.db` schema，不增加空维护模块或用户可见入口。
 
 当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
 首次 Provider Step 冻结预算内的连续近期 Turn 后缀，后续 Tool Step 复用冻结历史，
@@ -150,7 +159,7 @@ Gate 1 在审阅基线之后增加了：
   Instruction Blocks；
 - 明确为空的 Context Data、Provider-default generation options，以及当时用于
   建立边界、后来由 Gate 3 替换的 legacy-unbounded budget snapshot；
-- Gate 1 的 ContextBuilder 明确拒绝非空 Context Data，避免在 Gate 9 定义安全包装
+- Gate 1 的 ContextBuilder 明确拒绝非空 Context Data，避免在 Gate 8 定义安全包装
   前将普通数据提升成无包装的 System Instruction；
 - `AgentLoop -> ModelInputPlanner -> ContextBuilder -> ProviderRequest` 生产链；
 - 贯穿 SQLite、双 Tool Step、OpenAI-compatible Adapter 和最终 HTTP Body 的静态
@@ -199,7 +208,7 @@ turn.start
 
 Scheduler 激活 Run
   -> HistorySelectorV1 选择历史
-  -> MemoryRetrieverV1 选择 Memory（Gate 9 前为空）
+  -> MemoryRetrieverV1 选择 Memory（Gate 8 前为空）
   -> 持久化 ContextSnapshotV1
   -> 构造 ModelInputPlanV1
   -> 调用 Provider
@@ -224,7 +233,7 @@ SubmissionFrameV1
 │  ├─ identity_core              Gate 4 起冻结 IKAROS.md version 1
 │  └─ Skill catalog?
 ├─ context_data slots
-│  └─ memory?                    Gate 9 前为空
+│  └─ memory?                    Gate 8 前为空
 └─ max_steps
 ```
 
@@ -241,7 +250,7 @@ Manifest 或 Journal。恢复时，如果当前配置缺失或其非敏感指纹
 ```text
 ContextSnapshotV1
 ├─ selected history IDs and grouping
-├─ selected Memory ID/revision/digest   Gate 9 前为空
+├─ selected Memory ID/revision/digest   Gate 8 前为空
 ├─ budget accounting
 ├─ omission reasons
 └─ selection version
@@ -330,10 +339,9 @@ UI 只显示“来源记录不可用”。
 | 4 | `IKAROS.md` Identity Core 与 DeepSeek A/B | 已完成 | 否 |
 | 5 | 独立 `memory.db`，Create/List/Get | 已完成 | 不动 `state.db` |
 | 6 | Correction、Forget、Provenance、幂等 | 已完成 | 否 |
-| 7 | Memory Check、Backup、Export | 下一 Gate（未开始） | 否 |
-| 8 | Desktop Memory 管理页面 | 未开始 | 否 |
-| 9 | Memory Read V1，有限召回并进入模型 | 未开始 | 否 |
-| 10 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 未开始 | 否 |
+| 7 | Desktop Memory 管理页面 | 已完成 | 否 |
+| 8 | Memory Read V1，有限召回并进入模型 | 下一 Gate（未开始） | 否 |
+| 9 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 未开始 | 否 |
 
 ## 7. Gate 0：文档和架构边界
 
@@ -389,7 +397,7 @@ Gate 1 只建立结构：
 - Skill Catalog 成为 Run 级 Instruction Block；
 - `identity_core` 为空；
 - `memory_context` 为空；
-- ContextBuilder 在 Gate 9 定义版本化、安全的 Context Data 降级前拒绝非空
+- ContextBuilder 在 Gate 8 定义版本化、安全的 Context Data 降级前拒绝非空
   `context_data`；
 - Messages 和 Tools 保持独立；
 - ContextBuilder 继续渲染为现有 `ProviderRequest`；
@@ -443,7 +451,7 @@ SQLite schema 从 5 升至 6，Journal Event schema 从 2 升至 3。按照 rese
 ### Submission Frame 和 Context Snapshot
 
 第 5.1 节的两阶段冻结已实现。Gate 2 预留了 Identity 和 Memory 空槽，使
-Gate 4 与 Gate 9 只填充既有契约，不再次改变 Session schema。
+Gate 4 与 Gate 8 只填充既有契约，不再次改变 Session schema。
 
 `turn.start` 只用 `.strip()` 判断输入是否全是空白，持久化的 User Item 保留
 原始空格、换行和尾随空白。
@@ -740,8 +748,8 @@ runtime/src/ikaros_runtime/
    └─ memories.py
 ```
 
-`retrieval.py`、Memory maintenance 和 export 没有以空模块提前创建；它们分别
-属于后续 Gate 9 与 Gate 7。
+`retrieval.py` 没有以空模块提前创建，属于后续 Gate 8。独立 Memory maintenance、
+backup 和 import/export 已延期，不为它们保留空入口。
 
 `paths.py` 统一声明 `config.yaml`、`state.db`、`memory.db` 和 `skills/`，避免
 清理 Session 时误伤 Memory。
@@ -750,7 +758,7 @@ runtime/src/ikaros_runtime/
 
 Gate 5 创建 `~/.ikaros/memory.db`。虽然只开放 Create/List/Get，
 数据库必须从一开始预留 Gate 6 的 revision/tombstone/provenance/idempotency
-字段，以及 Gate 9 所需索引，避免后续未计划的 Memory schema reset。
+字段，以及 Gate 8 所需索引，避免后续未计划的 Memory schema reset。
 
 V1 使用应用层确定性关键词排序，不依赖后续增加 FTS shadow table。
 
@@ -941,52 +949,13 @@ Gate 6 已贯通 Python Store/Service、认证 WebSocket JSON-RPC、Electron mai
 preload 和 `RuntimeClient`。它没有增加 Journal Event、Renderer Memory 状态/UI、
 模型召回、自动提取或物理安全擦除承诺。
 
-## 14. Gate 7：Memory 维护能力
+## 14. Gate 7：Desktop Memory 管理页面
 
-新增离线命令：
-
-```text
-python -m ikaros_runtime memory check
-python -m ikaros_runtime memory backup --output <path>
-python -m ikaros_runtime memory export --output <path>
-```
-
-### Check
-
-验证：
-
-- schema version；
-- `quick_check` 和 foreign keys；
-- revision 从 1 连续到 current；
-- current revision 存在；
-- active Memory 当前 revision 有正文；
-- forgotten Memory 没有任何正文或正文派生 digest；
-- content digest 与正文一致；
-- operation receipt 指向有效 revision。
-
-Memory 没有可重建 Journal，V0 不提供 `repair-projections`。损坏时只能从
-verified backup 恢复。
-
-### Backup
-
-- 使用 SQLite Backup API，包含已提交 WAL；
-- 临时文件、fsync、原子发布；
-- 不覆盖已有文件；
-- Backup 可重新打开并通过 check。
-
-### Export
-
-- 稳定顺序的严格 UTF-8 JSONL；
-- 不包含内部幂等记录；
-- 不包含 forgotten 正文或正文派生 digest；
-- 原子发布，不覆盖已有文件；
-- Export 是便携用户数据，不等于完整恢复备份；
-- V0 不做 import。
-
-`storage` 命令只操作 `state.db`；`memory` 命令只操作 `memory.db`。Runtime
-持有 home lock 时，离线维护命令明确失败。
-
-## 15. Gate 8：Desktop Memory 管理页面
+实施状态：**CURRENT**。页面由
+`ikaros/desktop/src/renderer/components/MemorySettings.tsx` 局部管理短生命周期
+查询状态，只通过 typed `RuntimeClient` 读取和修改 Runtime 权威数据，不写入
+Zustand 持久状态或 `ui-preferences.json`。每页 25 条；列表加载后对当前页逐条
+调用 `memory.get` 核验 provenance，且筛选切换使用 generation 隔离迟到响应。
 
 在 Settings 增加真实 Memory 页面，只显示 Runtime 权威数据：
 
@@ -1015,9 +984,14 @@ verified backup 恢复。
 此 Gate 完成后只能称为“可显式管理的 Memory V0”，仍不能称为模型拥有长期
 记忆。
 
-## 16. Gate 9：Memory Read V1
+Gate 门禁：Desktop TypeScript、416 个 Vitest 测试（另 1 个 live 测试跳过）及
+Electron production build 通过。定向组件测试覆盖 Runtime 缺失、加载/筛选、
+cursor 追加去重、Create、Correct 冲突锁定、Forget 前重读最新 revision、
+forgotten tombstone、Settings 懒加载和中英文 UI。
 
-只有 Gate 1 到 Gate 8 全部完成，Memory 才能进入模型输入。
+## 15. Gate 8：Memory Read V1
+
+只有 Gate 1 到 Gate 7 全部完成，Memory 才能进入模型输入。
 
 流程：
 
@@ -1102,7 +1076,7 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 - Memory Prompt Injection 合成测试不能扩大实际 Tool 权限；
 - 真实 DeepSeek A/B 覆盖聊天、命令和文件任务。
 
-## 17. Gate 10：最终验证与收口
+## 16. Gate 9：最终验证与收口
 
 ### 离线门禁
 
@@ -1113,9 +1087,7 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 - Vitest；
 - 协议生成检查；
 - Electron build；
-- Journal rebuild；
-- state/memory check；
-- WAL 状态下 backup；
+- `state.db` storage check 和 Journal rebuild；
 - secret canary 扫描；
 - 工作树和 commit 范围审计。
 
@@ -1148,7 +1120,7 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 - Manifest 是否含敏感正文；
 - Identity 是否干扰任务执行。
 
-## 18. 稳定失败语义
+## 17. 稳定失败语义
 
 已实现 Gate 使用下列稳定 reason code，均不依赖 Provider 文案。标为“后续”的
 Memory 输入错误只有在对应召回 Gate 完成后才是产品能力：
@@ -1168,9 +1140,9 @@ Memory 输入错误只有在对应召回 Gate 完成后才是产品能力：
 | `memory_source_unavailable` | 首次创建时指定的 Session Item 不存在或不符合来源约束 |
 | `memory_snapshot_unavailable`（后续） | Run 冻结的 Memory revision 在新 Step 前已被忘记 |
 | `memory_retrieval_overflow`（后续） | scoped active 候选超过确定性检索上限 |
-| `memory_schema_incompatible` | `memory.db` schema 不兼容，需要先备份并由用户决定 |
+| `memory_schema_incompatible` | `memory.db` schema 不兼容，Runtime 拒绝自动修改或删除 |
 
-## 19. 文档维护矩阵
+## 18. 文档维护矩阵
 
 | 文档 | 负责什么 |
 | --- | --- |
