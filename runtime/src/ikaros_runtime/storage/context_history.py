@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from ..errors import ModelInputUnavailableError
 from ..json_codec import loads as json_loads
 from ..run_input import (
+    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     ContextItemRecordV1,
     ContextSnapshotV1,
+    FrozenMemoryContextV1,
     HistoryItemReferenceV1,
     RunManifestV1,
     SubmissionFrameV1,
@@ -155,6 +157,7 @@ def select_context_snapshot(
     run_id: str,
     frame: SubmissionFrameV1,
     manifest: RunManifestV1,
+    memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
 ) -> tuple[ContextSnapshotV1, tuple[ContextItemRecordV1, ...]]:
     # Local import avoids the package-level agent -> loop -> storage dependency cycle.
     from ..agent.history import HISTORY_TURN_PAGE_SIZE_V1, HistorySelectorV1
@@ -167,6 +170,7 @@ def select_context_snapshot(
             current_turn_id=turn_id,
             current_turn_ordinal=ordinal,
             current_records=load_current_run_context(connection, run_id=run_id),
+            memory_context=memory_context,
         )
     except (LookupError, TypeError, ValueError):
         raise ModelInputUnavailableError("model_input_unavailable") from None
@@ -202,6 +206,7 @@ def select_context_snapshot(
         maximum_characters=selection.maximum_characters,
         reserved_current_run_characters=selection.reserved_current_run_characters,
         omissions=selection.omissions,
+        memory_context=memory_context,
     )
     return snapshot, selection.records
 

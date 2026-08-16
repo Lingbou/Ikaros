@@ -125,8 +125,23 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
                     "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 },
                 "historyItems": [],
-                "memory": [],
-                "omissions": [],
+                "memory": [
+                    {
+                        "memoryId": "memory_00000000000000000000000000000001",
+                        "revision": 1,
+                        "scope": "global",
+                        "characters": 12,
+                    }
+                ],
+                "omissions": [
+                    {
+                        "sourceType": "memory",
+                        "sourceId": "memory_00000000000000000000000000000002",
+                        "revision": 1,
+                        "characters": 13,
+                        "reason": "omitted_by_budget",
+                    }
+                ],
             },
             "stepManifest": {
                 "budget": {
@@ -134,8 +149,23 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
                     "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 },
                 "historyItems": [],
-                "memory": [],
-                "omissions": [],
+                "memory": [
+                    {
+                        "memoryId": "memory_00000000000000000000000000000001",
+                        "revision": 1,
+                        "scope": "global",
+                        "characters": 12,
+                    }
+                ],
+                "omissions": [
+                    {
+                        "sourceType": "memory",
+                        "sourceId": "memory_00000000000000000000000000000002",
+                        "revision": 1,
+                        "characters": 13,
+                        "reason": "omitted_by_limit",
+                    }
+                ],
             },
         }
     }
@@ -157,6 +187,10 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
         "bounded-history-v1",
         "bounded",
         "unicode-codepoints-canonical-json-v1",
+        "global",
+        "memory",
+        "omitted_by_budget",
+        "omitted_by_limit",
         sha256,
     ):
         assert response_values_contain_protected_value(value, [protected]) is False

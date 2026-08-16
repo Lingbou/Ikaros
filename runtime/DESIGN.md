@@ -6,12 +6,12 @@ current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
 The active next stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–7
-are implemented, including the Runtime-owned `IKAROS.md` Identity Core and the
-independent, explicitly managed Memory V0 Store/RPC/typed Desktop bridge and its
-real Settings management page. Gate 8, deterministic bounded Memory recall, is
-the next strictly serial Gate;
-standalone Memory maintenance, backup, and import/export are deferred.
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–8
+are implemented, including the Runtime-owned `IKAROS.md` Identity Core, the
+independent explicitly managed Memory Store/RPC/typed Desktop bridge and its
+real Settings page, and deterministic bounded Memory recall. Gate 9 is the next
+strictly serial verification and audit Gate. No standalone Memory maintenance
+or transfer surface is part of the current stage.
 
 ## Product boundary
 
@@ -143,7 +143,7 @@ same-version structural drift is rejected rather than silently accepted.
 
 During pre-release development, `state.db` uses an explicit reset-only schema
 policy. An empty database is created atomically at canonical database schema
-version 7. A non-empty unversioned database or any different `user_version`
+version 8. A non-empty unversioned database or any different `user_version`
 fails startup with `reset required`; the Runtime never migrates or silently
 deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
 only after the owning Runtime has stopped. `config.yaml`, `skills/`, Desktop
@@ -329,7 +329,7 @@ selection for the Run, and records the first omitted Turn as a boundary. The
 UI continues to page the complete Thread history independently. Later Tool
 Steps reload frozen Items by ID and append only current-Run Items.
 
-Durable cross-Thread Memory has an explicit-management foundation: active
+Durable cross-Thread Memory has an explicit-management and recall foundation: active
 records can be created and corrected idempotently, forgotten through a
 content-redacting tombstone revision, and listed by scope/kind/state with
 keyset pagination, while full current content is loaded by ID. An optional
@@ -338,8 +338,13 @@ from clients, and unavailable or reset Session state degrades the soft
 provenance link without deleting Memory. It remains a different
 authority and lifecycle from Session history, History selection, History
 compaction, Identity Core, and Skills. `memory.db` is independent from Session
-reset and is not a second conversation truth source. Maintenance/export, UI
-management, and model recall remain later Gates. The
+reset and is not a second conversation truth source. The real Settings page
+manages records, while `MemoryRetrieverV1` selects bounded Global/current-
+workspace records and freezes exact revisions for each Run. Memory bodies are
+materialized outside `state.db` transactions and lowered through one canonical,
+Runtime-owned contextual-data wrapper; only IDs, revisions, scope and character
+accounting enter Session audit records. Content-integrity digests remain private
+to `memory.db` and are cleared by Forget. The
 detailed boundary and serial implementation Gates are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
@@ -347,7 +352,7 @@ An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
 client can resume from a cursor without guessing what it missed. Every
 persisted and wire Event also carries `schemaVersion`. The current Event schema
-is version 4. Readers require that exact version and reject unknown versions;
+is version 5. Readers require that exact version and reject unknown versions;
 there is no payload upcaster while the database itself follows the explicit
 development reset policy above.
 
@@ -574,13 +579,17 @@ client submits user input
   -> Scheduler reserves the persisted Run
   -> server attempts the command ACK
   -> Scheduler activates the Run
+  -> MemoryRetrieverV1 reads Global/current-workspace candidates outside the
+     state.db transaction and freezes bounded exact-revision metadata
   -> first prepare_model_step pages backward and freezes bounded ContextSnapshotV1;
      later Steps load frozen Item IDs plus current-Run Items
   -> Runtime persists StepManifestV1 and emits model.input_prepared
+  -> Runtime re-materializes the exact frozen Memory revisions; Forget aborts
+     before the Provider sees a new Step
   -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1 from
      the frozen Submission Frame, versioned Output Style, frozen IKAROS.md
-     Identity Core, frozen Skill Catalog, frozen ContextItems, and separate
-     Tool definitions
+     Identity Core, frozen Skill Catalog, bounded Memory Context Data, frozen
+     ContextItems, and separate Tool definitions
   -> ContextBuilder deterministically renders that Plan into ProviderRequest
   -> provider streams assistant output or requests a tool
   -> ToolRegistry resolves and validates the call
@@ -605,9 +614,10 @@ with `importlib.resources`, freezes the version 1 `ikaros-identity` Instruction
 Block into each Submission Frame at `turn.start`, and reuses that frozen input
 for every Step in the Run. Recovery validates the frozen block against the
 current release Identity and fails on drift rather than silently substituting
-new content. The Agent loop still does not retrieve or inject durable Memory;
-the separate V0 management path does not change Provider input. Recall remains
-a separately gated responsibility in
+new content. Memory retrieval remains a separate low-authority input: its body
+is absent from Session audit records, exact references are frozen in the Context
+Snapshot, and the ContextBuilder accepts only the canonical Runtime wrapper.
+Detailed limits and failure semantics are recorded in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 Gate 4 requires no `state.db` schema reset. Completed pre-Gate-4 history whose
@@ -948,7 +958,7 @@ current operating-system user's authority. Skill scripts invoked through
 `process_run` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 7. Thread
+The current reset-only SQLite database schema is canonical version 8. Thread
 projections include optional `workspace_json`, nullable `archived_at`, and an
 indexed active/archived Thread Catalog ordering key; Run history hydration is
 indexed by `turn_id`. Each Run snapshots `execution_policy = full_access` and
@@ -981,7 +991,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
 | provider/model settings | runtime capability and model catalog |
 | Skills settings | `skill.list` / `skill.set_enabled` catalog, diagnostics, and global enablement |
-| Memory foundation | `memory.create` / `memory.correct` / `memory.forget` / `memory.list` / `memory.get` typed Desktop bridge with structured conflicts and Session provenance; no Renderer page or model recall yet |
+| Memory management and recall | `memory.create` / `memory.correct` / `memory.forget` / `memory.list` / `memory.get`, the real Settings page, and deterministic bounded Runtime recall with frozen exact revisions |
 | Profile Token metrics and activity | `usage.read` over the `model_usages` projection rebuilt solely from Provider-reported usage in `model.response_finished`; no text-based estimation |
 | theme, language, username | client-only UI state |
 
@@ -1115,16 +1125,19 @@ path. The following have been demonstrated end to end:
 11. Gate 4 loads the packaged `resources/IKAROS.md` through
     `importlib.resources`, freezes its versioned `runtime_identity` block into
     every Run, and keeps Provider/model identity separate from Ikaros identity.
+12. Gate 8 deterministically recalls bounded Global/current-workspace Memory,
+    freezes exact revisions, rejects cross-database transaction overlap, and
+    stops unsent Steps after Forget without changing Tool definitions or Policy.
 
 The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
 This slice does not implement web search, browser or desktop control,
-model-facing Memory recall, background or scheduled tasks, messaging channels, MCP/connectors,
+automatic Memory extraction, background or scheduled tasks, messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
 provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded
 history selection, Gate 4 Identity Core, and explicitly managed durable Memory
-with its Desktop management page are current. Model-facing Memory recall remains
-a later Gate documented in
+with its Desktop management page and deterministic recall are current. The
+remaining verification Gate is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

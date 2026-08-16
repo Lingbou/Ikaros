@@ -146,6 +146,64 @@ function attachTestIdentityCore(
   return { block, manifest };
 }
 
+interface TestMemoryReference {
+  memoryId: string;
+  revision: number;
+  scope: "global" | "workspace";
+  characters: number;
+}
+
+type TestMemoryOmission = {
+  sourceType: "memory";
+  sourceId: string;
+  revision: number;
+  characters: number;
+  reason: "omitted_by_budget" | "omitted_by_limit";
+};
+
+function testMemoryReference(
+  digit: string,
+  characters: number,
+  scope: "global" | "workspace" = "global"
+): TestMemoryReference {
+  return {
+    memoryId: `memory_${digit.repeat(32)}`,
+    revision: 1,
+    scope,
+    characters
+  };
+}
+
+function attachTestMemoryContext(
+  event: ReturnType<typeof cloneGoldenNotification>,
+  memory: TestMemoryReference[],
+  omissions: Array<Record<string, unknown>> = [],
+  contextDataCharacters = 128
+): void {
+  const selectedCharacters = memory.reduce((total, item) => total + item.characters, 0);
+  const nextContextDataCharacters = memory.length === 0 ? 0 : contextDataCharacters;
+  const snapshot = asWireObject(event.payload.contextSnapshot, "Context Snapshot");
+  const manifest = asWireObject(event.payload.stepManifest, "Step Manifest");
+  snapshot.memory = structuredClone(memory);
+  manifest.memory = structuredClone(memory);
+  snapshot.omissions = structuredClone(omissions);
+  manifest.omissions = structuredClone(omissions);
+
+  for (const budgetValue of [snapshot.budget, manifest.budget]) {
+    const budget = asWireObject(budgetValue, "Memory input budget");
+    const previousMemory = budget.memoryCharacters as number;
+    const previousContextData = budget.contextDataCharacters as number;
+    budget.memoryCharacters = selectedCharacters;
+    budget.contextDataCharacters = nextContextDataCharacters;
+    budget.totalCharacters =
+      (budget.totalCharacters as number) -
+      previousMemory -
+      previousContextData +
+      selectedCharacters +
+      nextContextDataCharacters;
+  }
+}
+
 describe("Runtime protocol Golden Trace", () => {
   it("parses the shared Python/Desktop envelopes with production parsers", () => {
     const observedEvents = new Set<string>();
@@ -288,6 +346,13 @@ describe("Runtime protocol Golden Trace", () => {
     });
   });
 
+  it("requires the Run Manifest Memory Context contract version", () => {
+    expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
+      const manifest = asWireObject(payload.runManifest, "Run Manifest");
+      manifest.memoryContextVersion = 1;
+    });
+  });
+
   it("rejects the unavailable Memory slot and an empty current-Run history", () => {
 
     expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
@@ -295,10 +360,10 @@ describe("Runtime protocol Golden Trace", () => {
       const contextData = asWireObject(frame.contextData, "Frame Context Data");
       contextData.memory = [
         {
-          memoryId: "memory_1",
+          memoryId: `memory_${"1".repeat(32)}`,
           revision: 1,
-          contentSha256: "a".repeat(64),
-          scope: "global"
+          scope: "global",
+          characters: 1
         }
       ];
     });
@@ -321,6 +386,251 @@ describe("Runtime protocol Golden Trace", () => {
       manifestBudget.totalCharacters =
         (manifestBudget.totalCharacters as number) - manifestCurrent;
     });
+  });
+
+  it("accepts bounded Global and Workspace Memory references with ordered omissions", () => {
+    const event = cloneGoldenNotification("model-input-prepared");
+    const memory = [testMemoryReference("1", 17), testMemoryReference("2", 31, "workspace")];
+    const memoryOmission: TestMemoryOmission = {
+      sourceType: "memory",
+      sourceId: `memory_${"3".repeat(32)}`,
+      revision: 4,
+      characters: 53,
+      reason: "omitted_by_budget"
+    };
+    attachTestMemoryContext(event, memory, [
+      {
+        sourceType: "history",
+        sourceId: "turn_omitted_boundary",
+        reason: "omitted_by_budget"
+      },
+      memoryOmission
+    ]);
+
+    expect(() => parseRuntimeEventNotification(event.envelope)).not.toThrow();
+  });
+
+  it("accepts a limit omission only with a full eight-item Memory selection", () => {
+    const selected = Array.from({ length: 8 }, (_, index) =>
+      testMemoryReference(
+        (index + 1).toString(16),
+        index + 1,
+        index === 7 ? "workspace" : "global"
+      )
+    );
+    const omission: TestMemoryOmission = {
+      sourceType: "memory",
+      sourceId: `memory_${"9".repeat(32)}`,
+      revision: 1,
+      characters: 9,
+      reason: "omitted_by_limit"
+    };
+
+    const fullSelection = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(fullSelection, selected, [omission]);
+    expect(() => parseRuntimeEventNotification(fullSelection.envelope)).not.toThrow();
+
+    const incompleteSelection = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(incompleteSelection, selected.slice(0, 7), [omission]);
+    expect(() => parseRuntimeEventNotification(incompleteSelection.envelope)).toThrow();
+  });
+
+  it("rejects malformed Memory references", () => {
+    const mutations: Array<(memory: Record<string, unknown>) => void> = [
+      (memory) => {
+        memory.memoryId = "memory_invalid";
+      },
+      (memory) => {
+        memory.revision = 0;
+      },
+      (memory) => {
+        memory.scope = "thread";
+      },
+      (memory) => {
+        memory.characters = 0;
+      },
+      (memory) => {
+        memory.characters = 2_049;
+      },
+      (memory) => {
+        memory.snapshotSha256 = "a".repeat(64);
+      }
+    ];
+
+    for (const mutate of mutations) {
+      const event = cloneGoldenNotification("model-input-prepared");
+      attachTestMemoryContext(event, [testMemoryReference("1", 17)]);
+      const snapshot = asWireObject(event.payload.contextSnapshot, "Context Snapshot");
+      const selected = asWireArray(snapshot.memory, "selected Memory");
+      mutate(asWireObject(selected[0], "Memory reference"));
+      expect(() => parseRuntimeEventNotification(event.envelope)).toThrow();
+    }
+  });
+
+  it("rejects duplicate, over-limit, and incorrectly budgeted Memory selections", () => {
+    const duplicate = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(duplicate, [
+      testMemoryReference("1", 17),
+      { ...testMemoryReference("1", 19), revision: 2 }
+    ]);
+    expect(() => parseRuntimeEventNotification(duplicate.envelope)).toThrow();
+
+    const tooMany = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(
+      tooMany,
+      Array.from({ length: 9 }, (_, index) =>
+        testMemoryReference((index + 1).toString(16), 1)
+      )
+    );
+    expect(() => parseRuntimeEventNotification(tooMany.envelope)).toThrow();
+
+    const tooLarge = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(tooLarge, [
+      testMemoryReference("1", 1_501),
+      testMemoryReference("2", 1_501),
+      testMemoryReference("3", 1_501),
+      testMemoryReference("4", 1_501)
+    ]);
+    expect(() => parseRuntimeEventNotification(tooLarge.envelope)).toThrow();
+
+    const wrongSum = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(wrongSum, [testMemoryReference("1", 17)]);
+    const wrongSumSnapshot = asWireObject(wrongSum.payload.contextSnapshot, "Context Snapshot");
+    const wrongSumBudget = asWireObject(wrongSumSnapshot.budget, "Context budget");
+    wrongSumBudget.memoryCharacters = 18;
+    wrongSumBudget.totalCharacters = (wrongSumBudget.totalCharacters as number) + 1;
+    expect(() => parseRuntimeEventNotification(wrongSum.envelope)).toThrow();
+
+    const missingWrapper = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(missingWrapper, [testMemoryReference("1", 17)], [], 0);
+    expect(() => parseRuntimeEventNotification(missingWrapper.envelope)).toThrow();
+
+    const ghostWrapper = cloneGoldenNotification("model-input-prepared");
+    const ghostSnapshot = asWireObject(ghostWrapper.payload.contextSnapshot, "Context Snapshot");
+    const ghostBudget = asWireObject(ghostSnapshot.budget, "Context budget");
+    ghostBudget.contextDataCharacters = 1;
+    ghostBudget.totalCharacters = (ghostBudget.totalCharacters as number) + 1;
+    expect(() => parseRuntimeEventNotification(ghostWrapper.envelope)).toThrow();
+  });
+
+  it("rejects malformed, duplicate, overlapping, or misordered Memory omissions", () => {
+    const selected = testMemoryReference("1", 17);
+    const omitted: TestMemoryOmission = {
+      sourceType: "memory",
+      sourceId: `memory_${"2".repeat(32)}`,
+      revision: 1,
+      characters: 19,
+      reason: "omitted_by_budget"
+    };
+
+    for (const mutate of [
+      (value: Record<string, unknown>) => {
+        value.revision = 0;
+      },
+      (value: Record<string, unknown>) => {
+        value.characters = 0;
+      },
+      (value: Record<string, unknown>) => {
+        value.characters = 2_049;
+      },
+      (value: Record<string, unknown>) => {
+        value.reason = "unknown";
+      },
+      (value: Record<string, unknown>) => {
+        value.extra = true;
+      }
+    ]) {
+      const event = cloneGoldenNotification("model-input-prepared");
+      attachTestMemoryContext(event, [selected], [omitted]);
+      const snapshot = asWireObject(event.payload.contextSnapshot, "Context Snapshot");
+      const omissions = asWireArray(snapshot.omissions, "Memory omissions");
+      mutate(asWireObject(omissions[0], "Memory omission"));
+      expect(() => parseRuntimeEventNotification(event.envelope)).toThrow();
+    }
+
+    const duplicate = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(duplicate, [selected], [omitted, { ...omitted, revision: 2 }]);
+    expect(() => parseRuntimeEventNotification(duplicate.envelope)).toThrow();
+
+    const overlap = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(overlap, [selected], [
+      { ...omitted, sourceId: selected.memoryId }
+    ]);
+    expect(() => parseRuntimeEventNotification(overlap.envelope)).toThrow();
+
+    const historyAfterMemory = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(historyAfterMemory, [selected], [
+      omitted,
+      {
+        sourceType: "history",
+        sourceId: "turn_omitted_boundary",
+        reason: "omitted_by_budget"
+      }
+    ]);
+    expect(() => parseRuntimeEventNotification(historyAfterMemory.envelope)).toThrow();
+
+    const twoHistory = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(twoHistory, [selected], [
+      {
+        sourceType: "history",
+        sourceId: "turn_omitted_boundary",
+        reason: "omitted_by_budget"
+      },
+      {
+        sourceType: "history",
+        sourceId: "turn_older_boundary",
+        reason: "omitted_by_budget"
+      }
+    ]);
+    expect(() => parseRuntimeEventNotification(twoHistory.envelope)).toThrow();
+
+    const impossibleLimit = cloneGoldenNotification("model-input-prepared");
+    attachTestMemoryContext(impossibleLimit, [selected], [
+      { ...omitted, reason: "omitted_by_limit" }
+    ]);
+    expect(() => parseRuntimeEventNotification(impossibleLimit.envelope)).toThrow();
+  });
+
+  it("rejects Step Memory, omission, and frozen-budget drift", () => {
+    const event = cloneGoldenNotification("model-input-prepared-step-2");
+    const memory = [testMemoryReference("1", 17)];
+    const omission: TestMemoryOmission = {
+      sourceType: "memory",
+      sourceId: `memory_${"2".repeat(32)}`,
+      revision: 1,
+      characters: 19,
+      reason: "omitted_by_budget"
+    };
+    attachTestMemoryContext(event, memory, [omission]);
+    expect(() => parseRuntimeEventNotification(event.envelope)).not.toThrow();
+
+    const memoryDrift = structuredClone(event);
+    const memoryDriftManifest = asWireObject(
+      memoryDrift.payload.stepManifest,
+      "Step Manifest"
+    );
+    const stepMemory = asWireArray(memoryDriftManifest.memory, "Step Memory");
+    asWireObject(stepMemory[0], "Step Memory reference").revision = 2;
+    expect(() => parseRuntimeEventNotification(memoryDrift.envelope)).toThrow();
+
+    const omissionDrift = structuredClone(event);
+    const omissionDriftManifest = asWireObject(
+      omissionDrift.payload.stepManifest,
+      "Step Manifest"
+    );
+    const stepOmissions = asWireArray(omissionDriftManifest.omissions, "Step omissions");
+    asWireObject(stepOmissions[0], "Step Memory omission").reason = "omitted_by_limit";
+    expect(() => parseRuntimeEventNotification(omissionDrift.envelope)).toThrow();
+
+    const budgetDrift = structuredClone(event);
+    const budgetDriftManifest = asWireObject(
+      budgetDrift.payload.stepManifest,
+      "Step Manifest"
+    );
+    const stepBudget = asWireObject(budgetDriftManifest.budget, "Step budget");
+    stepBudget.contextDataCharacters = (stepBudget.contextDataCharacters as number) + 1;
+    stepBudget.totalCharacters = (stepBudget.totalCharacters as number) + 1;
+    expect(() => parseRuntimeEventNotification(budgetDrift.envelope)).toThrow();
   });
 
   it("requires the Run Manifest to be the exact Python from_frame projection", () => {

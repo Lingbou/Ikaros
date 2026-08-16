@@ -94,15 +94,17 @@ The Runtime currently owns:
   `skill.list` / `skill.set_enabled`, global enablement persisted in
   `~/.ikaros/config.yaml`, immutable enabled-descriptor snapshots per Run, and
   a lazily loaded Skills settings page;
-- Memory V0 management: strict DTO parsing and narrow IPC/preload
+- Memory management and recall: strict DTO parsing and narrow IPC/preload
   methods for `memory.create`, `memory.correct`, `memory.forget`, paginated
   `memory.list`, and lazy `memory.get`. Create can carry one Runtime-verified
   Session Item source; mutation conflicts cross the bridge as a bounded
   `reasonCode`, not arbitrary JSON-RPC data. The data lives in Runtime-owned
   `~/.ikaros/memory.db`. A lazy Settings page provides active/forgotten,
   kind, Global/exact-Workspace filters, cursor pagination, per-record provenance
-  verification, Create/Correct/Forget, and conflict-safe refresh. Model recall
-  is not exposed yet;
+  verification, Create/Correct/Forget, and conflict-safe refresh. Runtime recall
+  now freezes bounded exact revisions in Context Snapshot/Step Manifest audit
+  payloads; Electron main validates their scope, item/character limits,
+  omissions, and cross-Step consistency before advancing the Journal cursor;
 - Gate 2/3 audit DTOs and Events: Submission Frame and Run Manifest on Turn
   creation, frozen Context Snapshot and Step Manifest on
   `model.input_prepared`, and response metadata/usage on
@@ -192,9 +194,10 @@ The following UI surfaces are not production Runtime capabilities yet:
   is connected; and
 - automatic model discovery currently supports only DeepSeek. Custom
   OpenAI-compatible Provider models are entered manually; and
-- Memory model recall is unavailable. The visible Memory management page is
-  Runtime-backed rather than a Mock. Standalone Memory maintenance, backup, and
-  import/export are intentionally deferred.
+- The visible Memory management page and deterministic bounded Memory recall are
+  Runtime-backed rather than Mock. Recall is limited to Global plus the current
+  workspace and freezes exact revisions per Run; no standalone Memory
+  maintenance or transfer surface is part of this stage.
 
 ## Architecture boundary
 
@@ -205,7 +208,7 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema version 7 and is
+Conversation persistence uses canonical SQLite schema version 8 and is
 intentionally reset-only during pre-release development. An incompatible
 `~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
 or Event upcaster is provided. After stopping the Runtime, an explicitly
@@ -215,7 +218,7 @@ conversation history and must be preserved, as must `skills/`, Desktop
 preferences, and the separately owned `memory.db`. An incompatible Memory
 schema stops Runtime startup explicitly and is never silently reset.
 
-The persisted Journal uses Event schema version 4 with 11 supported Event
+The persisted Journal uses Event schema version 5 with 11 supported Event
 discriminators. Incompatible database or Event schemas still require the
 explicit reset-only path.
 
@@ -223,7 +226,8 @@ Persistent input Frames/Manifests, bounded history selection, and the frozen
 Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the
 Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
 Desktop exposes no Identity editor or budget control. Durable cross-Thread
-Memory has a Create/Correct/Forget/Provenance Store/RPC/typed-client foundation
-and a real Settings management page, but is not part of model input. Gate 8
-(deterministic bounded Memory recall) is next. The strict Gate plan is documented in
+Memory has a Create/Correct/Forget/Provenance Store/RPC/typed-client foundation,
+a real Settings management page, and deterministic bounded recall through a
+Runtime-owned contextual-data wrapper. Gate 9 verification and audit is next.
+The strict Gate plan is documented in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).

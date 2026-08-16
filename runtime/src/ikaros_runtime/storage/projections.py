@@ -20,6 +20,7 @@ from ..json_codec import loads as json_loads
 from ..run_input import (
     ContextItemRecordV1,
     ContextSnapshotV1,
+    FrozenMemoryContextV1,
     RunManifestV1,
     StepManifestV1,
     SubmissionFrameV1,
@@ -139,7 +140,7 @@ def contains_protected_projection_values(
         context_snapshot = row["context_snapshot_json"]
         if context_snapshot is not None:
             # Context Snapshots contain only Runtime-generated references,
-            # controlled selectors, numeric budgets, hashes, and omission enums.
+            # controlled selectors, numeric budgets, and omission enums.
             ContextSnapshotV1.from_wire(json_loads(str(context_snapshot)))
     for row in connection.execute(
         """
@@ -148,7 +149,7 @@ def contains_protected_projection_values(
         """
     ).fetchall():
         # Step Manifests and usage contain no user/Provider text: only frozen
-        # references, controlled provenance, hashes, and numeric counters.
+        # references, controlled provenance, and numeric counters.
         StepManifestV1.from_wire(json_loads(str(row["step_manifest_json"])))
         usage_json = row["usage_json"]
         if usage_json is not None:
@@ -800,6 +801,7 @@ def apply_event(
                 run_id=str(event.run_id),
                 frame=submission_frame,
                 manifest=run_manifest,
+                memory_context=FrozenMemoryContextV1.from_snapshot(snapshot),
             )
             if snapshot != expected_snapshot:
                 raise RuntimeError("initial Context Snapshot is not canonical")

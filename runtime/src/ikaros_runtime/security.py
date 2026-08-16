@@ -377,6 +377,7 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "provenance",
         "publicProviderConfigFingerprint",
         "requestId",
+        "reason",
         "resultingRevision",
         "responseModelId",
         "revision",
@@ -490,6 +491,14 @@ def _is_fixed_response_value(
         "publicProviderConfigFingerprint",
     }:
         return _is_sha256(value)
+    if (
+        path
+        and path[-1] == "reason"
+        and value in {"omitted_by_budget", "omitted_by_limit"}
+        and container is not None
+        and container.get("sourceType") in {"history", "memory"}
+    ):
+        return True
     if path and path[-1] == "type" and value in JOURNAL_EVENT_TYPE_SET:
         return True
     if path and path[-1] in {"status", "outcome"} and value in _FIXED_STATUSES:

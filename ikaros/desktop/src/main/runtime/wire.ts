@@ -145,6 +145,9 @@ const MEMORY_KINDS = new Set<RuntimeMemoryKind>([
 ]);
 const MEMORY_STATES = new Set<RuntimeMemoryState>(["active", "forgotten"]);
 const MEMORY_CONTENT_MAX_CHARACTERS = 2_048;
+const MEMORY_CONTEXT_MAX_CHARACTERS = 6_000;
+const MEMORY_CONTEXT_MAX_ITEMS = 8;
+const MEMORY_RETRIEVAL_MAX_CANDIDATES = 2_000;
 const MEMORY_PREVIEW_MAX_CHARACTERS = 160;
 const MEMORY_LIST_DEFAULT_LIMIT = 50;
 const MEMORY_LIST_PAGE_LIMIT = 100;
@@ -885,7 +888,7 @@ function isRunManifest(value: unknown, frameValue: unknown): boolean {
     value.modelInputPlanVersion !== 1 ||
     value.submissionFrameVersion !== 1 ||
     value.contextSelectionVersion !== "bounded-history-v1" ||
-    value.memoryContextVersion !== 1 ||
+    value.memoryContextVersion !== 2 ||
     value.executionPolicy !== frameValue.executionPolicy ||
     value.maxSteps !== frameValue.maxSteps ||
     !Array.isArray(value.instructions) ||
@@ -1099,8 +1102,10 @@ function isInputBudget(
 }
 
 function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
+  if (!isWireObject(value)) return false;
+  const memory = value.memory;
+  const budget = value.budget;
   if (
-    !isWireObject(value) ||
     !isWireIdentifier(currentRunId) ||
     !hasExactKeys(value, [
       "schemaVersion",
@@ -1119,19 +1124,14 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
     value.historyItems.length === 0 ||
     !value.historyItems.every(isHistoryItemReference) ||
     !hasUniqueHistoryItemIds(value.historyItems) ||
-    !Array.isArray(value.memory) ||
-    value.memory.length !== 0 ||
-    !isInputBudget(value.budget) ||
-    value.budget.maximumCharacters !== MAXIMUM_INPUT_CHARACTERS_V1 ||
-    value.budget.reservedCurrentRunCharacters !== RESERVED_CURRENT_RUN_CHARACTERS_V1 ||
-    !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
-    value.budget.memoryCharacters !== 0 ||
-    value.budget.contextDataCharacters !== 0 ||
-    !Array.isArray(value.omissions) ||
-    value.omissions.length > 1 ||
-    !value.omissions.every(isHistoryOmission) ||
-    value.budget.totalCharacters + value.budget.reservedCurrentRunCharacters >
-      value.budget.maximumCharacters
+    !isMemoryReferenceList(memory) ||
+    !isInputBudget(budget) ||
+    budget.maximumCharacters !== MAXIMUM_INPUT_CHARACTERS_V1 ||
+    budget.reservedCurrentRunCharacters !== RESERVED_CURRENT_RUN_CHARACTERS_V1 ||
+    !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
+    !isMemoryBudgetForReferences(budget, memory) ||
+    !isContextOmissionList(value.omissions, memory) ||
+    budget.totalCharacters + budget.reservedCurrentRunCharacters > budget.maximumCharacters
   ) {
     return false;
   }
@@ -1165,7 +1165,7 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
   if (
     value.omissions.some(
       (omission) =>
-        isWireObject(omission) && selectedTurnIds.has(omission.sourceId as string)
+        isHistoryOmission(omission) && selectedTurnIds.has(omission.sourceId)
     )
   ) {
     return false;
@@ -1189,9 +1189,12 @@ function isStepManifest(
   contextSnapshot: unknown,
   currentRunId: unknown
 ): boolean {
+  if (!isWireObject(value) || !isWireObject(contextSnapshot)) return false;
+  const memory = value.memory;
+  const budget = value.budget;
+  const snapshotMemory = contextSnapshot.memory;
+  const snapshotBudget = contextSnapshot.budget;
   if (
-    !isWireObject(value) ||
-    !isWireObject(contextSnapshot) ||
     !isWireIdentifier(currentRunId) ||
     !hasExactKeys(value, [
       "schemaVersion",
@@ -1211,44 +1214,155 @@ function isStepManifest(
     !hasUniqueHistoryItemIds(value.historyItems) ||
     !Array.isArray(contextSnapshot.historyItems) ||
     !isHistoryPrefix(contextSnapshot.historyItems, value.historyItems, currentRunId) ||
-    !Array.isArray(value.memory) ||
-    value.memory.length !== 0 ||
-    !sameWireValue(value.memory, contextSnapshot.memory) ||
-    !isInputBudget(value.budget) ||
-    !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
-    value.budget.memoryCharacters !== 0 ||
-    value.budget.contextDataCharacters !== 0 ||
-    !isWireObject(contextSnapshot.budget) ||
-    value.budget.mode !== contextSnapshot.budget.mode ||
-    value.budget.measurementVersion !== contextSnapshot.budget.measurementVersion ||
-    value.budget.maximumCharacters !== contextSnapshot.budget.maximumCharacters ||
-    value.budget.reservedCurrentRunCharacters !==
-      contextSnapshot.budget.reservedCurrentRunCharacters ||
-    value.budget.instructionCharacters !== contextSnapshot.budget.instructionCharacters ||
-    value.budget.contextDataCharacters !== contextSnapshot.budget.contextDataCharacters ||
-    value.budget.toolCharacters !== contextSnapshot.budget.toolCharacters ||
-    value.budget.historyCharacters !== contextSnapshot.budget.historyCharacters ||
-    value.budget.memoryCharacters !== contextSnapshot.budget.memoryCharacters ||
-    !Array.isArray(value.omissions) ||
-    !value.omissions.every(isHistoryOmission) ||
+    !isMemoryReferenceList(memory) ||
+    !isMemoryReferenceList(snapshotMemory) ||
+    !sameWireValue(memory, snapshotMemory) ||
+    !isInputBudget(budget) ||
+    !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
+    !isMemoryBudgetForReferences(budget, memory) ||
+    !isInputBudget(snapshotBudget) ||
+    budget.mode !== snapshotBudget.mode ||
+    budget.measurementVersion !== snapshotBudget.measurementVersion ||
+    budget.maximumCharacters !== snapshotBudget.maximumCharacters ||
+    budget.reservedCurrentRunCharacters !== snapshotBudget.reservedCurrentRunCharacters ||
+    budget.instructionCharacters !== snapshotBudget.instructionCharacters ||
+    budget.contextDataCharacters !== snapshotBudget.contextDataCharacters ||
+    budget.toolCharacters !== snapshotBudget.toolCharacters ||
+    budget.historyCharacters !== snapshotBudget.historyCharacters ||
+    budget.memoryCharacters !== snapshotBudget.memoryCharacters ||
+    !isContextOmissionList(value.omissions, memory) ||
+    !Array.isArray(contextSnapshot.omissions) ||
     !sameWireValue(value.omissions, contextSnapshot.omissions)
   ) {
     return false;
   }
-  const snapshotBudget = contextSnapshot.budget;
+  return budget.currentRunCharacters >= snapshotBudget.currentRunCharacters;
+}
+
+interface MemoryReferenceWire {
+  memoryId: string;
+  revision: number;
+  scope: "global" | "workspace";
+  characters: number;
+}
+
+interface HistoryOmissionWire {
+  sourceType: "history";
+  sourceId: string;
+  reason: "omitted_by_budget";
+}
+
+interface MemoryOmissionWire {
+  sourceType: "memory";
+  sourceId: string;
+  revision: number;
+  characters: number;
+  reason: "omitted_by_budget" | "omitted_by_limit";
+}
+
+function isMemoryReference(value: unknown): value is MemoryReferenceWire {
   return (
-    isInputBudget(snapshotBudget) &&
-    value.budget.currentRunCharacters >= snapshotBudget.currentRunCharacters
+    isWireObject(value) &&
+    hasExactKeys(value, [
+      "memoryId",
+      "revision",
+      "scope",
+      "characters"
+    ]) &&
+    isMemoryId(value.memoryId) &&
+    isSafePositiveInteger(value.revision) &&
+    (value.scope === "global" || value.scope === "workspace") &&
+    isSafePositiveInteger(value.characters) &&
+    value.characters <= MEMORY_CONTENT_MAX_CHARACTERS
   );
 }
 
-function isHistoryOmission(value: unknown): boolean {
+function isMemoryReferenceList(value: unknown): value is MemoryReferenceWire[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > MEMORY_CONTEXT_MAX_ITEMS ||
+    !value.every(isMemoryReference)
+  ) {
+    return false;
+  }
+  const ids = value.map((reference) => reference.memoryId);
+  return new Set(ids).size === ids.length;
+}
+
+function isMemoryBudgetForReferences(
+  budget: Record<string, unknown> & {
+    memoryCharacters: number;
+    contextDataCharacters: number;
+  },
+  references: MemoryReferenceWire[]
+): boolean {
+  const characters = references.reduce((total, reference) => total + reference.characters, 0);
+  if (
+    characters > MEMORY_CONTEXT_MAX_CHARACTERS ||
+    budget.memoryCharacters !== characters
+  ) {
+    return false;
+  }
+  return references.length === 0
+    ? budget.contextDataCharacters === 0
+    : budget.contextDataCharacters > 0;
+}
+
+function isHistoryOmission(value: unknown): value is HistoryOmissionWire {
   return (
     isWireObject(value) &&
     hasExactKeys(value, ["sourceType", "sourceId", "reason"]) &&
     value.sourceType === "history" &&
     isWireIdentifier(value.sourceId) &&
     value.reason === "omitted_by_budget"
+  );
+}
+
+function isMemoryOmission(value: unknown): value is MemoryOmissionWire {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, ["sourceType", "sourceId", "revision", "characters", "reason"]) &&
+    value.sourceType === "memory" &&
+    isMemoryId(value.sourceId) &&
+    isSafePositiveInteger(value.revision) &&
+    isSafePositiveInteger(value.characters) &&
+    value.characters <= MEMORY_CONTENT_MAX_CHARACTERS &&
+    (value.reason === "omitted_by_budget" || value.reason === "omitted_by_limit")
+  );
+}
+
+function isContextOmissionList(
+  value: unknown,
+  selected: MemoryReferenceWire[]
+): value is Array<HistoryOmissionWire | MemoryOmissionWire> {
+  if (
+    !Array.isArray(value) ||
+    value.length > MEMORY_RETRIEVAL_MAX_CANDIDATES + 1
+  ) {
+    return false;
+  }
+  const selectedIds = new Set(selected.map((reference) => reference.memoryId));
+  const omittedMemoryIds = new Set<string>();
+  let sawHistory = false;
+  let sawMemory = false;
+  let sawLimitOmission = false;
+  for (const omission of value) {
+    if (isHistoryOmission(omission)) {
+      if (sawHistory || sawMemory) return false;
+      sawHistory = true;
+      continue;
+    }
+    if (!isMemoryOmission(omission)) return false;
+    sawMemory = true;
+    if (selectedIds.has(omission.sourceId) || omittedMemoryIds.has(omission.sourceId)) {
+      return false;
+    }
+    sawLimitOmission ||= omission.reason === "omitted_by_limit";
+    omittedMemoryIds.add(omission.sourceId);
+  }
+  return (
+    (!sawLimitOmission || selected.length === MEMORY_CONTEXT_MAX_ITEMS) &&
+    selected.length + omittedMemoryIds.size <= MEMORY_RETRIEVAL_MAX_CANDIDATES
   );
 }
 

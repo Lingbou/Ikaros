@@ -8,13 +8,14 @@ import hashlib
 import re
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from ..domain import utc_now
-from ..errors import MemoryOperationError
+from ..errors import MemoryOperationError, MemoryRetrievalError
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from .domain import (
@@ -30,6 +31,13 @@ from .domain import (
     MemorySourceKind,
     MemorySourceSnapshot,
     MemoryState,
+)
+from .retrieval import (
+    MEMORY_RETRIEVAL_FETCH_LIMIT,
+    MEMORY_RETRIEVAL_MAX_CANDIDATES,
+    MaterializedMemoryV1,
+    MemoryRetrievalCandidateV1,
+    MemorySnapshotReferenceV1,
 )
 from .schema import initialize_memory_schema
 
@@ -347,6 +355,134 @@ class SqliteMemoryStore:
             item_digest=str(row["source_item_digest"]),
         )
 
+    def read_active_candidates(
+        self,
+        *,
+        workspace_id: str | None,
+    ) -> tuple[MemoryRetrievalCandidateV1, ...]:
+        """Read every scoped active candidate, or fail instead of ranking a prefix."""
+
+        if workspace_id is None:
+            scope_clause = "records.scope_type = 'global' AND records.scope_key IS NULL"
+            parameters: tuple[object, ...] = (MEMORY_RETRIEVAL_FETCH_LIMIT,)
+        else:
+            MemoryScope("workspace", workspace_id)
+            scope_clause = """
+                (records.scope_type = 'global' AND records.scope_key IS NULL)
+                OR
+                (records.scope_type = 'workspace' AND records.scope_key = ?)
+            """
+            parameters = (workspace_id, MEMORY_RETRIEVAL_FETCH_LIMIT)
+        rows = self._connection.execute(
+            """
+            SELECT records.id,
+                   records.kind,
+                   records.scope_type,
+                   records.scope_key,
+                   records.current_revision,
+                   records.updated_at,
+                   revisions.content,
+                   revisions.content_digest,
+                   revisions.content_redacted_at
+            FROM memory_records AS records
+            JOIN memory_revisions AS revisions
+              ON revisions.memory_id = records.id
+             AND revisions.revision = records.current_revision
+            WHERE records.state = 'active'
+              AND ("""
+            + scope_clause
+            + """)
+            ORDER BY records.updated_at DESC, records.id ASC
+            LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+        if len(rows) > MEMORY_RETRIEVAL_MAX_CANDIDATES:
+            raise MemoryRetrievalError("memory_retrieval_overflow")
+        try:
+            return tuple(_retrieval_candidate_from_row(row) for row in rows)
+        except (TypeError, ValueError):
+            raise MemoryRetrievalError("memory_snapshot_unavailable") from None
+
+    def materialize_memory_revisions(
+        self,
+        references: Sequence[MemorySnapshotReferenceV1],
+        *,
+        workspace_id: str | None,
+    ) -> tuple[MaterializedMemoryV1, ...]:
+        """Materialize an ordered frozen revision set in one SQLite read snapshot."""
+
+        frozen = tuple(references)
+        if not frozen:
+            return ()
+        if workspace_id is not None:
+            MemoryScope("workspace", workspace_id)
+        if len({reference.memory_id for reference in frozen}) != len(frozen):
+            raise MemoryRetrievalError("memory_snapshot_unavailable")
+
+        values = ",".join("(?, ?, ?)" for _reference in frozen)
+        parameters: list[object] = []
+        for ordinal, reference in enumerate(frozen):
+            parameters.extend((ordinal, reference.memory_id, reference.revision))
+        rows = self._connection.execute(
+            f"""
+            WITH requested(ordinal, memory_id, revision) AS (
+                VALUES {values}
+            )
+            SELECT requested.ordinal,
+                   requested.memory_id AS requested_memory_id,
+                   requested.revision AS requested_revision,
+                   records.id AS stored_memory_id,
+                   records.state,
+                   records.scope_type,
+                   records.scope_key,
+                   revisions.operation,
+                   revisions.content,
+                   revisions.content_digest,
+                   revisions.content_redacted_at
+            FROM requested
+            LEFT JOIN memory_records AS records
+              ON records.id = requested.memory_id
+            LEFT JOIN memory_revisions AS revisions
+              ON revisions.memory_id = requested.memory_id
+             AND revisions.revision = requested.revision
+            ORDER BY requested.ordinal ASC
+            """,
+            tuple(parameters),
+        ).fetchall()
+        if len(rows) != len(frozen):
+            raise MemoryRetrievalError("memory_snapshot_unavailable")
+
+        materialized: list[MaterializedMemoryV1] = []
+        try:
+            for reference, row in zip(frozen, rows, strict=True):
+                if (
+                    row["stored_memory_id"] != reference.memory_id
+                    or int(row["requested_revision"]) != reference.revision
+                    or row["state"] != "active"
+                    or row["operation"] not in {"create", "correct"}
+                    or row["content"] is None
+                    or row["content_digest"] is None
+                    or row["content_redacted_at"] is not None
+                ):
+                    raise ValueError("frozen Memory revision is unavailable")
+                if reference.scope == "global":
+                    if row["scope_type"] != "global" or row["scope_key"] is not None:
+                        raise ValueError("frozen global Memory scope changed")
+                elif (
+                    workspace_id is None
+                    or row["scope_type"] != "workspace"
+                    or row["scope_key"] != workspace_id
+                ):
+                    raise ValueError("frozen workspace Memory scope changed")
+                content = str(row["content"])
+                if str(row["content_digest"]) != _canonical_sha256(content):
+                    raise ValueError("stored Memory content digest does not match")
+                materialized.append(MaterializedMemoryV1(reference, content))
+        except (TypeError, ValueError):
+            raise MemoryRetrievalError("memory_snapshot_unavailable") from None
+        return tuple(materialized)
+
     def list_memories(
         self,
         *,
@@ -580,6 +716,27 @@ def _record_from_row(row: sqlite3.Row) -> MemoryRecord:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         forgotten_at=cast(str | None, row["forgotten_at"]),
+    )
+
+
+def _retrieval_candidate_from_row(row: sqlite3.Row) -> MemoryRetrievalCandidateV1:
+    content = row["content"]
+    digest = row["content_digest"]
+    if content is None or digest is None or row["content_redacted_at"] is not None:
+        raise ValueError("active Memory candidate has no readable content")
+    content_text = str(content)
+    if str(digest) != _canonical_sha256(content_text):
+        raise ValueError("active Memory candidate digest does not match")
+    return MemoryRetrievalCandidateV1(
+        memory_id=str(row["id"]),
+        kind=cast(MemoryKind, str(row["kind"])),
+        scope=MemoryScope(
+            type=cast(MemoryScopeType, str(row["scope_type"])),
+            key=cast(str | None, row["scope_key"]),
+        ),
+        revision=int(row["current_revision"]),
+        content=content_text,
+        updated_at=str(row["updated_at"]),
     )
 
 

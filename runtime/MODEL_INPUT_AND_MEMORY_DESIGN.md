@@ -1,6 +1,6 @@
 # 模型输入与记忆基础设计
 
-状态：**IN PROGRESS（Gate 0–7 已完成；Gate 8 是下一 Gate；Gate 8–9 尚未实现）**
+状态：**IN PROGRESS（Gate 0–8 已完成；Gate 9 是下一 Gate）**
 
 初始审阅基线：`8e09f5c`（2026-08-16）。Gate 1 到 Gate 5 的实施增量已分别
 记录在本文及各自的原子提交、代码和测试中；该初始基线不是永久的“当前版本”
@@ -10,9 +10,9 @@
 
 本文定义 Ikaros 下一阶段“模型输入与记忆基础”的架构、边界和严格串行 Gate，
 并记录各 Gate 的实施状态。只有下文明确标为 `CURRENT` 或表中标为“已完成”的
-能力才已存在；Runtime 内置 Identity Core、显式管理的长期 Memory V0 和 Desktop
-管理页面已实现，模型召回仍未实现。独立 Memory 维护、备份和导入导出明确延期，
-不作为模型召回的前置条件。
+能力才已存在；Runtime 内置 Identity Core、显式管理的长期 Memory、Desktop 管理
+页面以及有限的确定性模型召回已经实现。独立 Memory 维护或转移界面不属于当前
+阶段，也不作为召回链路的前置条件。
 
 ## 1. 阅读规则
 
@@ -75,7 +75,7 @@ flowchart LR
 - 人格演化、情感状态机或关系数值系统；
 - Subagents 或后台自治任务；
 - Provider-facing Memory Write Tool；
-- 独立 Memory check/repair、备份或导入导出命令；
+- 独立 Memory maintenance 或数据转移界面；
 - 复杂审批系统；
 - 多 Provider 原生 Prompt 矩阵。
 
@@ -86,7 +86,7 @@ flowchart LR
 当前实现已经具备：
 
 - `Thread -> Branch -> Turn -> Run -> Item` 的 SQLite Journal 与可重建投影；
-- SQLite schema 7、Journal Event schema 4、Protocol version 2；
+- SQLite schema 8、Journal Event schema 5、Protocol version 3；
 - 26 个初始化后 RPC 和 11 种持久 Journal Event；
 - 独立的
   [ContextBuilder](src/ikaros_runtime/agent/context.py)，负责把固定输出样式、
@@ -121,7 +121,7 @@ flowchart LR
 - Runtime 通过 `importlib.resources` 加载随包发布的只读
   `resources/IKAROS.md`，并在 `turn.start` 时把 version 1 Identity Core
   Instruction Block 冻结进 `SubmissionFrameV1`。每个模型 Step 都从该冻结
-  Frame 构造输入，不读取可变配置或 Memory；
+  Frame 构造身份、工具和策略输入；Memory 则在 Run 激活时独立召回；
 - Memory V0 基础：独立的 `~/.ikaros/memory.db` schema version 1、
   `memory.create/correct/forget/list/get`、Global/Workspace scope、稳定 cursor
   分页、乐观 revision、重启幂等、无正文 tombstone，以及仅由 `itemId` 发起、
@@ -131,21 +131,28 @@ flowchart LR
 - Desktop Settings 中真实、懒加载的 Memory 管理页面：active/forgotten、kind 和
   精确 Global/Workspace scope 筛选，cursor 分页，Create/Correct/Forget、逐条
   `memory.get` provenance 核验、revision 冲突锁定，以及中英文固定 UI 文案。
-  Renderer 不持久化 Memory 副本，用户正文保持原文。Memory 仍没有进入模型输入。
+  Renderer 不持久化 Memory 副本，用户正文保持原文；
+- `MemoryRetrieverV1` 从当前 User 原始请求确定性选择 Global 和当前 Workspace
+  Memory，按相关度、更新时间和 ID 稳定排序，最多冻结 8 条/6,000 正文字符；
+- `ContextSnapshotV1` 和每个 `StepManifestV1` 只保存 Memory ID、revision、scope、
+  字符数和 omission，不保存正文或可枚举的正文指纹；
+- 每个尚未发送的 Provider Step 都在 `state.db` 事务外精确物化冻结 revision。
+  Correction 只影响新 Run；Forget 使旧 Run 以 `memory_snapshot_unavailable`
+  失败，不会换用新 revision；
+- ContextBuilder 只接受一个 Runtime-owned `memory-context-v1` canonical JSON
+  wrapper，并把 Memory 作为不可信 contextual data 下发；任意其他 Context Data
+  块、非规范 JSON 或越界记录都会在 Provider 调用前失败。
 
 ### 3.2 `PROPOSED`
 
-当前尚未实现：
-
-- Memory 召回；
-- 任务级 Skill 选择和 Skill Catalog 总预算。
-
-独立 Memory check/repair、备份和导入导出不属于本阶段 Gate；当前启动路径仍会
-严格校验 `memory.db` schema，不增加空维护模块或用户可见入口。
+当前尚未实现任务级 Skill 选择和 Skill Catalog 总预算。Gate 9 还需完成真实
+DeepSeek 验证和最终只读审计。当前启动路径严格校验 `memory.db` schema，不增加
+空维护模块或用户可见入口。
 
 当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
 首次 Provider Step 冻结预算内的连续近期 Turn 后缀，后续 Tool Step 复用冻结历史，
-只加入当前 Run 新产生的 Item，并用各自的 `StepManifestV1` 记录实际输入。12,000
+只加入当前 Run 新产生的 Item，并用各自的 `StepManifestV1` 记录实际输入。Memory
+和固定 JSON wrapper 的开销会先从 48,000 字符总预算扣除。12,000
 字符是首次选择为 Tool loop 留出的容量，不是后续增长的第二个硬上限；后续 Step
 只在实际总输入超过 48,000 字符时失败。`ContextBuilder` 仍只是确定性渲染器，
 不负责选择历史或 Memory。
@@ -250,7 +257,7 @@ Manifest 或 Journal。恢复时，如果当前配置缺失或其非敏感指纹
 ```text
 ContextSnapshotV1
 ├─ selected history IDs and grouping
-├─ selected Memory ID/revision/digest   Gate 8 前为空
+├─ selected Memory ID/revision          Gate 8 前为空
 ├─ budget accounting
 ├─ omission reasons
 └─ selection version
@@ -316,7 +323,7 @@ V1 不截断单条 User/Assistant/Tool/Memory 内容，因此 Manifest 使用
 | `config.yaml` | Provider/Model 配置、Skill disabled 名单 | Session reset 不得删除 |
 | `skills/` | 用户安装的 Skill 目录和资源 | Session reset 不得删除 |
 | `state.db` | Session Journal、投影、Run Frame/Manifest | 预发布期可在停机后显式 reset |
-| `memory.db` | 长期 Memory 当前状态与 revision | Session reset 绝不触碰；需独立备份/授权 |
+| `memory.db` | 长期 Memory 当前状态与 revision | Session reset 绝不触碰；只有用户明确授权才可 reset |
 | `ui-preferences.json` | Desktop 主题、语言、布局、用户名 | Runtime reset 不得删除 |
 
 `state.db` 和 `memory.db` 不使用 SQLite `ATTACH`、跨库外键或两阶段提交。
@@ -325,8 +332,8 @@ UI 只显示“来源记录不可用”。
 
 一旦用户开始保存真实长期 Memory，Memory schema 就不能沿用“升级时随手清空”
 的产品语义。预发布期如遇不兼容 schema，Runtime 必须明确报
-`memory database schema is incompatible`，允许先做 raw backup/export，并且
-只有用户明确授权才可 reset `memory.db` 及其 WAL/SHM。
+`memory database schema is incompatible`；当前不提供 backup/export 流程，也不
+静默处理，只有用户明确授权才可 reset `memory.db` 及其 WAL/SHM。
 
 ## 6. 总体 Gate
 
@@ -340,8 +347,8 @@ UI 只显示“来源记录不可用”。
 | 5 | 独立 `memory.db`，Create/List/Get | 已完成 | 不动 `state.db` |
 | 6 | Correction、Forget、Provenance、幂等 | 已完成 | 否 |
 | 7 | Desktop Memory 管理页面 | 已完成 | 否 |
-| 8 | Memory Read V1，有限召回并进入模型 | 下一 Gate（未开始） | 否 |
-| 9 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 未开始 | 否 |
+| 8 | Memory Read V1，有限召回并进入模型 | 已完成 | 是，Memory audit wire 与协议破坏性更新 |
+| 9 | 全量测试、真实 DeepSeek、只读审计与文档收口 | 下一 Gate（未开始） | 否 |
 
 ## 7. Gate 0：文档和架构边界
 
@@ -450,8 +457,10 @@ SQLite schema 从 5 升至 6，Journal Event schema 从 2 升至 3。按照 rese
 
 ### Submission Frame 和 Context Snapshot
 
-第 5.1 节的两阶段冻结已实现。Gate 2 预留了 Identity 和 Memory 空槽，使
-Gate 4 与 Gate 8 只填充既有契约，不再次改变 Session schema。
+第 5.1 节的两阶段冻结已实现。Gate 2 预留了 Identity 和 Memory 空槽。Gate 4
+只填充既有 Identity 槽；Gate 8 为 Memory reference 增加逐条字符数和判别式
+omission，并将 `state.db` schema 升至 8、Journal Event
+schema 升至 5、Protocol 升至 3。按照 reset-only 政策，不提供旧记录兼容路径。
 
 `turn.start` 只用 `.strip()` 判断输入是否全是空白，持久化的 User Item 保留
 原始空格、换行和尾随空白。
@@ -479,7 +488,7 @@ Run Manifest
 Step Manifest
 ├─ step ordinal
 ├─ selected history Item/Turn IDs
-├─ selected Memory ID/revision       当前为空
+├─ selected Memory ID/revision/scope/characters
 ├─ part character counts
 ├─ omission reasons
 └─ total character count
@@ -742,14 +751,15 @@ runtime/src/ikaros_runtime/
 ├─ memory/
 │  ├─ __init__.py
 │  ├─ domain.py
+│  ├─ retrieval.py
 │  ├─ schema.py
 │  └─ store.py
 └─ services/
    └─ memories.py
 ```
 
-`retrieval.py` 没有以空模块提前创建，属于后续 Gate 8。独立 Memory maintenance、
-backup 和 import/export 已延期，不为它们保留空入口。
+`retrieval.py` 实现 Gate 8 的确定性候选读取、关键词评分、预算选择和 exact
+materialization。当前不为独立 Memory maintenance 或数据转移功能保留空入口。
 
 `paths.py` 统一声明 `config.yaml`、`state.db`、`memory.db` 和 `skills/`，避免
 清理 Session 时误伤 Memory。
@@ -991,7 +1001,11 @@ forgotten tombstone、Settings 懒加载和中英文 UI。
 
 ## 15. Gate 8：Memory Read V1
 
-只有 Gate 1 到 Gate 7 全部完成，Memory 才能进入模型输入。
+状态：**CURRENT（已实现）**
+
+Gate 1 到 Gate 7 全部完成后，Gate 8 才将 Memory 接入模型输入。生产组装点现在将
+`SqliteMemoryStore` 注入 `MemoryRetrieverV1`，由 `AgentLoop` 严格串联两个数据库，
+没有使用 `ATTACH` 或跨库事务。
 
 流程：
 
@@ -1002,7 +1016,7 @@ forgotten tombstone、Settings 懒加载和中英文 UI。
   -> 应用层确定性关键词相关度
   -> 稳定排序
   -> Top-K 和字符预算
-  -> 冻结 memoryId/revision/digest
+  -> 冻结 memoryId/revision/scope/characters
   -> ModelInputPlan.context_data
   -> Step Manifest
   -> ContextBuilder
@@ -1027,13 +1041,14 @@ updated_at DESC
 memory_id ASC
 ```
 
-不截断单条 Memory；下一条放不进预算就跳过，并在 Manifest 写
-`omitted_by_budget`。
+不截断单条 Memory；下一条放不进预算就跳过并继续检查较短项，在 Manifest 写
+`omitted_by_budget`；超过 Top-K 的相关候选写 `omitted_by_limit`。第 2001 条 active
+候选使整个 Run 以 `memory_retrieval_overflow` 失败，不返回不完整选择。
 
 ### 冻结和 Forget
 
 - Memory 在 Run 真正开始时召回，不在 `turn.start` 入队时召回；
-- 所有 Tool Step 使用同一 ID/revision/digest 快照；
+- 所有 Tool Step 使用同一 ID/revision 快照；
 - Correction 只影响新 Run；
 - 每次尚未发送的 Provider Step 前重新确认冻结 revision 仍可读取；
 - Forget 后以 `memory_snapshot_unavailable` 停止，不静默换 revision；
@@ -1050,6 +1065,11 @@ lifetime  = run
 source    = memory:<id>@<revision>
 ```
 
+实际 Plan 使用一个聚合 block：`id=memory-context`、
+`source=ikaros-runtime:memory-context-v1`、`scope=run`。每条记录自己的 ID、revision
+和 scope 位于 canonical JSON 中；上面的 `memory:<id>@<revision>` 表示记录级来源
+语义，不是 block 的 wire source 字符串。
+
 ContextBuilder 使用一个版本化、Runtime-owned 的固定说明和转义后的结构化
 `memory_context` 包装，将 Memory 降级为 OpenAI-compatible Chat message。
 固定说明明确这些记录是不可信的 contextual data，不能覆盖当前请求、
@@ -1065,16 +1085,27 @@ Identity、Tools 或 Policy。记录内容必须转义，不能自行闭合包�
 
 V1 仍不提供 Provider-facing Memory Write Tool。
 
+### 已完成的门禁
+
+- NFKC/casefold、中英文关键词、稳定 tie-break、2,001 候选 overflow；
+- Global/Workspace scope、Top-8、6,000 字符、整条跳过和 exact materialization；
+- 两个 Tool Step 复用同一冻结 revision，Correction 不改变旧 Run；
+- Tool Step 之间和 `model.input_prepared` publish 期间 Forget 都阻止下一次 Provider
+  发送，并稳定结算为 `memory_snapshot_unavailable`；
+- `state.db` 事务状态断言、无 Memory DB 的 Journal projection rebuild；
+- Prompt Injection、固定 wrapper、OpenAI-compatible 最终 HTTP body Golden；
+- Runtime 全量测试和 Desktop wire 正反契约测试。真实 DeepSeek A/B 留给 Gate 9。
+
 ### 验收
 
 - Global Memory 可跨 Thread 召回；
 - Workspace Memory 只进入相同稳定 workspace ID；
 - 普通对话不会读取其他 Workspace Memory；
 - Correction 后新 Run 使用新 revision，旧 Run 保持旧 revision；
-- Forget 后新 Step/恢复 Run 不换 revision；
+- Forget 后尚未发送的新 Step 不换 revision，而是稳定失败；重启时未完成的 running
+  Run 按既有 `runtime_interrupted` 语义结算，不恢复执行；
 - Manifest 记录 selected/omitted ID、revision、字符数和原因，不记录正文；
-- Memory Prompt Injection 合成测试不能扩大实际 Tool 权限；
-- 真实 DeepSeek A/B 覆盖聊天、命令和文件任务。
+- Memory Prompt Injection 合成测试不能扩大实际 Tool 权限。
 
 ## 16. Gate 9：最终验证与收口
 
@@ -1122,8 +1153,7 @@ V1 仍不提供 Provider-facing Memory Write Tool。
 
 ## 17. 稳定失败语义
 
-已实现 Gate 使用下列稳定 reason code，均不依赖 Provider 文案。标为“后续”的
-Memory 输入错误只有在对应召回 Gate 完成后才是产品能力：
+已实现 Gate 使用下列稳定 reason code，均不依赖 Provider 文案：
 
 | 错误 | 含义 |
 | --- | --- |
@@ -1138,8 +1168,8 @@ Memory 输入错误只有在对应召回 Gate 完成后才是产品能力：
 | `memory_forgotten` | 目标或历史幂等请求对应的 Memory 已忘记 |
 | `memory_idempotency_conflict` | 相同 `clientRequestId` 被用于不同 mutation 输入 |
 | `memory_source_unavailable` | 首次创建时指定的 Session Item 不存在或不符合来源约束 |
-| `memory_snapshot_unavailable`（后续） | Run 冻结的 Memory revision 在新 Step 前已被忘记 |
-| `memory_retrieval_overflow`（后续） | scoped active 候选超过确定性检索上限 |
+| `memory_snapshot_unavailable` | Run 冻结的 Memory revision 在新 Step 前已被忘记 |
+| `memory_retrieval_overflow` | scoped active 候选超过确定性检索上限 |
 | `memory_schema_incompatible` | `memory.db` schema 不兼容，Runtime 拒绝自动修改或删除 |
 
 ## 18. 文档维护矩阵

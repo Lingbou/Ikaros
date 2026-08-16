@@ -3,7 +3,7 @@
 
 export const RUNTIME_PROTOCOL_MANIFEST = {
   "schemaVersion": 2,
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -39,7 +39,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "event"
   ],
   "journal": {
-    "schemaVersion": 4,
+    "schemaVersion": 5,
     "eventTypes": [
       "thread.created",
       "thread.renamed",

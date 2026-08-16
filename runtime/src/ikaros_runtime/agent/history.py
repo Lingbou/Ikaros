@@ -7,9 +7,11 @@ from dataclasses import dataclass
 
 from ..errors import ContextBudgetExceededError
 from ..run_input import (
+    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     MAXIMUM_INPUT_CHARACTERS_V1,
     RESERVED_CURRENT_RUN_CHARACTERS_V1,
     ContextItemRecordV1,
+    FrozenMemoryContextV1,
     OmissionRecordV1,
     SubmissionFrameV1,
     frame_input_character_counts,
@@ -41,6 +43,7 @@ class HistorySelectorV1:
         current_turn_id: str,
         current_turn_ordinal: int,
         current_records: Sequence[ContextItemRecordV1],
+        memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
         maximum_characters: int = MAXIMUM_INPUT_CHARACTERS_V1,
         reserved_current_run_characters: int = RESERVED_CURRENT_RUN_CHARACTERS_V1,
     ) -> None:
@@ -78,6 +81,8 @@ class HistorySelectorV1:
         fixed_with_reserve = (
             instruction_characters
             + tool_characters
+            + memory_context.context_data_characters
+            + memory_context.memory_characters
             + current_characters
             + reserved_current_run_characters
         )

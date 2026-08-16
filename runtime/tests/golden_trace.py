@@ -14,12 +14,20 @@ from unittest.mock import patch
 import ikaros_runtime.agent.loop as agent_loop_module
 import ikaros_runtime.memory.store as memory_store_module
 import ikaros_runtime.storage.store as store_module
+from ikaros_runtime import __version__
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, ModelUsage
 from ikaros_runtime.identity import load_identity_core
-from ikaros_runtime.memory import SqliteMemoryStore
-from ikaros_runtime.protocol.spec import EVENT_NOTIFICATION_METHOD, JSONRPC_VERSION
+from ikaros_runtime.memory import MemoryRetrieverV1, SqliteMemoryStore
+from ikaros_runtime.protocol.spec import (
+    EVENT_NOTIFICATION_METHOD,
+    INITIALIZE_METHOD,
+    JSONRPC_VERSION,
+    PROTOCOL_VERSION,
+    SERVER_NAME,
+    initialize_capabilities,
+)
 from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderRequest,
@@ -295,6 +303,19 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 content="/process.run golden",
                 frame_template=frame,
             )
+            memory_service = MemoryService(memory_store, lambda _value: None, store)
+            memory_create_params = {
+                "kind": "preference",
+                "scope": {"type": "global", "key": None},
+                "content": "For golden commands, the user prefers concise technical explanations.",
+                "clientRequestId": "golden-memory-create",
+                "source": {
+                    "type": "session_item",
+                    "itemId": prepared.initial_events[0].item_id,
+                },
+            }
+            memory_created = memory_service.create(memory_create_params)
+            memory_id = cast(str, memory_created["memoryId"])
             loop = AgentLoop(
                 store,
                 {provider.id: provider},
@@ -302,6 +323,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 executor,
                 provider_snapshot_resolver=_snapshot_resolver(snapshot),
                 identity_core=identity_core,
+                memory_retriever=MemoryRetrieverV1(memory_store),
             )
             await loop.run(prepared.run_id, CancellationToken())
             if store.run_status(prepared.run_id) != "completed":
@@ -317,19 +339,6 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 "branchId": thread.default_branch_id,
                 "limit": 25,
             }
-            memory_service = MemoryService(memory_store, lambda _value: None, store)
-            memory_create_params = {
-                "kind": "preference",
-                "scope": {"type": "global", "key": None},
-                "content": "The user prefers concise technical explanations.",
-                "clientRequestId": "golden-memory-create",
-                "source": {
-                    "type": "session_item",
-                    "itemId": prepared.initial_events[0].item_id,
-                },
-            }
-            memory_created = memory_service.create(memory_create_params)
-            memory_id = cast(str, memory_created["memoryId"])
             memory_active_list_params = {
                 "limit": 25,
                 "scope": {"type": "global", "key": None},
@@ -474,6 +483,22 @@ async def _expected_trace(database_path: Path) -> dict[str, Any]:
         if message["kind"] == "response"
         and message["name"] not in committed_response_names
     )
+    for message in responses:
+        if message.get("method") != INITIALIZE_METHOD:
+            continue
+        message["requestParams"] = {
+            "protocolVersion": PROTOCOL_VERSION,
+            "client": {"name": "golden-client", "version": "1.0.0"},
+        }
+        message["envelope"] = {
+            "jsonrpc": JSONRPC_VERSION,
+            "id": 1,
+            "result": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "server": {"name": SERVER_NAME, "version": __version__},
+                "capabilities": initialize_capabilities(),
+            },
+        }
     return {
         "fixtureVersion": committed.get("fixtureVersion"),
         "messages": [

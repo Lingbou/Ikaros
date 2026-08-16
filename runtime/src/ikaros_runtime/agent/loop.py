@@ -8,10 +8,15 @@ from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JournalEvent, ModelUsage
 from ..errors import (
     ContextBudgetExceededError,
+    MemoryRetrievalError,
     ModelInputUnavailableError,
     ProtectedValueError,
     ProviderFailure,
     RunInputDriftError,
+)
+from ..memory import (
+    MemoryRetrieverV1,
+    MemorySnapshotReferenceV1,
 )
 from ..providers.base import (
     ProviderAdapter,
@@ -24,8 +29,13 @@ from ..providers.base import (
     ToolCallCompleted,
 )
 from ..run_input import (
+    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     EXECUTABLE_CONTEXT_SELECTION_VERSIONS,
+    ContextDataBlockV1,
+    FrozenMemoryContextV1,
     InstructionBlockV1,
+    MemoryReferenceV1,
+    OmissionRecordV1,
     ProviderExecutionSnapshotV1,
     SubmissionFrameV1,
     validate_tool_environment,
@@ -37,7 +47,11 @@ from ..security import (
 )
 from ..storage import SqliteRuntimeStore
 from ..tools.core import ToolCall, ToolExecutionCancelled, ToolExecutor, ToolResult
-from .context import ContextBuilder
+from .context import (
+    ContextBuilder,
+    build_memory_context_data,
+    memory_context_data_characters,
+)
 from .model_input import ModelInputPlanner
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
@@ -96,6 +110,7 @@ class AgentLoop:
         protected_values: ProtectedValues | None = None,
         context_builder: ContextBuilder | None = None,
         model_input_planner: ModelInputPlanner | None = None,
+        memory_retriever: MemoryRetrieverV1 | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
         identity_core: InstructionBlockV1 | None = None,
     ) -> None:
@@ -113,6 +128,7 @@ class AgentLoop:
         self._model_input_planner = (
             model_input_planner if model_input_planner is not None else ModelInputPlanner()
         )
+        self._memory_retriever = memory_retriever
         self._provider_snapshot_resolver = provider_snapshot_resolver
         self._identity_core = identity_core
 
@@ -142,19 +158,35 @@ class AgentLoop:
             elif run.execution_policy != "full_access":
                 raise RuntimeError("run execution policy is not available")
 
+            submission_content = self._store.get_submission_user_content(run_id)
+            workspace_id = frame.workspace.id if frame.workspace is not None else None
             await self._publish(self._store.mark_run_running(run_id))
+            cancellation.raise_if_cancelled()
+            memory_context = self._select_memory_context(
+                query=submission_content,
+                workspace_id=workspace_id,
+            )
             for step_ordinal in range(1, frame.max_steps + 1):
                 cancellation.raise_if_cancelled()
                 prepared_step = self._store.prepare_model_step(
                     run_id,
                     step_ordinal=step_ordinal,
+                    memory_context=memory_context,
                 )
                 try:
                     await self._publish(prepared_step.event)
                     cancellation.raise_if_cancelled()
+                    context_data = self._materialize_memory_context(
+                        prepared_step.context_snapshot.memory,
+                        workspace_id=workspace_id,
+                        expected_context_data_characters=(
+                            prepared_step.context_snapshot.budget.context_data_characters
+                        ),
+                    )
                     plan = self._model_input_planner.build_plan(
                         frame=frame,
                         items=prepared_step.items,
+                        context_data=context_data,
                         budget_snapshot=prepared_step.step_manifest.budget,
                     )
                     request = self._context_builder.build_request(plan)
@@ -217,6 +249,78 @@ class AgentLoop:
 
     async def cancel(self, run_id: str) -> None:
         await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
+
+    def _select_memory_context(
+        self,
+        *,
+        query: str,
+        workspace_id: str | None,
+    ) -> FrozenMemoryContextV1:
+        retriever = self._memory_retriever
+        if retriever is None:
+            return EMPTY_FROZEN_MEMORY_CONTEXT_V1
+        self._assert_memory_read_outside_state_transaction()
+        retrieval = retriever.retrieve(query=query, workspace_id=workspace_id)
+        references = tuple(
+            MemoryReferenceV1(
+                memory_id=record.memory_id,
+                revision=record.revision,
+                scope=record.scope,
+                characters=record.characters,
+            )
+            for record in retrieval.selected
+        )
+        omissions = tuple(
+            OmissionRecordV1(
+                source_type="memory",
+                source_id=omission.memory_id,
+                revision=omission.revision,
+                characters=omission.characters,
+                reason=omission.reason,
+            )
+            for omission in retrieval.omissions
+        )
+        return FrozenMemoryContextV1(
+            memory=references,
+            omissions=omissions,
+            memory_characters=retrieval.memory_characters,
+            context_data_characters=memory_context_data_characters(retrieval.selected),
+        )
+
+    def _materialize_memory_context(
+        self,
+        references: Sequence[MemoryReferenceV1],
+        *,
+        workspace_id: str | None,
+        expected_context_data_characters: int,
+    ) -> tuple[ContextDataBlockV1, ...]:
+        if not references:
+            if expected_context_data_characters != 0:
+                raise MemoryRetrievalError("memory_snapshot_unavailable")
+            return ()
+        retriever = self._memory_retriever
+        if retriever is None:
+            raise MemoryRetrievalError("memory_snapshot_unavailable")
+        self._assert_memory_read_outside_state_transaction()
+        materialized = retriever.materialize_exact(
+            tuple(
+                MemorySnapshotReferenceV1(
+                    memory_id=reference.memory_id,
+                    revision=reference.revision,
+                    scope=reference.scope,
+                    characters=reference.characters,
+                )
+                for reference in references
+            ),
+            workspace_id=workspace_id,
+        )
+        if memory_context_data_characters(materialized) != expected_context_data_characters:
+            raise MemoryRetrievalError("memory_snapshot_unavailable")
+        return build_memory_context_data(materialized)
+
+    def _assert_memory_read_outside_state_transaction(self) -> None:
+        if self._store.in_transaction:
+            raise RuntimeError("Memory read attempted during a state database transaction")
 
     async def _publish_terminal_events(self, events: Sequence[JournalEvent]) -> None:
         for event in events:
@@ -651,6 +755,8 @@ def _failure_reason_code(error: Exception) -> str:
         return "context_budget_exceeded"
     if isinstance(error, ModelInputUnavailableError):
         return "model_input_unavailable"
+    if isinstance(error, MemoryRetrievalError):
+        return error.reason_code
     if isinstance(error, ProviderFailure):
         return f"provider_{error.category}"
     if isinstance(error, ProtectedValueError):

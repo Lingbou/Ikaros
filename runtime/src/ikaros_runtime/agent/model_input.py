@@ -63,12 +63,13 @@ class ModelInputPlanner:
         *,
         frame: SubmissionFrameV1,
         items: Sequence[ContextItem],
+        context_data: Sequence[ContextDataBlockV1] = (),
         budget_snapshot: InputBudgetRecordV1,
     ) -> ModelInputPlanV1:
         return ModelInputPlanV1(
             model_id=frame.model_id,
             instructions=frame.instructions,
-            context_data=(),
+            context_data=tuple(context_data),
             messages=tuple(items),
             tools=frame.tool_definitions,
             generation_options=GenerationOptionsV1(),

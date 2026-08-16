@@ -22,7 +22,9 @@ from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
     CONTEXT_SELECTION_VERSION,
+    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     CompletedProviderStepV1,
+    FrozenMemoryContextV1,
     PreparedModelStepV1,
     RunManifestV1,
     SubmissionFrameTemplateV1,
@@ -118,6 +120,12 @@ class SqliteRuntimeStore:
 
     def close(self) -> None:
         self._connection.close()
+
+    @property
+    def in_transaction(self) -> bool:
+        """Expose transaction state so cross-database orchestration can assert lock order."""
+
+        return self._connection.in_transaction
 
     def has_active_runs(self) -> bool:
         return has_active_runs(self._connection)
@@ -601,6 +609,30 @@ class SqliteRuntimeStore:
     def get_run_manifest(self, run_id: str) -> RunManifestV1:
         return get_run_manifest(self._connection, run_id)
 
+    def get_submission_user_content(self, run_id: str) -> str:
+        """Read only the frozen Run's original User Item for deterministic retrieval."""
+
+        frame = get_submission_frame(self._connection, run_id)
+        row = self._connection.execute(
+            """
+            SELECT turn_id, run_id, kind, role, status, content
+            FROM items
+            WHERE id = ?
+            """,
+            (frame.user_item_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["turn_id"] != frame.turn_id
+            or row["run_id"] != frame.run_id
+            or row["kind"] != "message"
+            or row["role"] != "user"
+            or row["status"] != "completed"
+            or not isinstance(row["content"], str)
+        ):
+            raise RuntimeError("Run submission User Item is unavailable")
+        return str(row["content"])
+
     def run_status(self, run_id: str) -> str:
         return run_status(self._connection, run_id)
 
@@ -664,6 +696,7 @@ class SqliteRuntimeStore:
         run_id: str,
         *,
         step_ordinal: int,
+        memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     ) -> PreparedModelStepV1:
         if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
             raise ValueError("model Step ordinal must be a positive integer")
@@ -672,6 +705,7 @@ class SqliteRuntimeStore:
             return self._prepare_model_step_in_transaction(
                 run_id,
                 step_ordinal=step_ordinal,
+                memory_context=memory_context,
             )
 
     def _prepare_model_step_in_transaction(
@@ -679,6 +713,7 @@ class SqliteRuntimeStore:
         run_id: str,
         *,
         step_ordinal: int,
+        memory_context: FrozenMemoryContextV1,
     ) -> PreparedModelStepV1:
         run = self.get_run(run_id)
         frame = get_submission_frame(self._connection, run_id)
@@ -692,8 +727,11 @@ class SqliteRuntimeStore:
                 run_id=run_id,
                 frame=frame,
                 manifest=run_manifest,
+                memory_context=memory_context,
             )
         else:
+            if FrozenMemoryContextV1.from_snapshot(snapshot) != memory_context:
+                raise RuntimeError("model Step changes the frozen Memory context")
             records = load_context_for_snapshot(
                 self._connection,
                 run_id=run_id,

@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 2,
+          "protocolVersion": 3,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
@@ -93,7 +93,7 @@
               "ordinal": 1,
               "status": "completed",
               "createdAt": "2026-08-15T12:00:00.004Z",
-              "updatedAt": "2026-08-15T12:00:00.016Z",
+              "updatedAt": "2026-08-15T12:00:00.017Z",
               "runs": [
                 {
                   "id": "run_00000000000000000000000000000004",
@@ -103,7 +103,7 @@
                   "executionPolicy": "full_access",
                   "status": "completed",
                   "createdAt": "2026-08-15T12:00:00.004Z",
-                  "settledAt": "2026-08-15T12:00:00.016Z",
+                  "settledAt": "2026-08-15T12:00:00.017Z",
                   "items": [
                     {
                       "id": "item_00000000000000000000000000000005",
@@ -119,7 +119,7 @@
                       "updatedAt": "2026-08-15T12:00:00.004Z"
                     },
                     {
-                      "id": "item_00000000000000000000000000000008",
+                      "id": "item_00000000000000000000000000000009",
                       "turnId": "turn_00000000000000000000000000000003",
                       "runId": "run_00000000000000000000000000000004",
                       "ordinal": 2,
@@ -128,8 +128,8 @@
                       "status": "completed",
                       "content": "",
                       "data": {
-                        "stepId": "step_00000000000000000000000000000007",
-                        "callId": "call_00000000000000000000000000000006",
+                        "stepId": "step_00000000000000000000000000000008",
+                        "callId": "call_00000000000000000000000000000007",
                         "toolName": "process_run",
                         "arguments": {
                           "command": "golden"
@@ -137,25 +137,25 @@
                         "outcome": "completed",
                         "durationMs": 3
                       },
-                      "createdAt": "2026-08-15T12:00:00.007Z",
-                      "updatedAt": "2026-08-15T12:00:00.009Z"
+                      "createdAt": "2026-08-15T12:00:00.008Z",
+                      "updatedAt": "2026-08-15T12:00:00.010Z"
                     },
                     {
-                      "id": "item_00000000000000000000000000000009",
+                      "id": "item_0000000000000000000000000000000a",
                       "turnId": "turn_00000000000000000000000000000003",
                       "runId": "run_00000000000000000000000000000004",
                       "ordinal": 3,
                       "kind": "tool_result",
                       "role": "tool",
                       "status": "completed",
-                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000006\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
+                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
                       "data": {
-                        "stepId": "step_00000000000000000000000000000007",
-                        "callId": "call_00000000000000000000000000000006",
-                        "toolCallItemId": "item_00000000000000000000000000000008",
+                        "stepId": "step_00000000000000000000000000000008",
+                        "callId": "call_00000000000000000000000000000007",
+                        "toolCallItemId": "item_00000000000000000000000000000009",
                         "toolName": "process_run",
                         "result": {
-                          "toolCallId": "call_00000000000000000000000000000006",
+                          "toolCallId": "call_00000000000000000000000000000007",
                           "toolName": "process_run",
                           "ok": true,
                           "output": "golden-output",
@@ -169,11 +169,11 @@
                           "truncated": false
                         }
                       },
-                      "createdAt": "2026-08-15T12:00:00.009Z",
-                      "updatedAt": "2026-08-15T12:00:00.009Z"
+                      "createdAt": "2026-08-15T12:00:00.010Z",
+                      "updatedAt": "2026-08-15T12:00:00.010Z"
                     },
                     {
-                      "id": "item_0000000000000000000000000000000a",
+                      "id": "item_0000000000000000000000000000000b",
                       "turnId": "turn_00000000000000000000000000000003",
                       "runId": "run_00000000000000000000000000000004",
                       "ordinal": 4,
@@ -182,8 +182,8 @@
                       "status": "completed",
                       "content": "Command exited with code 0.\ngolden-output",
                       "data": {},
-                      "createdAt": "2026-08-15T12:00:00.011Z",
-                      "updatedAt": "2026-08-15T12:00:00.014Z"
+                      "createdAt": "2026-08-15T12:00:00.012Z",
+                      "updatedAt": "2026-08-15T12:00:00.015Z"
                     }
                   ]
                 }
@@ -248,7 +248,7 @@
           "type": "global",
           "key": null
         },
-        "content": "The user prefers concise technical explanations.",
+        "content": "For golden commands, the user prefers concise technical explanations.",
         "clientRequestId": "golden-memory-create",
         "source": {
           "type": "session_item",
@@ -259,7 +259,7 @@
         "jsonrpc": "2.0",
         "id": 4,
         "result": {
-          "memoryId": "memory_0000000000000000000000000000000b",
+          "memoryId": "memory_00000000000000000000000000000006",
           "resultingRevision": 1,
           "created": true
         }
@@ -283,7 +283,7 @@
         "result": {
           "memories": [
             {
-              "id": "memory_0000000000000000000000000000000b",
+              "id": "memory_00000000000000000000000000000006",
               "kind": "preference",
               "scope": {
                 "type": "global",
@@ -291,9 +291,9 @@
               },
               "revision": 1,
               "state": "active",
-              "preview": "The user prefers concise technical explanations.",
-              "createdAt": "2026-08-15T12:00:00.017Z",
-              "updatedAt": "2026-08-15T12:00:00.017Z",
+              "preview": "For golden commands, the user prefers concise technical explanations.",
+              "createdAt": "2026-08-15T12:00:00.005Z",
+              "updatedAt": "2026-08-15T12:00:00.005Z",
               "forgottenAt": null
             }
           ],
@@ -307,14 +307,14 @@
       "kind": "response",
       "method": "memory.get",
       "requestParams": {
-        "memoryId": "memory_0000000000000000000000000000000b"
+        "memoryId": "memory_00000000000000000000000000000006"
       },
       "envelope": {
         "jsonrpc": "2.0",
         "id": 6,
         "result": {
           "memory": {
-            "id": "memory_0000000000000000000000000000000b",
+            "id": "memory_00000000000000000000000000000006",
             "kind": "preference",
             "scope": {
               "type": "global",
@@ -322,7 +322,7 @@
             },
             "revision": 1,
             "state": "active",
-            "content": "The user prefers concise technical explanations.",
+            "content": "For golden commands, the user prefers concise technical explanations.",
             "provenance": {
               "sourceKind": "session_item",
               "threadId": "thread_00000000000000000000000000000001",
@@ -330,8 +330,8 @@
               "itemId": "item_00000000000000000000000000000005",
               "status": "available"
             },
-            "createdAt": "2026-08-15T12:00:00.017Z",
-            "updatedAt": "2026-08-15T12:00:00.017Z",
+            "createdAt": "2026-08-15T12:00:00.005Z",
+            "updatedAt": "2026-08-15T12:00:00.005Z",
             "forgottenAt": null
           }
         }
@@ -342,7 +342,7 @@
       "kind": "response",
       "method": "memory.correct",
       "requestParams": {
-        "memoryId": "memory_0000000000000000000000000000000b",
+        "memoryId": "memory_00000000000000000000000000000006",
         "expectedRevision": 1,
         "content": "The user prefers precise, concise technical explanations.",
         "clientRequestId": "golden-memory-correct"
@@ -351,7 +351,7 @@
         "jsonrpc": "2.0",
         "id": 7,
         "result": {
-          "memoryId": "memory_0000000000000000000000000000000b",
+          "memoryId": "memory_00000000000000000000000000000006",
           "resultingRevision": 2,
           "created": true
         }
@@ -362,14 +362,14 @@
       "kind": "response",
       "method": "memory.get",
       "requestParams": {
-        "memoryId": "memory_0000000000000000000000000000000b"
+        "memoryId": "memory_00000000000000000000000000000006"
       },
       "envelope": {
         "jsonrpc": "2.0",
         "id": 8,
         "result": {
           "memory": {
-            "id": "memory_0000000000000000000000000000000b",
+            "id": "memory_00000000000000000000000000000006",
             "kind": "preference",
             "scope": {
               "type": "global",
@@ -385,7 +385,7 @@
               "itemId": null,
               "status": "not_applicable"
             },
-            "createdAt": "2026-08-15T12:00:00.017Z",
+            "createdAt": "2026-08-15T12:00:00.005Z",
             "updatedAt": "2026-08-15T12:00:00.018Z",
             "forgottenAt": null
           }
@@ -397,7 +397,7 @@
       "kind": "response",
       "method": "memory.forget",
       "requestParams": {
-        "memoryId": "memory_0000000000000000000000000000000b",
+        "memoryId": "memory_00000000000000000000000000000006",
         "expectedRevision": 2,
         "clientRequestId": "golden-memory-forget"
       },
@@ -405,7 +405,7 @@
         "jsonrpc": "2.0",
         "id": 9,
         "result": {
-          "memoryId": "memory_0000000000000000000000000000000b",
+          "memoryId": "memory_00000000000000000000000000000006",
           "resultingRevision": 3,
           "created": true
         }
@@ -429,7 +429,7 @@
         "result": {
           "memories": [
             {
-              "id": "memory_0000000000000000000000000000000b",
+              "id": "memory_00000000000000000000000000000006",
               "kind": "preference",
               "scope": {
                 "type": "global",
@@ -438,7 +438,7 @@
               "revision": 3,
               "state": "forgotten",
               "preview": null,
-              "createdAt": "2026-08-15T12:00:00.017Z",
+              "createdAt": "2026-08-15T12:00:00.005Z",
               "updatedAt": "2026-08-15T12:00:00.019Z",
               "forgottenAt": "2026-08-15T12:00:00.019Z"
             }
@@ -453,14 +453,14 @@
       "kind": "response",
       "method": "memory.get",
       "requestParams": {
-        "memoryId": "memory_0000000000000000000000000000000b"
+        "memoryId": "memory_00000000000000000000000000000006"
       },
       "envelope": {
         "jsonrpc": "2.0",
         "id": 11,
         "result": {
           "memory": {
-            "id": "memory_0000000000000000000000000000000b",
+            "id": "memory_00000000000000000000000000000006",
             "kind": "preference",
             "scope": {
               "type": "global",
@@ -476,7 +476,7 @@
               "itemId": null,
               "status": "not_applicable"
             },
-            "createdAt": "2026-08-15T12:00:00.017Z",
+            "createdAt": "2026-08-15T12:00:00.005Z",
             "updatedAt": "2026-08-15T12:00:00.019Z",
             "forgottenAt": "2026-08-15T12:00:00.019Z"
           }
@@ -491,7 +491,7 @@
         "method": "event",
         "params": {
           "seq": 1,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "thread.created",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -527,7 +527,7 @@
         "method": "event",
         "params": {
           "seq": 2,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "thread.renamed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -557,7 +557,7 @@
         "method": "event",
         "params": {
           "seq": 3,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "thread.archived",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -587,7 +587,7 @@
         "method": "event",
         "params": {
           "seq": 4,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "thread.unarchived",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -617,7 +617,7 @@
         "method": "event",
         "params": {
           "seq": 5,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -733,7 +733,7 @@
               "modelInputPlanVersion": 1,
               "submissionFrameVersion": 1,
               "contextSelectionVersion": "bounded-history-v1",
-              "memoryContextVersion": 1,
+              "memoryContextVersion": 2,
               "instructions": [
                 {
                   "id": "ikaros-identity",
@@ -786,7 +786,7 @@
         "method": "event",
         "params": {
           "seq": 6,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -810,14 +810,14 @@
         "method": "event",
         "params": {
           "seq": 7,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.005Z",
+          "timestamp": "2026-08-15T12:00:00.006Z",
           "payload": {
             "status": "running",
             "turnId": "turn_00000000000000000000000000000003",
@@ -834,17 +834,17 @@
         "method": "event",
         "params": {
           "seq": 8,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.006Z",
+          "timestamp": "2026-08-15T12:00:00.007Z",
           "payload": {
             "stepOrdinal": 1,
-            "preparedAt": "2026-08-15T12:00:00.006Z",
+            "preparedAt": "2026-08-15T12:00:00.007Z",
             "contextSnapshot": {
               "schemaVersion": 1,
               "selectionVersion": "bounded-history-v1",
@@ -866,19 +866,26 @@
                   "characters": 19
                 }
               ],
-              "memory": [],
+              "memory": [
+                {
+                  "memoryId": "memory_00000000000000000000000000000006",
+                  "revision": 1,
+                  "scope": "global",
+                  "characters": 69
+                }
+              ],
               "budget": {
                 "mode": "bounded",
                 "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 "maximumCharacters": 48000,
                 "reservedCurrentRunCharacters": 12000,
                 "instructionCharacters": 891,
-                "contextDataCharacters": 0,
+                "contextDataCharacters": 186,
                 "toolCharacters": 422,
                 "historyCharacters": 0,
                 "currentRunCharacters": 19,
-                "memoryCharacters": 0,
-                "totalCharacters": 1332
+                "memoryCharacters": 69,
+                "totalCharacters": 1587
               },
               "omissions": []
             },
@@ -896,19 +903,26 @@
                   "characters": 19
                 }
               ],
-              "memory": [],
+              "memory": [
+                {
+                  "memoryId": "memory_00000000000000000000000000000006",
+                  "revision": 1,
+                  "scope": "global",
+                  "characters": 69
+                }
+              ],
               "budget": {
                 "mode": "bounded",
                 "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 "maximumCharacters": 48000,
                 "reservedCurrentRunCharacters": 12000,
                 "instructionCharacters": 891,
-                "contextDataCharacters": 0,
+                "contextDataCharacters": 186,
                 "toolCharacters": 422,
                 "historyCharacters": 0,
                 "currentRunCharacters": 19,
-                "memoryCharacters": 0,
-                "totalCharacters": 1332
+                "memoryCharacters": 69,
+                "totalCharacters": 1587
               },
               "omissions": []
             },
@@ -926,17 +940,17 @@
         "method": "event",
         "params": {
           "seq": 9,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_00000000000000000000000000000008",
-          "timestamp": "2026-08-15T12:00:00.007Z",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.008Z",
           "payload": {
             "item": {
-              "id": "item_00000000000000000000000000000008",
+              "id": "item_00000000000000000000000000000009",
               "turnId": "turn_00000000000000000000000000000003",
               "runId": "run_00000000000000000000000000000004",
               "ordinal": 2,
@@ -945,19 +959,19 @@
               "status": "running",
               "content": "",
               "data": {
-                "stepId": "step_00000000000000000000000000000007",
-                "callId": "call_00000000000000000000000000000006",
+                "stepId": "step_00000000000000000000000000000008",
+                "callId": "call_00000000000000000000000000000007",
                 "toolName": "process_run",
                 "arguments": {
                   "command": "golden"
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.007Z",
-              "updatedAt": "2026-08-15T12:00:00.007Z"
+              "createdAt": "2026-08-15T12:00:00.008Z",
+              "updatedAt": "2026-08-15T12:00:00.008Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_00000000000000000000000000000008"
+            "itemId": "item_00000000000000000000000000000009"
           }
         }
       }
@@ -970,14 +984,14 @@
         "method": "event",
         "params": {
           "seq": 10,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.008Z",
+          "timestamp": "2026-08-15T12:00:00.009Z",
           "payload": {
             "stepOrdinal": 1,
             "providerId": "scripted",
@@ -994,7 +1008,7 @@
               "totalTokens": 16
             },
             "activityDate": "2026-08-15",
-            "finishedAt": "2026-08-15T12:00:00.008Z",
+            "finishedAt": "2026-08-15T12:00:00.009Z",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
           }
@@ -1009,17 +1023,17 @@
         "method": "event",
         "params": {
           "seq": 11,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_00000000000000000000000000000008",
-          "timestamp": "2026-08-15T12:00:00.009Z",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.010Z",
           "payload": {
             "item": {
-              "id": "item_00000000000000000000000000000008",
+              "id": "item_00000000000000000000000000000009",
               "turnId": "turn_00000000000000000000000000000003",
               "runId": "run_00000000000000000000000000000004",
               "ordinal": 2,
@@ -1028,8 +1042,8 @@
               "status": "completed",
               "content": "",
               "data": {
-                "stepId": "step_00000000000000000000000000000007",
-                "callId": "call_00000000000000000000000000000006",
+                "stepId": "step_00000000000000000000000000000008",
+                "callId": "call_00000000000000000000000000000007",
                 "toolName": "process_run",
                 "arguments": {
                   "command": "golden"
@@ -1037,12 +1051,12 @@
                 "outcome": "completed",
                 "durationMs": 3
               },
-              "createdAt": "2026-08-15T12:00:00.007Z",
-              "updatedAt": "2026-08-15T12:00:00.009Z"
+              "createdAt": "2026-08-15T12:00:00.008Z",
+              "updatedAt": "2026-08-15T12:00:00.010Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_00000000000000000000000000000008"
+            "itemId": "item_00000000000000000000000000000009"
           }
         }
       }
@@ -1055,31 +1069,31 @@
         "method": "event",
         "params": {
           "seq": 12,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_00000000000000000000000000000009",
-          "timestamp": "2026-08-15T12:00:00.009Z",
+          "itemId": "item_0000000000000000000000000000000a",
+          "timestamp": "2026-08-15T12:00:00.010Z",
           "payload": {
             "item": {
-              "id": "item_00000000000000000000000000000009",
+              "id": "item_0000000000000000000000000000000a",
               "turnId": "turn_00000000000000000000000000000003",
               "runId": "run_00000000000000000000000000000004",
               "ordinal": 3,
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
-              "content": "{\"toolCallId\":\"call_00000000000000000000000000000006\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
+              "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
               "data": {
-                "stepId": "step_00000000000000000000000000000007",
-                "callId": "call_00000000000000000000000000000006",
-                "toolCallItemId": "item_00000000000000000000000000000008",
+                "stepId": "step_00000000000000000000000000000008",
+                "callId": "call_00000000000000000000000000000007",
+                "toolCallItemId": "item_00000000000000000000000000000009",
                 "toolName": "process_run",
                 "result": {
-                  "toolCallId": "call_00000000000000000000000000000006",
+                  "toolCallId": "call_00000000000000000000000000000007",
                   "toolName": "process_run",
                   "ok": true,
                   "output": "golden-output",
@@ -1093,12 +1107,12 @@
                   "truncated": false
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.009Z",
-              "updatedAt": "2026-08-15T12:00:00.009Z"
+              "createdAt": "2026-08-15T12:00:00.010Z",
+              "updatedAt": "2026-08-15T12:00:00.010Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_00000000000000000000000000000009"
+            "itemId": "item_0000000000000000000000000000000a"
           }
         }
       }
@@ -1111,17 +1125,17 @@
         "method": "event",
         "params": {
           "seq": 13,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.010Z",
+          "timestamp": "2026-08-15T12:00:00.011Z",
           "payload": {
             "stepOrdinal": 2,
-            "preparedAt": "2026-08-15T12:00:00.010Z",
+            "preparedAt": "2026-08-15T12:00:00.011Z",
             "contextSnapshot": {
               "schemaVersion": 1,
               "selectionVersion": "bounded-history-v1",
@@ -1143,19 +1157,26 @@
                   "characters": 19
                 }
               ],
-              "memory": [],
+              "memory": [
+                {
+                  "memoryId": "memory_00000000000000000000000000000006",
+                  "revision": 1,
+                  "scope": "global",
+                  "characters": 69
+                }
+              ],
               "budget": {
                 "mode": "bounded",
                 "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 "maximumCharacters": 48000,
                 "reservedCurrentRunCharacters": 12000,
                 "instructionCharacters": 891,
-                "contextDataCharacters": 0,
+                "contextDataCharacters": 186,
                 "toolCharacters": 422,
                 "historyCharacters": 0,
                 "currentRunCharacters": 19,
-                "memoryCharacters": 0,
-                "totalCharacters": 1332
+                "memoryCharacters": 69,
+                "totalCharacters": 1587
               },
               "omissions": []
             },
@@ -1173,7 +1194,7 @@
                   "characters": 19
                 },
                 {
-                  "itemId": "item_00000000000000000000000000000008",
+                  "itemId": "item_00000000000000000000000000000009",
                   "turnId": "turn_00000000000000000000000000000003",
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_call",
@@ -1181,7 +1202,7 @@
                   "characters": 20
                 },
                 {
-                  "itemId": "item_00000000000000000000000000000009",
+                  "itemId": "item_0000000000000000000000000000000a",
                   "turnId": "turn_00000000000000000000000000000003",
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
@@ -1189,19 +1210,26 @@
                   "characters": 262
                 }
               ],
-              "memory": [],
+              "memory": [
+                {
+                  "memoryId": "memory_00000000000000000000000000000006",
+                  "revision": 1,
+                  "scope": "global",
+                  "characters": 69
+                }
+              ],
               "budget": {
                 "mode": "bounded",
                 "measurementVersion": "unicode-codepoints-canonical-json-v1",
                 "maximumCharacters": 48000,
                 "reservedCurrentRunCharacters": 12000,
                 "instructionCharacters": 891,
-                "contextDataCharacters": 0,
+                "contextDataCharacters": 186,
                 "toolCharacters": 422,
                 "historyCharacters": 0,
                 "currentRunCharacters": 301,
-                "memoryCharacters": 0,
-                "totalCharacters": 1614
+                "memoryCharacters": 69,
+                "totalCharacters": 1869
               },
               "omissions": []
             },
@@ -1219,17 +1247,17 @@
         "method": "event",
         "params": {
           "seq": 14,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000a",
-          "timestamp": "2026-08-15T12:00:00.011Z",
+          "itemId": "item_0000000000000000000000000000000b",
+          "timestamp": "2026-08-15T12:00:00.012Z",
           "payload": {
             "item": {
-              "id": "item_0000000000000000000000000000000a",
+              "id": "item_0000000000000000000000000000000b",
               "turnId": "turn_00000000000000000000000000000003",
               "runId": "run_00000000000000000000000000000004",
               "ordinal": 4,
@@ -1238,12 +1266,12 @@
               "status": "streaming",
               "content": "",
               "data": {},
-              "createdAt": "2026-08-15T12:00:00.011Z",
-              "updatedAt": "2026-08-15T12:00:00.011Z"
+              "createdAt": "2026-08-15T12:00:00.012Z",
+              "updatedAt": "2026-08-15T12:00:00.012Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000a"
+            "itemId": "item_0000000000000000000000000000000b"
           }
         }
       }
@@ -1256,19 +1284,19 @@
         "method": "event",
         "params": {
           "seq": 15,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.delta",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000a",
-          "timestamp": "2026-08-15T12:00:00.012Z",
+          "itemId": "item_0000000000000000000000000000000b",
+          "timestamp": "2026-08-15T12:00:00.013Z",
           "payload": {
             "delta": "Command exit",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000a"
+            "itemId": "item_0000000000000000000000000000000b"
           }
         }
       }
@@ -1281,19 +1309,19 @@
         "method": "event",
         "params": {
           "seq": 16,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.delta",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000a",
-          "timestamp": "2026-08-15T12:00:00.013Z",
+          "itemId": "item_0000000000000000000000000000000b",
+          "timestamp": "2026-08-15T12:00:00.014Z",
           "payload": {
             "delta": "ed with code 0.\ngolden-output",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000a"
+            "itemId": "item_0000000000000000000000000000000b"
           }
         }
       }
@@ -1306,17 +1334,17 @@
         "method": "event",
         "params": {
           "seq": 17,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000a",
-          "timestamp": "2026-08-15T12:00:00.014Z",
+          "itemId": "item_0000000000000000000000000000000b",
+          "timestamp": "2026-08-15T12:00:00.015Z",
           "payload": {
             "item": {
-              "id": "item_0000000000000000000000000000000a",
+              "id": "item_0000000000000000000000000000000b",
               "turnId": "turn_00000000000000000000000000000003",
               "runId": "run_00000000000000000000000000000004",
               "ordinal": 4,
@@ -1325,12 +1353,12 @@
               "status": "completed",
               "content": "Command exited with code 0.\ngolden-output",
               "data": {},
-              "createdAt": "2026-08-15T12:00:00.011Z",
-              "updatedAt": "2026-08-15T12:00:00.014Z"
+              "createdAt": "2026-08-15T12:00:00.012Z",
+              "updatedAt": "2026-08-15T12:00:00.015Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000a"
+            "itemId": "item_0000000000000000000000000000000b"
           }
         }
       }
@@ -1343,14 +1371,14 @@
         "method": "event",
         "params": {
           "seq": 18,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.015Z",
+          "timestamp": "2026-08-15T12:00:00.016Z",
           "payload": {
             "stepOrdinal": 2,
             "providerId": "scripted",
@@ -1367,7 +1395,7 @@
               "totalTokens": 18
             },
             "activityDate": "2026-08-15",
-            "finishedAt": "2026-08-15T12:00:00.015Z",
+            "finishedAt": "2026-08-15T12:00:00.016Z",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
           }
@@ -1382,17 +1410,17 @@
         "method": "event",
         "params": {
           "seq": 19,
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "type": "run.settled",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.016Z",
+          "timestamp": "2026-08-15T12:00:00.017Z",
           "payload": {
             "status": "completed",
-            "settledAt": "2026-08-15T12:00:00.016Z",
+            "settledAt": "2026-08-15T12:00:00.017Z",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
           }

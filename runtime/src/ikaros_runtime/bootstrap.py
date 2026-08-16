@@ -14,7 +14,7 @@ from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome
 from .identity import load_identity_core
-from .memory import SqliteMemoryStore
+from .memory import MemoryRetrieverV1, SqliteMemoryStore
 from .paths import RuntimePaths
 from .protocol.router import RuntimeRouter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
@@ -107,6 +107,7 @@ class RuntimeApplication:
             protected_values=self.security.protected_values,
             provider_snapshot_resolver=provider_execution_snapshot,
             identity_core=self.identity_core,
+            memory_retriever=MemoryRetrieverV1(memory_store),
         )
         self._scheduler = AgentScheduler(loop)
         self._publish = publish

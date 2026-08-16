@@ -13,11 +13,16 @@ from ikaros_runtime.domain import ContextItem, SkillDescriptor
 from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.run_input import (
     CONTEXT_SELECTION_VERSION,
+    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     INPUT_BUDGET_MEASUREMENT_VERSION,
     ContextItemRecordV1,
     ContextSnapshotV1,
+    FrozenMemoryContextV1,
     HistoryItemReferenceV1,
     InputBudgetRecordV1,
+    MemoryReferenceV1,
+    MemoryScope,
+    OmissionRecordV1,
     RunManifestV1,
     StepManifestV1,
     build_context_snapshot,
@@ -28,6 +33,21 @@ from ikaros_runtime.run_input import (
 from ikaros_runtime.tools.core import ToolDefinition
 
 from .helpers import bounded_budget, submission_frame
+
+
+def _memory_reference(
+    ordinal: int = 1,
+    *,
+    characters: int = 12,
+    scope: str = "global",
+) -> MemoryReferenceV1:
+    memory_id = f"memory_{ordinal:032x}"
+    return MemoryReferenceV1(
+        memory_id=memory_id,
+        revision=ordinal,
+        scope=cast(MemoryScope, scope),
+        characters=characters,
+    )
 
 
 def test_model_input_plan_has_versioned_ordered_identity_style_and_skill_blocks(
@@ -431,6 +451,7 @@ def test_run_manifest_validation_uses_persisted_registered_selector(
     manifest = validate_run_manifest(persisted, frame)
 
     assert manifest.context_selection_version == "bounded-history-v1"
+    assert manifest.memory_context_version == 2
 
 
 def test_run_manifest_validation_rejects_unregistered_persisted_selector() -> None:
@@ -487,7 +508,7 @@ def test_submission_frame_rejects_instruction_slot_metadata_corruption(
         run_input_module.SubmissionFrameV1.from_wire(wire)
 
 
-def test_submission_frame_accepts_identity_but_rejects_future_memory_slot() -> None:
+def test_submission_frame_accepts_identity_but_keeps_memory_slot_empty() -> None:
     identity_core = load_identity_core()
     frame = submission_frame("provider", "model-1", identity_core=identity_core)
     restored = run_input_module.SubmissionFrameV1.from_wire(frame.to_wire())
@@ -496,16 +517,105 @@ def test_submission_frame_accepts_identity_but_rejects_future_memory_slot() -> N
 
     wire = submission_frame("provider", "model-1").to_wire()
     context_data = cast(dict[str, Any], wire["contextData"])
-    context_data["memory"] = [
-        {
-            "memoryId": "memory_1",
-            "revision": 1,
-            "contentSha256": "a" * 64,
-            "scope": "global",
-        }
-    ]
+    context_data["memory"] = [_memory_reference().to_wire()]
     with pytest.raises(ValueError, match="Memory context is not available"):
         run_input_module.SubmissionFrameV1.from_wire(wire)
+
+
+def test_memory_reference_wire_is_exact_and_omits_content_fingerprints() -> None:
+    reference = _memory_reference(characters=9)
+    assert MemoryReferenceV1.from_wire(reference.to_wire()) == reference
+    assert set(reference.to_wire()) == {
+        "memoryId",
+        "revision",
+        "scope",
+        "characters",
+    }
+
+    malformed = reference.to_wire()
+    malformed["snapshotSha256"] = "a" * 64
+    with pytest.raises(ValueError, match="structure"):
+        MemoryReferenceV1.from_wire(malformed)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("memoryId", "memory_1"),
+        ("revision", 0),
+        ("revision", True),
+        ("scope", "thread"),
+        ("characters", 0),
+        ("characters", 2_049),
+    ),
+)
+def test_memory_reference_rejects_noncanonical_values(
+    field: str,
+    replacement: object,
+) -> None:
+    wire = _memory_reference().to_wire()
+    wire[field] = replacement
+
+    with pytest.raises(ValueError):
+        MemoryReferenceV1.from_wire(wire)
+
+
+def test_frozen_memory_context_enforces_limits_and_disjoint_omissions() -> None:
+    selected = _memory_reference(characters=11)
+    overlapping = OmissionRecordV1(
+        source_type="memory",
+        source_id=selected.memory_id,
+        revision=selected.revision,
+        characters=selected.characters,
+        reason="omitted_by_limit",
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        FrozenMemoryContextV1((selected,), (overlapping,), 11, 5)
+
+    with pytest.raises(ValueError, match="item limit"):
+        FrozenMemoryContextV1(
+            tuple(_memory_reference(index, characters=1) for index in range(1, 10)),
+            (),
+            9,
+            5,
+        )
+
+    with pytest.raises(ValueError, match="character count"):
+        FrozenMemoryContextV1(
+            tuple(_memory_reference(index, characters=2_048) for index in range(1, 4)),
+            (),
+            6_144,
+            5,
+        )
+
+    with pytest.raises(ValueError, match="context-data"):
+        FrozenMemoryContextV1((selected,), (), 11, 0)
+
+    assert FrozenMemoryContextV1((), (), 0, 0) == EMPTY_FROZEN_MEMORY_CONTEXT_V1
+
+
+def test_omission_wire_is_discriminated_and_history_precedes_memory() -> None:
+    history = OmissionRecordV1("history", "turn_boundary", "omitted_by_budget")
+    memory = OmissionRecordV1(
+        "memory",
+        f"memory_{3:032x}",
+        "omitted_by_limit",
+        revision=2,
+        characters=101,
+    )
+    assert OmissionRecordV1.from_wire(history.to_wire()) == history
+    assert OmissionRecordV1.from_wire(memory.to_wire()) == memory
+    assert set(history.to_wire()) == {"sourceType", "sourceId", "reason"}
+    assert set(memory.to_wire()) == {
+        "sourceType",
+        "sourceId",
+        "revision",
+        "characters",
+        "reason",
+    }
+
+    with pytest.raises(ValueError, match="history omission"):
+        FrozenMemoryContextV1((), (history,), 0, 0)
 
 
 def _context_snapshot_fixture() -> tuple[
@@ -585,7 +695,7 @@ def test_context_snapshot_rejects_non_bijective_or_misordered_history_groups() -
             ContextSnapshotV1.from_wire(corrupted)
 
 
-def test_context_snapshot_rejects_empty_history_and_unavailable_memory() -> None:
+def test_context_snapshot_rejects_empty_history() -> None:
     _frame, _records, snapshot = _context_snapshot_fixture()
 
     empty = snapshot.to_wire()
@@ -601,20 +711,42 @@ def test_context_snapshot_rejects_empty_history_and_unavailable_memory() -> None
     with pytest.raises(ValueError, match="current User Item"):
         ContextSnapshotV1.from_wire(empty)
 
-    memory = snapshot.to_wire()
-    memory["memory"] = [
-        {
-            "memoryId": "memory_1",
-            "revision": 1,
-            "contentSha256": "a" * 64,
-            "scope": "global",
-        }
-    ]
-    memory_budget = cast(dict[str, Any], memory["budget"])
-    memory_budget["memoryCharacters"] = 1
-    memory_budget["totalCharacters"] = cast(int, memory_budget["totalCharacters"]) + 1
-    with pytest.raises(ValueError, match="Memory context is not available"):
-        ContextSnapshotV1.from_wire(memory)
+
+
+def test_context_snapshot_accepts_frozen_memory_and_body_free_omissions() -> None:
+    frame, records, _snapshot = _context_snapshot_fixture()
+    selected = _memory_reference(characters=17)
+    omitted = OmissionRecordV1(
+        source_type="memory",
+        source_id=f"memory_{2:032x}",
+        revision=2,
+        characters=19,
+        reason="omitted_by_budget",
+    )
+    frozen = FrozenMemoryContextV1(
+        memory=(selected,),
+        omissions=(omitted,),
+        memory_characters=17,
+        context_data_characters=41,
+    )
+
+    snapshot = build_context_snapshot(
+        records,
+        current_run_id=frame.run_id,
+        frame=frame,
+        selection_version=CONTEXT_SELECTION_VERSION,
+        maximum_characters=48_000,
+        reserved_current_run_characters=12_000,
+        omissions=(),
+        memory_context=frozen,
+    )
+    restored = ContextSnapshotV1.from_wire(snapshot.to_wire())
+
+    assert restored.memory == (selected,)
+    assert restored.omissions == (omitted,)
+    assert restored.budget.memory_characters == 17
+    assert restored.budget.context_data_characters == 41
+    assert FrozenMemoryContextV1.from_snapshot(restored) == frozen
 
 
 
@@ -760,8 +892,31 @@ def test_step_manifest_rejects_noncanonical_bounded_history_limits() -> None:
         StepManifestV1.from_wire(wire)
 
 
-def test_step_manifest_rejects_unavailable_memory() -> None:
-    frame, records, snapshot = _context_snapshot_fixture()
+def test_step_manifest_preserves_frozen_memory_and_omissions() -> None:
+    frame, records, _snapshot = _context_snapshot_fixture()
+    selected = _memory_reference(characters=23)
+    omitted = OmissionRecordV1(
+        source_type="memory",
+        source_id=f"memory_{2:032x}",
+        revision=1,
+        characters=31,
+        reason="omitted_by_budget",
+    )
+    snapshot = build_context_snapshot(
+        records,
+        current_run_id=frame.run_id,
+        frame=frame,
+        selection_version=CONTEXT_SELECTION_VERSION,
+        maximum_characters=48_000,
+        reserved_current_run_characters=12_000,
+        omissions=(),
+        memory_context=FrozenMemoryContextV1(
+            memory=(selected,),
+            omissions=(omitted,),
+            memory_characters=23,
+            context_data_characters=47,
+        ),
+    )
     manifest = build_step_manifest(
         1,
         records,
@@ -770,17 +925,9 @@ def test_step_manifest_rejects_unavailable_memory() -> None:
         frame=frame,
     )
 
-    memory = manifest.to_wire()
-    memory["memory"] = [
-        {
-            "memoryId": "memory_1",
-            "revision": 1,
-            "contentSha256": "a" * 64,
-            "scope": "global",
-        }
-    ]
-    memory_budget = cast(dict[str, Any], memory["budget"])
-    memory_budget["memoryCharacters"] = 1
-    memory_budget["totalCharacters"] = cast(int, memory_budget["totalCharacters"]) + 1
-    with pytest.raises(ValueError, match="Memory context is not available"):
-        StepManifestV1.from_wire(memory)
+    restored = StepManifestV1.from_wire(manifest.to_wire())
+
+    assert restored.memory == snapshot.memory == (selected,)
+    assert restored.omissions == snapshot.omissions == (omitted,)
+    assert restored.budget.memory_characters == 23
+    assert restored.budget.context_data_characters == 47

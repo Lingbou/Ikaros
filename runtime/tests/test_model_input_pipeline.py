@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 import httpx
 import pytest
 
+import ikaros_runtime.memory.store as memory_store_module
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, SkillDescriptor
 from ikaros_runtime.identity import load_identity_core
+from ikaros_runtime.memory import MemoryRetrieverV1, MemoryScope, SqliteMemoryStore
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from ikaros_runtime.storage import SqliteRuntimeStore
@@ -156,6 +160,7 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
         events.append(event)
 
     store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
     try:
         identity_core = load_identity_core()
         thread, _event = store.create_thread("Golden model input")
@@ -180,6 +185,17 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
             tools=executor.definitions,
             identity_core=identity_core,
         )
+        with patch.object(
+            memory_store_module.uuid,
+            "uuid4",
+            return_value=uuid.UUID(int=1),
+        ):
+            memory_store.create_memory_once(
+                kind="preference",
+                scope=MemoryScope("global", None),
+                content="Commands should remain concise and deterministic.",
+                client_request_id="golden-model-input-memory",
+            )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             adapter = OpenAICompatibleAdapter(configured, client=client, max_retries=0)
             await AgentLoop(
@@ -188,6 +204,7 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
                 publish,
                 tool_executor=executor,
                 identity_core=identity_core,
+                memory_retriever=MemoryRetrieverV1(memory_store),
             ).run(prepared.run_id, CancellationToken())
 
         expected = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -210,4 +227,5 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
             "completed"
         ]
     finally:
+        memory_store.close()
         store.close()

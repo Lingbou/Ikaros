@@ -26,6 +26,9 @@ type InstructionAuthority = Literal[
 type InputAuthority = InstructionAuthority | Literal["contextual_data"]
 type InputLifetime = Literal["release", "run"]
 type ModelStepOutcome = Literal["completed", "failed", "cancelled"]
+type MemoryScope = Literal["global", "workspace"]
+type OmissionSourceType = Literal["history", "memory"]
+type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]
 
 SUBMISSION_FRAME_SCHEMA_VERSION = 1
 RUN_MANIFEST_SCHEMA_VERSION = 1
@@ -33,9 +36,13 @@ CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
 STEP_MANIFEST_SCHEMA_VERSION = 1
 CONTEXT_SELECTION_VERSION = "bounded-history-v1"
 INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1"
-MEMORY_CONTEXT_VERSION = 1
+MEMORY_CONTEXT_VERSION = 2
 MAXIMUM_INPUT_CHARACTERS_V1 = 48_000
 RESERVED_CURRENT_RUN_CHARACTERS_V1 = 12_000
+MEMORY_CONTENT_MAX_CHARACTERS_V1 = 2_048
+MEMORY_RETRIEVAL_MAX_CANDIDATES_V1 = 2_000
+MEMORY_SELECTION_MAX_ITEMS_V1 = 8
+MEMORY_SELECTION_MAX_CHARACTERS_V1 = 6_000
 IKAROS_IDENTITY_ID = "ikaros-identity"
 IKAROS_IDENTITY_VERSION = 1
 IKAROS_IDENTITY_SOURCE = "ikaros-runtime:identity"
@@ -136,6 +143,17 @@ class ContextDataBlockV1:
     scope: str
     lifetime: InputLifetime
     content: str
+
+    def __post_init__(self) -> None:
+        _nonempty("context-data ID", self.id)
+        _positive("context-data version", self.version)
+        _nonempty("context-data source", self.source)
+        if self.authority != "contextual_data":
+            raise ValueError("context-data authority is invalid")
+        _nonempty("context-data scope", self.scope)
+        if self.lifetime not in {"release", "run"}:
+            raise ValueError("context-data lifetime is invalid")
+        _text("context-data content", self.content)
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,21 +257,27 @@ class ToolDefinitionSnapshotV1:
 class MemoryReferenceV1:
     memory_id: str
     revision: int
-    content_sha256: str
-    scope: str
+    scope: MemoryScope
+    characters: int
 
     def __post_init__(self) -> None:
-        _nonempty("Memory ID", self.memory_id)
+        _runtime_id("Memory ID", self.memory_id, "memory_")
         _positive("Memory revision", self.revision)
-        _sha256("Memory content hash", self.content_sha256)
-        _nonempty("Memory scope", self.scope)
+        if self.scope not in {"global", "workspace"}:
+            raise ValueError("Memory scope is invalid")
+        if (
+            not isinstance(self.characters, int)
+            or isinstance(self.characters, bool)
+            or not 1 <= self.characters <= MEMORY_CONTENT_MAX_CHARACTERS_V1
+        ):
+            raise ValueError("Memory character count is invalid")
 
     def to_wire(self) -> JsonObject:
         return {
             "memoryId": self.memory_id,
             "revision": self.revision,
-            "contentSha256": self.content_sha256,
             "scope": self.scope,
+            "characters": self.characters,
         }
 
     @classmethod
@@ -262,8 +286,8 @@ class MemoryReferenceV1:
         return cls(
             memory_id=_as_str(row["memoryId"]),
             revision=_as_int(row["revision"]),
-            content_sha256=_as_str(row["contentSha256"]),
-            scope=_as_str(row["scope"]),
+            scope=cast(MemoryScope, row["scope"]),
+            characters=_as_int(row["characters"]),
         )
 
 
@@ -876,30 +900,142 @@ class InputBudgetRecordV1:
 
 @dataclass(frozen=True, slots=True)
 class OmissionRecordV1:
-    source_type: str
+    source_type: OmissionSourceType
     source_id: str
-    reason: str
+    reason: OmissionReason
+    revision: int | None = None
+    characters: int | None = None
 
     def __post_init__(self) -> None:
-        if self.source_type != "history" or self.reason != "omitted_by_budget":
-            raise ValueError("history omission record is invalid")
-        _nonempty("history omission boundary Turn ID", self.source_id)
+        if self.source_type == "history":
+            if (
+                self.reason != "omitted_by_budget"
+                or self.revision is not None
+                or self.characters is not None
+            ):
+                raise ValueError("history omission record is invalid")
+            _nonempty("history omission boundary Turn ID", self.source_id)
+            return
+        if self.source_type != "memory" or self.reason not in {
+            "omitted_by_budget",
+            "omitted_by_limit",
+        }:
+            raise ValueError("Memory omission record is invalid")
+        _runtime_id("Memory omission ID", self.source_id, "memory_")
+        _positive("Memory omission revision", self.revision)
+        if (
+            not isinstance(self.characters, int)
+            or isinstance(self.characters, bool)
+            or not 1 <= self.characters <= MEMORY_CONTENT_MAX_CHARACTERS_V1
+        ):
+            raise ValueError("Memory omission character count is invalid")
 
     def to_wire(self) -> JsonObject:
+        if self.source_type == "history":
+            return {
+                "sourceType": self.source_type,
+                "sourceId": self.source_id,
+                "reason": self.reason,
+            }
         return {
             "sourceType": self.source_type,
             "sourceId": self.source_id,
+            "revision": cast(int, self.revision),
+            "characters": cast(int, self.characters),
             "reason": self.reason,
         }
 
     @classmethod
     def from_wire(cls, value: object) -> OmissionRecordV1:
-        row = _object(value, "omission record", {"sourceType", "sourceId", "reason"})
+        if not isinstance(value, dict):
+            raise ValueError("omission record has an invalid structure")
+        source_type = value.get("sourceType")
+        if source_type == "history":
+            row = _object(value, "history omission record", _HISTORY_OMISSION_KEYS)
+            return cls(
+                source_type="history",
+                source_id=_as_str(row["sourceId"]),
+                reason=cast(OmissionReason, row["reason"]),
+            )
+        if source_type != "memory":
+            raise ValueError("omission record source type is invalid")
+        row = _object(value, "Memory omission record", _MEMORY_OMISSION_KEYS)
         return cls(
-            source_type=_as_str(row["sourceType"]),
+            source_type="memory",
             source_id=_as_str(row["sourceId"]),
-            reason=_as_str(row["reason"]),
+            revision=_as_int(row["revision"]),
+            characters=_as_int(row["characters"]),
+            reason=cast(OmissionReason, row["reason"]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenMemoryContextV1:
+    """Body-free Memory selection frozen for every Provider Step in one Run."""
+
+    memory: tuple[MemoryReferenceV1, ...]
+    omissions: tuple[OmissionRecordV1, ...]
+    memory_characters: int
+    context_data_characters: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "memory", tuple(self.memory))
+        object.__setattr__(self, "omissions", tuple(self.omissions))
+        if len(self.memory) > MEMORY_SELECTION_MAX_ITEMS_V1:
+            raise ValueError("Memory selection exceeds the item limit")
+        selected_ids = tuple(reference.memory_id for reference in self.memory)
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ValueError("Memory selection IDs must be unique")
+        if any(omission.source_type != "memory" for omission in self.omissions):
+            raise ValueError("Frozen Memory context contains a history omission")
+        omitted_ids = tuple(omission.source_id for omission in self.omissions)
+        if len(omitted_ids) != len(set(omitted_ids)):
+            raise ValueError("Memory omission IDs must be unique")
+        if set(selected_ids).intersection(omitted_ids):
+            raise ValueError("selected and omitted Memory IDs overlap")
+        if len(self.memory) + len(self.omissions) > MEMORY_RETRIEVAL_MAX_CANDIDATES_V1:
+            raise ValueError("Memory selection exceeds the candidate limit")
+        if any(
+            omission.reason == "omitted_by_limit" for omission in self.omissions
+        ) and len(self.memory) != MEMORY_SELECTION_MAX_ITEMS_V1:
+            raise ValueError("Memory limit omission requires a full selection")
+        expected_characters = sum(reference.characters for reference in self.memory)
+        if (
+            not isinstance(self.memory_characters, int)
+            or isinstance(self.memory_characters, bool)
+            or self.memory_characters != expected_characters
+            or self.memory_characters > MEMORY_SELECTION_MAX_CHARACTERS_V1
+        ):
+            raise ValueError("Memory selection character count is invalid")
+        if (
+            not isinstance(self.context_data_characters, int)
+            or isinstance(self.context_data_characters, bool)
+            or self.context_data_characters < 0
+            or bool(self.memory) != (self.context_data_characters > 0)
+        ):
+            raise ValueError("Memory context-data character count is invalid")
+
+    @classmethod
+    def from_snapshot(cls, snapshot: ContextSnapshotV1) -> FrozenMemoryContextV1:
+        """Extract only Memory metadata from a validated persisted Snapshot."""
+
+        memory_omissions: list[OmissionRecordV1] = []
+        seen_memory_omission = False
+        for omission in snapshot.omissions:
+            if omission.source_type == "memory":
+                seen_memory_omission = True
+                memory_omissions.append(omission)
+            elif seen_memory_omission:
+                raise ValueError("history omission must precede Memory omissions")
+        return cls(
+            memory=snapshot.memory,
+            omissions=tuple(memory_omissions),
+            memory_characters=snapshot.budget.memory_characters,
+            context_data_characters=snapshot.budget.context_data_characters,
+        )
+
+
+EMPTY_FROZEN_MEMORY_CONTEXT_V1 = FrozenMemoryContextV1((), (), 0, 0)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -921,7 +1057,7 @@ class ContextSnapshotV1:
         object.__setattr__(self, "omissions", tuple(self.omissions))
         _validate_history_groups(self.history_groups, self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
-        _validate_gate3_future_slots(
+        _validate_context_snapshot_slots(
             memory=self.memory,
             omissions=self.omissions,
             budget=self.budget,
@@ -993,11 +1129,11 @@ class StepManifestV1:
         object.__setattr__(self, "omissions", tuple(self.omissions))
         _validate_unique_history_items(self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
-        _validate_gate3_future_slots(
+        _validate_context_snapshot_slots(
             memory=self.memory,
             omissions=self.omissions,
             budget=self.budget,
-            selected_turn_ids=(),
+            selected_turn_ids=tuple(item.turn_id for item in self.history_items),
         )
         if (
             self.budget.maximum_characters != MAXIMUM_INPUT_CHARACTERS_V1
@@ -1059,9 +1195,13 @@ def build_context_snapshot(
     maximum_characters: int,
     reserved_current_run_characters: int,
     omissions: Sequence[OmissionRecordV1],
+    memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
 ) -> ContextSnapshotV1:
     if selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
         raise ValueError("Context selection version is unsupported")
+    if any(omission.source_type != "history" for omission in omissions):
+        raise ValueError("history selection contains a Memory omission")
+    _validate_memory_scope_for_frame(memory_context.memory, frame)
     references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
     groups: list[HistoryGroupReferenceV1] = []
     for reference in references:
@@ -1088,26 +1228,28 @@ def build_context_snapshot(
         selection_version=selection_version,
         history_groups=tuple(groups),
         history_items=references,
-        memory=(),
+        memory=memory_context.memory,
         budget=InputBudgetRecordV1(
             mode="bounded",
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
             maximum_characters=maximum_characters,
             reserved_current_run_characters=reserved_current_run_characters,
             instruction_characters=_instruction_characters(frame),
-            context_data_characters=0,
+            context_data_characters=memory_context.context_data_characters,
             tool_characters=_tool_definition_characters(frame),
             history_characters=history_characters,
             current_run_characters=current_run_characters,
-            memory_characters=0,
+            memory_characters=memory_context.memory_characters,
             total_characters=(
                 _instruction_characters(frame)
+                + memory_context.context_data_characters
                 + _tool_definition_characters(frame)
                 + history_characters
                 + current_run_characters
+                + memory_context.memory_characters
             ),
         ),
-        omissions=tuple(omissions),
+        omissions=(*tuple(omissions), *memory_context.omissions),
     )
 
 
@@ -1121,6 +1263,7 @@ def build_step_manifest(
 ) -> StepManifestV1:
     try:
         references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
+        _validate_memory_scope_for_frame(snapshot.memory, frame)
     except (TypeError, ValueError):
         raise ModelInputUnavailableError("model_input_unavailable") from None
     frozen = snapshot.history_items
@@ -1326,22 +1469,45 @@ def _validate_skill_catalog_content(
         raise ValueError("Skill catalog instruction content is invalid")
 
 
-def _validate_gate3_future_slots(
+def _validate_context_snapshot_slots(
     *,
     memory: Sequence[MemoryReferenceV1],
     omissions: Sequence[OmissionRecordV1],
     budget: InputBudgetRecordV1,
     selected_turn_ids: Sequence[str],
 ) -> None:
-    if memory or budget.memory_characters != 0 or budget.context_data_characters != 0:
-        raise ValueError("Memory context is not available in this Runtime version")
     if budget.mode != "bounded":
         raise ValueError("history selection budget mode is invalid")
-    if len(omissions) > 1:
+    history_omissions: list[OmissionRecordV1] = []
+    memory_omissions: list[OmissionRecordV1] = []
+    seen_memory_omission = False
+    for omission in omissions:
+        if omission.source_type == "history":
+            if seen_memory_omission:
+                raise ValueError("history omission must precede Memory omissions")
+            history_omissions.append(omission)
+        else:
+            seen_memory_omission = True
+            memory_omissions.append(omission)
+    if len(history_omissions) > 1:
         raise ValueError("history selection has multiple omission boundaries")
     selected = set(selected_turn_ids)
-    if omissions and omissions[0].source_id in selected:
+    if history_omissions and history_omissions[0].source_id in selected:
         raise ValueError("history omission boundary is selected")
+    FrozenMemoryContextV1(
+        memory=tuple(memory),
+        omissions=tuple(memory_omissions),
+        memory_characters=budget.memory_characters,
+        context_data_characters=budget.context_data_characters,
+    )
+
+
+def _validate_memory_scope_for_frame(
+    memory: Sequence[MemoryReferenceV1],
+    frame: SubmissionFrameV1,
+) -> None:
+    if frame.workspace is None and any(reference.scope == "workspace" for reference in memory):
+        raise ValueError("Workspace Memory requires a Run workspace")
 
 
 def _instruction_characters(frame: SubmissionFrameV1) -> int:
@@ -1444,6 +1610,14 @@ def _sha256(label: str, value: object) -> None:
         raise ValueError(f"{label} is invalid")
 
 
+def _runtime_id(label: str, value: object, prefix: str) -> None:
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise ValueError(f"{label} is invalid")
+    suffix = value.removeprefix(prefix)
+    if len(suffix) != 32 or any(character not in "0123456789abcdef" for character in suffix):
+        raise ValueError(f"{label} is invalid")
+
+
 def _unique_names(label: str, names: Iterable[str]) -> None:
     copied = tuple(names)
     if len(copied) != len(set(copied)):
@@ -1452,7 +1626,20 @@ def _unique_names(label: str, names: Iterable[str]) -> None:
 
 _INSTRUCTION_KEYS = {"id", "version", "source", "authority", "scope", "lifetime", "content"}
 _TOOL_SNAPSHOT_KEYS = {"name", "description", "inputSchema", "definitionSha256"}
-_MEMORY_REFERENCE_KEYS = {"memoryId", "revision", "contentSha256", "scope"}
+_MEMORY_REFERENCE_KEYS = {
+    "memoryId",
+    "revision",
+    "scope",
+    "characters",
+}
+_HISTORY_OMISSION_KEYS = {"sourceType", "sourceId", "reason"}
+_MEMORY_OMISSION_KEYS = {
+    "sourceType",
+    "sourceId",
+    "revision",
+    "characters",
+    "reason",
+}
 _INSTRUCTION_SLOT_KEYS = {"outputStyle", "identityCore", "skillCatalog"}
 _SUBMISSION_FRAME_KEYS = {
     "schemaVersion",
@@ -1529,6 +1716,10 @@ __all__ = [
     "IKAROS_IDENTITY_VERSION",
     "INPUT_BUDGET_MEASUREMENT_VERSION",
     "MAXIMUM_INPUT_CHARACTERS_V1",
+    "MEMORY_CONTENT_MAX_CHARACTERS_V1",
+    "MEMORY_RETRIEVAL_MAX_CANDIDATES_V1",
+    "MEMORY_SELECTION_MAX_CHARACTERS_V1",
+    "MEMORY_SELECTION_MAX_ITEMS_V1",
     "REGISTERED_CONTEXT_SELECTION_VERSIONS",
     "REGISTERED_INPUT_BUDGET_MODES",
     "RESERVED_CURRENT_RUN_CHARACTERS_V1",
@@ -1536,6 +1727,8 @@ __all__ = [
     "ContextDataBlockV1",
     "ContextItemRecordV1",
     "ContextSnapshotV1",
+    "EMPTY_FROZEN_MEMORY_CONTEXT_V1",
+    "FrozenMemoryContextV1",
     "HistoryItemReferenceV1",
     "InputAuthority",
     "InputBudgetRecordV1",
@@ -1543,7 +1736,9 @@ __all__ = [
     "InstructionAuthority",
     "InstructionBlockV1",
     "MemoryReferenceV1",
+    "MemoryScope",
     "ModelStepOutcome",
+    "OmissionRecordV1",
     "PreparedModelStepV1",
     "ProviderExecutionSnapshotV1",
     "RunManifestV1",

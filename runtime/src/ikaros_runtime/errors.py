@@ -32,6 +32,15 @@ MEMORY_OPERATION_REASON_CODES: Final[tuple[MemoryOperationReasonCode, ...]] = (
     "memory_source_unavailable",
 )
 
+type MemoryRetrievalReasonCode = Literal[
+    "memory_retrieval_overflow",
+    "memory_snapshot_unavailable",
+]
+MEMORY_RETRIEVAL_REASON_CODES: Final[tuple[MemoryRetrievalReasonCode, ...]] = (
+    "memory_retrieval_overflow",
+    "memory_snapshot_unavailable",
+)
+
 
 class RunCancelled(Exception):
     """Cooperative cancellation requested for an Agent Run."""
@@ -109,5 +118,15 @@ class MemoryOperationError(RuntimeError):
     def __init__(self, reason_code: MemoryOperationReasonCode) -> None:
         if reason_code not in MEMORY_OPERATION_REASON_CODES:
             raise ValueError("unsupported Memory operation reason code")
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+class MemoryRetrievalError(RuntimeError):
+    """A stable, non-secret Memory selection or materialization failure."""
+
+    def __init__(self, reason_code: MemoryRetrievalReasonCode) -> None:
+        if reason_code not in MEMORY_RETRIEVAL_REASON_CODES:
+            raise ValueError("unsupported Memory retrieval reason code")
         super().__init__(reason_code)
         self.reason_code = reason_code

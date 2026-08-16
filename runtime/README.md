@@ -16,7 +16,7 @@ stdio.
 ## Protocol contract
 
 `src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
-version 2, Journal Event schema 4, the 26 post-initialize RPC methods, the 11
+version 3, Journal Event schema 5, the 26 post-initialize RPC methods, the 11
 persisted Journal Event types, capabilities, and provider-facing Tool IDs. The
 deterministic generator
 commits both `protocol/runtime-protocol.json` and Desktop's
@@ -57,9 +57,9 @@ The current Desktop/Runtime path provides:
 - a Provider-neutral `ModelInputPlanV1` between the Agent loop and
   `ContextBuilder`, with versioned Output Style, Runtime-owned `IKAROS.md`
   Identity Core, and frozen Run Skill Catalog instruction blocks, explicit
-  empty Context Data, Provider-default generation options, and the actual
-  bounded input budget; the resulting OpenAI wire body remains locked by a
-  two-Step Golden Test;
+  low-authority Memory Context Data, Provider-default generation options, and
+  the actual bounded input budget; the resulting OpenAI wire body remains
+  locked by a two-Step Golden Test;
 - a bundled, read-only `src/ikaros_runtime/resources/IKAROS.md` loaded through
   `importlib.resources`. `turn.start` freezes its version 1
   `ikaros-identity`/`runtime_identity` Instruction Block into the Submission
@@ -86,14 +86,15 @@ The current Desktop/Runtime path provides:
   enable/disable state, immutable enabled-descriptor snapshots per Run, and
   provider context containing only each enabled Skill's name, description, and
   location;
-- explicitly managed Memory V0 in independently durable `~/.ikaros/memory.db`:
+- explicitly managed Memory in independently durable `~/.ikaros/memory.db`:
   schema version 1 records/revisions/idempotency receipts, Global/Workspace
   scopes, `memory.create/correct/forget/list/get`, bounded preview pagination,
   optional verified Session Item provenance, authenticated JSON-RPC, and a
   typed Desktop bridge. Correct/Forget use optimistic revisions and durable
   receipts; Forget removes stored content and derived digests while retaining
-  a queryable tombstone. Memory is not injected into model input and has no
-  Renderer management page yet;
+  a queryable tombstone. The real Settings page manages these records, and
+  deterministic bounded recall injects exact frozen revisions through one
+  canonical contextual-data wrapper;
 - the provider-facing `process_run`, `read`, `write`, and `edit` Tools under
   V1's fixed `full_access` policy. Command execution has bounded output,
   timeout, cancellation, and child-process-tree cleanup; the file Tools provide
@@ -156,11 +157,19 @@ Durable cross-Thread Memory now supports explicit Create/Correct/Forget,
 Session Item provenance, restart-safe mutation receipts, and tombstone reads.
 The Desktop Settings page provides real lazy-loaded filters, cursor pagination,
 provenance status, correction conflict handling, and Forget confirmation.
-Model recall is not implemented. Standalone Memory maintenance, backup, and
-import/export are deferred rather than prerequisites.
-Identity Core, persistent
-input Frames/Manifests, and `bounded-history-v1` remain independent from Memory;
-their boundaries and the remaining implementation order are defined in
+`MemoryRetrieverV1` now performs bounded, deterministic Global/current-workspace
+recall from the original User request. A Run freezes at most eight exact Memory
+revisions within a 6,000-character body budget; every unsent Provider Step
+re-materializes those exact revisions, so Correction only affects new Runs and
+Forget stops the current Run with `memory_snapshot_unavailable` rather than
+silently switching revisions. Memory bodies enter Provider input only through a
+Runtime-owned canonical JSON context-data wrapper and never enter `state.db`, the
+Journal, or public Manifests. No standalone Memory maintenance or transfer UI is
+part of this stage.
+
+Identity Core, persistent input Frames/Manifests, and `bounded-history-v1`
+remain separate authorities from Memory; their boundaries and the remaining
+verification order are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Development
@@ -190,7 +199,7 @@ remains absent until the user saves a real provider/model configuration or
 changes persisted Skill enablement.
 
 During pre-release development, conversation storage uses canonical SQLite
-schema version 7 and is intentionally reset-only. Incompatible `state.db`
+schema version 8 and is intentionally reset-only. Incompatible `state.db`
 schema versions fail with `reset required`; the Runtime does not carry
 old-schema migrations or silently delete data.
 After stopping the owning Runtime, developers may explicitly remove
