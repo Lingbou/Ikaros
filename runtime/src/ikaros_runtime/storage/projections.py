@@ -22,10 +22,11 @@ from ..run_input import (
     ContextSnapshotV1,
     FrozenMemoryContextV1,
     RunManifestV1,
-    StepManifestV1,
     SubmissionFrameV1,
     build_step_manifest,
     canonical_json,
+    parse_context_snapshot,
+    parse_step_manifest,
     validate_run_manifest,
 )
 from ..security import (
@@ -141,7 +142,7 @@ def contains_protected_projection_values(
         if context_snapshot is not None:
             # Context Snapshots contain only Runtime-generated references,
             # controlled selectors, numeric budgets, and omission enums.
-            ContextSnapshotV1.from_wire(json_loads(str(context_snapshot)))
+            parse_context_snapshot(json_loads(str(context_snapshot)))
     for row in connection.execute(
         """
         SELECT step_manifest_json, response_model_id, request_id, usage_json
@@ -150,7 +151,7 @@ def contains_protected_projection_values(
     ).fetchall():
         # Step Manifests and usage contain no user/Provider text: only frozen
         # references, controlled provenance, and numeric counters.
-        StepManifestV1.from_wire(json_loads(str(row["step_manifest_json"])))
+        parse_step_manifest(json_loads(str(row["step_manifest_json"])))
         usage_json = row["usage_json"]
         if usage_json is not None:
             json_loads(str(usage_json))
@@ -314,7 +315,7 @@ def get_context_snapshot(
     if value is None:
         return None
     try:
-        return ContextSnapshotV1.from_wire(json_loads(str(value)))
+        return parse_context_snapshot(json_loads(str(value)))
     except (TypeError, ValueError):
         raise RuntimeError("Run Context Snapshot is invalid") from None
 
@@ -785,8 +786,8 @@ def apply_event(
         )
         _require_equal("model Step ordinal", payload["stepOrdinal"], expected_ordinal)
         try:
-            snapshot = ContextSnapshotV1.from_wire(payload["contextSnapshot"])
-            step_manifest = StepManifestV1.from_wire(payload["stepManifest"])
+            snapshot = parse_context_snapshot(payload["contextSnapshot"])
+            step_manifest = parse_step_manifest(payload["stepManifest"])
         except (TypeError, ValueError):
             raise RuntimeError("model input preparation snapshots are invalid") from None
         _require_equal("Step Manifest ordinal", step_manifest.step_ordinal, expected_ordinal)

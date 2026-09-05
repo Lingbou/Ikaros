@@ -108,6 +108,7 @@ class HistorySelectorV1:
         turn_id: str,
         ordinal: int,
         records: Sequence[ContextItemRecordV1],
+        additional_characters: int = 0,
     ) -> bool:
         if self._stopped:
             raise RuntimeError("history selection already reached its omission boundary")
@@ -120,7 +121,7 @@ class HistorySelectorV1:
             raise ValueError("history Turn order is invalid")
         group = tuple(records)
         _validate_turn_group(turn_id, group)
-        characters = sum(record.characters for record in group)
+        characters = sum(record.characters for record in group) + additional_characters
         if characters > self._remaining_history_characters:
             self._omissions = (
                 OmissionRecordV1(
@@ -136,7 +137,9 @@ class HistorySelectorV1:
         self._last_ordinal = ordinal
         return True
 
-    def finish(self) -> HistorySelectionV1:
+    def finish(self, *, additional_characters: int = 0) -> HistorySelectionV1:
+        if additional_characters > self._remaining_history_characters:
+            raise ContextBudgetExceededError("context_budget_exceeded")
         chronological = tuple(
             record
             for group in reversed(self._selected_newest_first)

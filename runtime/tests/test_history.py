@@ -82,9 +82,7 @@ def test_history_selector_stops_at_first_turn_that_does_not_fit() -> None:
         current_turn_id=frame.turn_id,
         current_turn_ordinal=4,
         current_records=(current,),
-        maximum_characters=(
-            instruction_characters + tool_characters + current.characters + 5 + 6
-        ),
+        maximum_characters=(instruction_characters + tool_characters + current.characters + 5 + 6),
         reserved_current_run_characters=5,
     )
     newest = _message_record("item_new", "turn_3", "run_3", "user", "123456")
@@ -122,17 +120,13 @@ def test_history_selector_counts_unicode_and_accepts_an_exact_fit() -> None:
         current_turn_id=frame.turn_id,
         current_turn_ordinal=2,
         current_records=(current,),
-        maximum_characters=(
-            instructions + tools + current.characters + candidate.characters + 1
-        ),
+        maximum_characters=(instructions + tools + current.characters + candidate.characters + 1),
         reserved_current_run_characters=1,
     )
 
     assert current.characters == 2
     assert candidate.characters == 3
-    assert selector.consider_turn(
-        turn_id="turn_old", ordinal=1, records=(candidate,)
-    ) is True
+    assert selector.consider_turn(turn_id="turn_old", ordinal=1, records=(candidate,)) is True
     assert selector.finish().omissions == ()
 
 
@@ -452,7 +446,13 @@ def test_multi_tool_call_turn_is_selected_as_one_atomic_group(tmp_path: Path) ->
         store.close()
 
 
-def test_cancelled_tool_items_do_not_create_orphan_provider_messages(tmp_path: Path) -> None:
+@pytest.mark.parametrize("selection_version", ["bounded-history-v1", "bounded-history-v2"])
+def test_cancelled_tool_items_do_not_create_orphan_provider_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selection_version: str,
+) -> None:
+    monkeypatch.setattr("ikaros_runtime.storage.store.CONTEXT_SELECTION_VERSION", selection_version)
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Cancelled tools")
@@ -494,7 +494,11 @@ def test_cancelled_tool_items_do_not_create_orphan_provider_messages(tmp_path: P
             if reference.turn_id == cancelled.turn_id
         )
 
-        assert cancelled_kinds == ("message",)
+        assert cancelled_kinds == (
+            ("message",)
+            if selection_version == "bounded-history-v1"
+            else ("message", "tool_call", "tool_result")
+        )
     finally:
         store.close()
 
@@ -547,9 +551,10 @@ def test_later_tool_steps_load_frozen_ids_and_current_run_without_branch_scan(
                 current.run_id,
                 step_ordinal=ordinal + 1,
             )
-            assert tuple(
-                item.item_id for item in next_step.context_snapshot.history_items
-            ) == frozen_ids
+            assert (
+                tuple(item.item_id for item in next_step.context_snapshot.history_items)
+                == frozen_ids
+            )
 
         normalized = "\n".join(query.upper() for query in queries)
         assert "WHERE I.ID IN" in normalized

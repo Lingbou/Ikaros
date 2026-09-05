@@ -582,9 +582,9 @@ client submits user input
   -> Scheduler activates the Run
   -> MemoryRetrieverV1 reads Global/current-workspace candidates outside the
      state.db transaction and freezes bounded exact-revision metadata
-  -> first prepare_model_step pages backward and freezes bounded ContextSnapshotV1;
+  -> first prepare_model_step pages backward and freezes bounded ContextSnapshotV2;
      later Steps load frozen Item IDs plus current-Run Items
-  -> Runtime persists StepManifestV1 and emits model.input_prepared
+  -> Runtime persists StepManifestV2 and emits model.input_prepared
   -> Runtime re-materializes the exact frozen Memory revisions; Forget aborts
      before the Provider sees a new Step
   -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1 from
@@ -605,8 +605,8 @@ client submits user input
 ```
 
 `ModelInputPlanner` consumes the frozen Submission Frame, while
-`ContextSnapshotV1`, `RunManifestV1`, and per-Step `StepManifestV1` provide the
-durable audit boundary. Selection uses `bounded-history-v1`: a 48,000 Unicode
+`ContextSnapshotV2`, `RunManifestV1`, and per-Step `StepManifestV2` provide the
+durable audit boundary for new Runs. Selection uses `bounded-history-v2`: a 48,000 Unicode
 character total limit, a 12,000-character first-Step current-Run reserve,
 complete-Turn atomic selection, and deterministic omission metadata. Later
 Steps may use capacity beyond that reserve, but actual total input may never
@@ -618,6 +618,12 @@ current release Identity and fails on drift rather than silently substituting
 new content. Memory retrieval remains a separate low-authority input: its body
 is absent from Session audit records, exact references are frozen in the Context
 Snapshot, and the ContextBuilder accepts only the canonical Runtime wrapper.
+Failed and cancelled Runs contribute persisted tool pairs and a separately
+budgeted `history-status` Context Data block. Partial assistant messages remain
+excluded. A budget-omitted latest failure keeps a short warning to inspect the
+current state; a normal new Turn can ask to continue or ask an unrelated question.
+Selection never dispatches historical calls. V1 snapshots, manifests, and queued
+Runs continue to use their frozen v1 selector; replay does not upgrade old events.
 Detailed limits and failure semantics are recorded in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 

@@ -50,6 +50,7 @@ from ..storage import SqliteRuntimeStore
 from ..tools.core import ToolCall, ToolExecutionCancelled, ToolExecutor, ToolResult
 from .context import (
     ContextBuilder,
+    build_history_status_context_data,
     build_memory_context_data,
     memory_context_data_characters,
 )
@@ -123,9 +124,7 @@ class AgentLoop:
         self._tool_executor = tool_executor
         self._max_steps = max_steps
         self._protected_values = protected_values or _empty_protected_values
-        self._context_builder = (
-            context_builder if context_builder is not None else ContextBuilder()
-        )
+        self._context_builder = context_builder if context_builder is not None else ContextBuilder()
         self._model_input_planner = (
             model_input_planner if model_input_planner is not None else ModelInputPlanner()
         )
@@ -143,10 +142,7 @@ class AgentLoop:
             run = self._store.get_run(run_id)
             frame = self._store.get_submission_frame(run_id)
             manifest = self._store.get_run_manifest(run_id)
-            if (
-                manifest.context_selection_version
-                not in EXECUTABLE_CONTEXT_SELECTION_VERSIONS
-            ):
+            if manifest.context_selection_version not in EXECUTABLE_CONTEXT_SELECTION_VERSIONS:
                 raise RunInputDriftError("model_input_unavailable")
             self._validate_submission_environment(frame)
             provider = self._resolve_provider(run.provider_id)
@@ -182,6 +178,13 @@ class AgentLoop:
                         workspace_id=workspace_id,
                         expected_context_data_characters=(
                             prepared_step.context_snapshot.budget.context_data_characters
+                            - prepared_step.context_snapshot.history_status.characters
+                        ),
+                    )
+                    context_data = (
+                        *context_data,
+                        *build_history_status_context_data(
+                            prepared_step.context_snapshot.history_status
                         ),
                     )
                     plan = self._model_input_planner.build_plan(
@@ -600,11 +603,7 @@ class AgentLoop:
         if model_id is None and request_id is None:
             raise RuntimeError("provider emitted empty response metadata")
         self._assert_response_metadata_safe(model_id, request_id)
-        if (
-            response_model_id is not None
-            and model_id is not None
-            and response_model_id != model_id
-        ):
+        if response_model_id is not None and model_id is not None and response_model_id != model_id:
             raise RuntimeError("provider emitted conflicting response model IDs")
         if (
             response_request_id is not None
@@ -734,18 +733,15 @@ class AgentLoop:
         if current_provider.fingerprint != frame.public_provider_config_fingerprint:
             raise RunInputDriftError("provider_configuration_changed")
 
-        definitions = (
-            self._tool_executor.definitions if self._tool_executor is not None else ()
-        )
+        definitions = self._tool_executor.definitions if self._tool_executor is not None else ()
         if not validate_tool_environment(frame.tools, definitions):
             raise RunInputDriftError("tool_definitions_changed")
         current_policy = (
-            self._tool_executor.policy_name
-            if self._tool_executor is not None
-            else "full_access"
+            self._tool_executor.policy_name if self._tool_executor is not None else "full_access"
         )
         if frame.execution_policy != current_policy:
             raise RunInputDriftError("execution_policy_changed")
+
 
 def _failure_reason_code(error: Exception) -> str:
     if isinstance(error, AgentStepLimitError):

@@ -276,6 +276,8 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
     executor = ToolExecutor(ToolRegistry((tool,)), FullAccessPolicy())
 
     with (
+        # This fixture remains a compatibility contract for the v1 selector.
+        patch.object(store_module, "CONTEXT_SELECTION_VERSION", "bounded-history-v1"),
         patch.object(uuid, "uuid4", new=ids),
         patch.object(store_module, "utc_now", new=utc_now),
         patch.object(memory_store_module, "utc_now", new=utc_now),

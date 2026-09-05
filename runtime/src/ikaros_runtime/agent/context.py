@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..domain import ContextItem
+from ..history_status import HISTORY_STATUS_PREAMBLE_V1, FrozenHistoryStatusV1
 from ..json_codec import loads as json_loads
 from ..memory import MaterializedMemoryV1
 from ..memory.domain import (
@@ -90,6 +91,57 @@ def memory_context_data_characters(records: Sequence[MaterializedMemoryV1]) -> i
 
 
 def _context_data_messages(
+    blocks: Sequence[ContextDataBlockV1],
+) -> tuple[ProviderMessage, ...]:
+    messages: list[ProviderMessage] = []
+    seen: set[str] = set()
+    for block in blocks:
+        if block.id in seen or (block.id == "memory-context" and "history-status" in seen):
+            raise RuntimeError("model input contains duplicate or unordered context data")
+        seen.add(block.id)
+        if block.id != "history-status":
+            messages.extend(_memory_context_messages((block,)))
+            continue
+        prefix = HISTORY_STATUS_PREAMBLE_V1 + "\n"
+        if not block.content.startswith(prefix):
+            raise RuntimeError("history status wrapper is invalid")
+        try:
+            payload = json_loads(block.content[len(prefix) :])
+            if not isinstance(payload, dict) or set(payload) != {"version", "runs"}:
+                raise ValueError("history status payload is invalid")
+            status = FrozenHistoryStatusV1.from_wire(
+                {
+                    **payload,
+                    "characters": len(block.content),
+                }
+            )
+            if build_history_status_context_data(status) != (block,):
+                raise ValueError("history status wrapper is not canonical")
+        except (TypeError, ValueError):
+            raise RuntimeError("history status wrapper is invalid") from None
+        messages.append(ProviderMessage(role="system", content=block.content))
+    return tuple(messages)
+
+
+def build_history_status_context_data(
+    status: FrozenHistoryStatusV1,
+) -> tuple[ContextDataBlockV1, ...]:
+    if not status.runs:
+        return ()
+    return (
+        ContextDataBlockV1(
+            id="history-status",
+            version=1,
+            source="ikaros-runtime:history-status-v1",
+            authority="contextual_data",
+            scope="run",
+            lifetime="run",
+            content=status.content,
+        ),
+    )
+
+
+def _memory_context_messages(
     blocks: Sequence[ContextDataBlockV1],
 ) -> tuple[ProviderMessage, ...]:
     frozen = tuple(blocks)

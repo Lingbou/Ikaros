@@ -204,6 +204,72 @@ function attachTestMemoryContext(
   }
 }
 
+interface TestHistoryRun {
+  turnId: string;
+  runId: string;
+  status: "failed" | "cancelled";
+  reasonCode: string | null;
+  details: "included" | "omitted_by_budget";
+}
+
+function attachHistoryStatusV2(
+  event: ReturnType<typeof cloneGoldenNotification>,
+  runs: TestHistoryRun[] = []
+): void {
+  const preamble = "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.";
+  // Deliberately spell out canonical field order independently of the wire parser.
+  const content = `${preamble}\n${JSON.stringify({
+    runs: runs.map((run) => ({
+      details: run.details,
+      reasonCode: run.reasonCode,
+      runId: run.runId,
+      status: run.status,
+      turnId: run.turnId
+    })),
+    version: 1
+  })}`;
+  const status = { version: 1, characters: runs.length ? [...content].length : 0, runs };
+  const snapshot = asWireObject(event.payload.contextSnapshot, "Context Snapshot");
+  const manifest = asWireObject(event.payload.stepManifest, "Step Manifest");
+  snapshot.selectionVersion = "bounded-history-v2";
+  manifest.contextSnapshotVersion = 2;
+  for (const value of [snapshot, manifest]) {
+    value.schemaVersion = 2;
+    value.historyStatus = structuredClone(status);
+    const budget = asWireObject(value.budget, "Context budget");
+    budget.contextDataCharacters = (budget.contextDataCharacters as number) + status.characters;
+    budget.totalCharacters = (budget.totalCharacters as number) + status.characters;
+  }
+}
+
+function addFailedHistory(event: ReturnType<typeof cloneGoldenNotification>): TestHistoryRun {
+  const run: TestHistoryRun = {
+    turnId: "turn_previous_中文",
+    runId: "run_previous",
+    status: "failed",
+    reasonCode: "provider_transport",
+    details: "included"
+  };
+  const items = [
+    { itemId: "item_previous_user", kind: "message", role: "user", characters: 12 },
+    { itemId: "item_previous_call", kind: "tool_call", role: "assistant", characters: 43 },
+    { itemId: "item_previous_result", kind: "tool_result", role: "tool", characters: 25 }
+  ].map((item) => ({ ...item, turnId: run.turnId, runId: run.runId }));
+  const snapshot = asWireObject(event.payload.contextSnapshot, "Context Snapshot");
+  const manifest = asWireObject(event.payload.stepManifest, "Step Manifest");
+  asWireArray(snapshot.historyGroups, "History groups").unshift({
+    turnId: run.turnId,
+    itemIds: items.map((item) => item.itemId)
+  });
+  for (const value of [snapshot, manifest]) {
+    asWireArray(value.historyItems, "History items").unshift(...structuredClone(items));
+    const budget = asWireObject(value.budget, "Context budget");
+    budget.historyCharacters = (budget.historyCharacters as number) + 80;
+    budget.totalCharacters = (budget.totalCharacters as number) + 80;
+  }
+  return run;
+}
+
 describe("Runtime protocol Golden Trace", () => {
   it("parses the shared Python/Desktop envelopes with production parsers", () => {
     const observedEvents = new Set<string>();
@@ -980,6 +1046,108 @@ describe("Runtime protocol Golden Trace", () => {
       budget.reservedCurrentRunCharacters = 11_000;
     }
     expect(() => parseRuntimeEventNotification(alternateLimits.envelope)).toThrow();
+  });
+
+  it("keeps v1 readable and accepts v2 with empty or included failure status", () => {
+    const submitted = cloneGoldenNotification("initial-user-item-completed");
+    const runManifest = asWireObject(submitted.payload.runManifest, "Run Manifest");
+    runManifest.contextSelectionVersion = "bounded-history-v2";
+    expect(() => parseRuntimeEventNotification(submitted.envelope)).not.toThrow();
+    runManifest.contextSelectionVersion = "bounded-history-v3";
+    expect(() => parseRuntimeEventNotification(submitted.envelope)).toThrow();
+    const legacy = cloneGoldenNotification("model-input-prepared");
+    expect(() => parseRuntimeEventNotification(legacy.envelope)).not.toThrow();
+    const empty = structuredClone(legacy);
+    attachHistoryStatusV2(empty);
+    expect(() => parseRuntimeEventNotification(empty.envelope)).not.toThrow();
+    const included = structuredClone(legacy);
+    const run = addFailedHistory(included);
+    attachHistoryStatusV2(included, [run]);
+    expect(() => parseRuntimeEventNotification(included.envelope)).not.toThrow();
+    const withoutMemory = structuredClone(legacy);
+    attachTestMemoryContext(withoutMemory, []);
+    attachHistoryStatusV2(withoutMemory, [addFailedHistory(withoutMemory)]);
+    expect(() => parseRuntimeEventNotification(withoutMemory.envelope)).not.toThrow();
+  });
+
+  it("accepts a latest failed Turn omission with a separately budgeted warning", () => {
+    const event = cloneGoldenNotification("model-input-prepared");
+    const omission = {
+      sourceType: "history", sourceId: "turn_too_large", reason: "omitted_by_budget"
+    };
+    for (const key of ["contextSnapshot", "stepManifest"]) {
+      asWireObject(event.payload[key], key).omissions = [structuredClone(omission)];
+    }
+    attachHistoryStatusV2(event, [{
+      turnId: "turn_too_large", runId: "run_too_large", status: "cancelled",
+      reasonCode: null, details: "omitted_by_budget"
+    }]);
+    expect(() => parseRuntimeEventNotification(event.envelope)).not.toThrow();
+    const unrelated = structuredClone(event);
+    for (const key of ["contextSnapshot", "stepManifest"]) {
+      asWireObject(unrelated.payload[key], key).omissions = [];
+    }
+    expect(() => parseRuntimeEventNotification(unrelated.envelope)).toThrow();
+  });
+
+  it("rejects invalid, foreign, current, or duplicate history status Runs", () => {
+    const mutations: Array<(run: TestHistoryRun, event: ReturnType<typeof cloneGoldenNotification>) => TestHistoryRun[]> = [
+      (run) => [{ ...run, runId: "run_foreign" }],
+      (run) => [{ ...run, turnId: "turn_foreign" }],
+      (run, event) => [{ ...run, runId: event.params.runId as string }],
+      (run) => [run, structuredClone(run)],
+      (run) => [{ ...run, status: "completed" as "failed" }],
+      (run) => [{ ...run, reasonCode: "invalid reason" }],
+      (run) => [{ ...run, details: "omitted_by_budget" }]
+    ];
+    for (const mutate of mutations) {
+      const event = cloneGoldenNotification("model-input-prepared");
+      const run = addFailedHistory(event);
+      attachHistoryStatusV2(event, mutate(run, event));
+      expect(() => parseRuntimeEventNotification(event.envelope)).toThrow();
+    }
+  });
+
+  it("rejects status budget tampering, frozen Step drift, and cross-version manifests", () => {
+    const event = cloneGoldenNotification("model-input-prepared");
+    attachHistoryStatusV2(event, [addFailedHistory(event)]);
+    const mutations: Array<(snapshot: Record<string, unknown>, manifest: Record<string, unknown>) => void> = [
+      (snapshot) => { delete snapshot.historyStatus; },
+      (snapshot) => { snapshot.selectionVersion = "bounded-history-v1"; },
+      (snapshot) => { snapshot.schemaVersion = 1; },
+      (_, manifest) => { manifest.contextSnapshotVersion = 1; },
+      (_, manifest) => { manifest.schemaVersion = 1; },
+      (_, manifest) => {
+        const runs = asWireArray(asWireObject(manifest.historyStatus, "History status").runs, "Runs");
+        asWireObject(runs[0], "Run").reasonCode = "provider_protocol";
+      },
+      (snapshot, manifest) => {
+        for (const value of [snapshot, manifest]) {
+          const status = asWireObject(value.historyStatus, "History status");
+          status.characters = (status.characters as number) + 1;
+          const budget = asWireObject(value.budget, "Budget");
+          budget.contextDataCharacters = (budget.contextDataCharacters as number) + 1;
+          budget.totalCharacters = (budget.totalCharacters as number) + 1;
+        }
+      },
+      (snapshot, manifest) => {
+        for (const value of [snapshot, manifest]) {
+          const status = asWireObject(value.historyStatus, "History status");
+          const budget = asWireObject(value.budget, "Budget");
+          const previous = budget.contextDataCharacters as number;
+          budget.contextDataCharacters = status.characters;
+          budget.totalCharacters = (budget.totalCharacters as number) - previous + (status.characters as number);
+        }
+      }
+    ];
+    for (const mutate of mutations) {
+      const copy = structuredClone(event);
+      mutate(asWireObject(copy.payload.contextSnapshot, "Snapshot"), asWireObject(copy.payload.stepManifest, "Step"));
+      expect(() => parseRuntimeEventNotification(copy.envelope)).toThrow();
+    }
+    expectGoldenMutationRejected("model-input-prepared", ({ payload }) => {
+      asWireObject(payload.contextSnapshot, "Snapshot").historyStatus = { version: 1, characters: 0, runs: [] };
+    });
   });
 
   it("rejects empty Context Snapshot history groups", () => {

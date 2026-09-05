@@ -14,6 +14,7 @@ from typing import Any, Literal, cast
 
 from .domain import ContextItem, JournalEvent, JsonObject, SkillDescriptor, WorkspaceSummary
 from .errors import ContextBudgetExceededError, ModelInputUnavailableError
+from .history_status import EMPTY_HISTORY_STATUS_V1, FrozenHistoryStatusV1
 from .json_codec import dumps as json_dumps
 from .json_codec import loads as json_loads
 from .tools.core import ToolDefinition
@@ -34,7 +35,8 @@ SUBMISSION_FRAME_SCHEMA_VERSION = 1
 RUN_MANIFEST_SCHEMA_VERSION = 1
 CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
 STEP_MANIFEST_SCHEMA_VERSION = 1
-CONTEXT_SELECTION_VERSION = "bounded-history-v1"
+LEGACY_CONTEXT_SELECTION_VERSION = "bounded-history-v1"
+CONTEXT_SELECTION_VERSION = "bounded-history-v2"
 INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1"
 MEMORY_CONTEXT_VERSION = 2
 MAXIMUM_INPUT_CHARACTERS_V1 = 48_000
@@ -48,8 +50,12 @@ IKAROS_IDENTITY_VERSION = 1
 IKAROS_IDENTITY_SOURCE = "ikaros-runtime:identity"
 IDENTITY_CORE_MAX_CHARACTERS_V1 = 2_048
 
-REGISTERED_CONTEXT_SELECTION_VERSIONS = frozenset({CONTEXT_SELECTION_VERSION})
-EXECUTABLE_CONTEXT_SELECTION_VERSIONS = frozenset({CONTEXT_SELECTION_VERSION})
+REGISTERED_CONTEXT_SELECTION_VERSIONS = frozenset(
+    {LEGACY_CONTEXT_SELECTION_VERSION, CONTEXT_SELECTION_VERSION}
+)
+EXECUTABLE_CONTEXT_SELECTION_VERSIONS = frozenset(
+    {LEGACY_CONTEXT_SELECTION_VERSION, CONTEXT_SELECTION_VERSION}
+)
 REGISTERED_INPUT_BUDGET_MODES = frozenset({"bounded"})
 
 OUTPUT_STYLE_CONTENT = (
@@ -527,9 +533,7 @@ class SubmissionFrameV1:
             workspace=workspace,
             provider_id=_as_str(row["providerId"]),
             model_id=_as_str(row["modelId"]),
-            public_provider_config_fingerprint=_as_str(
-                row["publicProviderConfigFingerprint"]
-            ),
+            public_provider_config_fingerprint=_as_str(row["publicProviderConfigFingerprint"]),
             execution_policy=_as_str(row["executionPolicy"]),
             skills=tuple(SkillDescriptor.from_wire(skill) for skill in skills_value),
             tools=tuple(ToolDefinitionSnapshotV1.from_wire(tool) for tool in tools_value),
@@ -660,6 +664,7 @@ class RunManifestV1:
             "executionPolicy": self.execution_policy,
             "maxSteps": self.max_steps,
         }
+
 
 @dataclass(frozen=True, slots=True)
 class ContextItemRecordV1:
@@ -846,17 +851,13 @@ class InputBudgetRecordV1:
             self.total_characters,
         )
         if any(
-            not isinstance(count, int) or isinstance(count, bool) or count < 0
-            for count in counts
+            not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in counts
         ):
             raise ValueError("input budget counts are invalid")
         actual_parts = counts[1:7]
         if self.total_characters != sum(actual_parts):
             raise ValueError("input budget total is invalid")
-        if (
-            self.maximum_characters is not None
-            and self.total_characters > self.maximum_characters
-        ):
+        if self.maximum_characters is not None and self.total_characters > self.maximum_characters:
             raise ValueError("input budget exceeds its maximum")
 
     def to_wire(self) -> JsonObject:
@@ -884,9 +885,7 @@ class InputBudgetRecordV1:
                 row["maximumCharacters"],
                 label="input budget maximum",
             ),
-            reserved_current_run_characters=_as_int(
-                row["reservedCurrentRunCharacters"]
-            ),
+            reserved_current_run_characters=_as_int(row["reservedCurrentRunCharacters"]),
             instruction_characters=_as_int(row["instructionCharacters"]),
             context_data_characters=_as_int(row["contextDataCharacters"]),
             tool_characters=_as_int(row["toolCharacters"]),
@@ -995,9 +994,10 @@ class FrozenMemoryContextV1:
             raise ValueError("selected and omitted Memory IDs overlap")
         if len(self.memory) + len(self.omissions) > MEMORY_RETRIEVAL_MAX_CANDIDATES_V1:
             raise ValueError("Memory selection exceeds the candidate limit")
-        if any(
-            omission.reason == "omitted_by_limit" for omission in self.omissions
-        ) and len(self.memory) != MEMORY_SELECTION_MAX_ITEMS_V1:
+        if (
+            any(omission.reason == "omitted_by_limit" for omission in self.omissions)
+            and len(self.memory) != MEMORY_SELECTION_MAX_ITEMS_V1
+        ):
             raise ValueError("Memory limit omission requires a full selection")
         expected_characters = sum(reference.characters for reference in self.memory)
         if (
@@ -1031,7 +1031,9 @@ class FrozenMemoryContextV1:
             memory=snapshot.memory,
             omissions=tuple(memory_omissions),
             memory_characters=snapshot.budget.memory_characters,
-            context_data_characters=snapshot.budget.context_data_characters,
+            context_data_characters=(
+                snapshot.budget.context_data_characters - snapshot.history_status.characters
+            ),
         )
 
 
@@ -1040,17 +1042,24 @@ EMPTY_FROZEN_MEMORY_CONTEXT_V1 = FrozenMemoryContextV1((), (), 0, 0)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ContextSnapshotV1:
-    schema_version: Literal[1] = field(default=1, init=False)
+    schema_version: int = field(default=1, init=False)
     selection_version: str
     history_groups: tuple[HistoryGroupReferenceV1, ...]
     history_items: tuple[HistoryItemReferenceV1, ...]
     memory: tuple[MemoryReferenceV1, ...]
     budget: InputBudgetRecordV1
     omissions: tuple[OmissionRecordV1, ...]
+    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
 
     def __post_init__(self) -> None:
-        if self.selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
+        if self.selection_version != (
+            LEGACY_CONTEXT_SELECTION_VERSION
+            if self.schema_version == 1
+            else CONTEXT_SELECTION_VERSION
+        ):
             raise ValueError("Context selection version is unsupported")
+        if self.schema_version == 1 and self.history_status.runs:
+            raise ValueError("legacy Snapshot cannot contain history status")
         object.__setattr__(self, "history_groups", tuple(self.history_groups))
         object.__setattr__(self, "history_items", tuple(self.history_items))
         object.__setattr__(self, "memory", tuple(self.memory))
@@ -1061,20 +1070,17 @@ class ContextSnapshotV1:
             memory=self.memory,
             omissions=self.omissions,
             budget=self.budget,
+            history_status=self.history_status,
+            history_items=self.history_items,
             selected_turn_ids=tuple(group.turn_id for group in self.history_groups),
         )
         maximum = self.budget.maximum_characters
         if (
             maximum != MAXIMUM_INPUT_CHARACTERS_V1
-            or self.budget.reserved_current_run_characters
-            != RESERVED_CURRENT_RUN_CHARACTERS_V1
+            or self.budget.reserved_current_run_characters != RESERVED_CURRENT_RUN_CHARACTERS_V1
         ):
             raise ValueError("Context Snapshot bounded-history-v1 limits are invalid")
-        if (
-            self.budget.total_characters
-            + self.budget.reserved_current_run_characters
-            > maximum
-        ):
+        if self.budget.total_characters + self.budget.reserved_current_run_characters > maximum:
             raise ValueError("Context Snapshot does not preserve current Run capacity")
 
     def to_wire(self) -> JsonObject:
@@ -1086,12 +1092,17 @@ class ContextSnapshotV1:
             "memory": [memory.to_wire() for memory in self.memory],
             "budget": self.budget.to_wire(),
             "omissions": [omission.to_wire() for omission in self.omissions],
+            **(
+                {"historyStatus": self.history_status.to_wire()} if self.schema_version == 2 else {}
+            ),
         }
 
     @classmethod
     def from_wire(cls, value: object) -> ContextSnapshotV1:
-        row = _object(value, "Context Snapshot", _CONTEXT_SNAPSHOT_KEYS)
-        if row["schemaVersion"] != CONTEXT_SNAPSHOT_SCHEMA_VERSION:
+        version = 2 if cls is ContextSnapshotV2 else 1
+        keys = _CONTEXT_SNAPSHOT_KEYS | ({"historyStatus"} if version == 2 else set())
+        row = _object(value, "Context Snapshot", keys)
+        if type(row["schemaVersion"]) is not int or row["schemaVersion"] != version:
             raise ValueError("Context Snapshot schema version is unsupported")
         selection_version = _as_str(row["selectionVersion"])
         if selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
@@ -1107,22 +1118,30 @@ class ContextSnapshotV1:
             memory=tuple(MemoryReferenceV1.from_wire(reference) for reference in memory),
             budget=InputBudgetRecordV1.from_wire(row["budget"]),
             omissions=tuple(OmissionRecordV1.from_wire(item) for item in omissions),
+            history_status=(
+                FrozenHistoryStatusV1.from_wire(row["historyStatus"])
+                if version == 2
+                else EMPTY_HISTORY_STATUS_V1
+            ),
         )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StepManifestV1:
-    schema_version: Literal[1] = field(default=1, init=False)
+    schema_version: int = field(default=1, init=False)
     step_ordinal: int
     context_snapshot_version: int
     history_items: tuple[HistoryItemReferenceV1, ...]
     memory: tuple[MemoryReferenceV1, ...]
     budget: InputBudgetRecordV1
     omissions: tuple[OmissionRecordV1, ...]
+    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
 
     def __post_init__(self) -> None:
+        if self.schema_version == 1 and self.history_status.runs:
+            raise ValueError("legacy Step Manifest cannot contain history status")
         _positive("Step Manifest ordinal", self.step_ordinal)
-        if self.context_snapshot_version != CONTEXT_SNAPSHOT_SCHEMA_VERSION:
+        if self.context_snapshot_version != self.schema_version:
             raise ValueError("Step Manifest Context Snapshot version is unsupported")
         object.__setattr__(self, "history_items", tuple(self.history_items))
         object.__setattr__(self, "memory", tuple(self.memory))
@@ -1133,12 +1152,13 @@ class StepManifestV1:
             memory=self.memory,
             omissions=self.omissions,
             budget=self.budget,
+            history_status=self.history_status,
+            history_items=self.history_items,
             selected_turn_ids=tuple(item.turn_id for item in self.history_items),
         )
         if (
             self.budget.maximum_characters != MAXIMUM_INPUT_CHARACTERS_V1
-            or self.budget.reserved_current_run_characters
-            != RESERVED_CURRENT_RUN_CHARACTERS_V1
+            or self.budget.reserved_current_run_characters != RESERVED_CURRENT_RUN_CHARACTERS_V1
         ):
             raise ValueError("Step Manifest bounded-history-v1 limits are invalid")
 
@@ -1151,12 +1171,17 @@ class StepManifestV1:
             "memory": [memory.to_wire() for memory in self.memory],
             "budget": self.budget.to_wire(),
             "omissions": [omission.to_wire() for omission in self.omissions],
+            **(
+                {"historyStatus": self.history_status.to_wire()} if self.schema_version == 2 else {}
+            ),
         }
 
     @classmethod
     def from_wire(cls, value: object) -> StepManifestV1:
-        row = _object(value, "Step Manifest", _STEP_MANIFEST_KEYS)
-        if row["schemaVersion"] != STEP_MANIFEST_SCHEMA_VERSION:
+        version = 2 if cls is StepManifestV2 else 1
+        keys = _STEP_MANIFEST_KEYS | ({"historyStatus"} if version == 2 else set())
+        row = _object(value, "Step Manifest", keys)
+        if type(row["schemaVersion"]) is not int or row["schemaVersion"] != version:
             raise ValueError("Step Manifest schema version is unsupported")
         items = _array(row["historyItems"], "history Items")
         memory = _array(row["memory"], "Memory references")
@@ -1168,7 +1193,34 @@ class StepManifestV1:
             memory=tuple(MemoryReferenceV1.from_wire(item) for item in memory),
             budget=InputBudgetRecordV1.from_wire(row["budget"]),
             omissions=tuple(OmissionRecordV1.from_wire(item) for item in omissions),
+            history_status=(
+                FrozenHistoryStatusV1.from_wire(row["historyStatus"])
+                if version == 2
+                else EMPTY_HISTORY_STATUS_V1
+            ),
         )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextSnapshotV2(ContextSnapshotV1):
+    schema_version: int = field(default=2, init=False)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StepManifestV2(StepManifestV1):
+    schema_version: int = field(default=2, init=False)
+
+
+def parse_context_snapshot(value: object) -> ContextSnapshotV1:
+    if isinstance(value, dict) and value.get("schemaVersion") == 2:
+        return ContextSnapshotV2.from_wire(value)
+    return ContextSnapshotV1.from_wire(value)
+
+
+def parse_step_manifest(value: object) -> StepManifestV1:
+    if isinstance(value, dict) and value.get("schemaVersion") == 2:
+        return StepManifestV2.from_wire(value)
+    return StepManifestV1.from_wire(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1196,6 +1248,7 @@ def build_context_snapshot(
     reserved_current_run_characters: int,
     omissions: Sequence[OmissionRecordV1],
     memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
+    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
 ) -> ContextSnapshotV1:
     if selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
         raise ValueError("Context selection version is unsupported")
@@ -1224,7 +1277,11 @@ def build_context_snapshot(
     current_run_characters = sum(
         reference.characters for reference in references if reference.run_id == current_run_id
     )
-    return ContextSnapshotV1(
+    snapshot_type = (
+        ContextSnapshotV2 if selection_version == CONTEXT_SELECTION_VERSION else ContextSnapshotV1
+    )
+    return snapshot_type(
+        history_status=history_status,
         selection_version=selection_version,
         history_groups=tuple(groups),
         history_items=references,
@@ -1235,7 +1292,8 @@ def build_context_snapshot(
             maximum_characters=maximum_characters,
             reserved_current_run_characters=reserved_current_run_characters,
             instruction_characters=_instruction_characters(frame),
-            context_data_characters=memory_context.context_data_characters,
+            context_data_characters=memory_context.context_data_characters
+            + history_status.characters,
             tool_characters=_tool_definition_characters(frame),
             history_characters=history_characters,
             current_run_characters=current_run_characters,
@@ -1243,6 +1301,7 @@ def build_context_snapshot(
             total_characters=(
                 _instruction_characters(frame)
                 + memory_context.context_data_characters
+                + history_status.characters
                 + _tool_definition_characters(frame)
                 + history_characters
                 + current_run_characters
@@ -1295,7 +1354,9 @@ def build_step_manifest(
     )
     if maximum_characters is None or total_characters > maximum_characters:
         raise ContextBudgetExceededError("context_budget_exceeded")
-    return StepManifestV1(
+    manifest_type = StepManifestV2 if snapshot.schema_version == 2 else StepManifestV1
+    return manifest_type(
+        history_status=snapshot.history_status,
         step_ordinal=step_ordinal,
         context_snapshot_version=snapshot.schema_version,
         history_items=references,
@@ -1444,12 +1505,8 @@ def _validate_budget_history_counts(
     budget: InputBudgetRecordV1,
 ) -> None:
     current_run_id = items[-1].run_id if items else None
-    history_characters = sum(
-        item.characters for item in items if item.run_id != current_run_id
-    )
-    current_run_characters = sum(
-        item.characters for item in items if item.run_id == current_run_id
-    )
+    history_characters = sum(item.characters for item in items if item.run_id != current_run_id)
+    current_run_characters = sum(item.characters for item in items if item.run_id == current_run_id)
     if (
         budget.history_characters != history_characters
         or budget.current_run_characters != current_run_characters
@@ -1475,6 +1532,8 @@ def _validate_context_snapshot_slots(
     omissions: Sequence[OmissionRecordV1],
     budget: InputBudgetRecordV1,
     selected_turn_ids: Sequence[str],
+    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
+    history_items: Sequence[HistoryItemReferenceV1] = (),
 ) -> None:
     if budget.mode != "bounded":
         raise ValueError("history selection budget mode is invalid")
@@ -1498,8 +1557,30 @@ def _validate_context_snapshot_slots(
         memory=tuple(memory),
         omissions=tuple(memory_omissions),
         memory_characters=budget.memory_characters,
-        context_data_characters=budget.context_data_characters,
+        context_data_characters=budget.context_data_characters - history_status.characters,
     )
+    included_runs = {(item.turn_id, item.run_id) for item in history_items}
+    ordered_runs = list(dict.fromkeys(item.run_id for item in history_items))
+    current_run_id = history_items[-1].run_id if history_items else None
+    last_run_index = -1
+    omitted_turns = {omission.source_id for omission in history_omissions}
+    for run in history_status.runs:
+        if run.run_id == current_run_id:
+            raise ValueError("history status contains the current Run")
+        if run.details == "included":
+            if (run.turn_id, run.run_id) not in included_runs:
+                raise ValueError("history status has no selected Run")
+            run_index = ordered_runs.index(run.run_id)
+            if run_index <= last_run_index:
+                raise ValueError("history status Runs are not chronological")
+            last_run_index = run_index
+        elif (
+            run.turn_id not in omitted_turns
+            or run.turn_id in selected
+            or any(item.run_id != current_run_id for item in history_items)
+            or any(status.details == "included" for status in history_status.runs)
+        ):
+            raise ValueError("history status omission does not match history boundary")
 
 
 def _validate_memory_scope_for_frame(
@@ -1709,6 +1790,11 @@ _STEP_MANIFEST_KEYS = {
 
 __all__ = [
     "CONTEXT_SELECTION_VERSION",
+    "LEGACY_CONTEXT_SELECTION_VERSION",
+    "ContextSnapshotV2",
+    "StepManifestV2",
+    "parse_context_snapshot",
+    "parse_step_manifest",
     "EXECUTABLE_CONTEXT_SELECTION_VERSIONS",
     "IDENTITY_CORE_MAX_CHARACTERS_V1",
     "IKAROS_IDENTITY_ID",

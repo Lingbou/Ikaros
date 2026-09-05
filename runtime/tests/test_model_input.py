@@ -12,7 +12,6 @@ from ikaros_runtime.agent import ModelInputPlanner, ModelInputPlanV1
 from ikaros_runtime.domain import ContextItem, SkillDescriptor
 from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.run_input import (
-    CONTEXT_SELECTION_VERSION,
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     INPUT_BUDGET_MEASUREMENT_VERSION,
     ContextItemRecordV1,
@@ -29,6 +28,9 @@ from ikaros_runtime.run_input import (
     build_step_manifest,
     canonical_json,
     validate_run_manifest,
+)
+from ikaros_runtime.run_input import (
+    LEGACY_CONTEXT_SELECTION_VERSION as CONTEXT_SELECTION_VERSION,
 )
 from ikaros_runtime.tools.core import ToolDefinition
 

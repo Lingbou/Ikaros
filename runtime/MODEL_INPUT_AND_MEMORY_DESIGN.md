@@ -149,13 +149,24 @@ flowchart LR
 属于后续能力阶段。当前启动路径严格校验 `memory.db` schema，不增加空维护模块、
 Memory backup/export/import 或用户可见转移入口。
 
-当前 `ContextSnapshotV1` 使用 `bounded-history-v1` 和 `bounded` 预算模式：Run
+当前新 Run 的 `ContextSnapshotV2` 使用 `bounded-history-v2` 和 `bounded` 预算模式：Run
 首次 Provider Step 冻结预算内的连续近期 Turn 后缀，后续 Tool Step 复用冻结历史，
-只加入当前 Run 新产生的 Item，并用各自的 `StepManifestV1` 记录实际输入。Memory
-和固定 JSON wrapper 的开销会先从 48,000 字符总预算扣除。12,000
+只加入当前 Run 新产生的 Item，并用各自的 `StepManifestV2` 记录实际输入。Memory、
+其固定 JSON wrapper 与独立的历史终结说明分别计量，再从 48,000 字符总预算扣除。12,000
 字符是首次选择为 Tool loop 留出的容量，不是后续增长的第二个硬上限；后续 Step
 只在实际总输入超过 48,000 字符时失败。`ContextBuilder` 仍只是确定性渲染器，
 不负责选择历史或 Memory。
+
+日常可用 Alpha 增加的 v2 保留失败、取消 Run 已持久化的 Tool Call/Result 配对，
+不把未完成的助手输出当作完整回答。`historyStatus` 冻结 Run、原因码和执行细节
+是否纳入的元数据，通过 Runtime-owned `history-status` Context Data 告知模型任务
+尚未完成、操作可能部分生效；崩溃补写的结果表示执行结果未知。最近失败 Turn
+放不进预算时保留“执行细节缺失，先核查”的说明。继续对话仍使用普通 `turn.start`，
+无关键词分支，也不重新调度旧调用。该说明不写入 Memory。
+
+v1 的解析、选择与重放仍保留；旧 queued Run 按冻结的选择版本执行，不升级或重写
+旧 Journal。下文 Gate 1–8 保留当时的实施记录；其中 Gate 3 的 reset-only 是历史
+决策，不适用于 Alpha 的 v1/v2 共存及后续保留数据的 schema 8→9 迁移。
 
 ### 3.3 Gate 1 实施增量
 

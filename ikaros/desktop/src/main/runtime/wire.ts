@@ -888,7 +888,8 @@ function isRunManifest(value: unknown, frameValue: unknown): boolean {
     value.runId !== frameValue.runId ||
     value.modelInputPlanVersion !== 1 ||
     value.submissionFrameVersion !== 1 ||
-    value.contextSelectionVersion !== "bounded-history-v1" ||
+    (value.contextSelectionVersion !== "bounded-history-v1" &&
+      value.contextSelectionVersion !== "bounded-history-v2") ||
     value.memoryContextVersion !== 2 ||
     value.executionPolicy !== frameValue.executionPolicy ||
     value.maxSteps !== frameValue.maxSteps ||
@@ -1104,6 +1105,7 @@ function isInputBudget(
 
 function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
   if (!isWireObject(value)) return false;
+  const versionTwo = value.schemaVersion === 2;
   const memory = value.memory;
   const budget = value.budget;
   if (
@@ -1115,10 +1117,11 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
       "historyItems",
       "memory",
       "budget",
-      "omissions"
+      "omissions",
+      ...(versionTwo ? ["historyStatus"] : [])
     ]) ||
-    value.schemaVersion !== 1 ||
-    value.selectionVersion !== "bounded-history-v1" ||
+    (!versionTwo && value.schemaVersion !== 1) ||
+    value.selectionVersion !== (versionTwo ? "bounded-history-v2" : "bounded-history-v1") ||
     !Array.isArray(value.historyGroups) ||
     value.historyGroups.length === 0 ||
     !Array.isArray(value.historyItems) ||
@@ -1130,7 +1133,8 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
     budget.maximumCharacters !== MAXIMUM_INPUT_CHARACTERS_V1 ||
     budget.reservedCurrentRunCharacters !== RESERVED_CURRENT_RUN_CHARACTERS_V1 ||
     !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(budget, memory) ||
+    !isMemoryBudgetForReferences(budget, memory, versionTwo ? value.historyStatus : undefined) ||
+    (versionTwo && !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId)) ||
     !isContextOmissionList(value.omissions, memory) ||
     budget.totalCharacters + budget.reservedCurrentRunCharacters > budget.maximumCharacters
   ) {
@@ -1191,6 +1195,7 @@ function isStepManifest(
   currentRunId: unknown
 ): boolean {
   if (!isWireObject(value) || !isWireObject(contextSnapshot)) return false;
+  const versionTwo = value.schemaVersion === 2;
   const memory = value.memory;
   const budget = value.budget;
   const snapshotMemory = contextSnapshot.memory;
@@ -1204,9 +1209,11 @@ function isStepManifest(
       "historyItems",
       "memory",
       "budget",
-      "omissions"
+      "omissions",
+      ...(versionTwo ? ["historyStatus"] : [])
     ]) ||
-    value.schemaVersion !== 1 ||
+    (!versionTwo && value.schemaVersion !== 1) ||
+    value.schemaVersion !== contextSnapshot.schemaVersion ||
     value.stepOrdinal !== stepOrdinal ||
     value.contextSnapshotVersion !== contextSnapshot.schemaVersion ||
     !Array.isArray(value.historyItems) ||
@@ -1220,7 +1227,8 @@ function isStepManifest(
     !sameWireValue(memory, snapshotMemory) ||
     !isInputBudget(budget) ||
     !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(budget, memory) ||
+    !isMemoryBudgetForReferences(budget, memory, versionTwo ? value.historyStatus : undefined) ||
+    (versionTwo && !sameWireValue(value.historyStatus, contextSnapshot.historyStatus)) ||
     !isInputBudget(snapshotBudget) ||
     budget.mode !== snapshotBudget.mode ||
     budget.measurementVersion !== snapshotBudget.measurementVersion ||
@@ -1295,18 +1303,73 @@ function isMemoryBudgetForReferences(
     memoryCharacters: number;
     contextDataCharacters: number;
   },
-  references: MemoryReferenceWire[]
+  references: MemoryReferenceWire[],
+  historyStatus?: unknown
 ): boolean {
+  const statusCharacters = historyStatus === undefined ? 0
+    : isWireObject(historyStatus) && isSafeNonNegativeInteger(historyStatus.characters)
+      ? historyStatus.characters : NaN;
+  const wrapperCharacters = budget.contextDataCharacters - statusCharacters;
   const characters = references.reduce((total, reference) => total + reference.characters, 0);
   if (
     characters > MEMORY_CONTEXT_MAX_CHARACTERS ||
-    budget.memoryCharacters !== characters
+    budget.memoryCharacters !== characters ||
+    !isSafeNonNegativeInteger(wrapperCharacters)
   ) {
     return false;
   }
   return references.length === 0
-    ? budget.contextDataCharacters === 0
-    : budget.contextDataCharacters > 0;
+    ? wrapperCharacters === 0
+    : wrapperCharacters > 0;
+}
+
+const HISTORY_STATUS_PREAMBLE = "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.";
+
+function isHistoryStatus(
+  value: unknown, items: unknown[], omissions: unknown, currentRunId: string
+): boolean {
+  if (!isWireObject(value) || !hasExactKeys(value, ["version", "characters", "runs"]) ||
+    value.version !== 1 || !isSafeNonNegativeInteger(value.characters) ||
+    !Array.isArray(value.runs) || !Array.isArray(omissions)) return false;
+  const selected = new Map<string, string>();
+  const turnOrder: string[] = [];
+  const runOrder: string[] = [];
+  for (const item of items) {
+    if (!isWireObject(item) || !isWireIdentifier(item.runId) || !isWireIdentifier(item.turnId)) return false;
+    selected.set(item.runId, item.turnId);
+    if (!turnOrder.includes(item.turnId)) turnOrder.push(item.turnId);
+    if (!runOrder.includes(item.runId)) runOrder.push(item.runId);
+  }
+  const seen = new Set<string>();
+  let lastRunIndex = -1;
+  let omittedTurn: string | null = null;
+  for (const run of value.runs) {
+    if (!isWireObject(run) ||
+      !hasExactKeys(run, ["turnId", "runId", "status", "reasonCode", "details"]) ||
+      !isWireIdentifier(run.turnId) || !isWireIdentifier(run.runId) ||
+      run.runId === currentRunId || seen.has(run.runId) ||
+      (run.status !== "failed" && run.status !== "cancelled") ||
+      (run.reasonCode !== null && !isRunReasonCode(run.reasonCode))) return false;
+    seen.add(run.runId);
+    if (run.details === "included") {
+      if (omittedTurn !== null || selected.get(run.runId) !== run.turnId) return false;
+      const index = runOrder.indexOf(run.runId);
+      if (index < lastRunIndex) return false;
+      lastRunIndex = index;
+    } else if (run.details === "omitted_by_budget") {
+      if (runOrder.some((runId) => runId !== currentRunId) ||
+        selected.has(run.runId) || turnOrder.includes(run.turnId) ||
+        (omittedTurn !== null && omittedTurn !== run.turnId) ||
+        !omissions.some((entry) => isHistoryOmission(entry) && entry.sourceId === run.turnId)) return false;
+      // Only the latest excluded Turn is protected; older selected Runs cannot
+      // accompany an omitted latest Turn in a contiguous history suffix.
+      if (value.runs.some((entry) => isWireObject(entry) && entry.details === "included")) return false;
+      omittedTurn = run.turnId;
+    } else return false;
+  }
+  const characters = value.runs.length === 0 ? 0
+    : [...`${HISTORY_STATUS_PREAMBLE}\n${canonicalJson({ version: 1, runs: value.runs })}`].length;
+  return value.characters === characters;
 }
 
 function isHistoryOmission(value: unknown): value is HistoryOmissionWire {

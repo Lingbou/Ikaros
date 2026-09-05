@@ -73,8 +73,8 @@ The current Desktop/Runtime path provides:
   the existing `runtime_interrupted` recovery path. No compatibility fallback
   injects the current Identity into an old Run;
 - durable Gate 2 input auditing: `SubmissionFrameV1` and `RunManifestV1`
-  persisted when a Turn is submitted, one frozen `ContextSnapshotV1` per Run,
-  and one `StepManifestV1` plus terminal response metadata per Provider Step;
+  persisted when a Turn is submitted, one frozen versioned Context Snapshot per Run,
+  and one versioned Step Manifest plus terminal response metadata per Provider Step;
   `model.input_prepared` / `model.response_finished` form the persisted Step
   lifecycle;
 - Gate 3 bounded history selection: complete prior Turns are read newest-first
@@ -147,9 +147,14 @@ OpenAI-compatible Provider models are entered manually.
 Restart recovery settles active Runs as `runtime_interrupted` and reschedules
 queued Runs; it does not resume a terminated process or a model Step from a
 checkpoint. Providers already perform bounded transport retries before emitting
-events. A new ordinary Turn can be submitted after failure, but the current
-history selector omits tools from failed/cancelled Runs, so it does not yet
-provide a complete continuation context.
+events. A new ordinary `turn.start` continues the conversation after failure.
+The default `bounded-history-v2` selector includes persisted tool call/result
+pairs from failed and cancelled Runs, excludes partial assistant messages, and
+freezes a separate Runtime status block describing incomplete work and possible
+partial effects. If the latest failed Turn cannot fit, its short status block
+asks the model to inspect current state before continuing. Historical calls are
+model input only; they are never automatically dispatched again. Existing v1
+snapshots and queued Runs retain their original selection and replay rules.
 
 Providers that do not report stream usage remain usable, but their calls are
 not estimated or added to Token totals. Profile metrics and activity include
@@ -176,7 +181,7 @@ copied into `state.db` or public Manifests; a model may still quote recalled dat
 in its ordinary assistant message, which is then normal conversation history.
 No standalone Memory maintenance or transfer UI is part of this stage.
 
-Identity Core, persistent input Frames/Manifests, and `bounded-history-v1`
+Identity Core, persistent input Frames/Manifests, and versioned bounded history
 remain separate authorities from Memory; their boundaries, completed Gate
 record, and deferred capabilities are defined in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
