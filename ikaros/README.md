@@ -8,7 +8,8 @@ state.
 - `desktop/` is the Windows and Linux client. It now integrates the first real
   Runtime vertical slice, including persistent multi-Turn Threads, restart
   recovery, Provider-reported usage, process and file Tools, workspace-backed
-  project conversations, and Runtime-backed Skills catalog/enablement.
+  project conversations, Runtime-backed Skills catalog/enablement, natural
+  continuation after failure, and internal read-only file preview/operation diffs.
 - `cli/` is not implemented yet. A future CLI will reuse the same Runtime
   contract rather than introduce a separate execution path.
 

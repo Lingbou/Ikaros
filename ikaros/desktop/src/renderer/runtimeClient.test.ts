@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { IkarosRuntimeBridgeApi } from "../shared/runtime";
+import type {
+  IkarosRuntimeBridgeApi,
+  RuntimeFileChangeResult,
+  RuntimeFilePreviewResult,
+} from "../shared/runtime";
 import { RuntimeClient, RuntimeRpcError } from "./runtimeClient";
 
 function bridgeWithListThreads(
@@ -32,11 +36,87 @@ function bridgeWithListThreads(
     listMemories: vi.fn(),
     getMemory: vi.fn(),
     readUsage: vi.fn(),
+    previewFile: vi.fn(),
+    getFileChange: vi.fn(),
     onEvent: vi.fn(() => () => undefined)
   };
 }
 
 describe("RuntimeClient", () => {
+  it("forwards current-file pages and historical change queries without caching", async () => {
+    const bridge = bridgeWithListThreads(vi.fn());
+    const firstPage: RuntimeFilePreviewResult = {
+      threadId: "thread-1",
+      path: "/workspace/report.md",
+      status: "text",
+      revision: "a".repeat(64),
+      encoding: "utf-8",
+      bom: false,
+      content: "First line\r\n",
+      lineStart: 1,
+      lineEnd: 1,
+      nextOffset: 2,
+      truncated: true,
+      truncationReason: "byte_limit",
+    };
+    const changed: RuntimeFilePreviewResult = {
+      threadId: "thread-1",
+      path: "/workspace/report.md",
+      status: "unavailable",
+      reason: "revision_changed",
+    };
+    bridge.previewFile = vi.fn<IkarosRuntimeBridgeApi["previewFile"]>()
+      .mockResolvedValueOnce({ ok: true, value: firstPage })
+      .mockResolvedValueOnce({ ok: true, value: changed });
+    const change: RuntimeFileChangeResult = {
+      threadId: "thread-1",
+      toolCallItemId: "call-1",
+      path: "/workspace/report.md",
+      operation: "write",
+      recordedAt: "2026-09-05T00:00:00Z",
+      before: {
+        exists: true, byteCount: 6, revision: "b".repeat(64),
+        encoding: "utf-8", bom: false, newline: "lf", lineCount: 1,
+      },
+      after: {
+        exists: true, byteCount: 6, revision: "c".repeat(64),
+        encoding: "utf-8", bom: false, newline: "lf", lineCount: 1,
+      },
+      status: "recorded",
+      diff: "--- before\n+++ after\n@@ -1 +1 @@\n-alpha\n+omega\n",
+      additions: 1,
+      deletions: 1,
+    };
+    bridge.getFileChange = vi.fn(async () => ({ ok: true as const, value: change }));
+    const client = new RuntimeClient(bridge);
+    const params = { threadId: "thread-1", path: "report.md", sourceToolCallItemId: "call-1" };
+    await expect(client.previewFile(params)).resolves.toEqual(firstPage);
+    const laterParams = { ...params, offset: 2, expectedRevision: firstPage.revision };
+    await expect(client.previewFile(laterParams)).resolves.toEqual(changed);
+    expect(bridge.previewFile).toHaveBeenNthCalledWith(1, params);
+    expect(bridge.previewFile).toHaveBeenNthCalledWith(2, laterParams);
+
+    const changeParams = { threadId: "thread-1", toolCallItemId: "call-1" };
+    await expect(client.getFileChange(changeParams)).resolves.toEqual(change);
+    expect(bridge.getFileChange).toHaveBeenCalledWith(changeParams);
+  });
+
+  it("keeps a protected preview unavailable and rejects file binding RPC errors", async () => {
+    const bridge = bridgeWithListThreads(vi.fn());
+    const unavailable: RuntimeFilePreviewResult = {
+      threadId: "thread-1", path: null, status: "unavailable", reason: "protected_content",
+    };
+    bridge.previewFile = vi.fn(async () => ({ ok: true as const, value: unavailable }));
+    bridge.getFileChange = vi.fn(async () => ({
+      ok: false as const,
+      error: { kind: "json_rpc" as const, code: -32602, message: "invalid file binding" },
+    }));
+    const client = new RuntimeClient(bridge);
+    await expect(client.previewFile({ threadId: "thread-1", path: "report.md" })).resolves.toEqual(unavailable);
+    await expect(client.getFileChange({ threadId: "thread-1", toolCallItemId: "foreign-call" }))
+      .rejects.toMatchObject({ code: -32602, message: "invalid file binding" });
+  });
+
   it("unwraps successful Electron bridge results", async () => {
     const threads = {
       threads: [],

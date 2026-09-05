@@ -10,7 +10,7 @@ JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
 EVENT_NOTIFICATION_METHOD: Final = "event"
-JOURNAL_EVENT_SCHEMA_VERSION: Final = 5
+JOURNAL_EVENT_SCHEMA_VERSION: Final = 6
 MEMORY_OPERATION_ERROR_CODE: Final = -32020
 MEMORY_OPERATION_ERROR_MESSAGE: Final = "memory operation failed"
 
@@ -36,6 +36,8 @@ RPC_METHODS: Final = (
     "memory.forget",
     "memory.list",
     "memory.get",
+    "file.preview",
+    "file.change.get",
     "turn.start",
     "turn.list",
     "run.cancel",
@@ -53,6 +55,7 @@ JOURNAL_EVENT_TYPES: Final = (
     "item.started",
     "item.delta",
     "item.completed",
+    "file.change_recorded",
     "model.input_prepared",
     "model.response_finished",
     "run.settled",

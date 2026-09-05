@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Archive, Check, ChevronDown, GitBranch, Pencil } from "lucide-react";
+import { Archive, Check, ChevronDown, FileText, GitBranch, Pencil } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   findThread,
@@ -74,6 +74,12 @@ export function ConversationHeader() {
   const switchBranch = useAppStore((state) => state.switchBranch);
   const renameThread = useAppStore((state) => state.renameThread);
   const archiveThread = useAppStore((state) => state.archiveThread);
+  const runtimeMode = useAppStore((state) => state.runtimeMode);
+  const openFile = useAppStore((state) => state.openFile);
+  const hasWorkspace = useAppStore((state) => {
+    const current = findThread(state.threads, state.selectedThreadId);
+    return Boolean(state.projects.find((project) => project.id === current?.projectId)?.rootUri);
+  });
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -167,6 +173,17 @@ export function ConversationHeader() {
           </DropdownMenu.Root>
         </h1>
       )}
+
+      {runtimeMode && hasWorkspace ? (
+        <button
+          type="button"
+          onClick={() => openFile({ threadId: thread.id, path: "", view: "current" })}
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        >
+          <FileText size={13} aria-hidden="true" />
+          {t("files.open")}
+        </button>
+      ) : null}
 
       {thread.branches.length > 1 && branch ? (
         <DropdownMenu.Root>

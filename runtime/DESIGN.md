@@ -142,18 +142,14 @@ no SQLite `ATTACH`, cross-database foreign key, or two-phase commit. Startup
 requires both schema version 1 and the exact canonical table/index DDL; a
 same-version structural drift is rejected rather than silently accepted.
 
-During pre-release development, `state.db` uses an explicit reset-only schema
-policy. An empty database is created atomically at canonical database schema
-version 8. A non-empty unversioned database or any different `user_version`
-fails startup with `reset required`; the Runtime never migrates or silently
-deletes it. A developer may explicitly remove `state.db` and its WAL/SHM files
-only after the owning Runtime has stopped. `config.yaml`, `skills/`, Desktop
-preferences, and the separately owned `memory.db` are independent and
-are not removed by a conversation-state reset. Every incompatible persistence
-or Event-payload change during this pre-release phase uses this destructive
-reset policy rather than a migration or upcaster. Durable release migrations
-remain a future compatibility commitment rather than a partial framework in
-V1.
+An empty `state.db` is created atomically at canonical schema 9. A canonical
+schema 8 database is backed up through SQLite's backup API (including WAL),
+verified, and migrated by adding `file_changes` in one transaction. Backup or
+migration failure preserves the old database. This supported 8→9 transition
+does not rewrite old Journal events or touch configuration, Skills, Desktop
+preferences, or `memory.db`. Other incompatible or unversioned databases fail
+explicitly. Journal schema 5 and 6 coexist; only schema 6 introduces
+`file.change_recorded`.
 
 Offline maintenance uses the same `runtime.lock` as the server and never starts
 the Runtime application or loads `config.yaml`. `storage check` and `storage
@@ -898,8 +894,16 @@ until that operation settles and then reports cancellation rather than success.
 Relative paths resolve against the Thread workspace when one exists and
 otherwise against the Runtime working directory. Absolute paths remain allowed
 under V1 Full access.
-Desktop projects their structured lifecycle and result summaries, but a file
-operation does not yet produce a first-class Artifact or file-change/diff Item.
+Desktop projects their structured lifecycle and result summaries and opens a
+read-only file panel. `file.preview` reads current UTF-8 text in revision-bound
+50 KiB / 2,000-line pages with an 8 MiB scan ceiling. `file.change.get` retrieves
+the immutable actual write/edit capture by Thread and Tool Call Item. Before
+and after are each capped at 256 KiB / 5,000 lines, and the serialized Event at
+256 KiB. Tool settlement and `file.change_recorded` commit together. The diff
+is separate from model tool output; missing or uncertain captures are explicit.
+BOM and newline metadata remain visible even for a textually empty patch.
+Current preview supports ordinary workspaces and script-created files; script
+diff tracking and a manual editor remain out of scope.
 
 Skills V0 treats a Skill as an instruction and resource bundle that may contain
 references, assets, and scripts. The Runtime safely scans one directory level
@@ -965,7 +969,7 @@ current operating-system user's authority. Skill scripts invoked through
 `process_run` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-The current reset-only SQLite database schema is canonical version 8. Thread
+The current SQLite database schema is canonical version 9 with an 8→9 migration. Thread
 projections include optional `workspace_json`, nullable `archived_at`, and an
 indexed active/archived Thread Catalog ordering key; Run history hydration is
 indexed by `turn_id`. Each Run snapshots `execution_policy = full_access` and
@@ -995,7 +999,8 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | edited earlier user message | mock-only UI; no Runtime Branch-fork command yet |
 | Turn Navigator | projected current Turn/Item records used only for navigation |
 | retry or recovery | mock-only UI; no Runtime retry/resume command yet |
-| artifacts and file changes | mock-only UI; no Runtime Artifact/file-change Item yet |
+| file preview and operation changes | `file.preview`, `file.change.get`, `file.change_recorded` and a read-only Desktop panel |
+| Artifacts | mock-only UI; no Runtime Artifact Item yet |
 | provider/model settings | runtime capability and model catalog |
 | Skills settings | `skill.list` / `skill.set_enabled` catalog, diagnostics, and global enablement |
 | Memory management and recall | `memory.create` / `memory.correct` / `memory.forget` / `memory.list` / `memory.get`, the real Settings page, and deterministic bounded Runtime recall with frozen exact revisions |
@@ -1068,8 +1073,7 @@ Desktop projects `process_run` as `process.run` and projects `read`, `write`,
 and `edit` with file-specific icons, translated fixed labels, and bounded
 metadata such as path, line range, byte count, and replacement count. Write and
 edit arguments containing file content or replacement text are not copied into
-the visible card. These are Tool projections only; Artifact and file-change
-fixtures remain mock-only.
+the visible card. File cards open the real inspector; Artifact fixtures remain mock-only.
 
 Provider and model forms call the Runtime's configuration operations. Secret
 fields cross only the write command and are not retained in renderer state;
@@ -1089,8 +1093,8 @@ conversation path.
 The Runtime-backed Composer fixes execution to `Full access`; its access picker
 is disabled rather than authorizing execution locally. Attachments and Tool
 selection are unavailable. Editing an earlier message, Branch switching/fork,
-retry/resume, regenerate, interactive permission decisions, and first-class
-Artifact/file-change production still need dedicated Runtime commands and event
+retry/resume of an old Run, regenerate, interactive permission decisions, and first-class
+Artifact production still need dedicated Runtime commands and event
 semantics before those UI surfaces can become functional.
 
 ## Implemented vertical slice

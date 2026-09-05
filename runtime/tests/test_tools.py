@@ -1024,9 +1024,14 @@ async def test_edit_rejects_missing_files_and_directories(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_edit_replace_all_changes_every_exact_match(tmp_path: Path) -> None:
+@pytest.mark.parametrize("target,updated", [("target", "updated"), ("原文", "修改后")])
+async def test_edit_replace_all_changes_every_exact_match(
+    tmp_path: Path,
+    target: str,
+    updated: str,
+) -> None:
     path = tmp_path / "all.txt"
-    path.write_text("target and target", encoding="utf-8")
+    path.write_text(f"{target} and {target}", encoding="utf-8")
 
     result = await _file_executor().execute(
         ToolCall(
@@ -1034,8 +1039,8 @@ async def test_edit_replace_all_changes_every_exact_match(tmp_path: Path) -> Non
             "edit",
             {
                 "filePath": str(path),
-                "oldString": "target",
-                "newString": "updated",
+                "oldString": target,
+                "newString": updated,
                 "replaceAll": True,
             },
         ),
@@ -1043,8 +1048,11 @@ async def test_edit_replace_all_changes_every_exact_match(tmp_path: Path) -> Non
     )
 
     assert result.ok is True
-    assert path.read_text(encoding="utf-8") == "updated and updated"
+    assert path.read_text(encoding="utf-8") == f"{updated} and {updated}"
     assert result.details["replacements"] == 2
+    assert result.file_change is not None
+    assert f"-{target} and {target}\n" in result.file_change.diff
+    assert f"+{updated} and {updated}\n" in result.file_change.diff
 
 
 @pytest.mark.asyncio
@@ -1176,11 +1184,16 @@ async def test_write_and_edit_share_a_per_path_lock(
     release_write = threading.Event()
     edit_read = threading.Event()
 
-    def paused_atomic_write(target: Path, payload: bytes) -> bool:
+    def paused_atomic_write(
+        target: Path,
+        payload: bytes,
+        *,
+        expected: bytes | None = None,
+    ) -> bool:
         write_entered.set()
         if not release_write.wait(timeout=5):
             raise TimeoutError("test did not release the write")
-        return original_atomic_write(target, payload)
+        return original_atomic_write(target, payload, expected=expected)
 
     def observed_edit_read(target: Path) -> file_common.TextDocument:
         edit_read.set()
@@ -1296,9 +1309,7 @@ async def test_cancelled_mutation_holds_its_lock_until_disk_write_settles(
     assert second_entered.is_set() is True
     expected_text = "second beta" if tool_name == "write" else "first second"
     assert path.read_text(encoding="utf-8") == expected_text
-    temporary_files = await asyncio.to_thread(
-        lambda: list(tmp_path.glob(f".{path.name}.*.tmp"))
-    )
+    temporary_files = await asyncio.to_thread(lambda: list(tmp_path.glob(f".{path.name}.*.tmp")))
     assert temporary_files == []
     assert file_common._PATH_LOCKS == {}
 

@@ -285,7 +285,22 @@ html[data-translucent-sidebar="true"] .sidebar-gradient {
 
 .conversation-rail {
   width: 738px;
-  max-width: none;
+  max-width: 100%;
+}
+
+.file-panel {
+  width: clamp(340px, 36vw, 560px);
+}
+
+@media (max-width: 1199px) {
+  .file-panel {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 80;
+    width: min(560px, 92vw);
+    box-shadow: -16px 0 48px rgba(0, 0, 0, 0.22);
+  }
 }
 
 .composer-shadow {

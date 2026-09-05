@@ -7,6 +7,10 @@ import {
   type UiPreferencesPatch
 } from "../shared/platform";
 import type {
+  RuntimeFileChangeGetParams,
+  RuntimeFileChangeResult,
+  RuntimeFilePreviewParams,
+  RuntimeFilePreviewResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeHostStatus,
@@ -176,6 +180,16 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.usageRead) as Promise<
         RuntimeInvocationResult<RuntimeUsageReadResult>
       >,
+    previewFile: (params: RuntimeFilePreviewParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.filePreview,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeFilePreviewResult>>,
+    getFileChange: (params: RuntimeFileChangeGetParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeFileChangeResult>>,
     onEvent: (listener: (event: RuntimeJournalEvent) => void) =>
       subscribe(DESKTOP_IPC_CHANNELS.runtime.event, listener),
     onStatus: (listener: (status: RuntimeHostStatus) => void) =>

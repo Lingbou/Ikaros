@@ -10,6 +10,8 @@ import {
   RUNTIME_RPC_METHODS,
   RUNTIME_SERVER_NAME,
   type RuntimeCancelRunResult,
+  type RuntimeFilePreviewResult,
+  type RuntimeFileChangeResult,
   type RuntimeHostStatus,
   type RuntimeInitializeResult,
   type RuntimeItemHistory,
@@ -247,7 +249,7 @@ export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
   ) {
     throw new Error("Runtime returned an invalid journal event.");
   }
-  if (value.schemaVersion !== RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION) {
+  if (value.schemaVersion !== 5 && value.schemaVersion !== RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION) {
     throw new Error(
       `Runtime journal event schema ${String(value.schemaVersion)} is unsupported.`
     );
@@ -267,7 +269,7 @@ export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
   }
   const event: RuntimeJournalEvent = {
     seq: value.seq,
-    schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+    schemaVersion: value.schemaVersion,
     type: value.type,
     threadId: value.threadId,
     branchId: value.branchId,
@@ -453,6 +455,21 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
     ) {
       invalidJournalEventPayload(event.type);
     }
+    return;
+  }
+
+  if (event.type === "file.change_recorded") {
+    if (event.schemaVersion !== 6 || !hasRunEventScope(event, true)) {
+      invalidJournalEventPayload(event.type);
+    }
+    const { turnId, runId, itemId, ...record } = payload;
+    if (turnId !== event.turnId || runId !== event.runId || itemId !== event.itemId ||
+      record.recordedAt !== event.timestamp || record.reason === "not_recorded") {
+      invalidJournalEventPayload(event.type);
+    }
+    parseRuntimeFileChangeResult(record, {
+      threadId: event.threadId, toolCallItemId: event.itemId
+    });
     return;
   }
 
@@ -2631,6 +2648,94 @@ function parseRuntimeCancelRunResult(value: unknown): RuntimeCancelRunResult {
   return value as unknown as RuntimeCancelRunResult;
 }
 
+const FILE_PREVIEW_REASONS = new Set([
+  "file_not_found", "not_a_file", "binary_file", "unsupported_encoding", "too_large",
+  "scan_limit", "revision_changed", "read_failed", "protected_content"
+]);
+const FILE_CHANGE_REASONS = new Set([
+  "not_recorded", "too_large", "binary_file", "unsupported_encoding", "read_failed",
+  "protected_content", "result_unknown"
+]);
+
+function isFilePath(value: unknown): value is string {
+  return isNonEmptyString(value) && value.length <= 4096 && !value.includes("\0");
+}
+
+function parseRuntimeFilePreviewResult(
+  value: unknown, params: Readonly<Record<string, unknown>>
+): RuntimeFilePreviewResult {
+  const invalid = () => invalidRuntimeMethodResult("file.preview");
+  if (!isWireObject(value) || !isWireIdentifier(value.threadId) ||
+    value.threadId !== params.threadId) throw invalid();
+  if (value.status === "unavailable") {
+    if (!hasExactKeys(value, ["threadId", "path", "status", "reason"]) ||
+      (value.path !== null && !isFilePath(value.path)) ||
+      !FILE_PREVIEW_REASONS.has(value.reason as string)) throw invalid();
+    return value as unknown as RuntimeFilePreviewResult;
+  }
+  if (value.status !== "text" || !hasExactKeys(value, [
+    "threadId", "path", "status", "revision", "encoding", "bom", "content",
+    "lineStart", "lineEnd", "nextOffset", "truncated", "truncationReason"
+  ]) || !isFilePath(value.path) || !isSha256(value.revision) || value.encoding !== "utf-8" ||
+    typeof value.bom !== "boolean" || typeof value.content !== "string" ||
+    Buffer.byteLength(value.content, "utf8") > 50 * 1024 ||
+    !isSafePositiveInteger(value.lineStart) || !isSafeNonNegativeInteger(value.lineEnd) ||
+    value.lineStart !== (params.offset ?? 1) ||
+    (params.expectedRevision !== undefined && value.revision !== params.expectedRevision) ||
+    typeof value.truncated !== "boolean") throw invalid();
+  const lineCount = value.content === "" ? 0 : value.content.split(/\r\n|\r|\n/).length -
+    (/\r\n$|[\r\n]$/.test(value.content) ? 1 : 0);
+  if (lineCount > 2000 || value.lineEnd !== value.lineStart + lineCount - 1 ||
+    (value.truncated
+      ? lineCount === 0 || value.nextOffset !== value.lineEnd + 1 ||
+        !["byte_limit", "line_limit", "scan_limit"].includes(value.truncationReason as string)
+      : value.nextOffset !== null || value.truncationReason !== null)) throw invalid();
+  return value as unknown as RuntimeFilePreviewResult;
+}
+
+function isFileRevisionMetadata(value: unknown): boolean {
+  if (!isWireObject(value) || !hasExactKeys(value, [
+    "exists", "byteCount", "revision", "encoding", "bom", "newline", "lineCount"
+  ]) || typeof value.exists !== "boolean" ||
+    !isNullableSafeNonNegativeInteger(value.byteCount) ||
+    (value.revision !== null && !isSha256(value.revision)) ||
+    (value.encoding !== null && value.encoding !== "utf-8") ||
+    (value.bom !== null && typeof value.bom !== "boolean") ||
+    ![null, "lf", "crlf", "mixed"].includes(value.newline as string | null) ||
+    !isNullableSafeNonNegativeInteger(value.lineCount)) return false;
+  return value.exists || (value.byteCount === 0 && value.revision === null &&
+    value.encoding === null && value.bom === null && value.newline === null && value.lineCount === 0);
+}
+
+function parseRuntimeFileChangeResult(
+  value: unknown, params: Readonly<Record<string, unknown>>
+): RuntimeFileChangeResult {
+  const invalid = () => invalidRuntimeMethodResult("file.change.get");
+  const baseKeys = ["threadId", "toolCallItemId", "path", "operation", "recordedAt", "before", "after", "status"];
+  if (!isWireObject(value) || !isWireIdentifier(value.threadId) ||
+    !isWireIdentifier(value.toolCallItemId) || value.threadId !== params.threadId ||
+    value.toolCallItemId !== params.toolCallItemId ||
+    (value.operation !== "write" && value.operation !== "edit")) throw invalid();
+  if (value.status === "unavailable") {
+    if (!hasExactKeys(value, [...baseKeys, "reason"]) ||
+      (value.path !== null && !isFilePath(value.path)) ||
+      (value.recordedAt !== null && !isCanonicalTimestamp(value.recordedAt)) ||
+      (value.before !== null && !isFileRevisionMetadata(value.before)) ||
+      (value.after !== null && !isFileRevisionMetadata(value.after)) ||
+      !FILE_CHANGE_REASONS.has(value.reason as string) ||
+      (value.reason === "not_recorded" && (value.recordedAt !== null || value.before !== null || value.after !== null))) {
+      throw invalid();
+    }
+  } else if (value.status !== "recorded" ||
+    !hasExactKeys(value, [...baseKeys, "diff", "additions", "deletions"]) ||
+    !isFilePath(value.path) || !isCanonicalTimestamp(value.recordedAt) ||
+    !isFileRevisionMetadata(value.before) || !isFileRevisionMetadata(value.after) ||
+    typeof value.diff !== "string" || !isSafeNonNegativeInteger(value.additions) ||
+    !isSafeNonNegativeInteger(value.deletions)) throw invalid();
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 256 * 1024) throw invalid();
+  return value as unknown as RuntimeFileChangeResult;
+}
+
 type RuntimeResultParser = (
   value: unknown,
   params: Readonly<Record<string, unknown>>
@@ -2683,6 +2788,8 @@ const RUNTIME_RESULT_PARSERS = {
       value,
       typeof params.memoryId === "string" ? params.memoryId : undefined
     ),
+  "file.preview": (value, params) => parseRuntimeFilePreviewResult(value, params),
+  "file.change.get": (value, params) => parseRuntimeFileChangeResult(value, params),
   "turn.start": (value) => parseRuntimeTurnStartResult(value),
   "turn.list": (value, params) => {
     const expectedScope =

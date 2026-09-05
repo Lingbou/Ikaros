@@ -16,6 +16,7 @@ from ikaros_runtime.protocol.spec import (
     MEMORY_OPERATION_ERROR_MESSAGE,
     MEMORY_OPERATION_REASON_CODES,
 )
+from ikaros_runtime.services.files import FileService
 from ikaros_runtime.services.memories import MemoryService
 from ikaros_runtime.services.providers import ProviderService
 from ikaros_runtime.services.skills import SkillService
@@ -50,6 +51,7 @@ def _router(memories: _MemoryServiceStub) -> RuntimeRouter:
         cast(UsageService, object()),
         cast(SkillService, object()),
         cast(MemoryService, memories),
+        cast(FileService, object()),
     )
 
 

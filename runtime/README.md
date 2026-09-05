@@ -17,7 +17,7 @@ stdio.
 ## Protocol contract
 
 `src/ikaros_runtime/protocol/spec.py` is the source of truth for protocol
-version 3, Journal Event schema 5, the 26 post-initialize RPC methods, the 11
+version 3, Journal Event schema 6 (with schema 5 replay), the 28 post-initialize RPC methods, the 12
 persisted Journal Event types, capabilities, and provider-facing Tool IDs. The
 deterministic generator
 commits both `protocol/runtime-protocol.json` and Desktop's
@@ -136,7 +136,7 @@ on demand through the ordinary `read` Tool, and a declared script is invoked
 through the ordinary `process_run` Tool rather than imported into the Runtime.
 
 The Runtime does not yet provide web-search, browser, or attachment Tools,
-generate first-class Artifact/file-change records, fork Branches, retry or
+generate first-class Artifacts, fork Branches, retry or
 resume Runs, or implement interactive permission approval. Desktop's fixed
 scenario fixtures, slash-command examples, and
 permission/recovery/Artifact demonstrations therefore remain mock-only UI
@@ -212,16 +212,33 @@ independent `state.db` and `memory.db` databases on startup, while `config.yaml`
 remains absent until the user saves a real provider/model configuration or
 changes persisted Skill enablement.
 
-During pre-release development, conversation storage uses canonical SQLite
-schema version 8 and is intentionally reset-only. Incompatible `state.db`
-schema versions fail with `reset required`; the Runtime does not carry
-old-schema migrations or silently delete data.
-After stopping the owning Runtime, developers may explicitly remove
-`state.db`, `state.db-wal`, and `state.db-shm` to create the current schema on
-the next start. This reset never includes `config.yaml`, `skills/`, Desktop
-preferences, or the separately owned `memory.db`. An incompatible Memory schema
+Conversation storage uses canonical SQLite schema 9. Opening a canonical
+schema 8 database first creates a verified SQLite backup in `backups/`, including
+WAL data, then atomically adds the rebuildable `file_changes` projection. A
+failed backup or migration leaves the old database intact. No old event is
+rewritten; schema 5 and 6 events remain readable together. Other incompatible
+versions fail explicitly and are never silently deleted. Configuration, Skills,
+Desktop preferences and `memory.db` are unaffected. An incompatible Memory schema
 fails startup with `memory database schema is incompatible`; the Runtime does
 not migrate, reset, or delete it automatically.
+
+The Desktop file inspector uses `file.preview` for current UTF-8 text and
+`file.change.get` for an immutable write/edit operation. Preview pages preserve
+line endings, show line numbers, and are capped at 50 KiB / 2,000 lines. A later
+page must carry the previous file revision; changes require refresh. Each call
+scans at most 8 MiB, so very distant offsets may be unavailable. Binary files,
+unsupported encoding and overlong lines return explicit unavailable states.
+The Runtime resolves paths from the saved Thread workspace; outside paths need
+a matching same-Thread file tool record. Preview does not enter model context.
+
+Write/edit tools capture actual before/after bytes (each at most 256 KiB /
+5,000 lines), then commit `file.change_recorded` with tool settlement in one
+SQLite transaction. The entire serialized event is capped at 256 KiB; over-limit
+operations retain metadata without a partial patch. Diff bodies remain separate
+from model tool output. A crash after disk mutation but before commit leaves an
+unknown outcome and no diff. Old records show `not_recorded`; current disk
+contents never reconstruct an old diff. Process-created files can be previewed
+by workspace path, but process changes have no captured diff.
 
 ## Offline storage maintenance
 

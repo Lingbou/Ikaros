@@ -13,11 +13,14 @@ from unittest.mock import patch
 
 import ikaros_runtime.agent.loop as agent_loop_module
 import ikaros_runtime.memory.store as memory_store_module
+import ikaros_runtime.storage.journal as journal_module
 import ikaros_runtime.storage.store as store_module
 from ikaros_runtime import __version__
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, ModelUsage
+from ikaros_runtime.file_changes import FileChangeCapture, FileRevisionCapture, build_file_change
+from ikaros_runtime.file_preview import preview_text_file
 from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.memory import MemoryRetrieverV1, SqliteMemoryStore
 from ikaros_runtime.protocol.spec import (
@@ -48,6 +51,7 @@ from ikaros_runtime.tools.core import (
 )
 from ikaros_runtime.tools.policy import FullAccessPolicy
 from ikaros_runtime.tools.process import ProcessRunTool
+from ikaros_runtime.tools.write import WriteTool
 
 _RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 _GOLDEN_TRACE_PATH = _RUNTIME_ROOT / "protocol" / "golden-trace.json"
@@ -278,6 +282,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
     with (
         # This fixture remains a compatibility contract for the v1 selector.
         patch.object(store_module, "CONTEXT_SELECTION_VERSION", "bounded-history-v1"),
+        patch.object(journal_module, "JOURNAL_EVENT_SCHEMA_VERSION", 5),
         patch.object(uuid, "uuid4", new=ids),
         patch.object(store_module, "utc_now", new=utc_now),
         patch.object(memory_store_module, "utc_now", new=utc_now),
@@ -370,7 +375,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
             }
             memory_forgotten_list = memory_service.list(memory_forgotten_list_params)
             memory_tombstone = memory_service.get(memory_get_params)
-            return [
+            legacy_messages = [
                 _response_message(
                     name="thread-list-page",
                     method="thread.list",
@@ -448,6 +453,130 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 ),
                 *_notification_messages(events),
             ]
+            # Append a v2/schema6 operation while retaining all original v1/schema5
+            # envelopes. This mixed Journal must rebuild without upgrading history.
+            with (
+                patch.object(store_module, "CONTEXT_SELECTION_VERSION", "bounded-history-v2"),
+                patch.object(journal_module, "JOURNAL_EVENT_SCHEMA_VERSION", 6),
+            ):
+                file_path = "C:/golden-workspace/hello.txt"
+                file_frame = SubmissionFrameTemplateV1.create(
+                    provider=snapshot,
+                    execution_policy="full_access",
+                    skills=(),
+                    tools=(WriteTool.definition,),
+                    identity_core=identity_core,
+                    max_steps=2,
+                )
+                file_turn = store.prepare_turn(
+                    thread_id=thread.id,
+                    branch_id=thread.default_branch_id,
+                    content="Write hello.txt",
+                    frame_template=file_frame,
+                )
+                store.mark_run_running(file_turn.run_id)
+                store.prepare_model_step(file_turn.run_id, step_ordinal=1)
+                call = ToolCall(
+                    "golden-write", "write", {"filePath": file_path, "content": "你好\n"}
+                )
+                completed = store.complete_provider_step(
+                    file_turn.run_id,
+                    step_ordinal=1,
+                    assistant_item_id=None,
+                    tool_calls=(call,),
+                    reasoning_content=None,
+                    usage=None,
+                    response_model_id=None,
+                    request_id=None,
+                )
+                item_id = completed.tool_call_item_ids[0]
+                before = FileRevisionCapture(
+                    {
+                        "exists": False,
+                        "byteCount": 0,
+                        "revision": None,
+                        "encoding": None,
+                        "bom": None,
+                        "newline": None,
+                        "lineCount": 0,
+                    },
+                    text="",
+                )
+                capture = build_file_change(Path(file_path), "write", before, "你好\n".encode())
+                # Path is a fixture identity, independent of the host path syntax.
+                capture = FileChangeCapture(
+                    file_path,
+                    capture.operation,
+                    capture.before,
+                    capture.after,
+                    capture.diff,
+                    capture.additions,
+                    capture.deletions,
+                    capture.reason,
+                )
+                result = ToolResult(
+                    call.id,
+                    call.name,
+                    True,
+                    "Created file successfully",
+                    {
+                        "path": file_path,
+                        "created": True,
+                        "bytesWritten": 7,
+                        "verified": True,
+                        "bom": False,
+                        "newline": "lf",
+                        "truncated": False,
+                    },
+                )
+                store.complete_tool_call(
+                    item_id,
+                    status="completed",
+                    result=result.to_wire(),
+                    result_content=result.to_model_content(),
+                    file_change=capture,
+                )
+                store.terminalize_run(file_turn.run_id, "completed")
+                file_events, _ = store.replay_events(latest_seq, 1000)
+                file_messages = []
+                for index, event in enumerate(file_events):
+                    file_messages.append(
+                        {
+                            "name": "file-change-recorded"
+                            if event.type == "file.change_recorded"
+                            else f"file-flow-event-{index}",
+                            "kind": "notification",
+                            "envelope": {
+                                "jsonrpc": JSONRPC_VERSION,
+                                "method": EVENT_NOTIFICATION_METHOD,
+                                "params": event.to_wire(),
+                            },
+                        }
+                    )
+                preview_path = database_path.with_name("preview.txt")
+                preview_path.write_bytes("你好\n".encode())
+                preview = preview_text_file(thread_id=thread.id, path=preview_path)
+                preview["path"] = file_path
+                preview["revision"] = "a" * 64  # Opaque, host-specific metadata fingerprint.
+                return [
+                    *legacy_messages[: -len(events)],
+                    _response_message(
+                        name="file-change",
+                        method="file.change.get",
+                        request_id=12,
+                        request_params={"threadId": thread.id, "toolCallItemId": item_id},
+                        result=store.get_file_change(thread.id, item_id),
+                    ),
+                    _response_message(
+                        name="file-preview",
+                        method="file.preview",
+                        request_id=13,
+                        request_params={"threadId": thread.id, "path": file_path},
+                        result=preview,
+                    ),
+                    *legacy_messages[-len(events) :],
+                    *file_messages,
+                ]
         finally:
             memory_store.close()
             store.close()
@@ -469,9 +598,7 @@ async def _expected_trace(database_path: Path) -> dict[str, Any]:
     committed = _load_trace()
     production_messages = await build_production_messages(database_path)
     production_responses = {
-        message["name"]: message
-        for message in production_messages
-        if message["kind"] == "response"
+        message["name"]: message for message in production_messages if message["kind"] == "response"
     }
     responses = [
         production_responses.get(message["name"], message)
@@ -482,8 +609,7 @@ async def _expected_trace(database_path: Path) -> dict[str, Any]:
     responses.extend(
         message
         for message in production_messages
-        if message["kind"] == "response"
-        and message["name"] not in committed_response_names
+        if message["kind"] == "response" and message["name"] not in committed_response_names
     )
     for message in responses:
         if message.get("method") != INITIALIZE_METHOD:
@@ -505,11 +631,7 @@ async def _expected_trace(database_path: Path) -> dict[str, Any]:
         "fixtureVersion": committed.get("fixtureVersion"),
         "messages": [
             *responses,
-            *(
-                message
-                for message in production_messages
-                if message["kind"] == "notification"
-            ),
+            *(message for message in production_messages if message["kind"] == "notification"),
         ],
     }
 

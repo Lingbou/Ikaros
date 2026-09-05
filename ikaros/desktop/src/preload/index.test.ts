@@ -33,6 +33,51 @@ describe("preload Runtime bridge", () => {
     electron.reset();
   });
 
+  it("forwards a bound file preview page and immutable change query through narrow channels", async () => {
+    const preview = {
+      ok: true as const,
+      value: {
+        threadId: "thread-1",
+        path: "/workspace/report.md",
+        status: "unavailable" as const,
+        reason: "revision_changed" as const,
+      },
+    };
+    const change = {
+      ok: true as const,
+      value: {
+        threadId: "thread-1",
+        toolCallItemId: "call-1",
+        path: null,
+        operation: "write" as const,
+        recordedAt: null,
+        before: null,
+        after: null,
+        status: "unavailable" as const,
+        reason: "not_recorded" as const,
+      },
+    };
+    electron.ipcRenderer.invoke.mockResolvedValueOnce(preview).mockResolvedValueOnce(change);
+    await import("./index");
+    const previewParams = {
+      threadId: "thread-1",
+      path: "report.md",
+      sourceToolCallItemId: "call-1",
+      offset: 2001,
+      expectedRevision: "a".repeat(64),
+    };
+    const changeParams = { threadId: "thread-1", toolCallItemId: "call-1" };
+
+    await expect(electron.exposedApi()?.runtime.previewFile(previewParams)).resolves.toEqual(preview);
+    await expect(electron.exposedApi()?.runtime.getFileChange(changeParams)).resolves.toEqual(change);
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:file-preview", previewParams,
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:file-change-get", changeParams,
+    );
+  });
+
   it("exposes aggregate token usage through its narrow IPC channel", async () => {
     const expected = {
       ok: true as const,

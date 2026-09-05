@@ -138,6 +138,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     memoryForget: "ikaros:runtime:memory-forget",
     memoryList: "ikaros:runtime:memory-list",
     memoryGet: "ikaros:runtime:memory-get",
+    filePreview: "ikaros:runtime:file-preview",
+    fileChangeGet: "ikaros:runtime:file-change-get",
     usageRead: "ikaros:runtime:usage-read"
   },
   workspace: {

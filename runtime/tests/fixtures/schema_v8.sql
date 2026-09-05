@@ -1,18 +1,5 @@
-"""Canonical SQLite schema with a backed-up, data-preserving 8 to 9 migration."""
+-- Frozen schema 8 before file-change recording; independent migration fixture.
 
-from __future__ import annotations
-
-import sqlite3
-from pathlib import Path
-
-SCHEMA_VERSION = 9
-_FILE_CHANGES_SCHEMA = """
-CREATE TABLE file_changes (
-    tool_call_item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    record_json TEXT NOT NULL
-);
-"""
-_CANONICAL_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     schema_version INTEGER NOT NULL CHECK (schema_version >= 1),
@@ -167,80 +154,5 @@ CREATE TABLE items (
 
 CREATE INDEX items_turn_context_idx
 ON items(turn_id, ordinal ASC);
-""" + _FILE_CHANGES_SCHEMA
 
-_INCOMPATIBLE_MESSAGE = "state database schema is incompatible; reset required"
-
-
-def initialize_schema(connection: sqlite3.Connection) -> None:
-    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if version == 0:
-        if _application_objects(connection):
-            raise RuntimeError(_INCOMPATIBLE_MESSAGE)
-        _create_schema(connection)
-        return
-    if version == 8:
-        _migrate_file_changes(connection)
-        return
-    if version != SCHEMA_VERSION:
-        raise RuntimeError(_INCOMPATIBLE_MESSAGE)
-
-
-def validate_existing_schema(connection: sqlite3.Connection) -> None:
-    if int(connection.execute("PRAGMA user_version").fetchone()[0]) != SCHEMA_VERSION:
-        raise RuntimeError(_INCOMPATIBLE_MESSAGE)
-
-
-def _application_objects(connection: sqlite3.Connection) -> tuple[str, ...]:
-    rows = connection.execute(
-        """
-        SELECT name FROM sqlite_master
-        WHERE name NOT LIKE 'sqlite_%'
-        ORDER BY name
-        """
-    ).fetchall()
-    return tuple(str(row[0]) for row in rows)
-
-
-def _create_schema(connection: sqlite3.Connection) -> None:
-    transaction = (
-        f"BEGIN IMMEDIATE;\n{_CANONICAL_SCHEMA}\n"
-        f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
-    )
-    try:
-        connection.executescript(transaction)
-    except BaseException:
-        if connection.in_transaction:
-            connection.rollback()
-        raise
-
-
-def _migrate_file_changes(connection: sqlite3.Connection) -> None:
-    # Import only at migration time: maintenance also imports the canonical version.
-    from .maintenance import create_state_backup
-
-    database = next(
-        (row[2] for row in connection.execute("PRAGMA database_list") if row[1] == "main"),
-        None,
-    )
-    if not database:
-        raise RuntimeError("schema 8 migration requires a file-backed database for its backup")
-    backup = create_state_backup(
-        connection,
-        Path(database),
-        expected_schema_version=8,
-    )
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute(_FILE_CHANGES_SCHEMA)
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        connection.commit()
-    except BaseException as error:
-        if connection.in_transaction:
-            connection.rollback()
-        raise RuntimeError(
-            f"schema 8 migration failed; backup preserved at {backup.backup_path}"
-        ) from error
-
-
-__all__ = ["SCHEMA_VERSION", "initialize_schema", "validate_existing_schema"]
+PRAGMA user_version = 8;

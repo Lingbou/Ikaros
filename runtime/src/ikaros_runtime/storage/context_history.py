@@ -379,8 +379,8 @@ def _historical_record_from_row(
     if not isinstance(result, dict):
         raise ModelInputUnavailableError("model_input_unavailable")
     interrupted = (
-        row["status"] == "cancelled"
-        or result.get("cancelled") is True
+        ((row["status"] == "cancelled" or result.get("cancelled") is True)
+         and result.get("ok") is not True)
         or result.get("errorCode") == "runtime_interrupted"
         or (
             row["status"] == "failed"

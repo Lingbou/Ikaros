@@ -46,6 +46,34 @@ afterEach(() => {
 });
 
 describe("EventCard localization boundary", () => {
+  it("opens file views using the Tool Call identity without toggling its result disclosure", () => {
+    useAppStore.setState({ runtimeMode: true, selectedThreadId: "thread-file-entry" });
+    const onToggle = vi.fn();
+    const event: ToolCallEvent = {
+      id: "call-file-entry", turnId: "turn-file-entry", createdAt: "2026-09-05T00:00:00Z",
+      type: "tool_call", toolName: "edit", label: appEventText("tool.editFile"), status: "success",
+      arguments: { filePath: "notes.txt", oldString: "before", newString: "after" },
+    };
+    render(<EventCard event={event} toolDisclosure={{ controlsId: "result-entry", expanded: false, onToggle }} />);
+    fireEvent.click(screen.getByRole("button", { name: "This operation’s diff" }));
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(useAppStore.getState().fileSelection).toEqual({ threadId: "thread-file-entry", path: "notes.txt", sourceToolCallItemId: event.id, toolCallItemId: event.id, view: "change" });
+    fireEvent.click(screen.getByRole("button", { name: "Current file" }));
+    expect(useAppStore.getState().fileSelection?.view).toBe("current");
+    expect(screen.queryByText("before")).toBeNull();
+  });
+
+  it("uses the bound call ID when opening a file from its result", () => {
+    useAppStore.setState({ runtimeMode: true, selectedThreadId: "thread-file-entry" });
+    const event: ToolResultEvent = {
+      id: "result-file-entry", toolCallId: "call-original", turnId: "turn-file-entry", createdAt: "2026-09-05T00:00:00Z",
+      type: "tool_result", toolName: "write", summary: appEventText("result.writeCompleted"), status: "success", output: "", path: "/workspace/notes.txt",
+    };
+    render(<EventCard event={event} />);
+    fireEvent.click(screen.getByRole("button", { name: "This operation’s diff" }));
+    expect(useAppStore.getState().fileSelection).toMatchObject({ toolCallItemId: "call-original", sourceToolCallItemId: "call-original" });
+  });
+
   it("renders process command cards with localized copy and multiline invariant output", () => {
     const toolCall: ToolCallEvent = {
       id: "process-call",

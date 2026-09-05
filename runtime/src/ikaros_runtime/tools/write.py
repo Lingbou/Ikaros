@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from ..cancellation import CancellationToken
 from ..domain import JsonObject
-from .core import ToolCall, ToolDefinition, ToolResult, require_exact_arguments
+from ..file_changes import FileChangeCapture, perform_captured_write
+from .core import (
+    ToolCall,
+    ToolDefinition,
+    ToolExecutionCancelled,
+    ToolResult,
+    ToolTaskCancelled,
+    require_exact_arguments,
+)
 from .file_common import (
     FileToolError,
+    SettledMutationCancelled,
     detect_line_ending,
     encode_text,
     inspect_existing_text_format,
@@ -50,6 +61,7 @@ class WriteTool:
         if isinstance(validated, ToolResult):
             return validated
         path, content = validated
+        task_cancelled = False
         cancellation.raise_if_cancelled()
         try:
             async with path_lock(path):
@@ -61,8 +73,17 @@ class WriteTool:
                     newline=existing.newline,
                 )
                 cancellation.raise_if_cancelled()
-                verified = await run_mutation_thread(atomic_write_bytes, path, payload)
-                cancellation.raise_if_cancelled()
+                try:
+                    verified, capture = await run_mutation_thread(
+                        perform_captured_write,
+                        atomic_write_bytes,
+                        path,
+                        payload,
+                        operation="write",
+                    )
+                except SettledMutationCancelled as error:
+                    verified, capture = cast(tuple[bool, FileChangeCapture], error.result)
+                    task_cancelled = True
         except FileToolError as error:
             return _error_result(call, path, error)
         except OSError as error:
@@ -83,13 +104,19 @@ class WriteTool:
             "truncated": False,
         }
         action = "Created" if not existing.exists else "Wrote"
-        return ToolResult(
+        result = ToolResult(
             tool_call_id=call.id,
             tool_name=call.name,
             ok=True,
             output=f"{action} file successfully: {path}",
             details=details,
+            file_change=capture,
         )
+        if task_cancelled:
+            raise ToolTaskCancelled(replace(result, cancelled=True))
+        if cancellation.is_cancelled:
+            raise ToolExecutionCancelled(replace(result, cancelled=True))
+        return result
 
 
 def _validate_arguments(

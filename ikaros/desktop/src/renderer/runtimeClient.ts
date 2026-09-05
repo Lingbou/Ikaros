@@ -3,6 +3,10 @@ import {
   RUNTIME_PROTOCOL_MANIFEST
 } from "../shared/runtime";
 import type {
+  RuntimeFileChangeGetParams,
+  RuntimeFileChangeResult,
+  RuntimeFilePreviewParams,
+  RuntimeFilePreviewResult,
   IkarosRuntimeApi,
   IkarosRuntimeBridgeApi,
   RuntimeCancelRunResult,
@@ -276,6 +280,14 @@ export class RuntimeClient implements IkarosRuntimeApi {
 
   readUsage(): Promise<RuntimeUsageReadResult> {
     return unwrapRuntimeInvocation(this.api.readUsage());
+  }
+
+  previewFile(params: RuntimeFilePreviewParams): Promise<RuntimeFilePreviewResult> {
+    return unwrapRuntimeInvocation(this.api.previewFile(params));
+  }
+
+  getFileChange(params: RuntimeFileChangeGetParams): Promise<RuntimeFileChangeResult> {
+    return unwrapRuntimeInvocation(this.api.getFileChange(params));
   }
 
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void {

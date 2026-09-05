@@ -58,6 +58,14 @@ class FileToolError(Exception):
         self.code = code
 
 
+class SettledMutationCancelled(asyncio.CancelledError):
+    """Task cancellation observed after its mutation produced a known result."""
+
+    def __init__(self, result: object) -> None:
+        super().__init__("file mutation settled while the task was cancelled")
+        self.result = result
+
+
 @dataclass(slots=True)
 class _PathLockEntry:
     lock: asyncio.Lock
@@ -257,9 +265,11 @@ async def run_mutation_thread[**P, T](
                 await asyncio.shield(mutation)
             except asyncio.CancelledError:
                 continue
-        with suppress(asyncio.CancelledError, Exception):
-            mutation.result()
-        raise
+        try:
+            result = mutation.result()
+        except (asyncio.CancelledError, Exception):
+            raise asyncio.CancelledError from None
+        raise SettledMutationCancelled(result) from None
 
 
 def atomic_write_bytes(
@@ -267,6 +277,7 @@ def atomic_write_bytes(
     payload: bytes,
     *,
     expected: bytes | None = None,
+    expected_missing: bool = False,
 ) -> bool:
     """Replace a file atomically using a temporary file in the same directory."""
 
@@ -301,7 +312,9 @@ def atomic_write_bytes(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        if expected is not None and not _file_matches_bytes(path, expected):
+        if (expected is not None and not _file_matches_bytes(path, expected)) or (
+            expected_missing and path.exists()
+        ):
             raise FileToolError(
                 "stale_content",
                 f"File changed since it was read; read it again before editing: {path}",

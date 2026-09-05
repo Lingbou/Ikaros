@@ -194,6 +194,7 @@ _TIMESTAMP_KEYS = frozenset(
         "finishedAt",
         "forgottenAt",
         "preparedAt",
+        "recordedAt",
         "settledAt",
         "startDate",
         "timestamp",
@@ -398,6 +399,19 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "totalCharacters",
         "toolCharacters",
         "userItemId",
+        # Runtime-owned file inspector metadata; body/path/diff remain guarded.
+        "before",
+        "after",
+        "operation",
+        "diff",
+        "additions",
+        "deletions",
+        "recordedAt",
+        "exists",
+        "byteCount",
+        "encoding",
+        "lineCount",
+        "truncationReason",
     }
 )
 
@@ -460,8 +474,27 @@ def _is_fixed_response_value(
         return True
     if path[-2:] == ("capabilities", "tools") and value in PROVIDER_TOOL_ID_SET:
         return True
-    if path and path[-1] == "newline" and value in {"lf", "crlf"}:
+    if path and path[-1] == "newline" and value in {"lf", "crlf", "mixed"}:
         return True
+    if path and container is not None:
+        file_record = "toolCallItemId" in container and "before" in container
+        file_preview = "threadId" in container and "path" in container
+        file_metadata = "exists" in container and "byteCount" in container
+        if (file_record or file_preview or file_metadata) and (
+            (path[-1] == "status" and value in {"text", "unavailable", "recorded"})
+            or (path[-1] == "operation" and value in {"write", "edit"})
+            or (path[-1] == "encoding" and value == "utf-8")
+            or (path[-1] == "revision" and _is_sha256(value))
+            or (path[-1] == "truncationReason" and value in {
+                "byte_limit", "line_limit", "scan_limit",
+            })
+            or (path[-1] == "reason" and value in {
+                "file_not_found", "not_a_file", "binary_file", "unsupported_encoding",
+                "too_large", "scan_limit", "revision_changed", "read_failed",
+                "protected_content", "not_recorded", "result_unknown",
+            })
+        ):
+            return True
     if path and path[-1] == "executionPolicy" and value == "full_access":
         return True
     if (

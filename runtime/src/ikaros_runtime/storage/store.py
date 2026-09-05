@@ -9,6 +9,7 @@ from typing import Any, Self
 from ..domain import (
     ContextItem,
     JournalEvent,
+    JsonObject,
     ModelUsage,
     PreparedTurn,
     RecoveryPlan,
@@ -18,6 +19,7 @@ from ..domain import (
     WorkspaceSummary,
     utc_now,
 )
+from ..file_changes import MAX_CHANGE_EVENT_BYTES, FileChangeCapture
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
@@ -35,6 +37,7 @@ from ..run_input import (
 from ..security import response_values_contain_protected_value
 from ..tools.core import ToolCall
 from .context_history import load_context_for_snapshot, select_context_snapshot
+from .file_changes import get_file_change, resolve_file_tool_path
 from .journal import (
     append_event,
     event_from_row,
@@ -129,6 +132,12 @@ class SqliteRuntimeStore:
 
     def has_active_runs(self) -> bool:
         return has_active_runs(self._connection)
+
+    def get_file_change(self, thread_id: str, tool_call_item_id: str) -> JsonObject:
+        return get_file_change(self._connection, thread_id, tool_call_item_id)
+
+    def resolve_file_tool_path(self, thread_id: str, tool_call_item_id: str) -> str:
+        return resolve_file_tool_path(self._connection, thread_id, tool_call_item_id)
 
     def journal_contains_protected_values(self, protected_values: Sequence[str]) -> bool:
         values = tuple(dict.fromkeys(value for value in protected_values if value))
@@ -1332,7 +1341,8 @@ class SqliteRuntimeStore:
         status: str,
         result: dict[str, Any],
         result_content: str,
-    ) -> tuple[JournalEvent, JournalEvent]:
+        file_change: FileChangeCapture | None = None,
+    ) -> tuple[JournalEvent, ...]:
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("tool status is not terminal")
         row = item_row(self._connection, tool_call_item_id)
@@ -1340,6 +1350,8 @@ class SqliteRuntimeStore:
             raise RuntimeError("tool call item is not running")
         timestamp = utc_now()
         call_data = json_loads(row["data_json"])
+        if file_change is not None and file_change.operation != call_data["toolName"]:
+            raise ValueError("file change operation does not match its Tool Call")
         call_data["outcome"] = status
         duration_ms = result.get("durationMs")
         if isinstance(duration_ms, int) and not isinstance(duration_ms, bool):
@@ -1434,7 +1446,44 @@ class SqliteRuntimeStore:
                 timestamp=timestamp,
                 payload={"item": result_item},
             )
-        return call_event, result_event
+            events = [call_event, result_event]
+            if file_change is not None:
+                record = file_change.to_record(
+                    thread_id=str(row["thread_id"]), tool_call_item_id=tool_call_item_id,
+                    recorded_at=timestamp,
+                )
+                # Include the actual event envelope and scoped payload fields in
+                # this byte cap; an oversized patch is never partially persisted.
+                predicted = JournalEvent(
+                    seq=result_event.seq + 1, schema_version=result_event.schema_version,
+                    type="file.change_recorded", thread_id=str(row["thread_id"]),
+                    branch_id=str(row["branch_id"]), turn_id=str(row["turn_id"]),
+                    run_id=str(row["run_id"]), item_id=tool_call_item_id, timestamp=timestamp,
+                    payload={**record, "turnId": row["turn_id"], "runId": row["run_id"],
+                             "itemId": tool_call_item_id},
+                )
+                if (
+                    len(canonical_json(predicted.to_wire()).encode("utf-8"))
+                    > MAX_CHANGE_EVENT_BYTES
+                ):
+                    record = FileChangeCapture(
+                        file_change.path, file_change.operation, file_change.before,
+                        file_change.after, reason="too_large",
+                    ).to_record(
+                        thread_id=str(row["thread_id"]), tool_call_item_id=tool_call_item_id,
+                        recorded_at=timestamp,
+                    )
+                event = self._append_event(
+                    event_type="file.change_recorded", thread_id=row["thread_id"],
+                    branch_id=row["branch_id"], turn_id=row["turn_id"], run_id=row["run_id"],
+                    item_id=tool_call_item_id, timestamp=timestamp, payload=record,
+                )
+                self._connection.execute(
+                    "INSERT INTO file_changes(tool_call_item_id, record_json) VALUES (?, ?)",
+                    (tool_call_item_id, canonical_json(record)),
+                )
+                events.append(event)
+        return tuple(events)
 
     def terminalize_run(
         self,

@@ -116,6 +116,14 @@ export type RuntimeIssue =
   | { kind: "rename"; message: string; threadId: string; title: string | null }
   | { kind: "archived_catalog"; message: string };
 
+export interface RuntimeFileSelection {
+  threadId: string;
+  path: string;
+  sourceToolCallItemId?: string;
+  toolCallItemId?: string;
+  view: "current" | "change";
+}
+
 interface AppState {
   runtimeMode: boolean;
   runtimeReady: boolean;
@@ -152,6 +160,7 @@ interface AppState {
   selectedThreadId: string | null;
   runStatus: RunStatus;
   draft: string;
+  fileSelection: RuntimeFileSelection | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
   searchOpen: boolean;
@@ -191,6 +200,8 @@ interface AppState {
   setSkillEnabled: (params: RuntimeSkillSetEnabledParams) => Promise<void>;
   selectModel: (selection: RuntimeModelSelection | null) => void;
   setDraft: (draft: string) => void;
+  openFile: (selection: RuntimeFileSelection) => void;
+  closeFile: () => void;
   setSidebarOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSearchOpen: (open: boolean) => void;
@@ -2942,6 +2953,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectedThreadId: null,
   runStatus: "idle",
   draft: "",
+  fileSelection: null,
   sidebarOpen: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   searchOpen: false,
@@ -3069,6 +3081,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     })),
 
   setDraft: (draft) => set({ draft }),
+  openFile: (fileSelection) => set({ fileSelection }),
+  closeFile: () => set({ fileSelection: null }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
   setSearchOpen: (searchOpen) => set({ searchOpen }),

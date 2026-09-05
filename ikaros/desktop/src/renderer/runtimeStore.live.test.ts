@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeHost, RuntimeRpcError } from "../main/runtimeHost";
 import type { IkarosDesktopApi } from "../shared/platform";
 import type {
+  RuntimeFileChangeResult,
+  RuntimeFilePreviewResult,
   IkarosRuntimeBridgeApi,
   RuntimeCancelRunResult,
   RuntimeInvocationResult,
@@ -189,6 +191,10 @@ function runtimeBridge(
       ),
     readUsage: () =>
       bridgeInvocation(() => host.request<RuntimeUsageReadResult>("usage.read")),
+    previewFile: (params) =>
+      bridgeInvocation(() => host.request<RuntimeFilePreviewResult>("file.preview", { ...params })),
+    getFileChange: (params) =>
+      bridgeInvocation(() => host.request<RuntimeFileChangeResult>("file.change.get", { ...params })),
     onEvent: (listener) =>
       host.onNotification((notification) => {
         if (notification.method === "event") {

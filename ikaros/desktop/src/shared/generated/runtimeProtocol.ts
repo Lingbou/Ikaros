@@ -29,6 +29,8 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "memory.forget",
     "memory.list",
     "memory.get",
+    "file.preview",
+    "file.change.get",
     "turn.start",
     "turn.list",
     "run.cancel",
@@ -39,7 +41,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "event"
   ],
   "journal": {
-    "schemaVersion": 5,
+    "schemaVersion": 6,
     "eventTypes": [
       "thread.created",
       "thread.renamed",
@@ -49,6 +51,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
       "item.started",
       "item.delta",
       "item.completed",
+      "file.change_recorded",
       "model.input_prepared",
       "model.response_finished",
       "run.settled"

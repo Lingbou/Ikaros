@@ -15,6 +15,7 @@ from ..domain import (
     WorkspaceSummary,
     skill_descriptors_from_wire,
 )
+from ..file_changes import MAX_CHANGE_EVENT_BYTES, validate_file_change_record
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
@@ -35,6 +36,7 @@ from ..security import (
     json_values_contain_protected_value,
 )
 from .context_history import load_context_for_snapshot, select_context_snapshot
+from .file_changes import file_tool_call, resolve_file_tool_path
 
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
 
@@ -159,6 +161,10 @@ def contains_protected_projection_values(
             (row["response_model_id"], row["request_id"]),
             values,
         ):
+            return True
+    for row in connection.execute("SELECT record_json FROM file_changes"):
+        record = validate_file_change_record(json_loads(row["record_json"]))
+        if json_contains_protected_value((record["path"], record.get("diff")), values):
             return True
     return False
 
@@ -457,6 +463,10 @@ def apply_event(
 ) -> None:
     event_type = event.type
     payload = event.payload
+    if event.schema_version not in {5, 6} or (
+        event_type == "file.change_recorded" and event.schema_version != 6
+    ):
+        raise RuntimeError("journal event schema version is unsupported")
     if event_type == "thread.created":
         _require_keys(payload, {"thread", "branch"}, {"clientRequestId"})
         thread = _record(payload, "thread", _THREAD_KEYS)
@@ -1098,8 +1108,55 @@ def apply_event(
             ),
         )
         _require_one_update(updated_turn, event_type)
+    elif event_type == "file.change_recorded":
+        _apply_file_change_event(connection, event)
     else:
         raise RuntimeError(f"journal event type is unsupported: {event_type}")
+
+
+def _apply_file_change_event(connection: sqlite3.Connection, event: JournalEvent) -> None:
+    if event.thread_id is None or event.item_id is None:
+        raise RuntimeError("file change event has no source Tool Call")
+    try:
+        record = validate_file_change_record({
+            key: value for key, value in event.payload.items()
+            if key not in {"turnId", "runId", "itemId"}
+        })
+        row, call_data = file_tool_call(
+            connection, event.thread_id, event.item_id, allowed=frozenset({"write", "edit"}),
+        )
+    except (ValueError, LookupError):
+        raise RuntimeError("file change event is invalid") from None
+    _require_payload_scope(event.payload, event)
+    _require_event_scope(
+        event, thread_id=str(row["thread_id"]), branch_id=str(row["branch_id"]),
+        turn_id=str(row["turn_id"]), run_id=str(row["run_id"]), item_id=str(row["id"]),
+    )
+    if (
+        record["threadId"] != event.thread_id or record["toolCallItemId"] != event.item_id
+        or record["recordedAt"] != event.timestamp or record["operation"] != call_data["toolName"]
+        or row["status"] not in {"completed", "failed", "cancelled"}
+        or row["updated_at"] != event.timestamp
+        or len(canonical_json(event.to_wire()).encode("utf-8")) > MAX_CHANGE_EVENT_BYTES
+    ):
+        raise RuntimeError("file change event does not match its Tool Call")
+    if record["path"] is not None and record["path"] != resolve_file_tool_path(
+        connection, event.thread_id, event.item_id,
+    ):
+        raise RuntimeError("file change event path does not match its Tool Call")
+    has_result = any(
+        json_loads(result["data_json"]).get("toolCallItemId") == event.item_id
+        for result in connection.execute(
+            "SELECT data_json FROM items WHERE run_id = ? AND kind = 'tool_result'",
+            (event.run_id,),
+        )
+    )
+    if not has_result:
+        raise RuntimeError("file change event has no settled Tool Result")
+    connection.execute(
+        "INSERT INTO file_changes(tool_call_item_id, record_json) VALUES (?, ?)",
+        (event.item_id, canonical_json(record)),
+    )
 
 
 def insert_item(connection: sqlite3.Connection, item: dict[str, Any]) -> None:

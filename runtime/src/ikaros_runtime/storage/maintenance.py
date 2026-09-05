@@ -25,6 +25,7 @@ _PROJECTION_TABLES = (
     ("items", "id"),
     ("model_steps", "run_id, step_ordinal"),
     ("model_usages", "run_id, step_ordinal"),
+    ("file_changes", "tool_call_item_id"),
 )
 
 
@@ -104,6 +105,7 @@ def create_state_backup(
     destination: Path | None = None,
     *,
     require_projection_integrity: bool = True,
+    expected_schema_version: int = SCHEMA_VERSION,
 ) -> StateBackupReport:
     """Create a verified SQLite snapshot without copying WAL sidecars directly."""
 
@@ -111,6 +113,7 @@ def create_state_backup(
     _assert_database_integrity(
         connection,
         require_foreign_keys=require_projection_integrity,
+        expected_schema_version=expected_schema_version,
     )
     events = projection_events(connection)
     source_digest = _journal_digest(connection)
@@ -137,6 +140,7 @@ def create_state_backup(
             _assert_database_integrity(
                 target,
                 require_foreign_keys=require_projection_integrity,
+                expected_schema_version=expected_schema_version,
             )
             copied_events = projection_events(target)
             if len(copied_events) != len(events) or _journal_digest(target) != source_digest:
@@ -238,11 +242,13 @@ def _assert_database_integrity(
     connection: sqlite3.Connection,
     *,
     require_foreign_keys: bool = True,
+    expected_schema_version: int = SCHEMA_VERSION,
 ) -> None:
     schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if schema_version != SCHEMA_VERSION:
+    if schema_version != expected_schema_version:
         raise RuntimeError(
-            f"state database schema version {schema_version} does not match {SCHEMA_VERSION}"
+            f"state database schema version {schema_version} does not match "
+            f"{expected_schema_version}"
         )
     quick_check = tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check"))
     if quick_check != ("ok",):

@@ -5,6 +5,10 @@ import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electro
 
 import { DESKTOP_IPC_CHANNELS, type UiPreferences } from "../shared/platform";
 import type {
+  RuntimeFileChangeGetParams,
+  RuntimeFileChangeResult,
+  RuntimeFilePreviewParams,
+  RuntimeFilePreviewResult,
   RuntimeCancelRunResult,
   RuntimeHostStatus,
   RuntimeInvocationResult,
@@ -171,6 +175,8 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.memoryList,
     DESKTOP_IPC_CHANNELS.runtime.memoryGet,
     DESKTOP_IPC_CHANNELS.runtime.usageRead,
+    DESKTOP_IPC_CHANNELS.runtime.filePreview,
+    DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.preferences.get,
     DESKTOP_IPC_CHANNELS.preferences.update,
@@ -417,6 +423,26 @@ export function registerDesktopIpc(
     trustPolicy.assertTrustedIpc(event);
     return invokeRuntime(() => runtimeHost.request<RuntimeUsageReadResult>("usage.read"));
   });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.filePreview,
+    async (event, params: RuntimeFilePreviewParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeFilePreviewResult>("file.preview", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
+    async (event, params: RuntimeFileChangeGetParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeFileChangeResult>("file.change.get", { ...params })
+      );
+    }
+  );
 
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.turnStart,

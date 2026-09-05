@@ -26,6 +26,7 @@ from .security import RuntimeSecurity
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
+from .services.files import FileService
 from .services.memories import MemoryService
 from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
@@ -137,6 +138,7 @@ class RuntimeApplication:
             self.security.assert_request_safe,
             store,
         )
+        self.files = FileService(store, self.security, paths)
         self.router = RuntimeRouter(
             self.threads,
             self.turns,
@@ -144,6 +146,7 @@ class RuntimeApplication:
             self.usage,
             self.skills,
             self.memories,
+            self.files,
         )
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:

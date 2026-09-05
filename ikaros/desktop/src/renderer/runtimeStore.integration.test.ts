@@ -164,6 +164,10 @@ function installRuntimeBridge(api: unknown): void {
         ),
       setSkillEnabled: (params: Parameters<IkarosRuntimeApi["setSkillEnabled"]>[0]) =>
         bridgeInvocation(() => runtime.setSkillEnabled(params)),
+      previewFile: (params: Parameters<IkarosRuntimeApi["previewFile"]>[0]) =>
+        bridgeInvocation(() => runtime.previewFile(params)),
+      getFileChange: (params: Parameters<IkarosRuntimeApi["getFileChange"]>[0]) =>
+        bridgeInvocation(() => runtime.getFileChange(params)),
       readUsage: () =>
         bridgeInvocation(() =>
           typeof runtime.readUsage === "function"

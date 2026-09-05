@@ -50,6 +50,22 @@ afterEach(() => {
 });
 
 describe("ConversationHeader branch localization", () => {
+  it("opens a path entry for a regular conversation folder without a Git requirement", () => {
+    useAppStore.setState({
+      runtimeMode: true,
+      projects: [{ id: "workspace-files", name: "Reports", color: "#ffffff", rootUri: "/tmp/plain-reports" }],
+      threads: [{ ...threadWithActiveBranch("branch-main"), projectId: "workspace-files" }],
+      selectedThreadId: "thread-localization",
+      draft: "Keep my draft",
+    });
+    render(<ConversationHeader />);
+    fireEvent.click(screen.getByRole("button", { name: "Open file" }));
+    expect(useAppStore.getState()).toMatchObject({
+      fileSelection: { threadId: "thread-localization", path: "", view: "current" },
+      draft: "Keep my draft",
+    });
+  });
+
   it("retranslates app branch labels and preserves external branch names", () => {
     useAppStore.setState({
       projects: [],

@@ -6,6 +6,7 @@ from typing import Any
 
 from ..domain import CommandOutcome
 from ..errors import InvalidParamsError, MemoryOperationError, ProviderFailure
+from ..services.files import FileService
 from ..services.memories import MemoryService
 from ..services.providers import ProviderService
 from ..services.skills import SkillService
@@ -47,6 +48,7 @@ class RuntimeRouter:
         usage: UsageService,
         skills: SkillService,
         memories: MemoryService,
+        files: FileService,
     ) -> None:
         self._threads = threads
         self._turns = turns
@@ -54,6 +56,7 @@ class RuntimeRouter:
         self._usage = usage
         self._skills = skills
         self._memories = memories
+        self._files = files
 
     async def dispatch(
         self,
@@ -112,6 +115,10 @@ class RuntimeRouter:
                 result = self._memories.list(params)
             elif method == "memory.get":
                 result = self._memories.get(params)
+            elif method == "file.preview":
+                result = await self._files.preview(params)
+            elif method == "file.change.get":
+                result = self._files.get_change(params)
             elif method == "turn.start":
                 outcome = self._turns.start_turn(params)
                 result = outcome.result

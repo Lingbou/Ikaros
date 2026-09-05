@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JsonObject
+from ..file_changes import FileChangeCapture
 from ..json_codec import dumps as json_dumps
 from .policy import ExecutionPolicy
 
@@ -32,6 +34,7 @@ class ToolResult:
     output: str
     details: JsonObject
     cancelled: bool = False
+    file_change: FileChangeCapture | None = field(default=None, repr=False)
 
     def to_wire(self) -> JsonObject:
         return {
@@ -68,6 +71,12 @@ class ToolResult:
 class ToolExecutionCancelled(RunCancelled):
     def __init__(self, result: ToolResult) -> None:
         super().__init__("tool execution was cancelled")
+        self.result = result
+
+
+class ToolTaskCancelled(asyncio.CancelledError):
+    def __init__(self, result: ToolResult) -> None:
+        super().__init__("task cancelled after the file mutation settled")
         self.result = result
 
 

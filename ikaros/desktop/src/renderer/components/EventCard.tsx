@@ -122,6 +122,51 @@ interface ToolDisclosure {
   onToggle: (toolCallId: string) => void;
 }
 
+function FileActions({
+  path,
+  toolName,
+  toolCallItemId,
+  running = false,
+}: {
+  path: string;
+  toolName: string | undefined;
+  toolCallItemId: string;
+  running?: boolean;
+}) {
+  const { t } = useTranslation();
+  const runtimeMode = useAppStore((state) => state.runtimeMode);
+  const threadId = useAppStore((state) => state.selectedThreadId);
+  const openFile = useAppStore((state) => state.openFile);
+  if (!runtimeMode || !threadId || !path || !isFileTool(toolName)) return null;
+  const canHaveChange = toolName === "write" || toolName === "edit";
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-3.5 pb-2.5 pt-0.5">
+      <button
+        type="button"
+        onClick={() => openFile({
+          threadId, path, sourceToolCallItemId: toolCallItemId,
+          ...(canHaveChange ? { toolCallItemId } : {}), view: "current",
+        })}
+        className="rounded-md px-2 py-1 text-[10px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+      >
+        {t("files.current")}
+      </button>
+      {canHaveChange ? (
+        <button
+          type="button"
+          disabled={running}
+          onClick={() => openFile({
+            threadId, path, sourceToolCallItemId: toolCallItemId, toolCallItemId, view: "change",
+          })}
+          className="rounded-md px-2 py-1 text-[10px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-40"
+        >
+          {t("files.change")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolCallCard({
   event,
   disclosure,
@@ -233,6 +278,9 @@ function ToolCallCard({
   return (
     <div className="event-card-shadow w-full rounded-xl border border-[var(--border-soft)] bg-[var(--panel)]">
       {commandTrigger}
+      {fileDetails ? (
+        <FileActions path={fileDetails.path} toolName={event.toolName} toolCallItemId={event.id} running={event.status === "running"} />
+      ) : null}
     </div>
   );
 }
@@ -286,6 +334,9 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
           <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-[var(--muted)]">
             {event.output}
           </pre>
+        ) : null}
+        {isFileResult && event.path ? (
+          <FileActions path={event.path} toolName={event.toolName} toolCallItemId={event.toolCallId} />
         ) : null}
       </div>
     </div>

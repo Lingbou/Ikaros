@@ -100,7 +100,9 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
             assert envelope["method"] == EVENT_NOTIFICATION_METHOD
             event = envelope["params"]
             assert isinstance(event, dict)
-            assert event["schemaVersion"] == JOURNAL_EVENT_SCHEMA_VERSION
+            assert event["schemaVersion"] in {5, JOURNAL_EVENT_SCHEMA_VERSION}
+            if event["type"] == "file.change_recorded":
+                assert event["schemaVersion"] == 6
             assert event["type"] in JOURNAL_EVENT_TYPE_SET
             assert isinstance(event["payload"], dict)
             for wire_key in ("turnId", "runId", "itemId"):
@@ -122,9 +124,11 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
         "skill.set_enabled",
         "thread.list",
         "turn.list",
+        "file.preview",
+        "file.change.get",
     }
     assert observed_event_types == JOURNAL_EVENT_TYPE_SET
-    assert len(RPC_METHODS) == 26
+    assert len(RPC_METHODS) == 28
 
 
 @pytest.mark.asyncio
@@ -148,6 +152,8 @@ async def test_committed_golden_session_trace_matches_the_production_agent_trace
             "memory-tombstone",
             "thread-list-page",
             "turn-list-page",
+            "file-change",
+            "file-preview",
         }
     ]
 
@@ -182,6 +188,11 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
                     timestamp=cast(str, event["timestamp"]),
                     payload=payload,
                 )
+                # Preserve the actual mixed event schema, as a migrated Journal does.
+                store._connection.execute(
+                    "UPDATE events SET schema_version = ? WHERE seq = ?",
+                    (event["schemaVersion"], event["seq"]),
+                )
 
         before, latest = store.replay_events(0, 1000)
         store.rebuild_projections()
@@ -189,9 +200,7 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
         assert after == before
         assert rebuilt_latest == latest == len(before)
         initial = next(
-            event
-            for event in after
-            if event.type == "item.completed" and "turn" in event.payload
+            event for event in after if event.type == "item.completed" and "turn" in event.payload
         )
         assert initial.run_id is not None
         assert store.run_status(initial.run_id) == "completed"
@@ -202,7 +211,7 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
     assert PROTOCOL_SPEC_SCHEMA_VERSION == 2
     assert PROTOCOL_VERSION == 3
-    assert JOURNAL_EVENT_SCHEMA_VERSION == 5
+    assert JOURNAL_EVENT_SCHEMA_VERSION == 6
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {
             "code": MEMORY_OPERATION_ERROR_CODE,

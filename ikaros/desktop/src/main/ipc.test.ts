@@ -74,6 +74,79 @@ describe("desktop window controls", () => {
     electron.dialog.showOpenDialog.mockReset();
   });
 
+  it("routes file preview and change queries with their exact binding and pagination", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    const removeHandlers = registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    const event = { sender: {} };
+    const previewParams = {
+      threadId: "thread-1",
+      path: "report.md",
+      sourceToolCallItemId: "call-1",
+      offset: 2001,
+      expectedRevision: "a".repeat(64),
+    };
+    const preview = {
+      threadId: "thread-1",
+      path: "/workspace/report.md",
+      status: "unavailable",
+      reason: "revision_changed",
+    };
+    electron.runtimeHost.request.mockResolvedValueOnce(preview);
+    await expect(electron.handlers.get("ikaros:runtime:file-preview")?.(event, previewParams))
+      .resolves.toEqual({ ok: true, value: preview });
+    expect(trustPolicy.assertTrustedIpc).toHaveBeenCalledWith(event);
+    expect(electron.runtimeHost.request).toHaveBeenCalledWith("file.preview", previewParams);
+
+    const changeParams = { threadId: "thread-1", toolCallItemId: "call-1" };
+    const change = {
+      threadId: "thread-1",
+      toolCallItemId: "call-1",
+      path: null,
+      operation: "write",
+      recordedAt: null,
+      before: null,
+      after: null,
+      status: "unavailable",
+      reason: "not_recorded",
+    };
+    electron.runtimeHost.request.mockResolvedValueOnce(change);
+    await expect(electron.handlers.get("ikaros:runtime:file-change-get")?.(event, changeParams))
+      .resolves.toEqual({ ok: true, value: change });
+    expect(electron.runtimeHost.request).toHaveBeenCalledWith("file.change.get", changeParams);
+    removeHandlers();
+    expect(electron.handlers.has("ikaros:runtime:file-preview")).toBe(false);
+    expect(electron.handlers.has("ikaros:runtime:file-change-get")).toBe(false);
+  });
+
+  it.each(["ikaros:runtime:file-preview", "ikaros:runtime:file-change-get"])(
+    "rejects untrusted file queries before reaching Runtime on %s",
+    async (channel) => {
+      const trustPolicy = {
+        assertTrustedIpc: vi.fn(() => { throw new Error("untrusted renderer"); }),
+        isTrustedUrl: vi.fn(() => false),
+      };
+      registerDesktopIpc(trustPolicy, electron.runtimeHost);
+      await expect(electron.handlers.get(channel)?.({ sender: {} }, { threadId: "thread-1" }))
+        .rejects.toThrow("untrusted renderer");
+      expect(electron.runtimeHost.request).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves file binding RPC rejection as a structured error", async () => {
+    const trustPolicy = { assertTrustedIpc: vi.fn(), isTrustedUrl: vi.fn(() => true) };
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    electron.runtimeHost.request.mockRejectedValueOnce(new RuntimeRpcError(-32602, "invalid file binding"));
+    await expect(electron.handlers.get("ikaros:runtime:file-change-get")?.(
+      { sender: {} }, { threadId: "thread-1", toolCallItemId: "foreign-call" },
+    )).resolves.toEqual({
+      ok: false,
+      error: { kind: "json_rpc", code: -32602, message: "invalid file binding" },
+    });
+  });
+
   it("lets a trusted renderer minimize its own window", async () => {
     const trustPolicy = {
       assertTrustedIpc: vi.fn(),

@@ -54,6 +54,8 @@ sudo dnf install ./dist/Ikaros-0.1.0-linux-x86_64.rpm
 
 `package:win` creates an unsigned Windows x64 NSIS development installer. It
 is a prototype artifact, not a signed production release.
+Python Runtime bundling is outside the daily-use Alpha milestone. Development
+and validation use the checkout Runtime with Python 3.12/3.13 installed.
 
 ## Current feature boundary
 
@@ -82,6 +84,14 @@ The Runtime currently owns:
   48,000-character V1 budget while Desktop continues to page full UI history;
 - `run.cancel`, event replay, sequence-based reconnect catch-up, and SQLite
   recovery across Runtime restarts;
+- ordinary new Turns after failure, with `bounded-history-v2` preserving tool
+  results and explicit incomplete/unknown-outcome context; old v1 Runs keep their
+  original selector and replay behavior;
+- `file.preview` and `file.change.get`, with a read-only right-hand panel opened
+  from file tool cards or a workspace path. Current content supports refresh,
+  revision-bound pagination and line numbers; immutable operation diffs show
+  before/after encoding metadata. Quoting a file adds its path to the draft for
+  the next conversational edit. Old missing captures are never reconstructed;
 - DeepSeek and Custom OpenAI-compatible Provider configuration, real DeepSeek
   model discovery, Model enablement, Provider disconnect/removal, and
   `~/.ikaros/config.yaml` persistence;
@@ -192,8 +202,8 @@ The following UI surfaces are not production Runtime capabilities yet:
   are not implemented;
 - permission cards and Ask/Safe/Full choices belong to the mock prototype;
   Runtime V1 always uses `full_access` and emits no permission requests;
-- editing a message to fork history, multiple Branches, retry/resume recovery,
-  Artifacts, first-class file-change/diff events, and generic status rows are
+- editing a message to fork history, multiple Branches, retry/resume of an old Run,
+  Artifacts, and generic status rows are
   mock-only UI projections without corresponding Runtime RPCs or events. This
   does not include the Runtime-backed `read`, `write`, and `edit` Tool cards;
 - attachments, tool selection, and response regeneration are disabled
@@ -216,19 +226,18 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema version 8 and is
-intentionally reset-only during pre-release development. An incompatible
-`~/.ikaros/state.db` fails Runtime startup with `reset required`; no migration
-or Event upcaster is provided. After stopping the Runtime, an explicitly
-authorized development reset removes only `state.db` plus its WAL/SHM files.
+Conversation persistence uses canonical SQLite schema 9. Runtime creates a
+verified backup including WAL before migrating canonical schema 8 data, then
+adds the rebuildable file-change projection without rewriting old events.
+Other incompatible versions fail explicitly and are never silently deleted.
 Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
 conversation history and must be preserved, as must `skills/`, Desktop
 preferences, and the separately owned `memory.db`. An incompatible Memory
 schema stops Runtime startup explicitly and is never silently reset.
 
-The persisted Journal uses Event schema version 5 with 11 supported Event
-discriminators. Incompatible database or Event schemas still require the
-explicit reset-only path.
+New Journal events use schema 6 with 12 supported Event discriminators; schema
+5 remains readable. File preview/diff bodies do not add to model input, and
+script-created files can be previewed without promising script diff tracking.
 
 Persistent input Frames/Manifests, bounded history selection, and the frozen
 Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the

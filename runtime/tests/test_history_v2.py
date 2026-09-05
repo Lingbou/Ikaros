@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import shlex
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -37,6 +41,7 @@ from ikaros_runtime.storage.context_history import load_context_for_snapshot
 from ikaros_runtime.storage.projections import get_context_snapshot
 from ikaros_runtime.tools.core import ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from ikaros_runtime.tools.policy import FullAccessPolicy
+from ikaros_runtime.tools.process import ProcessRunTool
 from ikaros_runtime.tools.read import ReadTool
 from ikaros_runtime.tools.write import WriteTool
 
@@ -248,7 +253,7 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
             )
             == records_before
         )
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 9
     finally:
         memory.close()
         store.close()
@@ -582,5 +587,103 @@ def test_latest_failed_status_charges_actual_included_or_omitted_budget(
             )
             store.rebuild_projections()
             assert get_context_snapshot(store._connection, current.run_id) == snapshot
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_real_command_keeps_partial_output_in_next_turn_without_replay(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "started.pid"
+    script = tmp_path / "wait_for_cancellation.py"
+    script.write_text(
+        "import os, pathlib, sys, time\n"
+        "print('partial-command-output', flush=True)\n"
+        "with pathlib.Path(sys.argv[1]).open('a', encoding='utf-8') as ready:\n"
+        "    ready.write(str(os.getpid()) + '\\n')\n"
+        "    ready.flush()\n"
+        "    os.fsync(ready.fileno())\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    arguments = [sys.executable, "-u", str(script), str(marker)]
+    command = (
+        "& " + " ".join("'" + argument.replace("'", "''") + "'" for argument in arguments)
+        if os.name == "nt" else shlex.join(arguments)
+    )
+    call = ToolCall("cancelled-command", "process_run", {"command": command})
+    bodies: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return _response(call if len(bodies) == 1 else None)
+
+    async def publish(event: JournalEvent) -> None:
+        del event
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Cancel command and continue")
+        executor = ToolExecutor(ToolRegistry((ProcessRunTool(),)), FullAccessPolicy())
+        first = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Run the command",
+            provider_id="custom",
+            model_id="model",
+            tools=executor.definitions,
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            loop = AgentLoop(
+                store,
+                {"custom": OpenAICompatibleAdapter(_provider(), client=client, max_retries=0)},
+                publish,
+                tool_executor=executor,
+            )
+            cancellation = CancellationToken()
+            running = asyncio.create_task(loop.run(first.run_id, cancellation))
+            try:
+                for _ in range(500):
+                    if marker.exists() and marker.read_text().strip():
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    raise AssertionError("command did not publish its ready PID")
+            finally:
+                cancellation.cancel()
+                await asyncio.wait_for(running, timeout=10)
+            assert store.run_status(first.run_id) == "cancelled"
+            assert len(marker.read_text().splitlines()) == 1
+            current = prepare_turn(
+                store,
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                content="继续",
+                provider_id="custom",
+                model_id="model",
+                tools=executor.definitions,
+            )
+            await loop.run(current.run_id, CancellationToken())
+        assert store.run_status(current.run_id) == "completed"
+        assert current.run_id != first.run_id
+        assert len(bodies) == 2
+        result = _assert_tool_pair(bodies[-1], call.id)
+        assert "partial-command-output" in result["stdout"]
+        assert "partial-command-output" in result["output"]
+        assert result["executionOutcome"] == "unknown"
+        assert "may already have changed files" in result["executionNotice"]
+        assert "Do not replay old Tool Calls" in _status_messages(bodies[-1])[0]
+        assert len(marker.read_text().splitlines()) == 1
+        assert (
+            store._connection.execute(
+                "SELECT COUNT(*) FROM items WHERE run_id = ? AND kind = 'tool_call'",
+                (current.run_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        store.rebuild_projections()
+        assert store.run_status(first.run_id) == "cancelled"
     finally:
         store.close()

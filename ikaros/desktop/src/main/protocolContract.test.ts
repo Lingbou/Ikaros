@@ -302,7 +302,7 @@ describe("Runtime protocol Golden Trace", () => {
 
     expect(trace.fixtureVersion).toBe(1);
     expect([...observedEvents].sort()).toEqual([...RUNTIME_JOURNAL_EVENT_TYPES].sort());
-    expect(RUNTIME_RPC_METHODS).toHaveLength(26);
+    expect(RUNTIME_RPC_METHODS).toHaveLength(28);
     expect(RUNTIME_PROVIDER_TOOL_IDS).toContain("process_run");
     expect(RUNTIME_PROVIDER_TOOL_IDS).not.toContain("process.run");
   });
@@ -1264,6 +1264,67 @@ describe("Runtime protocol Golden Trace", () => {
     expect(() =>
       parseRuntimeMethodResult(response.method, response.result, response.requestParams)
     ).toThrow();
+  });
+
+  it("preserves legacy event versions and accepts the recorded file operation", () => {
+    const legacy = cloneGoldenNotification("model-input-prepared");
+    expect(asWireObject(parseRuntimeEventNotification(legacy.envelope).params, "Event").schemaVersion).toBe(5);
+    const change = cloneGoldenNotification("file-change-recorded");
+    expect(asWireObject(parseRuntimeEventNotification(change.envelope).params, "Event").schemaVersion).toBe(6);
+    change.params.schemaVersion = 5;
+    expect(() => parseRuntimeEventNotification(change.envelope)).toThrow();
+  });
+
+  it("checks file preview pagination, UTF-8 byte limits and request identity", () => {
+    const source = cloneGoldenResponse("file-preview");
+    for (const mutate of [
+      (value: Record<string, unknown>) => { value.threadId = "foreign"; },
+      (value: Record<string, unknown>) => { value.lineEnd = 2; },
+      (value: Record<string, unknown>) => { value.nextOffset = 2; },
+      (value: Record<string, unknown>) => { value.revision = "not-a-version"; },
+      (value: Record<string, unknown>) => { value.content = "界".repeat(18_000); },
+      (value: Record<string, unknown>) => { value.contents = "extra"; }
+    ]) {
+      const copy = structuredClone(source.result);
+      mutate(copy);
+      expect(() => parseRuntimeMethodResult("file.preview", copy, source.requestParams)).toThrow();
+    }
+    const page: Record<string, unknown> = { ...source.result, content: "a\r\nb\r\n", lineStart: 2001, lineEnd: 2002,
+      nextOffset: 2003, truncated: true, truncationReason: "byte_limit" };
+    const params: Record<string, unknown> = { ...source.requestParams, offset: 2001, expectedRevision: source.result.revision };
+    expect(() => parseRuntimeMethodResult("file.preview", page, params)).not.toThrow();
+    expect(() => parseRuntimeMethodResult("file.preview", page, { ...params, expectedRevision: "b".repeat(64) })).toThrow();
+    expect(() => parseRuntimeMethodResult("file.preview", {
+      threadId: params.threadId, path: null, status: "unavailable", reason: "protected_content"
+    }, params)).not.toThrow();
+    const changed = { threadId: params.threadId, path: page.path, status: "unavailable", reason: "revision_changed" };
+    expect(() => parseRuntimeMethodResult("file.preview", changed, params)).not.toThrow();
+  });
+
+  it("binds immutable file changes to their source operation and bounds stored records", () => {
+    const source = cloneGoldenResponse("file-change");
+    for (const mutate of [
+      (value: Record<string, unknown>) => { value.toolCallItemId = "other"; },
+      (value: Record<string, unknown>) => { value.threadId = "foreign"; },
+      (value: Record<string, unknown>) => { value.operation = "process_run"; },
+      (value: Record<string, unknown>) => { value.additions = -1; },
+      (value: Record<string, unknown>) => { value.diff = "界".repeat(90_000); },
+      (value: Record<string, unknown>) => { asWireObject(value.before, "Before").byteCount = 1; }
+    ]) {
+      const copy = structuredClone(source.result);
+      mutate(copy);
+      expect(() => parseRuntimeMethodResult("file.change.get", copy, source.requestParams)).toThrow();
+    }
+    const old = { ...source.result, status: "unavailable", reason: "not_recorded",
+      recordedAt: null, before: null, after: null };
+    for (const key of ["diff", "additions", "deletions"]) delete (old as Record<string, unknown>)[key];
+    expect(() => parseRuntimeMethodResult("file.change.get", old, source.requestParams)).not.toThrow();
+    expectGoldenMutationRejected("file-change-recorded", ({ payload }) => {
+      payload.toolCallItemId = "foreign";
+    });
+    expectGoldenMutationRejected("file-change-recorded", ({ payload }) => {
+      payload.recordedAt = "2026-01-01T00:00:00.000Z";
+    });
   });
 
   it("rejects malformed, over-broad, or scope-inconsistent Memory results", () => {

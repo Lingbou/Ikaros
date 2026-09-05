@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
@@ -47,7 +48,13 @@ from ..security import (
     json_contains_protected_value,
 )
 from ..storage import SqliteRuntimeStore
-from ..tools.core import ToolCall, ToolExecutionCancelled, ToolExecutor, ToolResult
+from ..tools.core import (
+    ToolCall,
+    ToolExecutionCancelled,
+    ToolExecutor,
+    ToolResult,
+    ToolTaskCancelled,
+)
 from .context import (
     ContextBuilder,
     build_history_status_context_data,
@@ -516,6 +523,7 @@ class AgentLoop:
             raise RuntimeError("provider requested a tool but no ToolExecutor is available")
         call_items = list(zip(calls, item_ids, strict=True))
         for index, (call, item_id) in enumerate(call_items):
+            protected_snapshot = self._current_protected_values()
             try:
                 cancellation.raise_if_cancelled()
                 result = await executor.execute(
@@ -523,8 +531,10 @@ class AgentLoop:
                     cancellation=cancellation,
                     default_cwd=default_cwd,
                 )
-            except ToolExecutionCancelled as error:
-                await self._publish_tool_result(item_id, call, error.result, "cancelled")
+            except (ToolExecutionCancelled, ToolTaskCancelled) as error:
+                await self._publish_tool_result(
+                    item_id, call, error.result, "cancelled", protected_snapshot=protected_snapshot,
+                )
                 await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
                 raise RunCancelled from error
             except RunCancelled:
@@ -537,7 +547,9 @@ class AgentLoop:
                 await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
                 raise
             status = "completed" if result.ok else "failed"
-            await self._publish_tool_result(item_id, call, result, status)
+            await self._publish_tool_result(
+                item_id, call, result, status, protected_snapshot=protected_snapshot,
+            )
 
     async def _publish_tool_result(
         self,
@@ -545,7 +557,11 @@ class AgentLoop:
         call: ToolCall,
         result: ToolResult,
         status: str,
+        *,
+        protected_snapshot: Sequence[str] = (),
     ) -> None:
+        if result.file_change is not None:
+            result = replace(result, file_change=result.file_change.protected(protected_snapshot))
         result, protected = self._safe_tool_result(call, result)
         if protected and status != "cancelled":
             status = "failed"
@@ -555,6 +571,7 @@ class AgentLoop:
                 status=status,
                 result=result.to_wire(),
                 result_content=result.to_model_content(),
+                file_change=result.file_change,
             )
         )
 
@@ -644,6 +661,8 @@ class AgentLoop:
         result: ToolResult,
     ) -> tuple[ToolResult, bool]:
         protected_values = self._current_protected_values()
+        if result.file_change is not None:
+            result = replace(result, file_change=result.file_change.protected(protected_values))
         if not protected_values:
             return result, False
         wire = result.to_wire()
@@ -663,8 +682,11 @@ class AgentLoop:
                     "durationMs": 0,
                     "truncated": False,
                     "errorCode": "protected_output",
+                    **({"path": result.file_change.path} if result.file_change is not None
+                       and result.file_change.path is not None else {}),
                 },
                 cancelled=result.cancelled,
+                file_change=result.file_change,
             ),
             True,
         )

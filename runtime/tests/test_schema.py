@@ -61,6 +61,7 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             "model_steps",
             "items",
             "model_usages",
+            "file_changes",
         } <= tables
         assert {"turn_id", "run_id", "item_id", "schema_version"} <= event_columns
         assert {"client_request_id", "workspace_json", "archived_at"} <= thread_columns

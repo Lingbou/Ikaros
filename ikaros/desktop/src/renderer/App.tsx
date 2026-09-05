@@ -4,6 +4,7 @@ import { Composer } from "./components/Composer";
 import { ConversationHeader } from "./components/ConversationHeader";
 import { EditMessageDialog } from "./components/EditMessageDialog";
 import { EventFeed } from "./components/EventFeed";
+import { FilePanel } from "./components/FilePanel";
 import { SearchDialog } from "./components/SearchDialog";
 import { RuntimeStatusBanner } from "./components/RuntimeStatusBanner";
 import { SettingsPage } from "./components/SettingsPage";
@@ -116,6 +117,7 @@ export function App() {
                 <Composer onClearanceChange={setComposerClearance} />
               </section>
             </main>
+            <FilePanel />
           </div>
         )}
       </div>

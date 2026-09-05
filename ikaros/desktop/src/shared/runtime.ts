@@ -16,7 +16,7 @@ export interface RuntimeThreadSummary {
 
 export interface RuntimeJournalEvent {
   seq: number;
-  schemaVersion: typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION;
+  schemaVersion: 5 | typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION;
   type: RuntimeJournalEventType;
   threadId: string | null;
   branchId: string | null;
@@ -418,6 +418,105 @@ export interface RuntimeUsageReadResult {
   dailyUsageBuckets: RuntimeUsageDailyBucket[];
 }
 
+export interface RuntimeFilePreviewParams {
+  threadId: string;
+  path: string;
+  sourceToolCallItemId?: string;
+  /** First logical line, 1-based; defaults to 1. */
+  offset?: number;
+  /** Required for later pages; use the first page's opaque revision. */
+  expectedRevision?: string;
+}
+
+export type RuntimeFilePreviewUnavailableReason =
+  | "file_not_found"
+  | "not_a_file"
+  | "binary_file"
+  | "unsupported_encoding"
+  | "too_large"
+  | "scan_limit"
+  | "revision_changed"
+  | "read_failed"
+  | "protected_content";
+
+export interface RuntimeFilePreviewText {
+  threadId: string;
+  path: string;
+  status: "text";
+  /** Opaque file metadata fingerprint, not a digest of the complete content. */
+  revision: string;
+  encoding: "utf-8";
+  bom: boolean;
+  content: string;
+  lineStart: number;
+  lineEnd: number;
+  nextOffset: number | null;
+  truncated: boolean;
+  truncationReason: "byte_limit" | "line_limit" | "scan_limit" | null;
+}
+
+export interface RuntimeFilePreviewUnavailable {
+  threadId: string;
+  path: string | null;
+  status: "unavailable";
+  reason: RuntimeFilePreviewUnavailableReason;
+}
+
+export type RuntimeFilePreviewResult = RuntimeFilePreviewText | RuntimeFilePreviewUnavailable;
+
+export interface RuntimeFileChangeGetParams {
+  threadId: string;
+  toolCallItemId: string;
+}
+
+export interface RuntimeFileRevisionMetadata {
+  exists: boolean;
+  byteCount: number | null;
+  /** SHA256 of captured raw bytes when available. */
+  revision: string | null;
+  encoding: "utf-8" | null;
+  bom: boolean | null;
+  newline: "lf" | "crlf" | "mixed" | null;
+  lineCount: number | null;
+}
+
+export type RuntimeFileChangeUnavailableReason =
+  | "not_recorded"
+  | "too_large"
+  | "binary_file"
+  | "unsupported_encoding"
+  | "read_failed"
+  | "protected_content"
+  | "result_unknown";
+
+export interface RuntimeFileChangeRecord {
+  threadId: string;
+  toolCallItemId: string;
+  path: string;
+  operation: "write" | "edit";
+  recordedAt: string;
+  before: RuntimeFileRevisionMetadata;
+  after: RuntimeFileRevisionMetadata;
+  status: "recorded";
+  diff: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface RuntimeFileChangeUnavailable {
+  threadId: string;
+  toolCallItemId: string;
+  path: string | null;
+  operation: "write" | "edit";
+  recordedAt: string | null;
+  before: RuntimeFileRevisionMetadata | null;
+  after: RuntimeFileRevisionMetadata | null;
+  status: "unavailable";
+  reason: RuntimeFileChangeUnavailableReason;
+}
+
+export type RuntimeFileChangeResult = RuntimeFileChangeRecord | RuntimeFileChangeUnavailable;
+
 export interface RuntimeRpcFailure {
   kind: "json_rpc";
   code: number;
@@ -465,6 +564,8 @@ export interface IkarosRuntimeApi {
   listMemories(params?: RuntimeMemoryListParams): Promise<RuntimeMemoryListPage>;
   getMemory(memoryId: string): Promise<RuntimeMemoryGetResult>;
   readUsage(): Promise<RuntimeUsageReadResult>;
+  previewFile(params: RuntimeFilePreviewParams): Promise<RuntimeFilePreviewResult>;
+  getFileChange(params: RuntimeFileChangeGetParams): Promise<RuntimeFileChangeResult>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
   onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
 }
@@ -536,6 +637,12 @@ export interface IkarosRuntimeBridgeApi {
     memoryId: string
   ): Promise<RuntimeInvocationResult<RuntimeMemoryGetResult>>;
   readUsage(): Promise<RuntimeInvocationResult<RuntimeUsageReadResult>>;
+  previewFile(
+    params: RuntimeFilePreviewParams
+  ): Promise<RuntimeInvocationResult<RuntimeFilePreviewResult>>;
+  getFileChange(
+    params: RuntimeFileChangeGetParams
+  ): Promise<RuntimeInvocationResult<RuntimeFileChangeResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
   onStatus?(listener: (status: RuntimeHostStatus) => void): () => void;
 }

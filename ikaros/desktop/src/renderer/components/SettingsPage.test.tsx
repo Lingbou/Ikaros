@@ -135,6 +135,12 @@ function desktopApiWithPreferences(
         getMemory: async () => {
           throw new Error("not used in preference settings tests");
         },
+        previewFile: async () => {
+          throw new Error("not used in preference settings tests");
+        },
+        getFileChange: async () => {
+          throw new Error("not used in preference settings tests");
+        },
         readUsage: async () => ({
           ok: true,
           value: {
