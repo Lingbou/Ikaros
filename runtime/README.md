@@ -144,6 +144,13 @@ surfaces rather than Runtime-backed capabilities. Provider health remains
 `unknown`, and automatic model discovery is DeepSeek-only; Custom
 OpenAI-compatible Provider models are entered manually.
 
+Restart recovery settles active Runs as `runtime_interrupted` and reschedules
+queued Runs; it does not resume a terminated process or a model Step from a
+checkpoint. Providers already perform bounded transport retries before emitting
+events. A new ordinary Turn can be submitted after failure, but the current
+history selector omits tools from failed/cancelled Runs, so it does not yet
+provide a complete continuation context.
+
 Providers that do not report stream usage remain usable, but their calls are
 not estimated or added to Token totals. Profile metrics and activity include
 only Provider-reported usage. The Skills settings page exposes real catalog and

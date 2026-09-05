@@ -53,6 +53,9 @@ def _file_executor() -> ToolExecutor:
 async def test_process_run_hides_the_root_shell_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows process creation flags")
+
     captured: dict[str, Any] = {}
     fake_process = cast(asyncio.subprocess.Process, object())
 
@@ -78,7 +81,7 @@ async def test_process_run_hides_the_root_shell_window(
 
 
 def _process_is_alive(pid: int) -> bool:
-    if os.name == "nt":
+    if sys.platform == "win32":
         completed = subprocess.run(
             ["tasklist.exe", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             check=False,
@@ -125,7 +128,9 @@ def _background_child_command(pid_file: Path, *, inherit_output: bool) -> str:
     redirect = " >/dev/null 2>&1" if not inherit_output else ""
     return (
         'sh -c \'printf "%s" "$$" > "$1"; sleep 60\' sh '
-        f"'{pid_file}'{redirect} & printf 'root-exited\\n'"
+        f"'{pid_file}'{redirect} & "
+        f"while [ ! -s '{pid_file}' ]; do sleep 0.01; done; "
+        "printf 'root-exited\\n'"
     )
 
 

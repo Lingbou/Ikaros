@@ -1,3 +1,6 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -122,6 +125,7 @@ describe("desktop window controls", () => {
   });
 
   it("returns one stable workspace snapshot for a selected directory", async () => {
+    const directory = join(tmpdir(), "Workspace", "github", "Ikaros");
     const trustPolicy = {
       assertTrustedIpc: vi.fn(),
       isTrustedUrl: vi.fn(() => true),
@@ -129,7 +133,7 @@ describe("desktop window controls", () => {
     registerDesktopIpc(trustPolicy, electron.runtimeHost);
     electron.dialog.showOpenDialog.mockResolvedValue({
       canceled: false,
-      filePaths: ["C:\\Workspace\\github\\Ikaros"],
+      filePaths: [directory],
     });
     const event = { sender: {} };
     const handler = electron.handlers.get("ikaros:workspace:choose-directory");
@@ -141,7 +145,7 @@ describe("desktop window controls", () => {
     expect(first).toMatchObject({
       id: expect.stringMatching(/^workspace-[0-9a-f]{24}$/),
       name: "Ikaros",
-      rootUri: expect.stringMatching(/Ikaros$/),
+      rootUri: directory,
     });
     expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(electron.targetWindow, {
       properties: ["openDirectory"],

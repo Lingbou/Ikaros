@@ -85,7 +85,10 @@ is intentionally not a renderer setting or visible conversation card. The
 Memory Store and typed Create/Correct/Forget/Provenance bridge are connected,
 and Settings now exposes a real lazy-loaded Memory management page with filters,
 pagination, provenance verification, correction, and Forget confirmation.
-Model recall remains unavailable; its Runtime design is tracked in
+Deterministic, bounded recall from the original user request is connected:
+Global and current-workspace records are frozen by exact revision for each Run.
+Recall is keyword-based; automatic learning and semantic retrieval are not implemented.
+Its Runtime design is tracked in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](../../../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 ## Protocol boundary

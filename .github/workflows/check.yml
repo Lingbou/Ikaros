@@ -1,0 +1,86 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IKAROS_LIVE_DEEPSEEK_SMOKE: "0"
+
+jobs:
+  runtime:
+    name: Runtime (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
+    defaults:
+      run:
+        shell: bash
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: runtime/uv.lock
+      - name: Install locked Runtime dependencies
+        run: uv sync --locked --python "${{ matrix.python-version }}"
+      - name: Check Runtime lint
+        run: uv run --locked ruff check .
+      - name: Check Runtime types
+        run: uv run --locked mypy src tests
+      - name: Check generated protocol
+        run: uv run --locked python -m ikaros_runtime.protocol.generate --check
+      - name: Test Runtime
+        run: uv run --locked pytest
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: ikaros/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: runtime/uv.lock
+      - name: Install Runtime for Desktop integration tests
+        working-directory: runtime
+        run: uv sync --locked --python 3.12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+          package_json_file: ikaros/desktop/package.json
+      - name: Install locked Desktop dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check Desktop types
+        run: pnpm run typecheck
+      - name: Test Desktop
+        run: pnpm exec vitest run --maxWorkers=2
+      - name: Build Desktop
+        run: pnpm run build

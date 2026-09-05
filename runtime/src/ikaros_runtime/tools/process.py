@@ -5,6 +5,7 @@ import locale
 import os
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Awaitable
 from contextlib import suppress
@@ -444,6 +445,9 @@ async def _terminate_process_tree(spawned: _SpawnedProcess) -> None:
 
 
 def _create_windows_job(process: asyncio.subprocess.Process) -> _WindowsJob:
+    if sys.platform != "win32":
+        raise OSError("Windows Job Objects are unavailable on this platform")
+
     import ctypes
     from ctypes import wintypes
 
@@ -531,6 +535,9 @@ def _create_windows_job(process: asyncio.subprocess.Process) -> _WindowsJob:
 
 
 def _resume_windows_process(process: asyncio.subprocess.Process) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows suspended processes are unavailable on this platform")
+
     import ctypes
     from ctypes import wintypes
 

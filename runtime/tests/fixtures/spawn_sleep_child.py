@@ -6,6 +6,9 @@ from pathlib import Path
 
 
 def main() -> int:
+    if sys.platform != "win32":
+        raise RuntimeError("this fixture starts a hidden Windows process")
+
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     child_executable = pythonw if pythonw.is_file() else Path(sys.executable)
     child = subprocess.Popen(

@@ -167,8 +167,8 @@ Some real product state belongs to Desktop rather than the Agent Runtime:
   local profile username are persisted by Electron in `ui-preferences.json`;
 - the system directory picker creates workspace snapshots, while Projects are
   derived from Runtime Threads in the renderer;
-- Search filters the titles of Threads already loaded in the renderer; it is
-  not a Runtime or semantic-search API; and
+- Search first loads the active Thread catalog and then filters its titles in
+  the renderer; it does not search message bodies or provide semantic search; and
 - drafts, selected Model, expanded Project groups, and settings navigation are
   renderer session state.
 

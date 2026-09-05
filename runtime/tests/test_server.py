@@ -1743,7 +1743,7 @@ async def test_jsonrpc_envelope_and_schema_errors_never_echo_credentials(
 
 
 @pytest.mark.asyncio
-async def test_deeply_nested_jsonrpc_request_returns_parse_error(tmp_path: Path) -> None:
+async def test_jsonrpc_array_params_are_rejected_without_closing_connection(tmp_path: Path) -> None:
     token = secrets.token_hex(32)
     process, readiness = await _start_runtime(token, tmp_path)
     connection = await _initialize(
@@ -1751,20 +1751,87 @@ async def test_deeply_nested_jsonrpc_request_returns_parse_error(tmp_path: Path)
         token,
     )
     try:
-        nested = ("[" * 4000) + "0" + ("]" * 4000)
         await connection.send(
-            '{"jsonrpc":"2.0","id":2,"method":"thread.list","params":' + nested + "}"
+            '{"jsonrpc":"2.0","id":2,"method":"thread.list","params":[[0]]}'
         )
         response = json.loads(await connection.recv())
         assert response == {
             "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32700, "message": "parse error"},
+            "id": 2,
+            "error": {"code": -32602, "message": "params must be an object"},
         }
-        await _shutdown(connection, process, 3)
+        valid_response = await _rpc(connection, 3, "thread.list", {})
+        assert valid_response["result"]["threads"] == []
+        await _shutdown(connection, process, 4)
     finally:
         if process.returncode is None:
             await _stop_failed_process(process)
+
+
+@pytest.mark.asyncio
+async def test_json_decoder_recursion_failure_returns_parse_error_and_keeps_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rejected_request = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread.list",
+        "params": [[0]],
+    }
+    rejected_source = json.dumps(rejected_request)
+    original_loads = json.loads
+    decoder_failures = 0
+
+    def controlled_loads(source: str | bytes | bytearray, **kwargs: Any) -> Any:
+        nonlocal decoder_failures
+        if source == rejected_source:
+            decoder_failures += 1
+            raise RecursionError("controlled decoder recursion limit")
+        return original_loads(source, **kwargs)
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    event_bus = EventHub(next_seq=1)
+    kernel = RuntimeApplication(
+        store,
+        event_bus.publish,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
+    connection = AckFailingConnection(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": PROTOCOL_VERSION},
+            },
+            rejected_request,
+            {"jsonrpc": "2.0", "id": 3, "method": "thread.list", "params": {}},
+        ]
+    )
+    # Exercise the production codec's RecursionError conversion without depending
+    # on a particular CPython JSON decoder's nesting threshold.
+    monkeypatch.setattr(json, "loads", controlled_loads)
+    try:
+        await handle_connection(
+            cast(ServerConnection, connection),
+            asyncio.Event(),
+            kernel.router,
+            event_bus,
+            kernel.security,
+            kernel.finish_command,
+        )
+        assert decoder_failures == 1
+        assert connection.sent[1] == {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32700, "message": "parse error"},
+        }
+        assert connection.sent[2]["id"] == 3
+        assert connection.sent[2]["result"]["threads"] == []
+    finally:
+        await kernel.close()
+        store.close()
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,6 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-import ikaros_runtime.memory.store as memory_store_module
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, SkillDescriptor
@@ -185,9 +184,8 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
             tools=executor.definitions,
             identity_core=identity_core,
         )
-        with patch.object(
-            memory_store_module.uuid,
-            "uuid4",
+        with patch(
+            "ikaros_runtime.memory.store.uuid.uuid4",
             return_value=uuid.UUID(int=1),
         ):
             memory_store.create_memory_once(
