@@ -162,6 +162,55 @@ def test_turn_list_hydrates_every_run_and_materialized_item(
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        ("completed", None),
+        ("failed", "provider_unavailable"),
+        ("failed", "runtime_interrupted"),
+        ("cancelled", "cancelled"),
+    ],
+)
+def test_run_failure_reason_survives_history_restart_and_rebuild(
+    tmp_path: Path, status: str, reason: str | None,
+) -> None:
+    database_path = tmp_path / "state.db"
+    store = SqliteRuntimeStore(database_path)
+    try:
+        thread, _ = store.create_thread("Failure history")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="inspect this project",
+            provider_id="scripted",
+            model_id="scripted-v1",
+        )
+        queued = store.list_turn_page(
+            thread_id=thread.id, branch_id=thread.default_branch_id, cursor=None, limit=50,
+        ).to_wire()["turns"][0]["runs"][0]
+        assert queued["reasonCode"] is None
+        store.mark_run_running(prepared.run_id)
+        events = store.terminalize_run(prepared.run_id, status, reason_code=reason)
+        settled = next(event for event in events if event.type == "run.settled")
+        assert settled.payload.get("reasonCode") == reason
+    finally:
+        store.close()
+
+    reopened = SqliteRuntimeStore(database_path)
+    try:
+        for rebuild in (False, True):
+            if rebuild:
+                reopened.rebuild_projections()
+            run = reopened.list_turn_page(
+                thread_id=thread.id, branch_id=thread.default_branch_id, cursor=None, limit=50,
+            ).to_wire()["turns"][0]["runs"][0]
+            assert run["status"] == status
+            assert run["reasonCode"] == reason
+    finally:
+        reopened.close()
+
+
 def test_turn_history_pages_latest_first_but_each_page_is_chronological(
     tmp_path: Path,
 ) -> None:

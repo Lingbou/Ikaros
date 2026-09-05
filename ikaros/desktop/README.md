@@ -129,6 +129,14 @@ range, bytes written, and replacement count without displaying the full write
 or replacement arguments. It does not use `MockAgentClient` when the Electron
 Runtime bridge is available.
 
+When no runnable Model exists, the composer opens Provider or Model settings
+directly and preserves the draft, selected Thread, and staged Workspace. Runtime
+connection and catalog loading failures have separate reconnect/reload actions.
+Failed and cancelled Runs retain successful Tool results and display a localized
+explanation plus a bounded `reasonCode`, including after history reload. An
+unsuccessful file or command operation is identified as potentially having changed
+files; starting a new Turn neither resumes that Run nor rolls its operations back.
+
 Electron main strictly validates the Gate 2 audit DTO relationships before
 advancing the Event cursor. The renderer intentionally treats
 `model.input_prepared` and `model.response_finished` as non-visual audit Events;

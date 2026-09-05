@@ -72,6 +72,11 @@ export function Composer({
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const selectedModel = useAppStore((state) => state.selectedModel);
+  const connectionStatus = useAppStore((state) => state.runtimeConnectionStatus);
+  const providerCatalogStatus = useAppStore((state) => state.providerCatalogStatus);
+  const loadProviderCatalog = useAppStore((state) => state.loadProviderCatalog);
+  const retryRuntimeConnection = useAppStore((state) => state.retryRuntimeConnection);
+  const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const selectModel = useAppStore((state) => state.selectModel);
   const setDraft = useAppStore((state) => state.setDraft);
   const sendDraft = useAppStore((state) => state.sendDraft);
@@ -108,7 +113,51 @@ export function Composer({
       candidate.modelId === selectedModel.modelId,
   );
   const runtimeModelMissing = runtimeMode && !selectedRuntimeModel;
-  const submitBlocked = (isRunActive(runStatus) && !canStop) || runtimeModelMissing;
+  const runtimeModelUnavailable = runtimeMode &&
+    (runtimeModelMissing || connectionStatus !== "connected" || providerCatalogStatus !== "ready");
+  const submitBlocked = (isRunActive(runStatus) && !canStop) || runtimeModelUnavailable;
+  let modelAccess: {
+    label: TranslationKey;
+    message: TranslationKey;
+    action?: () => void;
+  } | null = null;
+  if (runtimeMode) {
+    if (connectionStatus === "offline") {
+      modelAccess = {
+        label: "composer.reconnectRuntime",
+        message: "composer.runtimeOffline",
+        action: () => void retryRuntimeConnection(),
+      };
+    } else if (connectionStatus === "starting" || connectionStatus === "reconnecting") {
+      modelAccess = {
+        label: connectionStatus === "starting" ? "runtime.starting" : "runtime.reconnecting",
+        message: "composer.waitForRuntime",
+      };
+    } else if (providerCatalogStatus === "idle" || providerCatalogStatus === "loading") {
+      modelAccess = { label: "composer.loadingModels", message: "composer.waitForModels" };
+    } else if (providerCatalogStatus === "error") {
+      modelAccess = {
+        label: "composer.retryModels",
+        message: "composer.modelsLoadFailed",
+        action: () => void loadProviderCatalog().catch(() => undefined),
+      };
+    } else if (runtimeModelOptions.length === 0) {
+      const hasConfiguredModels = models.some((candidate) =>
+        providers.some((provider) => provider.id === candidate.providerId && provider.configured),
+      );
+      modelAccess = hasConfiguredModels
+        ? {
+            label: "composer.enableModel",
+            message: "composer.modelsDisabled",
+            action: () => setSettingsOpen(true, "models"),
+          }
+        : {
+            label: "composer.configureModel",
+            message: "composer.connectProvider",
+            action: () => setSettingsOpen(true, "providers"),
+          };
+    }
+  }
   const slashMatch = draft.match(/^\/([^\s]*)$/);
   const slashQuery = slashMatch?.[1].toLowerCase() ?? "";
   const slashCommands = useMemo(
@@ -160,7 +209,7 @@ export function Composer({
   }, [onClearanceChange]);
 
   const send = () => {
-    if (isRunActive(runStatus) || runtimeModelMissing) return;
+    if (isRunActive(runStatus) || runtimeModelUnavailable) return;
     void sendDraft();
   };
 
@@ -358,70 +407,79 @@ export function Composer({
 
             <div className="min-w-0 flex-1" />
 
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button
-                  type="button"
-                  disabled={runtimeMode && runtimeModelOptions.length === 0}
-                  onPointerDown={() => setSlashDismissed(true)}
-                  className="hidden h-8 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[10px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
-                >
-                  <span className="min-w-0 max-w-[148px] truncate">
+            {modelAccess ? (
+              <button
+                type="button"
+                data-model-settings-trigger
+                disabled={!modelAccess.action}
+                onClick={modelAccess.action}
+                className="h-8 max-w-[220px] truncate rounded-lg px-2 text-[11px] font-medium leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-wait disabled:opacity-60"
+              >
+                {t(modelAccess.label)}
+              </button>
+            ) : (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    data-model-settings-trigger
+                    onPointerDown={() => setSlashDismissed(true)}
+                    className="hidden h-8 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[10px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
+                  >
+                    <span className="min-w-0 max-w-[148px] truncate">
+                      {runtimeMode
+                        ? selectedRuntimeModel?.label ?? t("composer.selectModel")
+                        : model === "local"
+                          ? t("composer.localModel")
+                          : model}
+                    </span>
+                    <ChevronDown size={11} />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    side="top"
+                    align="end"
+                    sideOffset={8}
+                    className="glass-menu z-[90] min-w-48 max-w-[280px] rounded-xl p-1"
+                  >
                     {runtimeMode
-                      ? selectedRuntimeModel?.label ??
-                        (runtimeModelOptions.length === 0
-                          ? t("composer.configureModel")
-                          : t("composer.selectModel"))
-                      : model === "local"
-                        ? t("composer.localModel")
-                        : model}
-                  </span>
-                  <ChevronDown size={11} />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  side="top"
-                  align="end"
-                  sideOffset={8}
-                  className="glass-menu z-[90] min-w-48 max-w-[280px] rounded-xl p-1"
-                >
-                  {runtimeMode
-                    ? runtimeModelOptions.map((candidate) => (
-                        <DropdownMenu.Item
-                          key={`${candidate.providerId}/${candidate.modelId}`}
-                          onSelect={() =>
-                            selectModel({
-                              providerId: candidate.providerId,
-                              modelId: candidate.modelId,
-                            })
-                          }
-                          className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[11px] leading-4 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                        >
-                          <span className="flex size-4 items-center justify-center text-[var(--accent)]">
-                            {selectedRuntimeModel?.providerId === candidate.providerId &&
-                            selectedRuntimeModel.modelId === candidate.modelId ? (
-                              <Check size={12} />
-                            ) : null}
-                          </span>
-                          <span className="min-w-0 truncate">{candidate.label}</span>
-                        </DropdownMenu.Item>
-                      ))
-                    : MODEL_OPTIONS.map((candidate) => (
-                        <DropdownMenu.Item
-                          key={candidate}
-                          onSelect={() => setModel(candidate)}
-                          className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                        >
-                          <span className="flex size-4 items-center justify-center text-[var(--accent)]">
-                            {model === candidate ? <Check size={12} /> : null}
-                          </span>
-                          {candidate === "local" ? t("composer.localModel") : candidate}
-                        </DropdownMenu.Item>
-                      ))}
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
+                      ? runtimeModelOptions.map((candidate) => (
+                          <DropdownMenu.Item
+                            key={`${candidate.providerId}/${candidate.modelId}`}
+                            onSelect={() =>
+                              selectModel({
+                                providerId: candidate.providerId,
+                                modelId: candidate.modelId,
+                              })
+                            }
+                            className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[11px] leading-4 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                          >
+                            <span className="flex size-4 items-center justify-center text-[var(--accent)]">
+                              {selectedRuntimeModel?.providerId === candidate.providerId &&
+                              selectedRuntimeModel.modelId === candidate.modelId ? (
+                                <Check size={12} />
+                              ) : null}
+                            </span>
+                            <span className="min-w-0 truncate">{candidate.label}</span>
+                          </DropdownMenu.Item>
+                        ))
+                      : MODEL_OPTIONS.map((candidate) => (
+                          <DropdownMenu.Item
+                            key={candidate}
+                            onSelect={() => setModel(candidate)}
+                            className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                          >
+                            <span className="flex size-4 items-center justify-center text-[var(--accent)]">
+                              {model === candidate ? <Check size={12} /> : null}
+                            </span>
+                            {candidate === "local" ? t("composer.localModel") : candidate}
+                          </DropdownMenu.Item>
+                        ))}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            )}
 
             <button
               type="button"
@@ -437,6 +495,15 @@ export function Composer({
               )}
             </button>
           </div>
+          {modelAccess ? (
+            <p role="status" className="px-1 pt-1.5 text-[11px] leading-4 text-[var(--muted)]">
+              {t(modelAccess.message)}
+            </p>
+          ) : runtimeModelMissing ? (
+            <p role="status" className="px-1 pt-1.5 text-[11px] leading-4 text-[var(--muted)]">
+              {t("composer.chooseModel")}
+            </p>
+          ) : null}
           {projectFolderError ? (
             <div role="alert" className="px-1 pt-1.5 text-[11px] leading-4 text-[#e07070]">
               {t("composer.addProjectFolderFailed")}

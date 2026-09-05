@@ -506,7 +506,8 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
         payload.status !== "failed" &&
         payload.status !== "cancelled") ||
       payload.settledAt !== event.timestamp ||
-      !isOptionalWireIdentifier(payload.reasonCode)
+      (payload.reasonCode !== undefined && !isRunReasonCode(payload.reasonCode)) ||
+      (payload.status === "completed" && payload.reasonCode !== undefined)
     ) {
       invalidJournalEventPayload(event.type);
     }
@@ -1501,6 +1502,10 @@ function isWireIdentifier(value: unknown): value is string {
   return isNonEmptyString(value) && value.length <= MAX_WIRE_IDENTIFIER_LENGTH;
 }
 
+function isRunReasonCode(value: unknown): value is string {
+  return isWireIdentifier(value) && /^[A-Za-z0-9_.-]+$/.test(value);
+}
+
 function isNullableWireIdentifier(value: unknown): value is string | null {
   return value === null || isWireIdentifier(value);
 }
@@ -1873,6 +1878,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
   const run = value as Partial<RuntimeRunHistory>;
   const terminal =
     run.status === "completed" || run.status === "failed" || run.status === "cancelled";
+  const reasonCode = run.reasonCode ?? null;
   if (
     !isWireIdentifier(run.id) ||
     run.turnId !== turnId ||
@@ -1880,6 +1886,9 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     !isNonEmptyString(run.modelId) ||
     run.executionPolicy !== "full_access" ||
     !TURN_AND_RUN_STATUSES.has(run.status as string) ||
+    (reasonCode !== null && !isRunReasonCode(reasonCode)) ||
+    ((run.status === "queued" || run.status === "running" || run.status === "completed") &&
+      reasonCode !== null) ||
     !isNonEmptyString(run.createdAt) ||
     (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
     !Array.isArray(run.items)
@@ -1905,6 +1914,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     modelId: run.modelId,
     executionPolicy: "full_access",
     status: run.status as RuntimeRunHistory["status"],
+    reasonCode,
     createdAt: run.createdAt,
     settledAt: run.settledAt as string | null,
     items

@@ -7,6 +7,7 @@ from time import monotonic
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JournalEvent, ModelUsage
 from ..errors import (
+    AgentStepLimitError,
     ContextBudgetExceededError,
     MemoryRetrievalError,
     ModelInputUnavailableError,
@@ -234,7 +235,7 @@ class AgentLoop:
                     self._store.terminalize_run(run_id, "completed")
                 )
                 return
-            raise RuntimeError("provider exceeded the maximum Agent step count")
+            raise AgentStepLimitError("maximum Agent step count reached")
         except RunCancelled:
             await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
         except Exception as error:
@@ -747,6 +748,8 @@ class AgentLoop:
             raise RunInputDriftError("execution_policy_changed")
 
 def _failure_reason_code(error: Exception) -> str:
+    if isinstance(error, AgentStepLimitError):
+        return "agent_step_limit"
     if isinstance(error, RunCancelled):
         return "cancelled"
     if isinstance(error, RunInputDriftError):

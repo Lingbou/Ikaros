@@ -119,7 +119,7 @@ export function projectRuntimeThreadHistory(
         runId: run.id,
         itemId: null,
         timestamp: run.settledAt ?? turn.updatedAt,
-        payload: { status: run.status },
+        payload: { status: run.status, reasonCode: run.reasonCode },
       });
     }
   }
@@ -232,6 +232,7 @@ function upsertAgentEvent(
       branchId: event.branchId as string,
       runId: event.runId ?? turn?.runId,
       status: turn?.status ?? "running",
+      reasonCode: turn?.reasonCode ?? null,
       events: nextEvents
     };
   });
@@ -464,7 +465,6 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           ? item.data.result.path
           : undefined;
       const errorCode =
-        fileTool &&
         typeof item.data.result.errorCode === "string" &&
         /^[A-Za-z0-9_.-]{1,80}$/.test(item.data.result.errorCode)
           ? item.data.result.errorCode
@@ -504,6 +504,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
       branchId: event.branchId as string,
       runId: event.runId ?? turn?.runId,
       status: turn?.status ?? "running",
+      reasonCode: turn?.reasonCode ?? null,
       events: (turn?.events ?? []).map((candidate) =>
         candidate.id === event.itemId && candidate.type === "message"
           ? { ...candidate, content: `${candidate.content}${event.payload.delta}` }
@@ -518,6 +519,12 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         branchId: event.branchId as string,
         runId: event.runId ?? turn?.runId,
         status,
+        reasonCode:
+          (status === "failed" || status === "interrupted") &&
+          typeof event.payload.reasonCode === "string" &&
+          /^[A-Za-z0-9_.-]{1,200}$/.test(event.payload.reasonCode)
+            ? event.payload.reasonCode
+            : null,
         events: turn?.events ?? []
       }));
     }

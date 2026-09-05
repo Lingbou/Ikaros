@@ -190,14 +190,17 @@ describe("Composer input and clearance", () => {
     expect(stopRun).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks Runtime submission when no runnable model is configured", () => {
+  it("opens provider configuration without losing the draft, thread, or workspace", () => {
     const sendDraft = vi.fn(async () => undefined);
+    const workspace = { id: "workspace-setup", name: "Setup", rootUri: "/workspace/setup" };
     useAppStore.setState({
       runtimeMode: true,
       providers: [],
       models: [],
       selectedModel: null,
       draft: "hello",
+      selectedThreadId: "thread-setup",
+      newThreadWorkspace: workspace,
       runStatus: "idle",
       sendDraft,
     });
@@ -208,12 +211,118 @@ describe("Composer input and clearance", () => {
     );
 
     expect(screen.getByRole("button", { name: "Full access" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Configure a model" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Configure a model" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message Ikaros" }), {
       key: "Enter",
     });
     expect(sendDraft).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Configure a model" }));
+    expect(useAppStore.getState()).toMatchObject({
+      settingsOpen: true,
+      settingsInitialSection: "providers",
+      draft: "hello",
+      selectedThreadId: "thread-setup",
+      newThreadWorkspace: workspace,
+    });
+    useAppStore.getState().setSettingsOpen(false);
+    expect(useAppStore.getState().draft).toBe("hello");
+  });
+
+  it("opens Models settings when configured models are disabled", () => {
+    useAppStore.setState({
+      runtimeMode: true,
+      providers: [{ id: "custom", displayName: "Custom", origin: "custom", configured: true, credentialConfigured: true, health: "unknown" }],
+      models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false }],
+      selectedModel: null,
+      draft: "saved draft",
+    });
+    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
+    expect(screen.getByText("The configured models are disabled. Enable one in Models settings.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Enable a model" }));
+    expect(useAppStore.getState()).toMatchObject({ settingsOpen: true, settingsInitialSection: "models", draft: "saved draft" });
+  });
+
+  it.each(["idle", "loading"] as const)("keeps %s catalogs distinct from missing configuration", (providerCatalogStatus) => {
+    useAppStore.setState({ runtimeMode: true, providerCatalogStatus, providers: [], models: [], draft: "saved draft" });
+    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
+    expect(screen.getByRole("button", { name: "Loading models…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("retries a failed model catalog without opening configuration or discarding the draft", () => {
+    const loadProviderCatalog = vi.fn(async () => undefined);
+    useAppStore.setState({ runtimeMode: true, providerCatalogStatus: "error", providers: [], models: [], draft: "saved draft", loadProviderCatalog });
+    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "Reload models" }));
+    expect(loadProviderCatalog).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({ draft: "saved draft", settingsOpen: false });
+    expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
+  });
+
+  it("reconnects the Runtime instead of treating an offline catalog as unconfigured", () => {
+    const retryRuntimeConnection = vi.fn(async () => undefined);
+    useAppStore.setState({ runtimeMode: true, runtimeConnectionStatus: "offline", providerCatalogStatus: "error", draft: "saved draft", retryRuntimeConnection });
+    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    expect(retryRuntimeConnection).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
+    expect(useAppStore.getState().draft).toBe("saved draft");
+  });
+
+  it("makes configuration available after a provider is disconnected", () => {
+    useAppStore.setState({
+      runtimeMode: true,
+      providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: false, credentialConfigured: false, health: "unknown" }],
+      models: [],
+      selectedModel: null,
+      draft: "saved draft",
+    });
+    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure a model" }));
+    expect(useAppStore.getState()).toMatchObject({ settingsInitialSection: "providers", draft: "saved draft" });
+  });
+
+  it("sends the preserved draft after configuration supplies a runnable model", () => {
+    const sendDraft = vi.fn(async () => undefined);
+    useAppStore.setState({
+      runtimeMode: true,
+      providers: [],
+      models: [],
+      selectedModel: null,
+      draft: "Resume my original request",
+      runStatus: "idle",
+      sendDraft,
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Configure a model" }));
+
+    act(() => {
+      useAppStore.setState({
+        providers: [{
+          id: "custom",
+          displayName: "Custom",
+          origin: "custom",
+          configured: true,
+          credentialConfigured: true,
+          health: "unknown",
+        }],
+        models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: true }],
+        selectedModel: { providerId: "custom", modelId: "model" },
+      });
+      useAppStore.getState().setSettingsOpen(false);
+    });
+
+    expect(screen.getByRole("textbox", { name: "Message Ikaros" })).toHaveValue("Resume my original request");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(sendDraft).toHaveBeenCalledOnce();
   });
 
   it("lets Runtime users explicitly choose between multiple runnable models", () => {

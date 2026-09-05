@@ -275,6 +275,7 @@ function singleTurnHistoryPage(
             modelId: "scripted-v1",
             executionPolicy: "full_access",
             status,
+            reasonCode: null,
             createdAt,
             settledAt:
               status === "completed" || status === "failed" || status === "cancelled"

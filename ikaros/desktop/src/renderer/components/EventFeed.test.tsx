@@ -145,6 +145,31 @@ afterEach(() => {
 });
 
 describe("EventFeed dynamic row measurement", () => {
+  it("shows a failed Runtime outcome even when no assistant Item was created", () => {
+    const thread = threadWith([]);
+    Object.assign(thread.branches[0].turns[0], {
+      runId: "run-failed-before-response",
+      status: "failed",
+      reasonCode: "provider_authentication",
+    });
+    useAppStore.setState({
+      runtimeMode: true,
+      threads: [thread],
+      selectedThreadId: thread.id,
+    });
+
+    render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByRole("status", { name: "This run failed" })).toBeVisible();
+    expect(screen.getByText(/provider_authentication/)).toBeVisible();
+    expect(screen.queryByText("What should we work on?")).toBeNull();
+    expect(thread.branches[0].turns[0].events).toEqual([]);
+  });
+
   it("shows a retryable history error instead of an empty conversation", () => {
     const thread = threadWith([]);
     const retryRuntimeThread = vi.fn(async () => undefined);

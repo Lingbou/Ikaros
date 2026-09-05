@@ -198,6 +198,7 @@ export interface Turn {
   branchId: string;
   runId?: string;
   status: TurnStatus;
+  reasonCode?: string | null;
   events: AgentEvent[];
 }
 

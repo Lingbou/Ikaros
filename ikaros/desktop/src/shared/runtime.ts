@@ -263,6 +263,7 @@ export interface RuntimeRunHistory {
   modelId: string;
   executionPolicy: "full_access";
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  reasonCode: string | null;
   createdAt: string;
   settledAt: string | null;
   items: RuntimeItemHistory[];

@@ -202,6 +202,30 @@ afterEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it.each([
+    ["providers", "Providers"],
+    ["models", "Models"],
+  ] as const)("opens the requested %s section and returns with the conversation intact", (section, heading) => {
+    const workspace = { id: "workspace-setup", name: "Setup", rootUri: "/work/setup" };
+    useAppStore.setState({
+      draft: "Continue this task",
+      selectedThreadId: "thread-setup",
+      newThreadWorkspace: workspace,
+    });
+    useAppStore.getState().setSettingsOpen(true, section);
+
+    render(<SettingsPage />);
+
+    expect(screen.getByRole("heading", { level: 1, name: heading })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to app" }));
+    expect(useAppStore.getState()).toMatchObject({
+      settingsOpen: false,
+      draft: "Continue this task",
+      selectedThreadId: "thread-setup",
+      newThreadWorkspace: workspace,
+    });
+  });
+
   it("manages archived conversations from General settings", async () => {
     const loadArchivedThreads = vi.fn(async () => undefined);
     const unarchiveThread = vi.fn(async () => undefined);

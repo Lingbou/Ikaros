@@ -167,6 +167,7 @@ function GeneralSettings({
 export function SettingsPage() {
   const { t } = useTranslation();
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
+  const initialSection = useAppStore((state) => state.settingsInitialSection);
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const providerCatalogStatus = useAppStore((state) => state.providerCatalogStatus);
@@ -186,7 +187,7 @@ export function SettingsPage() {
   const threads = useAppStore((state) => state.threads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const newThreadWorkspace = useAppStore((state) => state.newThreadWorkspace);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
   const [query, setQuery] = useState("");
   const [preferences, setPreferences] = useState<UiPreferences>(() =>
     cloneUiPreferences(DEFAULT_UI_PREFERENCES)
@@ -321,7 +322,10 @@ export function SettingsPage() {
   const closeSettings = () => {
     setSettingsOpen(false);
     window.requestAnimationFrame(() => {
-      document.querySelector<HTMLButtonElement>("[data-profile-menu-trigger]")?.focus();
+      const selector = initialSection === "general"
+        ? "[data-profile-menu-trigger]"
+        : "[data-model-settings-trigger]";
+      document.querySelector<HTMLButtonElement>(selector)?.focus();
     });
   };
 

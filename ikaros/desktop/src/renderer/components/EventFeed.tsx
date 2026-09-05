@@ -8,10 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { activeBranch } from "../domain";
+import { activeBranch, type AgentEvent, type Turn } from "../domain";
 import { useTranslation } from "../i18n";
 import { selectCurrentThread, useAppStore } from "../store";
 import { EventCard } from "./EventCard";
+import { RuntimeTurnOutcome } from "./RuntimeTurnOutcome";
 import { cx } from "./ui";
 import {
   getTurnAnchors,
@@ -90,6 +91,12 @@ function toolResultRegionId(toolCallId: string) {
   return `tool-result-${encodeURIComponent(toolCallId)}`;
 }
 
+type FeedRow = AgentEvent | {
+  type: "runtime_outcome";
+  id: string;
+  turn: Turn;
+};
+
 function eventRowVisualOffset(viewport: HTMLElement, eventId: string): number | null {
   const row = [...viewport.querySelectorAll<HTMLElement>("[data-event-id]")].find(
     (candidate) => candidate.dataset.eventId === eventId,
@@ -111,9 +118,14 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   );
   const branch = activeBranch(thread);
   const turns = branch?.turns;
-  const events = useMemo(
-    () => turns?.flatMap((turn) => turn.events) ?? [],
-    [turns],
+  const events = useMemo<FeedRow[]>(
+    () => turns?.flatMap((turn): FeedRow[] => [
+      ...turn.events,
+      ...(runtimeMode && turn.runId && (turn.status === "failed" || turn.status === "interrupted")
+        ? [{ type: "runtime_outcome" as const, id: `outcome:${turn.runId}`, turn }]
+        : []),
+    ]) ?? [],
+    [runtimeMode, turns],
   );
   const toolCallIds = useMemo(
     () =>
@@ -164,6 +176,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     useFlushSync: false,
     estimateSize: (index) => {
       const event = events[index];
+      if (event?.type === "runtime_outcome") return 164;
       if (event?.type === "message") return event.role === "user" ? 72 : 128;
       if (event?.type === "permission_request" || event?.type === "interrupt") return 168;
       if (
@@ -467,7 +480,9 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
                 style={{ transform: `translateY(${row.start + 18}px)` }}
               >
                 <div className={shouldAnimate ? "event-enter" : undefined}>
-                  {isMatchedToolResult ? (
+                  {event.type === "runtime_outcome" ? (
+                    <RuntimeTurnOutcome turn={event.turn} />
+                  ) : isMatchedToolResult ? (
                     <div
                       id={toolResultRegionId(event.toolCallId)}
                       aria-hidden={isCollapsed}

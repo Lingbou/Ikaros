@@ -52,6 +52,7 @@ class RunHistoryRecord:
     status: str
     created_at: str
     settled_at: str | None
+    reason_code: str | None
     items: tuple[ItemHistoryRecord, ...]
 
     def to_wire(self) -> JsonObject:
@@ -64,6 +65,7 @@ class RunHistoryRecord:
             "status": self.status,
             "createdAt": self.created_at,
             "settledAt": self.settled_at,
+            "reasonCode": self.reason_code,
             "items": [item.to_wire() for item in self.items],
         }
 
@@ -345,7 +347,7 @@ def _run_rows_for_turns(
     return connection.execute(
         f"""
         SELECT id, turn_id, provider_id, model_id, execution_policy, status,
-               created_at, settled_at
+               created_at, settled_at, reason_code
         FROM runs
         WHERE turn_id IN ({placeholders})
         ORDER BY turn_id ASC, created_at ASC, id ASC
@@ -376,6 +378,7 @@ def _runs_by_turn(
                 settled_at=(
                     str(row["settled_at"]) if row["settled_at"] is not None else None
                 ),
+                reason_code=(str(row["reason_code"]) if row["reason_code"] is not None else None),
                 items=items_by_run.get(run_id, ()),
             )
         )

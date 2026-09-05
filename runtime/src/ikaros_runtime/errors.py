@@ -104,6 +104,10 @@ class ContextBudgetExceededError(RuntimeError):
     """The current Run cannot fit the frozen provider-neutral input budget."""
 
 
+class AgentStepLimitError(RuntimeError):
+    """The Run used all of its frozen model Steps without completing the task."""
+
+
 class ModelInputUnavailableError(RuntimeError):
     """A provider-neutral input source is missing, corrupt, or no longer canonical."""
 

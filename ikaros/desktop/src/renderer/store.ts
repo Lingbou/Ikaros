@@ -156,6 +156,7 @@ interface AppState {
   sidebarWidth: number;
   searchOpen: boolean;
   settingsOpen: boolean;
+  settingsInitialSection: "general" | "providers" | "models";
   profileUsername: string;
   editingMessage: EditingMessage;
   expandedProjects: Record<string, boolean>;
@@ -193,7 +194,7 @@ interface AppState {
   setSidebarOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSearchOpen: (open: boolean) => void;
-  setSettingsOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean, section?: "providers" | "models") => void;
   setProfileUsername: (username: string) => void;
   toggleProject: (projectId: string) => void;
   beginEditMessage: (eventId: string, content: string) => void;
@@ -2945,6 +2946,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   searchOpen: false,
   settingsOpen: false,
+  settingsInitialSection: "general",
   profileUsername: LOCAL_PROFILE.name,
   editingMessage: null,
   expandedProjects: {
@@ -3071,9 +3073,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
   setSearchOpen: (searchOpen) => set({ searchOpen }),
   setProfileUsername: (profileUsername) => set({ profileUsername }),
-  setSettingsOpen: (settingsOpen) =>
+  setSettingsOpen: (settingsOpen, section) =>
     set((state) => ({
       settingsOpen,
+      settingsInitialSection: settingsOpen ? section ?? "general" : state.settingsInitialSection,
       searchOpen: settingsOpen ? false : state.searchOpen,
       editingMessage: settingsOpen ? null : state.editingMessage,
     })),

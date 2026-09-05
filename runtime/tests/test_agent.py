@@ -1816,6 +1816,7 @@ async def test_agent_step_limit_settles_an_infinite_tool_loop_once(tmp_path: Pat
         assert len(tool.calls) == 2
         assert len(settled) == 1
         assert settled[0].payload["status"] == "failed"
+        assert settled[0].payload["reasonCode"] == "agent_step_limit"
     finally:
         store.close()
 

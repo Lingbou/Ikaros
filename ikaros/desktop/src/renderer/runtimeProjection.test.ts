@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+  type RuntimeItemHistory,
   type RuntimeJournalEvent,
   type RuntimeThreadSummary,
   type RuntimeTurnHistory,
@@ -134,6 +135,7 @@ describe("Runtime workspace projection", () => {
             modelId: "scripted-v1",
             executionPolicy: "full_access",
             status: "completed",
+            reasonCode: null,
             createdAt: summary.createdAt,
             settledAt: summary.updatedAt,
             items: [
@@ -344,6 +346,105 @@ function fileToolResultItem(
 }
 
 describe("Runtime event projection", () => {
+  it.each([
+    ["failed", "provider_timeout", "failed"],
+    ["failed", "runtime_interrupted", "failed"],
+    ["cancelled", "cancelled", "interrupted"],
+    ["failed", null, "failed"],
+  ] as const)("preserves %s / %s outcomes equally in live and message-free history", (status, reasonCode, projectedStatus) => {
+    const settled = event(2, "run.settled", "turn-outcome", "run-outcome", null, {
+      status,
+      ...(reasonCode === null ? {} : { reasonCode }),
+    });
+    const live = replayRuntimeEvents(projectRuntimeThreads([summary]), [settled]);
+    const history = projectRuntimeThreadHistory(summary, [{
+      id: "turn-outcome",
+      threadId: summary.id,
+      branchId: summary.defaultBranchId,
+      ordinal: 1,
+      status,
+      createdAt: summary.createdAt,
+      updatedAt: settled.timestamp,
+      runs: [{
+        id: "run-outcome",
+        turnId: "turn-outcome",
+        providerId: "scripted",
+        modelId: "scripted-v1",
+        executionPolicy: "full_access",
+        status,
+        reasonCode,
+        createdAt: summary.createdAt,
+        settledAt: settled.timestamp,
+        items: [],
+      }],
+    }]);
+    expect(live[0]?.branches[0]?.turns).toEqual(history.branches[0]?.turns);
+    expect(history.branches[0]?.turns[0]).toMatchObject({
+      status: projectedStatus,
+      reasonCode,
+      events: [],
+    });
+  });
+
+  it("preserves successful mutations and process interruption reasons when a Run fails", () => {
+    const events = [
+      event(2, "item.completed", "turn-outcome", "run-outcome", "call-success", {
+        item: fileToolCallItem("call-success", "turn-outcome", "run-outcome", "write", "completed", { path: "/tmp/a.txt" }),
+      }),
+      event(3, "item.completed", "turn-outcome", "run-outcome", "result-success", {
+        item: fileToolResultItem("result-success", "turn-outcome", "run-outcome", "write", "completed", "call-success", { path: "/tmp/a.txt", bytesWritten: 4 }),
+      }),
+      event(4, "item.completed", "turn-outcome", "run-outcome", "call-interrupted", {
+        item: toolCallItem("call-interrupted", "turn-outcome", "run-outcome", "failed", "provider-interrupted"),
+      }),
+      event(5, "item.completed", "turn-outcome", "run-outcome", "result-interrupted", {
+        item: {
+          ...toolResultItem("result-interrupted", "turn-outcome", "run-outcome", "failed", "call-interrupted", ""),
+          data: {
+            toolCallItemId: "call-interrupted",
+            toolName: "process_run",
+            result: { output: "", errorCode: "runtime_interrupted" },
+          },
+        },
+      }),
+      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted" }),
+    ];
+    const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    const turn = thread.branches[0]?.turns[0];
+    expect(turn).toMatchObject({ status: "failed", reasonCode: "runtime_interrupted" });
+    expect(turn?.events).toEqual([
+      expect.objectContaining({ id: "call-success", status: "success" }),
+      expect.objectContaining({ id: "result-success", status: "success", path: "/tmp/a.txt" }),
+      expect.objectContaining({ id: "call-interrupted", status: "error" }),
+      expect.objectContaining({ id: "result-interrupted", status: "error", errorCode: "runtime_interrupted" }),
+    ]);
+    const history = projectRuntimeThreadHistory(summary, [{
+      id: "turn-outcome",
+      threadId: summary.id,
+      branchId: summary.defaultBranchId,
+      ordinal: 1,
+      status: "failed",
+      createdAt: summary.createdAt,
+      updatedAt: events[4]!.timestamp,
+      runs: [{
+        id: "run-outcome",
+        turnId: "turn-outcome",
+        providerId: "scripted",
+        modelId: "scripted-v1",
+        executionPolicy: "full_access",
+        status: "failed",
+        reasonCode: "runtime_interrupted",
+        createdAt: summary.createdAt,
+        settledAt: events[4]!.timestamp,
+        items: events.slice(0, 4).map((itemEvent, index) => ({
+          ...(itemEvent.payload.item as RuntimeItemHistory),
+          ordinal: index + 1,
+        })),
+      }],
+    }]);
+    expect(history.branches[0]?.turns).toEqual(thread.branches[0]?.turns);
+  });
+
   it("keeps model audit events as explicit conversation and catalog no-ops", () => {
     const initial = projectRuntimeThreads([summary]);
     const auditEvents = [

@@ -130,6 +130,7 @@ function historyTurn(ordinal: number): RuntimeTurnHistory {
         modelId: "scripted-v1",
         executionPolicy: "full_access",
         status: "completed",
+        reasonCode: null,
         createdAt: "2026-08-14T00:00:00.000Z",
         settledAt: "2026-08-14T00:00:01.000Z",
         items: [

@@ -47,6 +47,15 @@ The connected surface is:
   projection in Gate 6; and
 - fixed V1 `full_access` execution of the four built-in Tools.
 
+The composer separates Runtime connection, catalog loading/error, and missing
+runnable Model states. Missing configuration opens Providers; disabled configured
+Models open Models. Both routes preserve the draft and conversation selection.
+Failed/cancelled Runtime Turns display their validated `reasonCode` and localized
+explanation even without an assistant Item. This is a presentation row derived
+from Run state, not an invented canonical Event. Successful Tool results remain
+visible; unsuccessful mutating Tools can have partial effects, and no automatic
+resume or rollback is implied.
+
 ## Desktop-owned local state
 
 The following state is real but intentionally does not belong to the Runtime:

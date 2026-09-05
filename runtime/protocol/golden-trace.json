@@ -104,6 +104,7 @@
                   "status": "completed",
                   "createdAt": "2026-08-15T12:00:00.004Z",
                   "settledAt": "2026-08-15T12:00:00.017Z",
+                  "reasonCode": null,
                   "items": [
                     {
                       "id": "item_00000000000000000000000000000005",
