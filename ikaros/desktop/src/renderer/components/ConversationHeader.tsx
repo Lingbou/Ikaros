@@ -132,14 +132,14 @@ export function ConversationHeader() {
       ) : (
         <h1
           aria-label={thread.title || t("sidebar.newChat")}
-          className="min-w-0 flex-1 text-[13px] leading-5 tracking-[-0.005em]"
+          className="min-w-0 flex-1 text-[13px] leading-5"
         >
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
                 title={t("thread.actions")}
-                className="w-full truncate rounded-md px-1.5 py-1 text-left text-[13px] leading-5 tracking-[-0.005em] text-[var(--text)] outline-none transition-colors hover:bg-[var(--surface-hover)] data-[state=open]:bg-[var(--surface-hover)]"
+                className="w-full truncate rounded-md px-1.5 py-1 text-left text-[13px] leading-5 text-[var(--text)] outline-none transition-colors hover:bg-[var(--surface-hover)] data-[state=open]:bg-[var(--surface-hover)]"
               >
                 {thread.title || t("sidebar.newChat")}
               </button>
@@ -178,7 +178,7 @@ export function ConversationHeader() {
         <button
           type="button"
           onClick={() => openFile({ threadId: thread.id, path: "", view: "current" })}
-          className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
           <FileText size={13} aria-hidden="true" />
           {t("files.open")}

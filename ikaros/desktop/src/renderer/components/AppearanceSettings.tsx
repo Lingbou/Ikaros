@@ -60,7 +60,7 @@ function SettingsRow({
         className
       )}
     >
-      <span className="text-[13px] font-semibold leading-5 text-[var(--text)]">{label}</span>
+      <span className="text-[13px] font-medium leading-5 text-[var(--text)]">{label}</span>
       {children}
     </div>
   );
@@ -80,7 +80,7 @@ function ColorControl({
   const foreground = readableTextColor(value);
   return (
     <label
-      className="relative flex h-7 w-[137px] cursor-pointer items-center gap-2 overflow-hidden rounded-[9px] border border-[var(--border-soft)] px-2.5 text-[12px] font-semibold leading-[18px] shadow-sm"
+      className="relative flex h-7 w-[137px] cursor-pointer items-center gap-2 overflow-hidden rounded-[9px] border border-[var(--border-soft)] px-2.5 text-[12px] font-medium leading-[18px] shadow-sm"
       style={{ background: value, color: foreground }}
     >
       <input
@@ -212,7 +212,7 @@ export function AppearanceSettings({
       <h1
         data-settings-heading
         tabIndex={-1}
-        className="text-[20px] font-semibold leading-[28px] tracking-[-0.025em] text-[var(--text)] outline-none"
+        className="text-[20px] font-semibold leading-[28px] text-[var(--text)] outline-none"
       >
         {t("settings.appearance")}
       </h1>

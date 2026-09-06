@@ -147,7 +147,7 @@ function FileActions({
           threadId, path, sourceToolCallItemId: toolCallItemId,
           ...(canHaveChange ? { toolCallItemId } : {}), view: "current",
         })}
-        className="rounded-md px-2 py-1 text-[10px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        className="rounded-md px-2 py-1 text-[11px] font-medium text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         {t("files.current")}
       </button>
@@ -158,7 +158,7 @@ function FileActions({
           onClick={() => openFile({
             threadId, path, sourceToolCallItemId: toolCallItemId, toolCallItemId, view: "change",
           })}
-          className="rounded-md px-2 py-1 text-[10px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-40"
+          className="rounded-md px-2 py-1 text-[11px] font-medium text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-40"
         >
           {t("files.change")}
         </button>
@@ -210,7 +210,7 @@ function ToolCallCard({
           <span className="truncate text-[12px] font-medium leading-[18px] text-[var(--text)]">
             {resolveEventText(event.label, t)}
           </span>
-          <span className={cx("ml-auto flex shrink-0 items-center gap-1 text-[10px] leading-[14px]", status.className)}>
+          <span className={cx("ml-auto flex shrink-0 items-center gap-1 text-[11px] leading-4", status.className)}>
             {status.icon}
             {status.label}
           </span>
@@ -316,22 +316,22 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
           {resolveEventText(event.summary, t)}
         </div>
         {isFileResult && event.path ? (
-          <div className="mt-1 truncate font-mono text-[10px] leading-[14px] text-[var(--muted)]" title={event.path}>
+          <div className="mt-1 truncate font-mono text-[11px] leading-4 text-[var(--muted)]" title={event.path}>
             {event.path}
           </div>
         ) : null}
         {metadata.length > 0 ? (
-          <div className="mt-1 text-[10px] leading-[14px] text-[var(--muted)]">
+          <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
             {metadata.join(" · ")}
           </div>
         ) : null}
         {isFileResult && event.errorCode ? (
-          <div className="mt-1 font-mono text-[10px] leading-[14px] text-[var(--muted-strong)]">
+          <div className="mt-1 font-mono text-[11px] leading-4 text-[var(--muted-strong)]">
             {t("events.result.errorCode", { code: event.errorCode })}
           </div>
         ) : null}
         {event.output && (!isFileResult || event.status !== "success") ? (
-          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-[var(--muted)]">
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-[var(--muted)]">
             {event.output}
           </pre>
         ) : null}
@@ -368,7 +368,7 @@ function PermissionCard({ event }: { event: PermissionEvent }) {
             {!unresolved ? (
               <span
                 className={cx(
-                  "ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium leading-[14px]",
+                  "ml-auto rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
                   event.status === "allowed"
                     ? "bg-[#72d3a7]/10 text-[#82dcb5]"
                     : "bg-[var(--surface-hover)] text-[var(--muted-strong)]",
@@ -391,7 +391,7 @@ function PermissionCard({ event }: { event: PermissionEvent }) {
           <button
             type="button"
             onClick={() => void resolvePermission("deny")}
-            className="flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] leading-[18px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+            className="flex h-7.5 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium leading-[18px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
           >
             <X size={12} />
             {t("events.deny")}
@@ -399,7 +399,7 @@ function PermissionCard({ event }: { event: PermissionEvent }) {
           <button
             type="button"
             onClick={() => void resolvePermission("allow")}
-            className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] hover:opacity-90"
+            className="flex h-7.5 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] hover:opacity-90"
           >
             <Check size={12} />
             {t("events.allowOnce")}
@@ -457,7 +457,7 @@ function InterruptCard({ event }: { event: InterruptEvent }) {
               <button
                 type="button"
                 onClick={() => void recoverRun("retry")}
-                className="flex h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-3 text-[12px] leading-[18px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                className="flex h-7.5 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-3 text-[12px] font-medium leading-[18px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               >
                 <RotateCcw size={12} />
                 {t("events.retryStep")}
@@ -465,7 +465,7 @@ function InterruptCard({ event }: { event: InterruptEvent }) {
               <button
                 type="button"
                 onClick={() => void recoverRun("resume")}
-                className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] hover:opacity-90"
+                className="flex h-7.5 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] hover:opacity-90"
               >
                 <Play size={12} fill="currentColor" />
                 {t("events.recoverSession")}
@@ -504,11 +504,11 @@ function FileChangeCard({ event }: { event: FileChangeEvent }) {
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate font-mono text-[11px] leading-[16px] text-[var(--text)]">{event.path}</span>
-        <span className="mt-0.5 block text-[10px] leading-[14px] text-[var(--muted)]">
+        <span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted)]">
           {t(FILE_OPERATION_KEYS[event.operation])}
         </span>
       </span>
-      <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] leading-[14px]">
+      <span className="flex shrink-0 items-center gap-2 font-mono text-[11px] leading-4">
         <span className="text-[#72d3a7]">+{event.additions}</span>
         <span className="text-[#ff8585]">−{event.deletions}</span>
       </span>

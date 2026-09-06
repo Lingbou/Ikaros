@@ -205,7 +205,7 @@ export function ProfileSettings() {
           <h1
             data-settings-heading
             tabIndex={-1}
-            className="min-w-0 truncate text-[14px] font-semibold leading-5 tracking-[-0.015em] text-[var(--text)] outline-none"
+            className="min-w-0 truncate text-[20px] font-semibold leading-7 text-[var(--text)] outline-none"
           >
             {t("settings.profile")}
           </h1>
@@ -223,7 +223,7 @@ export function ProfileSettings() {
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-[110] bg-black/55 backdrop-blur-[2px]" />
           <Dialog.Content className="glass-menu fixed left-1/2 top-1/2 z-[120] w-[min(420px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl p-4">
-            <Dialog.Title className="text-[13px] font-semibold leading-5 text-[var(--text)]">
+            <Dialog.Title className="text-[15px] font-semibold leading-6 text-[var(--text)]">
               {t("settings.profileEditTitle")}
             </Dialog.Title>
             <Dialog.Description className="sr-only">
@@ -239,7 +239,7 @@ export function ProfileSettings() {
             >
               <div
                 aria-hidden="true"
-                className="mx-auto flex size-16 items-center justify-center rounded-full bg-[var(--accent)] text-[20px] font-medium leading-[28px] text-white"
+                className="mx-auto flex size-14 items-center justify-center rounded-full bg-[var(--accent)] text-[18px] font-medium leading-6 text-white"
               >
                 {profileInitials(usernameDraft)}
               </div>
@@ -254,7 +254,7 @@ export function ProfileSettings() {
                   maxLength={32}
                   value={usernameDraft}
                   onChange={(event) => setUsernameDraft(event.currentTarget.value)}
-                  className="h-9 w-full rounded-[10px] border border-[var(--border)] bg-[var(--panel)] px-3 text-[13px] leading-5 text-[var(--text)] outline-none transition-colors focus:border-[var(--muted)]"
+                  className="h-9 w-full rounded-[10px] border border-[var(--border)] bg-[var(--panel)] px-3 text-[12px] leading-[18px] text-[var(--text)] outline-none transition-colors focus:border-[var(--muted)]"
                 />
               </label>
 
@@ -294,13 +294,13 @@ export function ProfileSettings() {
         <div className="flex min-w-0 max-w-full flex-col items-center text-center">
           <div
             aria-hidden="true"
-            className="flex size-[clamp(68px,8vw,80px)] shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[24px] font-medium leading-[30px] text-white"
+            className="flex size-16 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[20px] font-medium leading-7 text-white"
           >
             {profileInitials(profileUsername)}
           </div>
           <h2
             id="profile-display-name"
-            className="mt-3.5 max-w-full truncate text-[20px] font-medium leading-[28px] text-[var(--text)]"
+            className="mt-3 max-w-full truncate text-[18px] font-semibold leading-6 text-[var(--text)]"
           >
             {profileUsername}
           </h2>
@@ -323,7 +323,7 @@ export function ProfileSettings() {
             <dt className="order-2 mt-1 truncate text-[11px] leading-4 text-[var(--muted)]">
               {t(metric.label)}
             </dt>
-            <dd className="order-1 truncate text-[13px] font-medium leading-5 text-[var(--text)]">
+            <dd className="order-1 truncate text-[15px] font-semibold leading-5 text-[var(--text)]">
               {metric.value}
             </dd>
           </div>
@@ -429,7 +429,7 @@ export function ProfileSettings() {
           </div>
           <p
             aria-live="polite"
-            className="mt-2 min-h-4 text-[10px] leading-4 text-[var(--muted)]"
+            className="mt-2 min-h-4 text-[11px] leading-4 text-[var(--muted)]"
           >
             {activityMessage}
           </p>

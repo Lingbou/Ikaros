@@ -136,7 +136,7 @@ function SelectField({
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.value)}
-        className="h-8 w-full appearance-none rounded-lg border border-[var(--border)] bg-[var(--panel-raised)] pl-3 pr-8 text-[11px] font-medium leading-4 text-[var(--text)] outline-none transition-colors hover:bg-[var(--panel-hover)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-8 w-full appearance-none rounded-lg border border-[var(--border)] bg-[var(--panel-raised)] pl-3 pr-8 text-[12px] font-medium leading-4 text-[var(--text)] outline-none transition-colors hover:bg-[var(--panel-hover)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {children}
       </select>
@@ -307,7 +307,7 @@ function MemoryEditorDialog({
               <Brain size={15} aria-hidden="true" />
             </div>
             <div className="min-w-0 flex-1">
-              <Dialog.Title className="text-[14px] font-semibold leading-5 text-[var(--text)]">
+              <Dialog.Title className="text-[15px] font-semibold leading-6 text-[var(--text)]">
                 {title}
               </Dialog.Title>
               <Dialog.Description className="mt-0.5 text-[11px] leading-4 text-[var(--muted)]">
@@ -427,7 +427,7 @@ function MemoryEditorDialog({
                     }
                   }}
                   placeholder={isCreate ? t("settings.memory.contentPlaceholder") : undefined}
-                  className="app-scrollbar min-h-36 w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--panel)] px-3 py-2.5 text-[12px] leading-5 text-[var(--text)] outline-none placeholder:text-[var(--muted)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] read-only:resize-none read-only:text-[var(--muted-strong)]"
+                  className="app-scrollbar min-h-36 w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--panel)] px-3 py-2.5 text-[13px] leading-5 text-[var(--text)] outline-none placeholder:text-[var(--muted)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] read-only:resize-none read-only:text-[var(--muted-strong)]"
                 />
               </label>
 
@@ -439,7 +439,7 @@ function MemoryEditorDialog({
                 <Dialog.Close asChild>
                   <button
                     type="button"
-                    className="h-8 rounded-lg px-3 text-[11px] font-medium text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    className="h-8 rounded-lg px-3 text-[12px] font-medium text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                   >
                     {isView ? t("common.close") : t("common.cancel")}
                   </button>
@@ -455,7 +455,7 @@ function MemoryEditorDialog({
                       loading ||
                       conflicted
                     }
-                    className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[11px] font-medium text-[var(--canvas)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium text-[var(--canvas)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {saving ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : null}
                     {isCreate ? t("settings.memory.create") : t("settings.memory.saveCorrection")}
@@ -567,7 +567,7 @@ function ForgetDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[130] bg-black/55 backdrop-blur-[2px]" />
         <Dialog.Content className="glass-menu fixed left-1/2 top-1/2 z-[140] w-[min(420px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 rounded-[18px] p-5 shadow-[0_24px_70px_var(--shadow-color)]">
-          <Dialog.Title className="text-[14px] font-semibold leading-5 text-[var(--text)]">
+          <Dialog.Title className="text-[15px] font-semibold leading-6 text-[var(--text)]">
             {t("settings.memory.forgetTitle")}
           </Dialog.Title>
           <Dialog.Description className="mt-1.5 text-[11px] leading-4 text-[var(--muted)]">
@@ -585,7 +585,7 @@ function ForgetDialog({
             <Dialog.Close asChild>
               <button
                 type="button"
-                className="h-8 rounded-lg px-3 text-[11px] font-medium text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                className="h-8 rounded-lg px-3 text-[12px] font-medium text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               >
                 {t("common.cancel")}
               </button>
@@ -594,7 +594,7 @@ function ForgetDialog({
               type="button"
               disabled={!runtime || !record || loading || forgetting}
               onClick={forget}
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-[#c95353] px-3 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-8 items-center gap-1.5 rounded-lg bg-[#c95353] px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {forgetting ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : null}
               {t("settings.memory.forget")}
@@ -723,7 +723,7 @@ export function MemorySettings({
           <h1
             data-settings-heading
             tabIndex={-1}
-            className="text-[20px] font-semibold leading-7 tracking-[-0.025em] text-[var(--text)] outline-none"
+            className="text-[20px] font-semibold leading-7 text-[var(--text)] outline-none"
           >
             {t("settings.memory.title")}
           </h1>
@@ -734,7 +734,7 @@ export function MemorySettings({
         <button
           type="button"
           onClick={() => setEditor({ mode: "create", summary: null })}
-          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[11px] font-medium text-[var(--canvas)] transition-opacity hover:opacity-90"
+          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium text-[var(--canvas)] transition-opacity hover:opacity-90"
         >
           <Plus size={13} aria-hidden="true" />
           {t("settings.memory.create")}
@@ -827,17 +827,17 @@ export function MemorySettings({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-2">
-                      <span className="shrink-0 rounded-md bg-[var(--panel-raised)] px-2 py-0.5 text-[10px] font-medium leading-4 text-[var(--muted-strong)]">
+                      <span className="shrink-0 rounded-md bg-[var(--panel-raised)] px-2 py-0.5 text-[11px] font-medium leading-4 text-[var(--muted-strong)]">
                         {t(KIND_LABELS[memory.kind])}
                       </span>
-                      <span className="truncate text-[10px] leading-4 text-[var(--muted)]">
+                      <span className="truncate text-[11px] leading-4 text-[var(--muted)]">
                         {scopeLabel(memory.scope, workspaces, t)} · {t("settings.memory.revision", { revision: memory.revision })} · {formatDate(memory.forgottenAt ?? memory.updatedAt, language)}
                       </span>
                     </div>
-                    <p className="mt-1 line-clamp-2 text-[12px] leading-[18px] text-[var(--text)]">
+                    <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-[var(--text)]">
                       {memory.preview ?? t("settings.memory.forgottenContent")}
                     </p>
-                    <p className="mt-0.5 truncate text-[10px] leading-4 text-[var(--muted)]">
+                    <p className="mt-0.5 truncate text-[11px] leading-4 text-[var(--muted)]">
                       {detail?.revision === memory.revision
                         ? detail.record
                           ? provenanceLabel(detail.record.provenance, t)
@@ -859,7 +859,7 @@ export function MemorySettings({
                           summary: memory
                         })
                       }
-                      className="flex size-8 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                      className="flex size-7 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                     >
                       {memory.state === "active" ? (
                         <Pencil size={13} aria-hidden="true" />
@@ -872,7 +872,7 @@ export function MemorySettings({
                         type="button"
                         aria-label={t("settings.memory.forget")}
                         onClick={() => setForgetTarget(memory)}
-                        className="flex size-8 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[color-mix(in_srgb,#c95353_12%,transparent)] hover:text-[#d66a6a]"
+                        className="flex size-7 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[color-mix(in_srgb,#c95353_12%,transparent)] hover:text-[#d66a6a]"
                       >
                         <Trash2 size={13} aria-hidden="true" />
                       </button>

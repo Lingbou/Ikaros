@@ -165,16 +165,16 @@ export function ArchivedThreadsDialog({
                       className="flex min-h-12 items-center gap-3 rounded-[10px] px-3 py-2 transition-colors hover:bg-[var(--surface-hover)]"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-[12px] font-medium leading-[18px] text-[var(--text)]">
+                        <div className="truncate text-[13px] font-medium leading-5 text-[var(--text)]">
                           {thread.title || t("sidebar.newChat")}
                         </div>
                         {thread.workspace ? (
-                          <div className="truncate text-[10px] leading-4 text-[var(--muted)]">
+                          <div className="truncate text-[11px] leading-4 text-[var(--muted)]">
                             {thread.workspace.name}
                           </div>
                         ) : null}
                         {restoreError ? (
-                          <div title={runtimeIssue.message} className="truncate text-[10px] leading-4 text-[#e07070]">
+                          <div title={runtimeIssue.message} className="truncate text-[11px] leading-4 text-[#e07070]">
                             {t("runtime.error.unarchive")}
                           </div>
                         ) : null}
@@ -201,7 +201,7 @@ export function ArchivedThreadsDialog({
                   className="flex min-h-9 items-center justify-center"
                 >
                   {archivedCatalogMoreStatus === "loading" ? (
-                    <span role="status" className="flex items-center gap-1.5 text-[10px] text-[var(--muted)]">
+                    <span role="status" className="flex items-center gap-1.5 text-[11px] text-[var(--muted)]">
                       <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />
                       {t("common.loading")}
                     </span>
@@ -210,7 +210,7 @@ export function ArchivedThreadsDialog({
                       type="button"
                       title={archivedCatalogMoreError ?? undefined}
                       onClick={() => void loadMoreArchivedThreads()}
-                      className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[10px] font-medium text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                      className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                     >
                       <RotateCcw size={10} aria-hidden="true" />
                       {t("common.retry")}

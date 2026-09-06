@@ -91,12 +91,6 @@ html[data-theme-transition="radial"]::view-transition-new(root) {
   }
 }
 
-button,
-textarea,
-input {
-  font: inherit;
-}
-
 button:focus-visible {
   outline: 1px solid color-mix(in srgb, var(--text) 38%, transparent);
   outline-offset: 2px;
@@ -381,7 +375,7 @@ html[data-translucent-sidebar="true"] .sidebar-gradient {
   margin: 1.45em 0 0.5em;
   color: var(--text);
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .markdown-body > h1:first-child,

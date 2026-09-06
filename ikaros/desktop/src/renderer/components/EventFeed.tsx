@@ -25,7 +25,7 @@ function EmptyConversation() {
   return (
     <div className="absolute inset-0 flex items-center justify-center pb-[120px]">
       <div className="mx-auto flex max-w-xl flex-col items-center px-6 text-center">
-        <h1 className="text-[24px] font-medium leading-[30px] tracking-[-0.03em] text-[var(--text)]">
+        <h1 className="text-[24px] font-medium leading-[30px] text-[var(--text)]">
           {t("empty.heading")}
         </h1>
         <p className="mt-2 max-w-md text-[12px] leading-[18px] text-[var(--muted)]">
@@ -425,7 +425,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
         {detail?.hasMore || detail?.olderStatus === "loading" || detail?.olderStatus === "error" ? (
           <div className="pointer-events-none sticky top-2 z-20 flex h-0 justify-center" aria-live="polite">
             {detail.olderStatus === "loading" ? (
-              <span role="status" className="flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 py-1 text-[10px] text-[var(--muted)] shadow-sm">
+              <span role="status" className="flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 py-1 text-[11px] text-[var(--muted)] shadow-sm">
                 <LoaderCircle size={10} className="animate-spin" aria-hidden="true" />
                 {t("runtime.loadingOlder")}
               </span>
@@ -434,7 +434,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
                 type="button"
                 title={detail.olderError ?? undefined}
                 onClick={() => requestOlderTurns(true)}
-                className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 py-1 text-[10px] text-[#d98b8b] shadow-sm transition-colors hover:bg-[var(--panel-raised)]"
+                className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 py-1 text-[11px] text-[#d98b8b] shadow-sm transition-colors hover:bg-[var(--panel-raised)]"
               >
                 <RotateCcw size={10} aria-hidden="true" />
                 {t("common.retry")}

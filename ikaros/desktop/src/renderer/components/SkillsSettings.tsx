@@ -121,7 +121,7 @@ export function SkillsSettings({
           <h1
             data-settings-heading
             tabIndex={-1}
-            className="text-[20px] font-semibold leading-7 tracking-[-0.025em] text-[var(--text)] outline-none"
+            className="text-[20px] font-semibold leading-7 text-[var(--text)] outline-none"
           >
             {t("settings.skills.title")}
           </h1>
@@ -165,7 +165,7 @@ export function SkillsSettings({
             {skills.map((skill) => (
               <div
                 key={skill.name}
-                className="flex min-h-[68px] items-center gap-5 border-t border-[var(--separator)] px-4 py-3 first:border-t-0"
+                className="flex min-h-[58px] items-center gap-5 border-t border-[var(--separator)] px-4 py-2.5 first:border-t-0"
               >
                 <div className="min-w-0 flex-1">
                   <div
@@ -174,7 +174,7 @@ export function SkillsSettings({
                   >
                     {skill.name}
                   </div>
-                  <div className="mt-0.5 text-[11px] leading-4 text-[var(--muted)]">
+                  <div className="mt-0.5 text-[12px] leading-[18px] text-[var(--muted)]">
                     {skill.description}
                   </div>
                 </div>

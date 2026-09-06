@@ -26,7 +26,7 @@ const UNAVAILABLE_KEYS = {
   result_unknown: "files.reason.resultUnknown",
 } satisfies Record<string, TranslationKey>;
 
-const buttonClass = "rounded-md px-2.5 py-1.5 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-40";
+const buttonClass = "rounded-md px-2.5 py-1.5 text-[11px] font-medium text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-40";
 
 function logicalLines(content: string): string[] {
   if (!content) return [];
@@ -121,7 +121,7 @@ function CurrentFile({ selection, onReference }: {
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-1 border-b border-[var(--border-soft)] px-3 py-2">
-        <span className="text-[10px] text-[var(--muted)]">{t("files.currentHint")}</span>
+        <span className="text-[11px] text-[var(--muted)]">{t("files.currentHint")}</span>
         <button type="button" disabled={busy} onClick={() => void load([1])} className={cx(buttonClass, "flex items-center gap-1")}>
           <RefreshCw size={11} aria-hidden="true" />{t("files.refresh")}
         </button>
@@ -130,7 +130,7 @@ function CurrentFile({ selection, onReference }: {
       {busy ? <p role="status" className="px-4 py-2 text-[11px] text-[var(--muted)]">{t("common.loading")}</p> : null}
       {page ? (
         <>
-          <div className="flex items-center justify-between gap-2 px-4 py-2 text-[10px] text-[var(--muted)]">
+          <div className="flex items-center justify-between gap-2 px-4 py-2 text-[11px] text-[var(--muted)]">
             <span>{page.lineEnd === 0 ? t("files.lineCount", { count: 0 }) : t("files.lines", { start: page.lineStart, end: page.lineEnd })}</span>
             <span>{page.bom ? "UTF-8 BOM" : "UTF-8"}</span>
           </div>
@@ -146,7 +146,7 @@ function CurrentFile({ selection, onReference }: {
               </div>
             ) : <p className="px-4 py-3 text-[11px] text-[var(--muted)]">{t("files.empty")}</p>}
           </div>
-          {page.truncated ? <p className="px-4 pt-2 text-[10px] leading-4 text-[var(--muted)]">{t(page.truncationReason === "scan_limit" ? "files.scanLimitedPage" : "files.moreContent")}</p> : null}
+          {page.truncated ? <p className="px-4 pt-2 text-[11px] leading-4 text-[var(--muted)]">{t(page.truncationReason === "scan_limit" ? "files.scanLimitedPage" : "files.moreContent")}</p> : null}
           <div className="flex flex-wrap items-center justify-between gap-1 px-3 py-2">
             <div className="flex gap-1">
               <button type="button" disabled={busy || stale || offsets.length <= 1} onClick={() => void load(offsets.slice(0, -1), page.revision)} className={buttonClass}>{t("files.previous")}</button>
@@ -209,7 +209,7 @@ function FileChange({ selection, onReference }: {
 
   return (
     <>
-      <p className="border-b border-[var(--border-soft)] px-4 py-3 text-[10px] leading-4 text-[var(--muted)]">{t("files.changeHint")}</p>
+      <p className="border-b border-[var(--border-soft)] px-4 py-3 text-[11px] leading-4 text-[var(--muted)]">{t("files.changeHint")}</p>
       {busy ? <p role="status" className="px-4 py-3 text-[11px] text-[var(--muted)]">{t("common.loading")}</p> : null}
       {failed || unavailableKey ? (
         <div className="p-4">
@@ -218,14 +218,14 @@ function FileChange({ selection, onReference }: {
         </div>
       ) : null}
       {result ? (
-        <div className="grid grid-cols-2 gap-4 border-b border-[var(--border-soft)] px-4 py-3 text-[10px] leading-4 text-[var(--muted)]">
+        <div className="grid grid-cols-2 gap-4 border-b border-[var(--border-soft)] px-4 py-3 text-[11px] leading-4 text-[var(--muted)]">
           {result.before ? <RevisionMetadata label={t("files.before")} value={result.before} /> : null}
           {result.after ? <RevisionMetadata label={t("files.after")} value={result.after} /> : null}
         </div>
       ) : null}
       {result?.status === "recorded" ? (
         <>
-          <div className="flex items-center justify-between gap-2 px-4 py-2 text-[10px] text-[var(--muted)]">
+          <div className="flex items-center justify-between gap-2 px-4 py-2 text-[11px] text-[var(--muted)]">
             <time dateTime={result.recordedAt}>{new Date(result.recordedAt).toLocaleString(language === "zh-CN" ? "zh-CN" : "en")}</time>
             <span><span className="text-[#72d3a7]">+{result.additions}</span> / <span className="text-[#ff8585]">−{result.deletions}</span></span>
           </div>

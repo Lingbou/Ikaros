@@ -300,7 +300,7 @@ export function Sidebar() {
           aria-label={t("sidebar.currentWorkspace", { name: "Ikaros" })}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <span className="truncate text-[13px] font-semibold leading-5 tracking-[-0.01em]">Ikaros</span>
+          <span className="truncate text-[13px] font-semibold leading-5">Ikaros</span>
         </div>
         <IconButton
           label={t("sidebar.searchConversations")}
@@ -454,7 +454,7 @@ export function Sidebar() {
             className="flex min-h-7 items-center justify-center px-2 py-1"
           >
             {threadCatalogMoreStatus === "loading" ? (
-              <span role="status" className="text-[10px] leading-4 text-[var(--muted)]">
+              <span role="status" className="text-[11px] leading-4 text-[var(--muted)]">
                 {t("common.loading")}
               </span>
             ) : threadCatalogMoreStatus === "error" ? (
@@ -462,7 +462,7 @@ export function Sidebar() {
                 type="button"
                 title={threadCatalogMoreError ?? undefined}
                 onClick={() => void loadMoreThreads()}
-                className="rounded-md px-2 py-1 text-[10px] leading-4 text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                className="rounded-md px-2 py-1 text-[11px] leading-4 text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               >
                 {t("common.retry")}
               </button>
@@ -483,7 +483,7 @@ export function Sidebar() {
               aria-label={t("sidebar.openProfileMenu")}
               className="flex h-[38px] w-full items-center gap-2 rounded-[10px] px-[7px] text-left outline-none transition-colors hover:bg-[var(--surface-hover)] data-[state=open]:bg-[var(--panel-hover)]"
             >
-              <span className="flex size-[18px] items-center justify-center rounded-full bg-[var(--accent)] text-[10px] font-medium leading-[14px] text-[var(--canvas)]">
+              <span className="flex size-[22px] items-center justify-center rounded-full bg-[var(--accent)] text-[10px] font-medium leading-[14px] text-[var(--canvas)]">
                 {profileInitials(profileUsername)}
               </span>
               <span className="min-w-0 flex-1 truncate text-[12px] leading-[18px] text-[var(--text)]">

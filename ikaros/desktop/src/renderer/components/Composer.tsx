@@ -413,7 +413,7 @@ export function Composer({
                 data-model-settings-trigger
                 disabled={!modelAccess.action}
                 onClick={modelAccess.action}
-                className="h-8 max-w-[220px] truncate rounded-lg px-2 text-[11px] font-medium leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-wait disabled:opacity-60"
+                className="h-7 max-w-[220px] truncate rounded-lg px-2 text-[11px] font-medium leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-wait disabled:opacity-60"
               >
                 {t(modelAccess.label)}
               </button>
@@ -424,7 +424,7 @@ export function Composer({
                     type="button"
                     data-model-settings-trigger
                     onPointerDown={() => setSlashDismissed(true)}
-                    className="hidden h-8 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[10px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
+                    className="hidden h-7 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[11px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
                   >
                     <span className="min-w-0 max-w-[148px] truncate">
                       {runtimeMode
@@ -453,7 +453,7 @@ export function Composer({
                                 modelId: candidate.modelId,
                               })
                             }
-                            className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[11px] leading-4 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                            className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
                           >
                             <span className="flex size-4 items-center justify-center text-[var(--accent)]">
                               {selectedRuntimeModel?.providerId === candidate.providerId &&

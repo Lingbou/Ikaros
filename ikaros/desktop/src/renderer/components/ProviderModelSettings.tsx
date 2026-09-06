@@ -142,7 +142,7 @@ function SettingsHeading({ children }: { children: ReactNode }) {
     <h1
       data-settings-heading
       tabIndex={-1}
-      className="text-[20px] font-semibold leading-7 tracking-[-0.025em] text-[var(--text)] outline-none"
+      className="text-[20px] font-semibold leading-7 text-[var(--text)] outline-none"
     >
       {children}
     </h1>
@@ -187,7 +187,7 @@ function ActionButton({
       aria-controls={dialogControls}
       onClick={onClick}
       className={cx(
-        "inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-[12px] font-semibold leading-[18px] outline-none transition-colors focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]",
+        "inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-[12px] font-medium leading-[18px] outline-none transition-colors focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]",
         quiet
           ? "text-[var(--muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
           : "border border-[var(--border)] bg-[var(--panel-raised)] text-[var(--text)] shadow-sm hover:bg-[var(--panel-hover)]"
@@ -210,7 +210,7 @@ function ProviderRow({
   action: ReactNode;
 }) {
   return (
-    <div className="flex min-h-[68px] items-center gap-3 border-t border-[var(--separator)] px-4 py-3 first:border-t-0">
+    <div className="flex min-h-[58px] items-center gap-3 border-t border-[var(--separator)] px-4 py-2.5 first:border-t-0">
       <ProviderMark custom={Boolean(badge)} />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
@@ -245,7 +245,7 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-[12px] font-semibold leading-[18px] text-[var(--text)]">
+      <span className="mb-1.5 block text-[12px] font-medium leading-[18px] text-[var(--text)]">
         {label}
       </span>
       {children}
@@ -266,7 +266,7 @@ function SubmitButton({ children, disabled = false }: { children: ReactNode; dis
     <button
       type="submit"
       disabled={disabled}
-      className="inline-flex h-8 items-center justify-center rounded-lg bg-[var(--text)] px-3.5 text-[12px] font-semibold leading-[18px] text-[var(--canvas)] outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-[var(--muted-strong)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--canvas)] disabled:cursor-not-allowed disabled:opacity-35"
+      className="inline-flex h-8 items-center justify-center rounded-lg bg-[var(--text)] px-3.5 text-[12px] font-medium leading-[18px] text-[var(--canvas)] outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-[var(--muted-strong)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--canvas)] disabled:cursor-not-allowed disabled:opacity-35"
     >
       {children}
     </button>
@@ -319,7 +319,7 @@ function ModelDraftEditor({
         {t("settings.providers.models")}
       </legend>
       <div className="mb-2.5 flex min-h-8 items-center justify-between gap-3">
-        <span className="text-[12px] font-semibold leading-[18px] text-[var(--text)]">
+        <span className="text-[12px] font-medium leading-[18px] text-[var(--text)]">
           {t("settings.providers.models")}
         </span>
         {onDiscover ? (
@@ -327,7 +327,7 @@ function ModelDraftEditor({
             type="button"
             disabled={discoveryDisabled || discoveryStatus === "loading"}
             onClick={onDiscover}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold leading-4 text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-[var(--muted-strong)]"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[11px] font-medium leading-4 text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-[var(--muted-strong)]"
           >
             <RefreshCw
               size={12}
@@ -377,7 +377,7 @@ function ModelDraftEditor({
                     aria-label={t("settings.providers.chooseFetchedModel", {
                       row: rowIndex + 1
                     })}
-                    className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--muted)]"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--muted)]"
                   >
                     <ListPlus size={14} aria-hidden="true" />
                   </button>
@@ -425,7 +425,7 @@ function ModelDraftEditor({
               type="button"
               aria-label={t("settings.providers.removeModel")}
               onClick={() => onChange(models.filter((item) => item.key !== model.key))}
-              className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
             >
               <Trash2 size={14} aria-hidden="true" />
             </button>
@@ -435,7 +435,7 @@ function ModelDraftEditor({
       <button
         type="button"
         onClick={() => onChange([...models, createModelDraft()])}
-        className="mt-2 inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[12px] font-semibold leading-[18px] text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+        className="mt-2 inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[12px] font-medium leading-[18px] text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
       >
         <Plus size={13} aria-hidden="true" />
         {t("settings.providers.addModel")}
@@ -697,7 +697,7 @@ function CustomProviderForm({
       />
 
       <fieldset className="pt-1">
-        <legend className="mb-2.5 text-[12px] font-semibold leading-[18px] text-[var(--text)]">
+        <legend className="mb-2.5 text-[12px] font-medium leading-[18px] text-[var(--text)]">
           {t("settings.providers.headersOptional")}
         </legend>
         <div className="space-y-2">
@@ -730,7 +730,7 @@ function CustomProviderForm({
                     headers: current.headers.filter((item) => item.key !== header.key)
                   }))
                 }
-                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
               >
                 <Trash2 size={14} aria-hidden="true" />
               </button>
@@ -745,7 +745,7 @@ function CustomProviderForm({
               headers: [...current.headers, createHeaderDraft()]
             }))
           }
-          className="mt-2 inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[12px] font-semibold leading-[18px] text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+          className="mt-2 inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[12px] font-medium leading-[18px] text-[var(--muted-strong)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
         >
           <Plus size={13} aria-hidden="true" />
           {t("settings.providers.addHeader")}
@@ -934,7 +934,7 @@ export function ProvidersSettings({
           <div className="flex shrink-0 items-start gap-3 border-b border-[var(--separator)] px-5 py-4">
             <ProviderMark custom={activeDialog === "custom"} />
             <div className="min-w-0 flex-1">
-              <Dialog.Title className="text-[14px] font-semibold leading-5 text-[var(--text)]">
+              <Dialog.Title className="text-[15px] font-semibold leading-6 text-[var(--text)]">
                 {activeDialog === "deepseek"
                   ? t("settings.providers.connectDeepSeek")
                   : t("settings.providers.customProvider")}
@@ -1031,7 +1031,7 @@ function ModelsGroup({
         aria-expanded={open}
         aria-controls={`model-list-${group.id}`}
         onClick={onToggleExpanded}
-        className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] font-semibold leading-[18px] text-[var(--text)] outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+        className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] font-medium leading-[18px] text-[var(--text)] outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
       >
         <ChevronRight
           size={13}
@@ -1052,7 +1052,7 @@ function ModelsGroup({
           {group.models.map((model) => (
             <div
               key={model.id}
-              className="flex min-h-[56px] items-center justify-between gap-5 border-t border-[var(--separator)] px-4 py-2.5 first:border-t-0"
+              className="flex min-h-[52px] items-center justify-between gap-5 border-t border-[var(--separator)] px-4 py-2 first:border-t-0"
             >
               <div className="min-w-0">
                 <div className="truncate text-[13px] font-semibold leading-5 text-[var(--text)]">

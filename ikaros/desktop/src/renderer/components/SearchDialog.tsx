@@ -68,7 +68,7 @@ function SearchDialogContent() {
               }
             }}
             placeholder={t("search.title")}
-            className="min-w-0 flex-1 bg-transparent text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--muted)]"
+            className="min-w-0 flex-1 bg-transparent text-[13px] leading-5 text-[var(--text)] outline-none placeholder:text-[var(--muted)]"
           />
           <IconButton label={t("search.close")} onClick={() => setOpen(false)}>
             <X size={15} />
@@ -87,12 +87,12 @@ function SearchDialogContent() {
                   <MessageSquare size={14} />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] leading-5 text-[var(--text)]">{thread.title}</span>
+                  <span className="block truncate text-[13px] font-medium leading-5 text-[var(--text)]">{thread.title}</span>
                   <span className="mt-0.5 flex items-center gap-1 text-[11px] leading-4 text-[var(--muted)]">
                     {project ? (
-                      <Folder size={10} style={{ color: project.color }} />
+                      <Folder size={12} style={{ color: project.color }} />
                     ) : (
-                      <MessageSquare size={10} />
+                      <MessageSquare size={12} />
                     )}
                     {project?.name ?? t("common.chat")}
                   </span>

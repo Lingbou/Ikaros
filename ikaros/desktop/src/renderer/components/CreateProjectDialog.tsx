@@ -86,7 +86,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
         <Dialog.Content className="fixed left-1/2 top-1/2 z-[120] w-[min(520px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[18px] border border-[var(--border-soft)] bg-[var(--menu)] shadow-[0_24px_70px_var(--shadow-color)]">
           <form onSubmit={createProject}>
             <div className="flex items-center gap-3 px-5 pb-3 pt-[18px]">
-              <Dialog.Title className="min-w-0 flex-1 text-[18px] font-semibold leading-6 tracking-[-0.02em] text-[var(--text)]">
+              <Dialog.Title className="min-w-0 flex-1 text-[15px] font-semibold leading-6 text-[var(--text)]">
                 {t("project.create.title")}
               </Dialog.Title>
               <Dialog.Description className="sr-only">
@@ -131,39 +131,39 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
                   workspace ? t("project.create.changeFolder") : t("project.create.addFolder")
                 }
                 onClick={() => void chooseFolder()}
-                className="mt-2 flex h-[98px] w-full items-center justify-center rounded-[10px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_45%,transparent)] px-4 text-center outline-none transition-colors hover:border-[var(--muted)] hover:bg-[var(--surface-hover)] focus-visible:border-[var(--muted-strong)] disabled:cursor-wait disabled:opacity-60"
+                className="mt-2 flex h-12 w-full items-center justify-between rounded-[10px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_45%,transparent)] px-3 text-left outline-none transition-colors hover:border-[var(--muted)] hover:bg-[var(--surface-hover)] focus-visible:border-[var(--muted-strong)] disabled:cursor-wait disabled:opacity-60"
               >
                 {workspace ? (
-                  <span className="flex min-w-0 w-full items-center gap-3 text-left">
-                    <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--panel-raised)] text-[var(--muted-strong)]">
-                      <Folder size={16} aria-hidden="true" />
+                  <span className="flex min-w-0 w-full items-center gap-2.5">
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--panel-raised)] text-[var(--muted-strong)]">
+                      <Folder size={14} aria-hidden="true" />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12px] font-medium leading-[18px] text-[var(--text)]">
+                      <span className="block truncate text-[12px] font-medium leading-5 text-[var(--text)]">
                         {workspace.name}
                       </span>
                       {workspace.rootUri ? (
-                        <span className="mt-0.5 block truncate text-[10px] leading-4 text-[var(--muted)]">
+                        <span className="block truncate text-[11px] leading-4 text-[var(--muted)]">
                           {workspace.rootUri}
                         </span>
                       ) : null}
                     </span>
-                    <span className="shrink-0 text-[11px] font-medium leading-4 text-[var(--muted-strong)]">
+                    <span className="shrink-0 text-[11px] font-medium text-[var(--muted-strong)]">
                       {t("project.create.changeFolder")}
                     </span>
                   </span>
                 ) : (
-                  <span className="flex flex-col items-center">
+                  <span className="flex min-w-0 w-full items-center justify-center gap-2">
                     {choosingFolder ? (
                       <LoaderCircle
-                        size={17}
+                        size={15}
                         aria-hidden="true"
                         className="animate-spin text-[var(--muted)]"
                       />
                     ) : (
-                      <FolderPlus size={17} aria-hidden="true" className="text-[var(--muted)]" />
+                      <FolderPlus size={15} aria-hidden="true" className="text-[var(--muted)]" />
                     )}
-                    <span className="mt-1.5 text-[12px] font-medium leading-[18px] text-[var(--text)]">
+                    <span className="text-[12px] font-medium leading-5 text-[var(--text)]">
                       {t("project.create.addFolderDescription")}
                     </span>
                   </span>

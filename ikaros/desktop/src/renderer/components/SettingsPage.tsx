@@ -73,7 +73,7 @@ function GeneralSettings({
       <h1
         data-settings-heading
         tabIndex={-1}
-        className="text-[20px] font-semibold leading-[28px] tracking-[-0.025em] text-[var(--text)] outline-none"
+        className="text-[20px] font-semibold leading-[28px] text-[var(--text)] outline-none"
       >
         {t("settings.general")}
       </h1>

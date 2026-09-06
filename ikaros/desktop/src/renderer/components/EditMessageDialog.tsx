@@ -26,7 +26,7 @@ export function EditMessageDialog() {
               <GitBranch size={16} />
             </span>
             <div className="min-w-0 flex-1">
-              <Dialog.Title className="text-[14px] font-medium text-[var(--text)]">{t("edit.title")}</Dialog.Title>
+              <Dialog.Title className="text-[15px] font-semibold leading-6 text-[var(--text)]">{t("edit.title")}</Dialog.Title>
               <Dialog.Description className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
                 {t("edit.description")}
               </Dialog.Description>
@@ -42,7 +42,7 @@ export function EditMessageDialog() {
             className="app-scrollbar mt-4 min-h-28 w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--panel)] px-3 py-2.5 text-[14px] leading-[22px] text-[var(--text)] outline-none placeholder:text-[var(--muted)]"
           />
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={cancel} className="h-8 rounded-lg px-3 text-[12px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]">
+            <button type="button" onClick={cancel} className="h-8 rounded-lg px-3 text-[12px] font-medium text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]">
               {t("common.cancel")}
             </button>
             <button
