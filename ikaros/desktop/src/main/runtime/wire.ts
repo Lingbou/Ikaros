@@ -30,6 +30,7 @@ import {
   type RuntimeMemoryState,
   type RuntimeMemorySummary,
   type RuntimeModelSummary,
+  type RuntimeModelInput,
   type RuntimeProviderSummary,
   type RuntimeReplayResult,
   type RuntimeRpcMethod,
@@ -68,10 +69,8 @@ const ITEM_STATUSES = new Set([
   "cancelled"
 ]);
 const ITEM_KINDS = new Set(["message", "tool_call", "tool_result"]);
-const INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1";
+const INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound";
 const INPUT_BUDGET_MODES = new Set(["bounded"]);
-const MAXIMUM_INPUT_CHARACTERS_V1 = 48_000;
-const RESERVED_CURRENT_RUN_CHARACTERS_V1 = 12_000;
 const OUTPUT_STYLE_CONTENT =
   "Use a restrained, professional response style. Do not use emoji or decorative " +
   "Unicode symbols unless the user explicitly asks for them. Never use them for " +
@@ -85,16 +84,10 @@ const TOOL_RESULT_REQUIRED_KEYS = [
   "cancelled"
 ] as const;
 const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
-  process_run: [
-    "stdout",
-    "stderr",
-    "cwd",
-    "exitCode",
-    "durationMs",
-    "timedOut",
-    "truncated",
-    "errorCode"
-  ],
+  process_start: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_read: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_wait: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_stop: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
   read: [
     "durationMs",
     "truncated",
@@ -249,7 +242,7 @@ export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
   ) {
     throw new Error("Runtime returned an invalid journal event.");
   }
-  if (value.schemaVersion !== 5 && value.schemaVersion !== RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION) {
+  if (value.schemaVersion !== RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION) {
     throw new Error(
       `Runtime journal event schema ${String(value.schemaVersion)} is unsupported.`
     );
@@ -440,16 +433,18 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
       !hasScopedPayloadKeys(event, [
         "stepOrdinal",
         "preparedAt",
-        "contextSnapshot",
-        "stepManifest"
+        "contextRevision",
+        "stepInput"
       ]) ||
       !isSafePositiveInteger(payload.stepOrdinal) ||
       payload.preparedAt !== event.timestamp ||
-      !isContextSnapshot(payload.contextSnapshot, event.runId) ||
-      !isStepManifest(
-        payload.stepManifest,
+      !(payload.stepOrdinal === 1
+        ? isContextRevision(payload.contextRevision, event.runId)
+        : payload.contextRevision === null) ||
+      !isStepInput(
+        payload.stepInput,
         payload.stepOrdinal,
-        payload.contextSnapshot,
+        payload.contextRevision,
         event.runId
       )
     ) {
@@ -458,8 +453,19 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
     return;
   }
 
+  if (event.type === "process.recorded") {
+    if (
+      !hasRunEventScope(event, true) ||
+      !hasScopedPayloadKeys(event, ["process"]) ||
+      !isProcessRecord(payload.process, event)
+    ) {
+      invalidJournalEventPayload(event.type);
+    }
+    return;
+  }
+
   if (event.type === "file.change_recorded") {
-    if (event.schemaVersion !== 6 || !hasRunEventScope(event, true)) {
+    if (!hasRunEventScope(event, true)) {
       invalidJournalEventPayload(event.type);
     }
     const { turnId, runId, itemId, ...record } = payload;
@@ -533,6 +539,38 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
 
   const exhaustive: never = event.type;
   throw new Error(`Runtime returned unsupported journal event ${String(exhaustive)}.`);
+}
+
+function isProcessState(value: unknown): boolean {
+  return value === "running" || value === "exited" || value === "terminated" || value === "unknown";
+}
+
+function isProcessRecord(value: unknown, event: RuntimeJournalEvent): boolean {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, [
+      "processId", "threadId", "runId", "stepOrdinal", "itemId", "command", "cwd",
+      "state", "exitCode", "pid", "startedAt", "finishedAt", "stdout", "stderr",
+      "output", "truncated", "errorCode"
+    ]) &&
+    isWireIdentifier(value.processId) &&
+    value.threadId === event.threadId &&
+    value.runId === event.runId &&
+    value.itemId === event.itemId &&
+    isSafePositiveInteger(value.stepOrdinal) &&
+    typeof value.command === "string" &&
+    typeof value.cwd === "string" &&
+    isProcessState(value.state) &&
+    (value.exitCode === null || Number.isSafeInteger(value.exitCode)) &&
+    (value.pid === null || isSafePositiveInteger(value.pid)) &&
+    isCanonicalTimestamp(value.startedAt) &&
+    (value.finishedAt === null || isCanonicalTimestamp(value.finishedAt)) &&
+    typeof value.stdout === "string" &&
+    typeof value.stderr === "string" &&
+    typeof value.output === "string" &&
+    typeof value.truncated === "boolean" &&
+    (value.errorCode === null || isWireIdentifier(value.errorCode))
+  );
 }
 
 function invalidEventMessage(type: RuntimeJournalEventType): string {
@@ -647,6 +685,13 @@ function isCanonicalToolResult(
 }
 
 function isCanonicalToolResultDetail(key: string, value: unknown): boolean {
+  if (key === "processId") return isWireIdentifier(value);
+  if (key === "state") return isProcessState(value);
+  if (key === "pid") return value === null || isSafePositiveInteger(value);
+  if (key === "startedAt") return isCanonicalTimestamp(value);
+  if (key === "finishedAt") return value === null || isCanonicalTimestamp(value);
+  if (key === "cursor" || key === "nextCursor") return isSafeNonNegativeInteger(value);
+  if (key === "hasMore") return typeof value === "boolean";
   if (key === "stdout" || key === "stderr" || key === "cwd") {
     return typeof value === "string";
   }
@@ -672,7 +717,7 @@ function isCanonicalToolResultDetail(key: string, value: unknown): boolean {
   ) {
     return typeof value === "boolean";
   }
-  if (key === "errorCode") return isWireIdentifier(value);
+  if (key === "errorCode") return value === null || isWireIdentifier(value);
   if (key === "path") return value === null || typeof value === "string";
   if (key === "newline") return value === null || value === "lf" || value === "crlf";
   return false;
@@ -693,7 +738,7 @@ function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
   if (
     !hasScopedPayloadKeys(
       event,
-      ["turn", "run", "item", "submissionFrame", "runManifest"],
+      ["turn", "run", "item", "runConfig"],
       ["clientRequestId"]
     ) ||
     !isWireObject(payload.turn) ||
@@ -725,7 +770,8 @@ function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
         "status",
         "createdAt",
         "settledAt",
-        "skills"
+        "skills",
+        "executionLimits"
       ],
       ["clientRequestId"]
     ) ||
@@ -742,8 +788,7 @@ function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
     !isOptionalWireIdentifier(payload.run.clientRequestId) ||
     payload.clientRequestId !== payload.run.clientRequestId ||
     !parseRuntimeEventItem(event, payload.item, true) ||
-    !isSubmissionFrame(payload.submissionFrame, event, payload.run) ||
-    !isRunManifest(payload.runManifest, payload.submissionFrame)
+    !isRunConfig(payload.runConfig, event, payload.run)
   ) {
     invalidJournalEventPayload(event.type);
   }
@@ -759,7 +804,7 @@ function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
   }
 }
 
-function isSubmissionFrame(
+function isRunConfig(
   value: unknown,
   event: RuntimeJournalEvent,
   runValue: unknown
@@ -768,7 +813,6 @@ function isSubmissionFrame(
     !isWireObject(value) ||
     !isWireObject(runValue) ||
     !hasExactKeys(value, [
-      "schemaVersion",
       "userItemId",
       "threadId",
       "branchId",
@@ -782,10 +826,8 @@ function isSubmissionFrame(
       "skills",
       "tools",
       "instructions",
-      "contextData",
-      "maxSteps"
+      "maxModelCalls", "maxDurationSeconds", "contextWindow", "maxOutputTokens"
     ]) ||
-    value.schemaVersion !== 1 ||
     value.userItemId !== event.itemId ||
     value.threadId !== event.threadId ||
     value.branchId !== event.branchId ||
@@ -798,7 +840,14 @@ function isSubmissionFrame(
     !isSha256(value.publicProviderConfigFingerprint) ||
     value.executionPolicy !== "full_access" ||
     value.executionPolicy !== runValue.executionPolicy ||
-    !isSafePositiveInteger(value.maxSteps) ||
+    !isSafePositiveInteger(value.maxModelCalls) ||
+    !isSafePositiveInteger(value.maxDurationSeconds) ||
+    !isSafePositiveInteger(value.contextWindow) ||
+    !isSafePositiveInteger(value.maxOutputTokens) ||
+    value.maxOutputTokens >= value.contextWindow ||
+    !sameWireValue(runValue.executionLimits, {
+      maxModelCalls: value.maxModelCalls, maxDurationSeconds: value.maxDurationSeconds,
+    }) ||
     !isRuntimeSkillSnapshot(value.skills) ||
     !sameWireValue(value.skills, runValue.skills) ||
     !Array.isArray(value.tools) ||
@@ -813,10 +862,6 @@ function isSubmissionFrame(
       content: OUTPUT_STYLE_CONTENT
     }) ||
     !isIdentityCoreBlock(value.instructions.identityCore) ||
-    !isWireObject(value.contextData) ||
-    !hasExactKeys(value.contextData, ["memory"]) ||
-    !Array.isArray(value.contextData.memory) ||
-    value.contextData.memory.length !== 0 ||
     !isWorkspaceSnapshot(value.workspace)
   ) {
     return false;
@@ -880,102 +925,6 @@ function isIdentityCoreBlock(value: unknown): boolean {
     typeof value.content === "string" &&
     value.content.trim().length > 0 &&
     [...value.content].length <= 2048
-  );
-}
-
-function isRunManifest(value: unknown, frameValue: unknown): boolean {
-  if (
-    !isWireObject(value) ||
-    !isWireObject(frameValue) ||
-    !hasExactKeys(value, [
-      "schemaVersion",
-      "runId",
-      "modelInputPlanVersion",
-      "submissionFrameVersion",
-      "contextSelectionVersion",
-      "memoryContextVersion",
-      "instructions",
-      "skills",
-      "tools",
-      "provider",
-      "executionPolicy",
-      "maxSteps"
-    ]) ||
-    value.schemaVersion !== 1 ||
-    value.runId !== frameValue.runId ||
-    value.modelInputPlanVersion !== 1 ||
-    value.submissionFrameVersion !== 1 ||
-    (value.contextSelectionVersion !== "bounded-history-v1" &&
-      value.contextSelectionVersion !== "bounded-history-v2") ||
-    value.memoryContextVersion !== 2 ||
-    value.executionPolicy !== frameValue.executionPolicy ||
-    value.maxSteps !== frameValue.maxSteps ||
-    !Array.isArray(value.instructions) ||
-    !Array.isArray(value.skills) ||
-    !Array.isArray(value.tools) ||
-    !isWireObject(value.provider) ||
-    !hasExactKeys(value.provider, [
-      "providerId",
-      "modelId",
-      "publicProviderConfigFingerprint"
-    ]) ||
-    value.provider.providerId !== frameValue.providerId ||
-    value.provider.modelId !== frameValue.modelId ||
-    value.provider.publicProviderConfigFingerprint !==
-      frameValue.publicProviderConfigFingerprint
-  ) {
-    return false;
-  }
-
-  if (
-    !isRuntimeSkillSnapshot(frameValue.skills) ||
-    !Array.isArray(frameValue.tools) ||
-    !isWireObject(frameValue.instructions)
-  ) {
-    return false;
-  }
-  const instructionBlocks = [
-    frameValue.instructions.identityCore,
-    frameValue.instructions.outputStyle,
-    frameValue.instructions.skillCatalog
-  ].filter((block) => block !== null);
-  if (!instructionBlocks.every((block) => isWireObject(block))) {
-    return false;
-  }
-  const expectedInstructions = instructionBlocks.map((block) => {
-    const instruction = block as Record<string, unknown>;
-    if (typeof instruction.content !== "string") return null;
-    return {
-      id: instruction.id,
-      version: instruction.version,
-      source: instruction.source,
-      authority: instruction.authority,
-      scope: instruction.scope,
-      lifetime: instruction.lifetime,
-      characters: [...instruction.content].length,
-      contentSha256: canonicalSha256(instruction.content)
-    };
-  });
-  if (expectedInstructions.some((instruction) => instruction === null)) {
-    return false;
-  }
-
-  const expectedSkills = frameValue.skills.map((skill) => ({
-    name: skill.name,
-    descriptorSha256: canonicalSha256(skill)
-  }));
-  const expectedTools = frameValue.tools.map((tool) => {
-    if (!isWireObject(tool)) return null;
-    return { name: tool.name, definitionSha256: tool.definitionSha256 };
-  });
-  if (expectedTools.some((tool) => tool === null)) {
-    return false;
-  }
-
-  return (
-    sameWireValue(value.instructions, expectedInstructions) &&
-    sameWireValue(value.skills, expectedSkills) &&
-    sameWireValue(value.tools, expectedTools)
   );
 }
 
@@ -1057,13 +1006,13 @@ function isHistoryItemReference(value: unknown): boolean {
       (value.kind === "tool_result" && value.role === "tool"));
   return (
     isWireObject(value) &&
-    hasExactKeys(value, ["itemId", "turnId", "runId", "kind", "role", "characters"]) &&
+    hasExactKeys(value, ["itemId", "turnId", "runId", "kind", "role", "tokens"]) &&
     isWireIdentifier(value.itemId) &&
     isWireIdentifier(value.turnId) &&
     isWireIdentifier(value.runId) &&
     ITEM_KINDS.has(value.kind as string) &&
     roleMatchesKind &&
-    isSafeNonNegativeInteger(value.characters)
+    isSafeNonNegativeInteger(value.tokens)
   );
 }
 
@@ -1072,73 +1021,70 @@ function isInputBudget(
 ): value is Record<string, unknown> & {
   mode: string;
   measurementVersion: string;
-  maximumCharacters: number;
-  reservedCurrentRunCharacters: number;
-  instructionCharacters: number;
-  contextDataCharacters: number;
-  toolCharacters: number;
-  historyCharacters: number;
-  currentRunCharacters: number;
-  memoryCharacters: number;
-  totalCharacters: number;
+  maximumTokens: number;
+  reservedCurrentRunTokens: number;
+  instructionTokens: number;
+  contextDataTokens: number;
+  toolTokens: number;
+  historyTokens: number;
+  currentRunTokens: number;
+  memoryTokens: number;
+  totalTokens: number;
 } {
   return (
     isWireObject(value) &&
     hasExactKeys(value, [
       "mode",
       "measurementVersion",
-      "maximumCharacters",
-      "reservedCurrentRunCharacters",
-      "instructionCharacters",
-      "contextDataCharacters",
-      "toolCharacters",
-      "historyCharacters",
-      "currentRunCharacters",
-      "memoryCharacters",
-      "totalCharacters"
+      "maximumTokens",
+      "reservedCurrentRunTokens",
+      "instructionTokens",
+      "contextDataTokens",
+      "toolTokens",
+      "historyTokens",
+      "currentRunTokens",
+      "memoryTokens",
+      "totalTokens"
     ]) &&
     INPUT_BUDGET_MODES.has(value.mode as string) &&
     value.measurementVersion === INPUT_BUDGET_MEASUREMENT_VERSION &&
-    isSafePositiveInteger(value.maximumCharacters) &&
-    isSafePositiveInteger(value.reservedCurrentRunCharacters) &&
-    value.reservedCurrentRunCharacters < value.maximumCharacters &&
-    isSafeNonNegativeInteger(value.instructionCharacters) &&
-    isSafeNonNegativeInteger(value.contextDataCharacters) &&
-    isSafeNonNegativeInteger(value.toolCharacters) &&
-    isSafeNonNegativeInteger(value.historyCharacters) &&
-    isSafeNonNegativeInteger(value.currentRunCharacters) &&
-    isSafeNonNegativeInteger(value.memoryCharacters) &&
-    isSafeNonNegativeInteger(value.totalCharacters) &&
-    value.totalCharacters ===
-      value.instructionCharacters +
-        value.contextDataCharacters +
-        value.toolCharacters +
-        value.historyCharacters +
-        value.currentRunCharacters +
-        value.memoryCharacters &&
-    value.totalCharacters <= value.maximumCharacters
+    isSafePositiveInteger(value.maximumTokens) &&
+    isSafePositiveInteger(value.reservedCurrentRunTokens) &&
+    value.reservedCurrentRunTokens < value.maximumTokens &&
+    isSafeNonNegativeInteger(value.instructionTokens) &&
+    isSafeNonNegativeInteger(value.contextDataTokens) &&
+    isSafeNonNegativeInteger(value.toolTokens) &&
+    isSafeNonNegativeInteger(value.historyTokens) &&
+    isSafeNonNegativeInteger(value.currentRunTokens) &&
+    isSafeNonNegativeInteger(value.memoryTokens) &&
+    isSafeNonNegativeInteger(value.totalTokens) &&
+    value.totalTokens ===
+      value.instructionTokens +
+        value.contextDataTokens +
+        value.toolTokens +
+        value.historyTokens +
+        value.currentRunTokens +
+        value.memoryTokens &&
+    value.totalTokens <= value.maximumTokens
   );
 }
 
-function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
+function isContextRevision(value: unknown, currentRunId: unknown): boolean {
   if (!isWireObject(value)) return false;
-  const versionTwo = value.schemaVersion === 2;
   const memory = value.memory;
   const budget = value.budget;
   if (
     !isWireIdentifier(currentRunId) ||
     !hasExactKeys(value, [
-      "schemaVersion",
-      "selectionVersion",
+      "revision",
       "historyGroups",
       "historyItems",
       "memory",
       "budget",
       "omissions",
-      ...(versionTwo ? ["historyStatus"] : [])
+      "historyStatus", "memoryContextCharacters"
     ]) ||
-    (!versionTwo && value.schemaVersion !== 1) ||
-    value.selectionVersion !== (versionTwo ? "bounded-history-v2" : "bounded-history-v1") ||
+    !isSafePositiveInteger(value.revision) ||
     !Array.isArray(value.historyGroups) ||
     value.historyGroups.length === 0 ||
     !Array.isArray(value.historyItems) ||
@@ -1147,13 +1093,11 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
     !hasUniqueHistoryItemIds(value.historyItems) ||
     !isMemoryReferenceList(memory) ||
     !isInputBudget(budget) ||
-    budget.maximumCharacters !== MAXIMUM_INPUT_CHARACTERS_V1 ||
-    budget.reservedCurrentRunCharacters !== RESERVED_CURRENT_RUN_CHARACTERS_V1 ||
     !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(budget, memory, versionTwo ? value.historyStatus : undefined) ||
-    (versionTwo && !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId)) ||
+    !isMemoryBudgetForReferences(budget, memory, value.historyStatus, value.memoryContextCharacters) ||
+    !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
     !isContextOmissionList(value.omissions, memory) ||
-    budget.totalCharacters + budget.reservedCurrentRunCharacters > budget.maximumCharacters
+    budget.totalTokens + budget.reservedCurrentRunTokens > budget.maximumTokens
   ) {
     return false;
   }
@@ -1205,64 +1149,71 @@ function isContextSnapshot(value: unknown, currentRunId: unknown): boolean {
   );
 }
 
-function isStepManifest(
+function isStepInput(
   value: unknown,
   stepOrdinal: unknown,
-  contextSnapshot: unknown,
+  contextRevision: unknown,
   currentRunId: unknown
 ): boolean {
-  if (!isWireObject(value) || !isWireObject(contextSnapshot)) return false;
-  const versionTwo = value.schemaVersion === 2;
-  const memory = value.memory;
-  const budget = value.budget;
-  const snapshotMemory = contextSnapshot.memory;
-  const snapshotBudget = contextSnapshot.budget;
   if (
+    !isWireObject(value) ||
     !isWireIdentifier(currentRunId) ||
     !hasExactKeys(value, [
-      "schemaVersion",
-      "stepOrdinal",
-      "contextSnapshotVersion",
-      "historyItems",
-      "memory",
-      "budget",
-      "omissions",
-      ...(versionTwo ? ["historyStatus"] : [])
+      "stepOrdinal", "contextRevision", "historyItems", "memory", "budget",
+      "omissions", "historyStatus", "memoryContextCharacters"
     ]) ||
-    (!versionTwo && value.schemaVersion !== 1) ||
-    value.schemaVersion !== contextSnapshot.schemaVersion ||
     value.stepOrdinal !== stepOrdinal ||
-    value.contextSnapshotVersion !== contextSnapshot.schemaVersion ||
+    !isSafePositiveInteger(value.contextRevision) ||
     !Array.isArray(value.historyItems) ||
     value.historyItems.length === 0 ||
     !value.historyItems.every(isHistoryItemReference) ||
     !hasUniqueHistoryItemIds(value.historyItems) ||
-    !Array.isArray(contextSnapshot.historyItems) ||
-    !isHistoryPrefix(contextSnapshot.historyItems, value.historyItems, currentRunId) ||
-    !isMemoryReferenceList(memory) ||
-    !isMemoryReferenceList(snapshotMemory) ||
-    !sameWireValue(memory, snapshotMemory) ||
-    !isInputBudget(budget) ||
-    !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(budget, memory, versionTwo ? value.historyStatus : undefined) ||
-    (versionTwo && !sameWireValue(value.historyStatus, contextSnapshot.historyStatus)) ||
-    !isInputBudget(snapshotBudget) ||
-    budget.mode !== snapshotBudget.mode ||
-    budget.measurementVersion !== snapshotBudget.measurementVersion ||
-    budget.maximumCharacters !== snapshotBudget.maximumCharacters ||
-    budget.reservedCurrentRunCharacters !== snapshotBudget.reservedCurrentRunCharacters ||
-    budget.instructionCharacters !== snapshotBudget.instructionCharacters ||
-    budget.contextDataCharacters !== snapshotBudget.contextDataCharacters ||
-    budget.toolCharacters !== snapshotBudget.toolCharacters ||
-    budget.historyCharacters !== snapshotBudget.historyCharacters ||
-    budget.memoryCharacters !== snapshotBudget.memoryCharacters ||
-    !isContextOmissionList(value.omissions, memory) ||
-    !Array.isArray(contextSnapshot.omissions) ||
-    !sameWireValue(value.omissions, contextSnapshot.omissions)
+    !isMemoryReferenceList(value.memory) ||
+    !isInputBudget(value.budget) ||
+    !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
+    !isMemoryBudgetForReferences(
+      value.budget, value.memory, value.historyStatus, value.memoryContextCharacters
+    ) ||
+    !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
+    !isContextOmissionList(value.omissions, value.memory)
   ) {
     return false;
   }
-  return budget.currentRunCharacters >= snapshotBudget.currentRunCharacters;
+  const selectedTurns = new Set(
+    value.historyItems.map((item) => (item as Record<string, unknown>).turnId)
+  );
+  if (value.omissions.some(
+    (omission) => isHistoryOmission(omission) && selectedTurns.has(omission.sourceId)
+  )) {
+    return false;
+  }
+  // Later events carry an explicit revision number; the Runtime validates the
+  // persisted revision relationship. The first event also carries its full body.
+  if (contextRevision === null) return stepOrdinal !== 1;
+  if (
+    !isWireObject(contextRevision) ||
+    !isContextRevision(contextRevision, currentRunId) ||
+    value.contextRevision !== contextRevision.revision ||
+    !Array.isArray(contextRevision.historyItems) ||
+    !isHistoryPrefix(contextRevision.historyItems, value.historyItems, currentRunId) ||
+    !sameWireValue(value.memory, contextRevision.memory) ||
+    !sameWireValue(value.omissions, contextRevision.omissions) ||
+    !sameWireValue(value.historyStatus, contextRevision.historyStatus) ||
+    value.memoryContextCharacters !== contextRevision.memoryContextCharacters ||
+    !isInputBudget(contextRevision.budget)
+  ) {
+    return false;
+  }
+  const immutableCounts = [
+    "mode", "measurementVersion", "maximumTokens", "reservedCurrentRunTokens",
+    "instructionTokens", "contextDataTokens", "toolTokens", "historyTokens", "memoryTokens"
+  ];
+  const budget = value.budget;
+  const revisionBudget = contextRevision.budget;
+  return (
+    immutableCounts.every((key) => budget[key] === revisionBudget[key]) &&
+    budget.currentRunTokens >= revisionBudget.currentRunTokens
+  );
 }
 
 interface MemoryReferenceWire {
@@ -1316,28 +1267,28 @@ function isMemoryReferenceList(value: unknown): value is MemoryReferenceWire[] {
 }
 
 function isMemoryBudgetForReferences(
-  budget: Record<string, unknown> & {
-    memoryCharacters: number;
-    contextDataCharacters: number;
-  },
+  budget: { memoryTokens: number; contextDataTokens: number },
   references: MemoryReferenceWire[],
-  historyStatus?: unknown
+  historyStatus: unknown,
+  wrapperCharacters: unknown
 ): boolean {
-  const statusCharacters = historyStatus === undefined ? 0
-    : isWireObject(historyStatus) && isSafeNonNegativeInteger(historyStatus.characters)
-      ? historyStatus.characters : NaN;
-  const wrapperCharacters = budget.contextDataCharacters - statusCharacters;
-  const characters = references.reduce((total, reference) => total + reference.characters, 0);
   if (
-    characters > MEMORY_CONTEXT_MAX_CHARACTERS ||
-    budget.memoryCharacters !== characters ||
-    !isSafeNonNegativeInteger(wrapperCharacters)
+    !isSafeNonNegativeInteger(wrapperCharacters) ||
+    !isWireObject(historyStatus) ||
+    !Array.isArray(historyStatus.runs)
   ) {
     return false;
   }
-  return references.length === 0
-    ? wrapperCharacters === 0
-    : wrapperCharacters > 0;
+  const statusTokens = historyStatus.runs.length === 0 ? 0 : Buffer.byteLength(
+    `${HISTORY_STATUS_PREAMBLE}\n${canonicalJson({ version: 1, runs: historyStatus.runs })}`, "utf8"
+  ) + 64;
+  const characters = references.reduce((total, reference) => total + reference.characters, 0);
+  return (
+    characters <= MEMORY_CONTEXT_MAX_CHARACTERS &&
+    budget.memoryTokens === characters * 4 &&
+    budget.contextDataTokens === wrapperCharacters * 4 + statusTokens &&
+    (references.length === 0 ? wrapperCharacters === 0 : wrapperCharacters > 0)
+  );
 }
 
 const HISTORY_STATUS_PREAMBLE = "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.";
@@ -1471,23 +1422,23 @@ function isHistoryBudgetForItems(
   items: unknown[],
   currentRunId: string
 ): boolean {
-  let historyCharacters = 0;
-  let currentRunCharacters = 0;
+  let historyTokens = 0;
+  let currentRunTokens = 0;
   let sawCurrentRun = false;
   for (const item of items) {
-    if (!isWireObject(item) || !isSafeNonNegativeInteger(item.characters)) return false;
+    if (!isWireObject(item) || !isSafeNonNegativeInteger(item.tokens)) return false;
     if (item.runId === currentRunId) {
       sawCurrentRun = true;
-      currentRunCharacters += item.characters;
+      currentRunTokens += item.tokens;
     } else {
       if (sawCurrentRun) return false;
-      historyCharacters += item.characters;
+      historyTokens += item.tokens;
     }
   }
   return (
     sawCurrentRun &&
-    budget.historyCharacters === historyCharacters &&
-    budget.currentRunCharacters === currentRunCharacters
+    budget.historyTokens === historyTokens &&
+    budget.currentRunTokens === currentRunTokens
   );
 }
 
@@ -1951,6 +1902,17 @@ function parseRuntimeItemHistory(
   };
 }
 
+function isExecutionLimits(
+  value: unknown
+): value is { maxModelCalls: number; maxDurationSeconds: number } {
+  return (
+    isWireObject(value) &&
+    hasExactKeys(value, ["maxModelCalls", "maxDurationSeconds"]) &&
+    isSafePositiveInteger(value.maxModelCalls) &&
+    isSafePositiveInteger(value.maxDurationSeconds)
+  );
+}
+
 function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHistory {
   if (!isWireObject(value)) {
     throw invalidTurnHistory();
@@ -1958,8 +1920,12 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
   const run = value as Partial<RuntimeRunHistory>;
   const terminal =
     run.status === "completed" || run.status === "failed" || run.status === "cancelled";
-  const reasonCode = run.reasonCode ?? null;
+  const reasonCode = run.reasonCode;
   if (
+    !hasExactKeys(value, [
+      "id", "turnId", "providerId", "modelId", "executionPolicy", "status", "reasonCode",
+      "createdAt", "startedAt", "settledAt", "executionLimits", "modelCalls", "items"
+    ]) ||
     !isWireIdentifier(run.id) ||
     run.turnId !== turnId ||
     !isNonEmptyString(run.providerId) ||
@@ -1969,7 +1935,13 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     (reasonCode !== null && !isRunReasonCode(reasonCode)) ||
     ((run.status === "queued" || run.status === "running" || run.status === "completed") &&
       reasonCode !== null) ||
-    !isNonEmptyString(run.createdAt) ||
+    !isCanonicalTimestamp(run.createdAt) ||
+    (run.startedAt !== null && !isCanonicalTimestamp(run.startedAt)) ||
+    (run.status === "queued" && run.startedAt !== null) ||
+    (run.status === "running" && run.startedAt === null) ||
+    !isExecutionLimits(run.executionLimits) ||
+    !isSafeNonNegativeInteger(run.modelCalls) ||
+    run.modelCalls > run.executionLimits.maxModelCalls ||
     (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
     !Array.isArray(run.items)
   ) {
@@ -1996,7 +1968,10 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     status: run.status as RuntimeRunHistory["status"],
     reasonCode,
     createdAt: run.createdAt,
+    startedAt: run.startedAt as string | null,
     settledAt: run.settledAt as string | null,
+    executionLimits: run.executionLimits,
+    modelCalls: run.modelCalls,
     items
   };
 }
@@ -2176,11 +2151,14 @@ function parseRuntimeProviderSummary(value: unknown): RuntimeProviderSummary {
 function parseRuntimeModelSummary(value: unknown): RuntimeModelSummary {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["providerId", "id", "displayName", "enabled"]) ||
+    !hasExactKeys(value, ["providerId", "id", "displayName", "enabled", "contextWindow", "maxOutputTokens"]) ||
     !isWireIdentifier(value.providerId) ||
     !isWireIdentifier(value.id) ||
     !isNonEmptyString(value.displayName) ||
-    typeof value.enabled !== "boolean"
+    typeof value.enabled !== "boolean" ||
+    !isSafePositiveInteger(value.contextWindow) ||
+    !isSafePositiveInteger(value.maxOutputTokens) ||
+    value.maxOutputTokens >= value.contextWindow
   ) {
     throw new Error("Runtime returned an invalid Model summary.");
   }
@@ -2206,21 +2184,24 @@ function parseRuntimeProviderResult(
   return { provider: parseRuntimeProviderSummary(value.provider) };
 }
 
-function parseRuntimeModelInput(value: unknown): { id: string; displayName: string } {
+function parseRuntimeModelInput(value: unknown): RuntimeModelInput {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["id", "displayName"]) ||
+    !hasExactKeys(value, ["id", "displayName", "contextWindow", "maxOutputTokens"]) ||
     !isWireIdentifier(value.id) ||
-    !isNonEmptyString(value.displayName)
+    !isNonEmptyString(value.displayName) ||
+    !isSafePositiveInteger(value.contextWindow) ||
+    !isSafePositiveInteger(value.maxOutputTokens) ||
+    value.maxOutputTokens >= value.contextWindow
   ) {
     throw invalidRuntimeMethodResult("provider.discover_models");
   }
-  return { id: value.id, displayName: value.displayName };
+  return { id: value.id, displayName: value.displayName, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens };
 }
 
 function parseRuntimeProviderDiscoveryResult(
   value: unknown
-): { models: Array<{ id: string; displayName: string }> } {
+): { models: RuntimeModelInput[] } {
   if (!isWireObject(value) || !hasExactKeys(value, ["models"]) || !Array.isArray(value.models)) {
     throw invalidRuntimeMethodResult("provider.discover_models");
   }
@@ -2775,6 +2756,7 @@ const RUNTIME_RESULT_PARSERS = {
   "provider.remove": (value) => parseRuntimeProviderRemoveResult(value),
   "model.list": (value) => parseRuntimeModelListResult(value),
   "model.set_enabled": (value) => parseRuntimeModelSetEnabledResult(value),
+  "model.set_limits": (value) => parseRuntimeModelSetEnabledResult(value),
   "skill.list": (value) => parseRuntimeSkillListResult(value),
   "skill.set_enabled": (value) => parseRuntimeSkillSetEnabledResult(value),
   "memory.create": (value) => parseRuntimeMemoryCreateResult(value),

@@ -25,6 +25,9 @@ function page(status: RuntimeRunHistory["status"], reasonCode: string | null): R
         providerId: "provider-1",
         modelId: "model-1",
         executionPolicy: "full_access",
+        startedAt: status === "queued" ? null : timestamp,
+        executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 },
+        modelCalls: 0,
         status,
         reasonCode,
         createdAt: timestamp,
@@ -45,11 +48,11 @@ describe("Run outcome wire contract", () => {
     expect(parseRuntimeTurnListPage(page(status, null)).turns[0]?.runs[0]?.reasonCode).toBeNull();
   });
 
-  it("normalizes old history without a reasonCode field to null", () => {
+  it("rejects history missing its current reasonCode field", () => {
     const value = page("failed", null);
     const run = value.turns[0]!.runs[0]! as Partial<RuntimeRunHistory>;
     delete run.reasonCode;
-    expect(parseRuntimeTurnListPage(value).turns[0]?.runs[0]?.reasonCode).toBeNull();
+    expect(() => parseRuntimeTurnListPage(value)).toThrow("invalid Turn history page");
   });
 
   it.each(["queued", "running", "completed"] as const)("requires null reason for %s", (status) => {

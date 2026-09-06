@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from ..config import ConfigDocumentStore
 from ..errors import ConfigError as ConfigError
-from ..run_input import ProviderExecutionSnapshotV1
+from ..run_input import ProviderExecutionSnapshot
 from ..security import contains_protected_value
 from .base import (
     ModelConfig,
@@ -74,6 +74,8 @@ class ModelSummary:
     id: str
     display_name: str
     enabled: bool
+    context_window: int
+    max_output_tokens: int
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -81,6 +83,8 @@ class ModelSummary:
             "id": self.id,
             "displayName": self.display_name,
             "enabled": self.enabled,
+            "contextWindow": self.context_window,
+            "maxOutputTokens": self.max_output_tokens,
         }
 
 
@@ -130,7 +134,14 @@ class ConfigStore:
 
     def model_summaries(self) -> tuple[ModelSummary, ...]:
         return tuple(
-            ModelSummary(provider.id, model.id, model.display_name, model.enabled)
+            ModelSummary(
+                provider.id,
+                model.id,
+                model.display_name,
+                model.enabled,
+                model.context_window,
+                model.max_output_tokens,
+            )
             for provider in sorted(self._providers.values(), key=lambda item: item.id)
             for model in provider.models
         )
@@ -156,14 +167,16 @@ class ConfigStore:
         self,
         provider_id: str,
         model_id: str,
-    ) -> ProviderExecutionSnapshotV1:
+    ) -> ProviderExecutionSnapshot:
         provider, model = self.resolve_model(provider_id, model_id)
-        return ProviderExecutionSnapshotV1(
+        return ProviderExecutionSnapshot(
             provider_id=provider.id,
             origin=provider.origin,
             base_url=provider.base_url,
             model_id=model.id,
             supports_tools=model.supports_tools,
+            context_window=model.context_window,
+            max_output_tokens=model.max_output_tokens,
         )
 
     def configure_deepseek(
@@ -247,6 +260,8 @@ class ConfigStore:
                         display_name=model.display_name,
                         enabled=enabled,
                         supports_tools=model.supports_tools,
+                        context_window=model.context_window,
+                        max_output_tokens=model.max_output_tokens,
                     )
                 )
             else:
@@ -264,7 +279,45 @@ class ConfigStore:
         )
         self._replace(updated)
         model = next(candidate for candidate in updated.models if candidate.id == model_id)
-        return ModelSummary(updated.id, model.id, model.display_name, model.enabled)
+        return ModelSummary(
+            updated.id,
+            model.id,
+            model.display_name,
+            model.enabled,
+            model.context_window,
+            model.max_output_tokens,
+        )
+
+    def set_model_limits(
+        self, provider_id: str, model_id: str, context_window: int, max_output_tokens: int
+    ) -> ModelSummary:
+        context_window, max_output_tokens = _model_limits(context_window, max_output_tokens)
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            raise ConfigError("provider does not exist")
+        model = next((model for model in provider.models if model.id == model_id), None)
+        if model is None:
+            raise ConfigError("model does not exist")
+        updated_model = replace(
+            model, context_window=context_window, max_output_tokens=max_output_tokens
+        )
+        self._replace(
+            replace(
+                provider,
+                models=tuple(
+                    updated_model if candidate.id == model_id else candidate
+                    for candidate in provider.models
+                ),
+            )
+        )
+        return ModelSummary(
+            provider_id,
+            model.id,
+            model.display_name,
+            model.enabled,
+            context_window,
+            max_output_tokens,
+        )
 
     def _replace(self, provider: ProviderConfig) -> None:
         updated = dict(self._providers)
@@ -312,6 +365,8 @@ def _provider_section(providers: Mapping[str, ProviderConfig]) -> dict[str, obje
                 "display_name": model.display_name,
                 "enabled": model.enabled,
                 "supports_tools": model.supports_tools,
+                "context_window": model.context_window,
+                "max_output_tokens": model.max_output_tokens,
             }
             for model in provider.models
         }
@@ -434,7 +489,10 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
     for raw_id, raw_model in value.items():
         if not isinstance(raw_id, str) or not isinstance(raw_model, dict):
             raise ConfigError("provider contains an invalid model record")
-        if set(raw_model) != {"display_name", "enabled", "supports_tools"}:
+        required = {"display_name", "enabled", "supports_tools"}
+        if not required <= set(raw_model) or set(raw_model) - (
+            required | {"context_window", "max_output_tokens"}
+        ):
             raise ConfigError("model configuration contains unsupported fields")
         model_id = _model_id(raw_id)
         if model_id in seen:
@@ -444,12 +502,17 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
         supports_tools = raw_model["supports_tools"]
         if not isinstance(enabled, bool) or not isinstance(supports_tools, bool):
             raise ConfigError("model flags must be booleans")
+        context_window, max_output_tokens = _model_limits(
+            raw_model.get("context_window", 32768), raw_model.get("max_output_tokens", 4096)
+        )
         models.append(
             ModelConfig(
                 id=model_id,
                 display_name=_display_name(raw_model["display_name"], "model display name"),
                 enabled=enabled,
                 supports_tools=supports_tools,
+                context_window=context_window,
+                max_output_tokens=max_output_tokens,
             )
         )
     return tuple(models)
@@ -470,15 +533,34 @@ def _models(
             raise ConfigError("model IDs must be unique")
         seen.add(model_id)
         previous = existing_by_id.get(model_id)
+        context_window, max_output_tokens = _model_limits(
+            item.context_window, item.max_output_tokens
+        )
         models.append(
             ModelConfig(
                 id=model_id,
                 display_name=_display_name(item.display_name, "model display name"),
                 enabled=previous.enabled if previous is not None else True,
                 supports_tools=previous.supports_tools if previous is not None else True,
+                context_window=context_window,
+                max_output_tokens=max_output_tokens,
             )
         )
     return tuple(models)
+
+
+def _model_limits(context_window: object, max_output_tokens: object) -> tuple[int, int]:
+    if (
+        not isinstance(context_window, int)
+        or isinstance(context_window, bool)
+        or not isinstance(max_output_tokens, int)
+        or isinstance(max_output_tokens, bool)
+        or not 0 < max_output_tokens < context_window <= 9007199254740991
+    ):
+        raise ConfigError(
+            "model token limits must be positive integers with output below context window"
+        )
+    return context_window, max_output_tokens
 
 
 def _custom_provider_id(value: Any) -> str:

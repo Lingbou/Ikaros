@@ -35,9 +35,9 @@ def _projection_snapshot(
         ("branches", "id"),
         ("turns", "id"),
         ("runs", "id"),
-        ("run_inputs", "run_id"),
+        ("run_configs", "run_id"),
         ("items", "id"),
-        ("model_steps", "run_id, step_ordinal"),
+        ("model_calls", "run_id, step_ordinal"),
         ("model_usages", "run_id, step_ordinal"),
     )
     return {
@@ -441,9 +441,7 @@ def test_projection_rebuild_rejects_settlement_before_active_item_completion(
 
         assert _projection_snapshot(store) == projection_before
         assert _journal_snapshot(store) == journal_before
-        item_events = tuple(
-            event.type for event in journal_before[0] if event.item_id == item_id
-        )
+        item_events = tuple(event.type for event in journal_before[0] if event.item_id == item_id)
         assert item_events == ("item.started",)
     finally:
         store.close()
@@ -583,7 +581,7 @@ def test_future_journal_event_versions_are_rejected_by_replay_and_rebuild(
                 (JOURNAL_EVENT_SCHEMA_VERSION + 1, event.seq),
             )
 
-        message = "does not match supported version"
+        message = "does not match"
         with pytest.raises(UnsupportedJournalEventVersionError, match=message):
             store.replay_events(0, 100)
         with pytest.raises(UnsupportedJournalEventVersionError, match=message):
@@ -658,6 +656,7 @@ def test_projection_rebuild_rejects_completed_item_immutable_field_changes(
     finally:
         store.close()
 
+
 def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: Path) -> None:
     database_path = tmp_path / "state.db"
     workspace_root = tmp_path / "research"
@@ -725,9 +724,7 @@ def test_thread_rename_archive_and_unarchive_survive_projection_rebuild(
         assert archived_event is not None
         assert archived_event.type == "thread.archived"
         assert store.list_thread_page(cursor=None, limit=50).threads == ()
-        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == (
-            archived,
-        )
+        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == (archived,)
 
         sequence_before_noop = store.latest_sequence()
         repeated, repeated_event = store.set_thread_archived(created.id, archived=True)
@@ -738,9 +735,7 @@ def test_thread_rename_archive_and_unarchive_survive_projection_rebuild(
         store.rebuild_projections()
         assert store.get_thread(created.id).thread == archived
         assert store.list_thread_page(cursor=None, limit=50).threads == ()
-        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == (
-            archived,
-        )
+        assert store.list_thread_page(cursor=None, limit=50, archived=True).threads == (archived,)
 
         restored, restored_event = store.set_thread_archived(created.id, archived=False)
         assert restored.archived_at is None
@@ -966,9 +961,7 @@ def test_credential_conflict_scan_includes_dynamic_skill_catalog_values(
     skill: SkillDescriptor,
 ) -> None:
     protected = next(
-        value
-        for value in (skill.name, skill.description, skill.location)
-        if "credential" in value
+        value for value in (skill.name, skill.description, skill.location) if "credential" in value
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
@@ -1163,7 +1156,7 @@ def test_projection_rebuild_rejects_corrupted_submission_instruction_slot(
             (prepared.run_id,),
         ).fetchone()
         payload = json_loads(str(row["payload_json"]))
-        payload["submissionFrame"]["instructions"]["outputStyle"]["scope"] = "run"
+        payload["runConfig"]["instructions"]["outputStyle"]["scope"] = "run"
         with store._connection:
             store._connection.execute(
                 "UPDATE events SET payload_json = ? WHERE seq = ?",
@@ -1219,17 +1212,17 @@ def test_projection_rebuild_rejects_corrupted_model_input_dto(
         ).fetchone()
         payload = json_loads(str(row["payload_json"]))
         if corruption == "context-group-ghost":
-            payload["contextSnapshot"]["historyGroups"][0]["itemIds"][0] = "item_ghost"
+            payload["contextRevision"]["historyGroups"][0]["itemIds"][0] = "item_ghost"
         elif corruption == "context-budget-count":
-            budget = payload["contextSnapshot"]["budget"]
-            budget["currentRunCharacters"] += 1
-            budget["totalCharacters"] += 1
+            budget = payload["contextRevision"]["budget"]
+            budget["currentRunTokens"] += 1
+            budget["totalTokens"] += 1
         elif corruption == "step-ordinal":
-            payload["stepManifest"]["stepOrdinal"] = 0
+            payload["stepInput"]["stepOrdinal"] = 0
         else:
-            budget = payload["stepManifest"]["budget"]
-            budget["currentRunCharacters"] += 1
-            budget["totalCharacters"] += 1
+            budget = payload["stepInput"]["budget"]
+            budget["currentRunTokens"] += 1
+            budget["totalTokens"] += 1
         with store._connection:
             store._connection.execute(
                 "UPDATE events SET payload_json = ? WHERE seq = ?",
@@ -1240,7 +1233,9 @@ def test_projection_rebuild_rejects_corrupted_model_input_dto(
             )
         journal_before = _journal_snapshot(store)
 
-        with pytest.raises(RuntimeError, match="model input preparation snapshots are invalid"):
+        with pytest.raises(
+            RuntimeError, match="(Context Revision|Step input|StepInput|budget|ordinal)"
+        ):
             store.rebuild_projections()
 
         assert _journal_snapshot(store) == journal_before
@@ -1582,5 +1577,57 @@ def test_context_does_not_include_later_queued_turns(tmp_path: Path) -> None:
             thread.default_branch_id,
             through_turn_id=second.turn_id,
         ) == [("user", "alpha"), ("user", "beta")]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("tamper", ["missing-limits", "changed-limits", "excess-call"])
+def test_rebuild_enforces_frozen_execution_budget(tmp_path: Path, tamper: str) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Budget integrity")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="two requests",
+            provider_id="test",
+            model_id="test",
+            max_model_calls=2,
+        )
+        store.mark_run_running(prepared.run_id)
+        for ordinal in (1, 2):
+            store.prepare_model_step(prepared.run_id, step_ordinal=ordinal)
+            store.complete_provider_step(
+                prepared.run_id,
+                step_ordinal=ordinal,
+                assistant_item_id=None,
+                tool_calls=(),
+                reasoning_content=None,
+                usage=None,
+                response_model_id=None,
+                request_id=None,
+            )
+        row = store._connection.execute(
+            "SELECT seq, payload_json FROM events WHERE run_id = ? "
+            "AND event_type = 'item.completed' ORDER BY seq LIMIT 1",
+            (prepared.run_id,),
+        ).fetchone()
+        payload = json_loads(row["payload_json"])
+        if tamper == "missing-limits":
+            del payload["run"]["executionLimits"]
+        else:
+            payload["run"]["executionLimits"]["maxModelCalls"] = 1
+            if tamper == "excess-call":
+                payload["runConfig"]["maxModelCalls"] = 1
+        with store._connection:
+            store._connection.execute(
+                "UPDATE events SET payload_json = ? WHERE seq = ?",
+                (json_dumps(payload), row["seq"]),
+            )
+        before = _projection_snapshot(store)
+        with pytest.raises(RuntimeError, match="(shape|execution limits|budget_exceeded)"):
+            store.rebuild_projections()
+        assert _projection_snapshot(store) == before
     finally:
         store.close()

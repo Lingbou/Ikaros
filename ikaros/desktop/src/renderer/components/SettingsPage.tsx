@@ -176,6 +176,7 @@ export function SettingsPage() {
   const configureProvider = useAppStore((state) => state.configureProvider);
   const disconnectProvider = useAppStore((state) => state.disconnectProvider);
   const removeProvider = useAppStore((state) => state.removeProvider);
+  const setModelLimits = useAppStore((state) => state.setModelLimits);
   const setModelEnabled = useAppStore((state) => state.setModelEnabled);
   const skillCatalogStatus = useAppStore((state) => state.skillCatalogStatus);
   const skillCatalogError = useAppStore((state) => state.skillCatalogError);
@@ -458,6 +459,9 @@ export function SettingsPage() {
             <ModelsSettings
               providers={providers}
               models={models}
+              onSetModelLimits={(providerId, modelId, contextWindow, maxOutputTokens) =>
+                setModelLimits({ providerId, modelId, contextWindow, maxOutputTokens })
+              }
               onSetModelEnabled={(providerId, modelId, enabled) =>
                 setModelEnabled({ providerId, modelId, enabled })
               }

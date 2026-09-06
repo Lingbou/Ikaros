@@ -134,6 +134,7 @@ describe("Runtime workspace projection", () => {
             providerId: "scripted",
             modelId: "scripted-v1",
             executionPolicy: "full_access",
+            startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
             status: "completed",
             reasonCode: null,
             createdAt: summary.createdAt,
@@ -249,7 +250,7 @@ function toolCallItem(
     data: {
       stepId: "step-1",
       callId,
-      toolName: "process_run",
+      toolName: "process_start",
       arguments: { command: "Write-Output original-command" },
       ...(durationMs === undefined ? {} : { durationMs })
     },
@@ -279,7 +280,7 @@ function toolResultItem(
       stepId: "step-1",
       callId: `provider-${toolCallItemId}`,
       toolCallItemId,
-      toolName: "process_run",
+      toolName: "process_start",
       result: { output }
     },
     createdAt: "2026-08-11T12:00:00.000Z",
@@ -355,6 +356,8 @@ describe("Runtime event projection", () => {
     const settled = event(2, "run.settled", "turn-outcome", "run-outcome", null, {
       status,
       ...(reasonCode === null ? {} : { reasonCode }),
+      executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 },
+      createdAt: summary.createdAt, startedAt: null, modelCalls: 0,
     });
     const live = replayRuntimeEvents(projectRuntimeThreads([summary]), [settled]);
     const history = projectRuntimeThreadHistory(summary, [{
@@ -371,6 +374,7 @@ describe("Runtime event projection", () => {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
+        startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
         status,
         reasonCode,
         createdAt: summary.createdAt,
@@ -402,12 +406,12 @@ describe("Runtime event projection", () => {
           ...toolResultItem("result-interrupted", "turn-outcome", "run-outcome", "failed", "call-interrupted", ""),
           data: {
             toolCallItemId: "call-interrupted",
-            toolName: "process_run",
+            toolName: "process_start",
             result: { output: "", errorCode: "runtime_interrupted" },
           },
         },
       }),
-      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted" }),
+      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted", executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, createdAt: summary.createdAt, modelCalls: 0 }),
     ];
     const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
     const turn = thread.branches[0]?.turns[0];
@@ -432,6 +436,7 @@ describe("Runtime event projection", () => {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
+        startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
         status: "failed",
         reasonCode: "runtime_interrupted",
         createdAt: summary.createdAt,
@@ -555,7 +560,7 @@ describe("Runtime event projection", () => {
           "turn-tools",
           "run-tools",
           "user",
-          "/process.run Write-Output original-command",
+          "/process_start Write-Output original-command",
           "completed"
         )
       }),
@@ -654,8 +659,8 @@ describe("Runtime event projection", () => {
     expect(projected?.[1]).toMatchObject({
       id: "call-success",
       type: "tool_call",
-      toolName: "process.run",
-      label: { source: "app", kind: "tool.runProcess" },
+      toolName: "process_start",
+      label: { source: "app", kind: "tool.startProcess" },
       status: "success",
       arguments: { command: "Write-Output original-command" },
       durationMs: 12
@@ -922,5 +927,47 @@ describe("Runtime event projection", () => {
       "call-read-three",
       "call-read-three",
     ]);
+  });
+});
+
+describe("Runtime execution progress projection", () => {
+  it("retains budgets through streamed items and reconstructs the same usage from history", () => {
+    const executionLimits = { maxModelCalls: 40, maxDurationSeconds: 1800 };
+    const queuedAt = "2026-09-07T00:00:00Z";
+    const startedAt = "2026-09-07T00:01:00Z";
+    const settledAt = "2026-09-07T00:01:20Z";
+    const user: RuntimeItemHistory = {
+      id: "user-progress", turnId: "turn-progress", runId: "run-progress", ordinal: 1,
+      kind: "message", role: "user", status: "completed", content: "Do the task", data: {},
+      createdAt: queuedAt, updatedAt: queuedAt,
+    };
+    const assistant: RuntimeItemHistory = {
+      ...user, id: "assistant-progress", ordinal: 2, role: "assistant", content: "Done",
+      createdAt: startedAt, updatedAt: settledAt,
+    };
+    const events = [
+      { ...event(1, "item.completed", user.turnId, user.runId, user.id, { item: user, run: { executionLimits, createdAt: queuedAt } }), timestamp: queuedAt },
+      { ...event(2, "run.state_changed", user.turnId, user.runId, null, { status: "running" }), timestamp: startedAt },
+      event(3, "model.input_prepared", user.turnId, user.runId, null, { stepOrdinal: 1 }),
+      event(4, "item.started", user.turnId, user.runId, assistant.id, { item: { ...assistant, content: "", status: "streaming" } }),
+      event(5, "item.delta", user.turnId, user.runId, assistant.id, { delta: "Done" }),
+      event(6, "model.input_prepared", user.turnId, user.runId, null, { stepOrdinal: 2 }),
+      event(7, "item.completed", user.turnId, user.runId, assistant.id, { item: assistant }),
+      { ...event(8, "run.settled", user.turnId, user.runId, null, { status: "completed" }), timestamp: settledAt },
+    ];
+    const live = replayRuntimeEvents(projectRuntimeThreads([summary]), events)[0]!;
+    const expected = { queuedAt, startedAt, settledAt, modelCalls: 2, ...executionLimits };
+    expect(live.branches[0]?.turns[0]?.runProgress).toEqual(expected);
+    const history = projectRuntimeThreadHistory(summary, [{
+      id: user.turnId, threadId: summary.id, branchId: summary.defaultBranchId, ordinal: 1,
+      status: "completed", createdAt: queuedAt, updatedAt: settledAt,
+      runs: [{
+        id: user.runId, turnId: user.turnId, providerId: "test", modelId: "test",
+        executionPolicy: "full_access", status: "completed", reasonCode: null,
+        createdAt: queuedAt, startedAt, settledAt, executionLimits, modelCalls: 2,
+        items: [user, assistant],
+      }],
+    }]);
+    expect(history.branches[0]?.turns[0]?.runProgress).toEqual(expected);
   });
 });

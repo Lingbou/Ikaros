@@ -89,7 +89,7 @@ describe("RuntimeTurnOutcome", () => {
     expect(screen.getByRole("status")).not.toHaveTextContent("may already have changed files");
   });
 
-  it.each(["write", "edit", "process.run"])(
+  it.each(["write", "edit", "process_start"])(
     "warns that an unsettled %s operation may already have changed files",
     (toolName) => {
       render(<RuntimeTurnOutcome turn={failedTurn({ events: [call(toolName, "running")] })} />);
@@ -110,7 +110,7 @@ describe("RuntimeTurnOutcome", () => {
     expect(screen.getByRole("status")).toHaveTextContent("may already have changed files");
   });
 
-  it.each(["write", "edit", "process.run"])(
+  it.each(["write", "edit", "process_start"])(
     "warns about possible partial effects when %s reports an ordinary failure",
     (toolName) => {
       render(
@@ -155,9 +155,24 @@ describe("RuntimeTurnOutcome", () => {
     expect(screen.getByRole("status")).toHaveTextContent("provider_authentication");
   });
 
-  it("explains a recorded step limit without presenting it as a provider response error", () => {
-    render(<RuntimeTurnOutcome turn={failedTurn({ reasonCode: "agent_step_limit" })} />);
-    expect(screen.getByRole("status")).toHaveTextContent("The run reached its step limit.");
-    expect(screen.getByRole("status")).toHaveTextContent("Reason: agent_step_limit");
+  it("explains a recorded model call limit without presenting it as a provider response error", () => {
+    render(<RuntimeTurnOutcome turn={failedTurn({ reasonCode: "model_call_budget_exceeded" })} />);
+    expect(screen.getByRole("status")).toHaveTextContent("The run reached its model call limit.");
+    expect(screen.getByRole("status")).toHaveTextContent("Reason: model_call_budget_exceeded");
   });
+});
+
+it("treats a started command as uncertain until a later successful exit is recorded", () => {
+  const start: ToolResultEvent = {
+    ...result("success"), toolName: "process_start",
+    details: { processId: "process-1", processState: "running", exitCode: null },
+  };
+  const view = render(<RuntimeTurnOutcome turn={failedTurn({ events: [call("process_start", "success"), start] })} />);
+  expect(screen.getByRole("status")).toHaveTextContent("may already have changed files");
+  const finished: ToolResultEvent = {
+    ...start, id: "wait-result", toolCallId: "wait-call", toolName: "process_wait",
+    details: { processId: "process-1", processState: "exited", exitCode: 0 },
+  };
+  view.rerender(<RuntimeTurnOutcome turn={failedTurn({ events: [call("process_start", "success"), start, finished] })} />);
+  expect(screen.getByRole("status")).not.toHaveTextContent("may already have changed files");
 });

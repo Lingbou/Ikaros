@@ -4,13 +4,10 @@ import asyncio
 import codecs
 import json
 import os
-import re
 import stat
-import subprocess
-import sys
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -18,27 +15,21 @@ from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.errors import RunCancelled
 from ikaros_runtime.tools import edit as edit_tool
 from ikaros_runtime.tools import file_common
-from ikaros_runtime.tools import process as process_tool
 from ikaros_runtime.tools import write as write_tool
 from ikaros_runtime.tools.core import (
     ToolCall,
-    ToolExecutionCancelled,
+    ToolExecutionContext,
     ToolExecutor,
     ToolRegistry,
 )
 from ikaros_runtime.tools.edit import EditTool
 from ikaros_runtime.tools.policy import FullAccessPolicy
-from ikaros_runtime.tools.process import ProcessRunTool
 from ikaros_runtime.tools.read import ReadTool
 from ikaros_runtime.tools.write import WriteTool
 
 
-def _command(*, windows: str, posix: str) -> str:
-    return windows if os.name == "nt" else posix
-
-
-def _executor() -> ToolExecutor:
-    return ToolExecutor(ToolRegistry([ProcessRunTool()]), FullAccessPolicy())
+def _context(*, default_cwd: str | None = None) -> ToolExecutionContext:
+    return ToolExecutionContext("run_test", 1, "item_test", "thread_test", default_cwd)
 
 
 def _file_executor() -> ToolExecutor:
@@ -49,461 +40,6 @@ def _file_executor() -> ToolExecutor:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(os.name != "nt", reason="Windows process creation flags")
-async def test_process_run_hides_the_root_shell_window(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if sys.platform != "win32":
-        pytest.skip("Windows process creation flags")
-
-    captured: dict[str, Any] = {}
-    fake_process = cast(asyncio.subprocess.Process, object())
-
-    async def fake_create_subprocess_exec(*arguments: str, **options: Any) -> Any:
-        captured["arguments"] = arguments
-        captured["options"] = options
-        return fake_process
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(
-        process_tool,
-        "_create_windows_job",
-        lambda process: cast(Any, object()),
-    )
-
-    spawned = await process_tool._spawn_process("Write-Output 'hidden'", None)
-
-    assert spawned.process is fake_process
-    flags = captured["options"]["creationflags"]
-    assert flags & subprocess.CREATE_NO_WINDOW
-    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
-    assert flags & 0x00000004
-
-
-def _process_is_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        completed = subprocess.run(
-            ["tasklist.exe", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        return re.search(rf'"{pid}"', completed.stdout) is not None
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-async def _wait_for_file(path: Path) -> str:
-    for _ in range(100):
-        try:
-            value = await asyncio.to_thread(path.read_text, encoding="utf-8")
-        except FileNotFoundError:
-            value = ""
-        if value.strip():
-            return value
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"process did not write {path}")
-
-
-async def _wait_for_process_exit(pid: int) -> None:
-    for _ in range(100):
-        if not await asyncio.to_thread(_process_is_alive, pid):
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"process {pid} is still alive")
-
-
-def _background_child_command(pid_file: Path, *, inherit_output: bool) -> str:
-    if os.name == "nt":
-        return _windows_sleep_child_command(
-            pid_file,
-            inherit_output=inherit_output,
-            wait_for_exit=False,
-        )
-    redirect = " >/dev/null 2>&1" if not inherit_output else ""
-    return (
-        'sh -c \'printf "%s" "$$" > "$1"; sleep 60\' sh '
-        f"'{pid_file}'{redirect} & "
-        f"while [ ! -s '{pid_file}' ]; do sleep 0.01; done; "
-        "printf 'root-exited\\n'"
-    )
-
-
-def _windows_sleep_child_command(
-    pid_file: Path,
-    *,
-    inherit_output: bool,
-    wait_for_exit: bool,
-) -> str:
-    escaped_path = str(pid_file).replace("'", "''")
-    if not inherit_output:
-        python_path = sys.executable.replace("'", "''")
-        helper = str(Path(__file__).parent / "fixtures" / "spawn_sleep_child.py").replace("'", "''")
-        wait_mode = "wait" if wait_for_exit else "detach"
-        tail = "" if wait_for_exit else "; Write-Output 'root-exited'"
-        return f"& '{python_path}' '{helper}' '{escaped_path}' '{wait_mode}'{tail}"
-    tail = "$child.WaitForExit()" if wait_for_exit else "Write-Output 'root-exited'"
-    return (
-        "$psi = [Diagnostics.ProcessStartInfo]::new(); "
-        "$psi.FileName = 'powershell.exe'; "
-        "$psi.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "
-        '"Start-Sleep -Seconds 60"\'; '
-        "$psi.UseShellExecute = $false; "
-        "$psi.CreateNoWindow = $true; "
-        "$child = [Diagnostics.Process]::Start($psi); "
-        f"[IO.File]::WriteAllText('{escaped_path}', [string]$child.Id); "
-        f"{tail}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_process_run_captures_stdout_stderr_exit_and_cwd(tmp_path: Path) -> None:
-    command = _command(
-        windows="Write-Output 'stdout-value'; [Console]::Error.WriteLine('stderr-value')",
-        posix="printf 'stdout-value\\n'; printf 'stderr-value\\n' >&2",
-    )
-    result = await _executor().execute(
-        ToolCall(
-            "call-success",
-            "process_run",
-            {"command": command, "cwd": str(tmp_path), "timeoutMs": 5_000},
-        ),
-        cancellation=CancellationToken(),
-    )
-
-    assert result.ok is True
-    assert result.cancelled is False
-    assert result.details["exitCode"] == 0
-    assert result.details["timedOut"] is False
-    assert result.details["truncated"] is False
-    resolved_tmp_path = await asyncio.to_thread(tmp_path.resolve)
-    assert result.details["cwd"] == str(resolved_tmp_path)
-    assert "stdout-value" in result.details["stdout"]
-    assert "stderr-value" in result.details["stderr"]
-    assert "stdout-value" in result.output
-    assert "stderr-value" in result.output
-
-
-@pytest.mark.asyncio
-async def test_process_run_uses_the_run_workspace_as_its_default_cwd(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    result = await _executor().execute(
-        ToolCall(
-            "call-workspace",
-            "process_run",
-            {"command": _command(windows="(Get-Location).Path", posix="pwd")},
-        ),
-        cancellation=CancellationToken(),
-        default_cwd=str(workspace),
-    )
-
-    assert result.ok is True
-    assert result.details["cwd"] == str(workspace.resolve())
-    assert str(workspace.resolve()) in result.output.strip()
-
-
-@pytest.mark.asyncio
-async def test_process_run_resolves_relative_cwd_from_the_run_workspace(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    nested = workspace / "nested"
-    nested.mkdir(parents=True)
-    result = await _executor().execute(
-        ToolCall(
-            "call-relative-workspace",
-            "process_run",
-            {
-                "command": _command(windows="(Get-Location).Path", posix="pwd"),
-                "cwd": "nested",
-            },
-        ),
-        cancellation=CancellationToken(),
-        default_cwd=str(workspace),
-    )
-
-    assert result.ok is True
-    assert result.details["cwd"] == str(nested.resolve())
-
-
-@pytest.mark.asyncio
-async def test_process_run_does_not_fall_back_when_the_workspace_is_missing(
-    tmp_path: Path,
-) -> None:
-    missing_workspace = tmp_path / "removed-workspace"
-    result = await _executor().execute(
-        ToolCall("call-missing-workspace", "process_run", {"command": "echo unsafe"}),
-        cancellation=CancellationToken(),
-        default_cwd=str(missing_workspace),
-    )
-
-    assert result.ok is False
-    assert result.details["errorCode"] == "invalid_cwd"
-
-
-@pytest.mark.asyncio
-async def test_process_run_returns_nonzero_exit_as_a_tool_error() -> None:
-    command = _command(
-        windows="Write-Output 'before-exit'; exit 7",
-        posix="printf 'before-exit\\n'; exit 7",
-    )
-    result = await _executor().execute(
-        ToolCall("call-nonzero", "process_run", {"command": command}),
-        cancellation=CancellationToken(),
-    )
-
-    assert result.ok is False
-    assert result.cancelled is False
-    assert result.details["exitCode"] == 7
-    assert result.details["errorCode"] == "non_zero_exit"
-    assert "before-exit" in result.output
-
-
-@pytest.mark.asyncio
-async def test_process_run_timeout_preserves_partial_output_and_stops_the_tree() -> None:
-    command = _command(
-        windows="Write-Output 'partial-timeout'; Start-Sleep -Seconds 60",
-        posix="printf 'partial-timeout\\n'; sleep 60",
-    )
-    result = await asyncio.wait_for(
-        _executor().execute(
-            ToolCall(
-                "call-timeout",
-                "process_run",
-                {"command": command, "timeoutMs": 500},
-            ),
-            cancellation=CancellationToken(),
-        ),
-        timeout=10,
-    )
-
-    assert result.ok is False
-    assert result.cancelled is False
-    assert result.details["timedOut"] is True
-    assert result.details["errorCode"] == "timeout"
-    assert "partial-timeout" in result.output
-
-
-@pytest.mark.asyncio
-async def test_process_run_cancellation_returns_partial_output_and_stops_the_tree() -> None:
-    command = _command(
-        windows="Write-Output 'partial-cancel'; Start-Sleep -Seconds 60",
-        posix="printf 'partial-cancel\\n'; sleep 60",
-    )
-    cancellation = CancellationToken()
-    task = asyncio.create_task(
-        _executor().execute(
-            ToolCall("call-cancel", "process_run", {"command": command}),
-            cancellation=cancellation,
-        )
-    )
-    await asyncio.sleep(0.5)
-    cancellation.cancel()
-
-    with pytest.raises(ToolExecutionCancelled) as cancelled:
-        await asyncio.wait_for(task, timeout=10)
-
-    assert cancelled.value.result.cancelled is True
-    assert cancelled.value.result.details["errorCode"] == "cancelled"
-    assert "partial-cancel" in cancelled.value.result.output
-
-
-@pytest.mark.asyncio
-async def test_cancelling_the_executor_task_still_terminates_the_process_tree(
-    tmp_path: Path,
-) -> None:
-    pid_file = tmp_path / "child.pid"
-    if os.name == "nt":
-        command = _windows_sleep_child_command(
-            pid_file,
-            inherit_output=False,
-            wait_for_exit=True,
-        )
-    else:
-        command = f"sleep 60 & child=$!; printf '%s' \"$child\" > '{pid_file}'; wait $child"
-    task = asyncio.create_task(
-        _executor().execute(
-            ToolCall("call-task-cancel", "process_run", {"command": command}),
-            cancellation=CancellationToken(),
-        )
-    )
-    child_pid = int(await _wait_for_file(pid_file))
-    assert _process_is_alive(child_pid)
-
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=10)
-
-    await _wait_for_process_exit(child_pid)
-
-
-@pytest.mark.asyncio
-async def test_timeout_covers_pipe_drain_after_the_root_process_exits(
-    tmp_path: Path,
-) -> None:
-    pid_file = tmp_path / "background-timeout.pid"
-    result = await asyncio.wait_for(
-        _executor().execute(
-            ToolCall(
-                "call-background-timeout",
-                "process_run",
-                {
-                    "command": _background_child_command(pid_file, inherit_output=True),
-                    "timeoutMs": 750,
-                },
-            ),
-            cancellation=CancellationToken(),
-        ),
-        timeout=10,
-    )
-
-    child_pid = int(await _wait_for_file(pid_file))
-    assert result.ok is False
-    assert result.details["timedOut"] is True
-    assert result.details["errorCode"] == "timeout"
-    assert "root-exited" in result.output
-    await _wait_for_process_exit(child_pid)
-
-
-@pytest.mark.asyncio
-async def test_task_cancel_kills_a_pipe_holder_after_the_root_process_exits(
-    tmp_path: Path,
-) -> None:
-    pid_file = tmp_path / "background-task-cancel.pid"
-    task = asyncio.create_task(
-        _executor().execute(
-            ToolCall(
-                "call-background-task-cancel",
-                "process_run",
-                {"command": _background_child_command(pid_file, inherit_output=True)},
-            ),
-            cancellation=CancellationToken(),
-        )
-    )
-    child_pid = int(await _wait_for_file(pid_file))
-    await asyncio.sleep(0.25)
-
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=10)
-
-    await _wait_for_process_exit(child_pid)
-
-
-@pytest.mark.asyncio
-async def test_successful_root_exit_does_not_leave_a_detached_child(
-    tmp_path: Path,
-) -> None:
-    pid_file = tmp_path / "background-success.pid"
-    result = await asyncio.wait_for(
-        _executor().execute(
-            ToolCall(
-                "call-background-success",
-                "process_run",
-                {
-                    "command": _background_child_command(pid_file, inherit_output=False),
-                    "timeoutMs": 5_000,
-                },
-            ),
-            cancellation=CancellationToken(),
-        ),
-        timeout=10,
-    )
-
-    child_pid = int(await _wait_for_file(pid_file))
-    assert result.ok is True
-    assert "root-exited" in result.output
-    await _wait_for_process_exit(child_pid)
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(os.name != "nt", reason="Windows suspended-spawn regression")
-async def test_task_cancel_during_spawn_never_resumes_the_suspended_command(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    marker = tmp_path / "must-not-run.txt"
-    escaped_marker = str(marker).replace("'", "''")
-    command = f"[IO.File]::WriteAllText('{escaped_marker}', 'ran')"
-    original_spawn = process_tool._spawn_process
-    supervised = asyncio.Event()
-    release = asyncio.Event()
-
-    async def pause_after_supervision(command: str, cwd: str | None) -> Any:
-        spawned = await original_spawn(command, cwd)
-        supervised.set()
-        await release.wait()
-        return spawned
-
-    monkeypatch.setattr(process_tool, "_spawn_process", pause_after_supervision)
-    task = asyncio.create_task(
-        _executor().execute(
-            ToolCall("call-spawn-task-cancel", "process_run", {"command": command}),
-            cancellation=CancellationToken(),
-        )
-    )
-    await asyncio.wait_for(supervised.wait(), timeout=5)
-
-    task.cancel()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=10)
-
-    assert not await asyncio.to_thread(marker.exists)
-
-
-@pytest.mark.asyncio
-async def test_process_run_bounds_output_and_does_not_inherit_arbitrary_secrets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("IKAROS_TEST_SECRET", "must-not-cross-tool-boundary")
-    command = _command(
-        windows=(
-            "$secret = $env:IKAROS_TEST_SECRET; "
-            "if ($secret) { [Console]::Write($secret) }; "
-            "[Console]::Write(('x' * 70000))"
-        ),
-        posix=(
-            'if [ -n "$IKAROS_TEST_SECRET" ]; then printf \'%s\' "$IKAROS_TEST_SECRET"; fi; '
-            "head -c 70000 /dev/zero | tr '\\0' x"
-        ),
-    )
-    result = await _executor().execute(
-        ToolCall("call-output-limit", "process_run", {"command": command}),
-        cancellation=CancellationToken(),
-    )
-
-    assert result.ok is True
-    assert result.details["truncated"] is True
-    assert len(result.details["stdout"].encode("utf-8")) <= 64 * 1024
-    assert "must-not-cross-tool-boundary" not in result.output
-
-
-@pytest.mark.asyncio
-async def test_invalid_and_unknown_tools_return_structured_results() -> None:
-    executor = _executor()
-    invalid = await executor.execute(
-        ToolCall("call-invalid", "process_run", {"timeoutMs": 5}),
-        cancellation=CancellationToken(),
-    )
-    unknown = await executor.execute(
-        ToolCall("call-unknown", "missing_tool", {}),
-        cancellation=CancellationToken(),
-    )
-
-    assert invalid.ok is False
-    assert invalid.details["errorCode"] == "invalid_arguments"
-    assert invalid.tool_call_id == "call-invalid"
-    assert unknown.ok is False
-    assert unknown.details["errorCode"] == "unknown_tool"
-    assert unknown.tool_call_id == "call-unknown"
-
-
-@pytest.mark.asyncio
 async def test_read_returns_numbered_utf8_lines_with_offset_and_limit(tmp_path: Path) -> None:
     path = tmp_path / "notes.txt"
     path.write_text("alpha\n中文\ngamma\ndelta\n", encoding="utf-8")
@@ -511,6 +47,7 @@ async def test_read_returns_numbered_utf8_lines_with_offset_and_limit(tmp_path: 
     result = await _file_executor().execute(
         ToolCall("read-lines", "read", {"filePath": str(path), "offset": 2, "limit": 2}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -538,7 +75,7 @@ async def test_read_resolves_relative_paths_from_the_thread_workspace(tmp_path: 
     result = await _file_executor().execute(
         ToolCall("read-relative", "read", {"filePath": "nested/notes.txt"}),
         cancellation=CancellationToken(),
-        default_cwd=str(workspace),
+        context=_context(default_cwd=str(workspace)),
     )
 
     assert result.ok is True
@@ -554,6 +91,7 @@ async def test_read_accepts_an_absolute_path_without_a_workspace(tmp_path: Path)
     result = await _file_executor().execute(
         ToolCall("read-absolute", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -572,6 +110,7 @@ async def test_read_resolves_relative_paths_from_the_runtime_cwd(
     result = await _file_executor().execute(
         ToolCall("read-cwd", "read", {"filePath": "cwd.txt"}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -586,6 +125,7 @@ async def test_read_preserves_bom_metadata_and_handles_crlf(tmp_path: Path) -> N
     result = await _file_executor().execute(
         ToolCall("read-bom", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -602,6 +142,7 @@ async def test_read_caps_long_lines_and_total_output(tmp_path: Path) -> None:
     result = await _file_executor().execute(
         ToolCall("read-large", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -629,6 +170,7 @@ async def test_read_streams_large_files_and_stops_after_the_requested_page(
     result = await _file_executor().execute(
         ToolCall("read-one-page", "read", {"filePath": str(path), "limit": 1}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -648,6 +190,7 @@ async def test_read_does_not_consume_invalid_content_beyond_the_requested_page(
     result = await _file_executor().execute(
         ToolCall("read-page-boundary", "read", {"filePath": str(path), "limit": 1}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -665,6 +208,7 @@ async def test_read_rejects_binary_content_after_the_initial_four_kibibytes(
     result = await _file_executor().execute(
         ToolCall("read-late-binary", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -697,6 +241,7 @@ async def test_read_rejects_non_text_inputs(
     result = await _file_executor().execute(
         ToolCall(f"read-{file_kind}", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -714,6 +259,7 @@ async def test_read_rejects_known_binary_extensions_even_with_text_like_bytes(
     result = await _file_executor().execute(
         ToolCall("read-binary-extension", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -739,6 +285,7 @@ async def test_read_rejects_invalid_arguments(arguments: dict[str, Any]) -> None
     result = await _file_executor().execute(
         ToolCall("read-invalid", "read", arguments),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -753,6 +300,7 @@ async def test_read_rejects_an_out_of_range_offset_without_guessing(tmp_path: Pa
     result = await _file_executor().execute(
         ToolCall("read-offset", "read", {"filePath": str(path), "offset": 3}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -768,6 +316,7 @@ async def test_read_accepts_an_empty_text_file_at_the_default_offset(tmp_path: P
     result = await _file_executor().execute(
         ToolCall("read-empty", "read", {"filePath": str(path)}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -785,7 +334,7 @@ async def test_relative_file_tool_path_does_not_fall_back_from_a_missing_workspa
     result = await _file_executor().execute(
         ToolCall("read-missing-workspace", "read", {"filePath": "notes.txt"}),
         cancellation=CancellationToken(),
-        default_cwd=str(missing_workspace),
+        context=_context(default_cwd=str(missing_workspace)),
     )
 
     assert result.ok is False
@@ -799,6 +348,7 @@ async def test_write_creates_parent_directories_and_empty_files(tmp_path: Path) 
     result = await _file_executor().execute(
         ToolCall("write-create", "write", {"filePath": str(path), "content": ""}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -827,6 +377,7 @@ async def test_write_rejects_invalid_arguments(arguments: dict[str, Any]) -> Non
     result = await _file_executor().execute(
         ToolCall("write-invalid", "write", arguments),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -845,6 +396,7 @@ async def test_write_overwrites_and_preserves_existing_bom_and_crlf(tmp_path: Pa
             {"filePath": str(path), "content": "new\nvalue\n"},
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -868,6 +420,7 @@ async def test_write_normalizes_lone_cr_and_mixed_endings_to_the_existing_style(
             {"filePath": str(path), "content": "one\rtwo\nthree\r\nfour"},
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -890,6 +443,7 @@ async def test_write_failure_leaves_the_previous_file_intact(
     result = await _file_executor().execute(
         ToolCall("write-atomic-failure", "write", {"filePath": str(path), "content": "after"}),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -945,6 +499,7 @@ async def test_file_mutations_reject_text_that_cannot_be_encoded_as_utf8(
             {"filePath": str(path), **arguments},
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -964,6 +519,7 @@ async def test_edit_replaces_one_unique_exact_match(tmp_path: Path) -> None:
             {"filePath": str(path), "oldString": "target", "newString": "updated"},
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -994,6 +550,7 @@ async def test_edit_refuses_zero_or_ambiguous_matches_without_modifying(
             {"filePath": str(path), "oldString": old_string, "newString": "updated"},
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -1017,6 +574,7 @@ async def test_edit_rejects_missing_files_and_directories(tmp_path: Path) -> Non
                 {"filePath": str(path), "oldString": "old", "newString": "new"},
             ),
             cancellation=CancellationToken(),
+            context=_context(),
         )
 
         assert result.ok is False
@@ -1045,6 +603,7 @@ async def test_edit_replace_all_changes_every_exact_match(
             },
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -1073,6 +632,7 @@ async def test_edit_normalizes_requested_line_endings_and_preserves_crlf_bom(
             },
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -1111,6 +671,7 @@ async def test_edit_normalizes_lone_cr_and_mixed_line_endings(
             },
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is True
@@ -1144,6 +705,7 @@ async def test_edit_refuses_to_overwrite_external_changes_after_its_read(
             {"filePath": str(path), "oldString": "target", "newString": "updated"},
         ),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -1165,6 +727,7 @@ async def test_edit_rejects_invalid_arguments(arguments: dict[str, Any]) -> None
     result = await _file_executor().execute(
         ToolCall("edit-invalid", "edit", arguments),
         cancellation=CancellationToken(),
+        context=_context(),
     )
 
     assert result.ok is False
@@ -1209,6 +772,7 @@ async def test_write_and_edit_share_a_per_path_lock(
                 {"filePath": str(path), "content": "written target"},
             ),
             cancellation=CancellationToken(),
+            context=_context(),
         )
     )
     assert await asyncio.to_thread(write_entered.wait, 2)
@@ -1220,6 +784,7 @@ async def test_write_and_edit_share_a_per_path_lock(
                 {"filePath": str(path), "oldString": "target", "newString": "updated"},
             ),
             cancellation=CancellationToken(),
+            context=_context(),
         )
     )
     await asyncio.sleep(0.05)
@@ -1287,6 +852,7 @@ async def test_cancelled_mutation_holds_its_lock_until_disk_write_settles(
         _file_executor().execute(
             ToolCall(f"{tool_name}-cancel-first", tool_name, first_arguments),
             cancellation=cancellation,
+            context=_context(),
         )
     )
     assert await asyncio.to_thread(entered.wait, 2)
@@ -1295,6 +861,7 @@ async def test_cancelled_mutation_holds_its_lock_until_disk_write_settles(
         _file_executor().execute(
             ToolCall(f"{tool_name}-cancel-second", tool_name, second_arguments),
             cancellation=CancellationToken(),
+            context=_context(),
         )
     )
 
@@ -1365,6 +932,7 @@ async def test_task_cancellation_waits_for_mutation_before_releasing_path_lock(
         _file_executor().execute(
             ToolCall(f"{tool_name}-task-cancel-first", tool_name, first_arguments),
             cancellation=CancellationToken(),
+            context=_context(),
         )
     )
     assert await asyncio.to_thread(entered.wait, 2)
@@ -1374,6 +942,7 @@ async def test_task_cancellation_waits_for_mutation_before_releasing_path_lock(
         _file_executor().execute(
             ToolCall(f"{tool_name}-task-cancel-second", tool_name, second_arguments),
             cancellation=CancellationToken(),
+            context=_context(),
         )
     )
     await asyncio.sleep(0.05)
@@ -1409,6 +978,7 @@ async def test_symlink_aliases_share_a_lock_and_preserve_the_link(tmp_path: Path
                 {"filePath": str(target), "oldString": "alpha", "newString": "ALPHA"},
             ),
             cancellation=CancellationToken(),
+            context=_context(),
         ),
         _file_executor().execute(
             ToolCall(
@@ -1417,6 +987,7 @@ async def test_symlink_aliases_share_a_lock_and_preserve_the_link(tmp_path: Path
                 {"filePath": str(alias), "oldString": "beta", "newString": "BETA"},
             ),
             cancellation=CancellationToken(),
+            context=_context(),
         ),
     )
 
@@ -1528,6 +1099,7 @@ async def test_pre_cancelled_file_write_does_not_modify_the_file(tmp_path: Path)
         await _file_executor().execute(
             ToolCall("write-cancelled", "write", {"filePath": str(path), "content": "after"}),
             cancellation=cancellation,
+            context=_context(),
         )
 
     assert path.read_text(encoding="utf-8") == "before"

@@ -23,20 +23,18 @@ from ..file_changes import MAX_CHANGE_EVENT_BYTES, FileChangeCapture
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
-    CONTEXT_SELECTION_VERSION,
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     CompletedProviderStepV1,
     FrozenMemoryContextV1,
-    PreparedModelStepV1,
-    RunManifestV1,
-    SubmissionFrameTemplateV1,
-    SubmissionFrameV1,
-    build_step_manifest,
+    PreparedModelStep,
+    RunConfig,
+    RunConfigTemplate,
+    build_step_input,
     canonical_json,
 )
 from ..security import response_values_contain_protected_value
 from ..tools.core import ToolCall
-from .context_history import load_context_for_snapshot, select_context_snapshot
+from .context_history import load_context_for_revision, select_context_revision
 from .file_changes import get_file_change, resolve_file_tool_path
 from .journal import (
     append_event,
@@ -53,15 +51,15 @@ from .maintenance import (
     rebuild_projection_tables,
     repair_state_projections,
 )
+from .processes import project_process
 from .projections import (
     contains_protected_projection_values,
     context_items,
     context_messages,
     find_turn_by_client_request_id,
-    get_context_snapshot,
+    get_context_revision,
     get_run,
-    get_run_manifest,
-    get_submission_frame,
+    get_run_config,
     has_active_runs,
     item_location,
     item_row,
@@ -150,13 +148,35 @@ class SqliteRuntimeStore:
         while True:
             events, latest_seq = replay_events(self._connection, after_seq, 256)
             if any(
-                response_values_contain_protected_value(event.to_wire(), values)
-                for event in events
+                response_values_contain_protected_value(event.to_wire(), values) for event in events
             ):
                 return True
             if not events or events[-1].seq >= latest_seq:
                 return False
             after_seq = events[-1].seq
+
+    def record_process(self, record: JsonObject) -> JournalEvent:
+        run = self.get_run(str(record["runId"]))
+        with self._connection:
+            project_process(self._connection, record)
+            return self._append_event(
+                event_type="process.recorded",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run.id,
+                item_id=str(record["itemId"]),
+                timestamp=utc_now(),
+                payload={"process": record},
+            )
+
+    def process_records(self) -> tuple[JsonObject, ...]:
+        return tuple(
+            json_loads(row[0])
+            for row in self._connection.execute(
+                "SELECT record_json FROM process_sessions ORDER BY process_id"
+            )
+        )
 
     def create_thread(
         self,
@@ -429,11 +449,11 @@ class SqliteRuntimeStore:
         thread_id: str,
         branch_id: str,
         content: str,
-        frame_template: SubmissionFrameTemplateV1,
+        run_config_template: RunConfigTemplate,
         client_request_id: str | None = None,
     ) -> PreparedTurn:
-        provider_id = frame_template.provider.provider_id
-        model_id = frame_template.provider.model_id
+        provider_id = run_config_template.provider.provider_id
+        model_id = run_config_template.provider.model_id
         if client_request_id is not None:
             existing = self.find_turn_by_client_request_id(
                 thread_id=thread_id,
@@ -471,18 +491,14 @@ class SqliteRuntimeStore:
         user_item_id = f"item_{uuid.uuid4().hex}"
         timestamp = utc_now()
         workspace = workspace_from_json(owner["workspace_json"])
-        submission_frame = SubmissionFrameV1.from_template(
-            frame_template,
+        run_config = RunConfig.from_template(
+            run_config_template,
             user_item_id=user_item_id,
             thread_id=thread_id,
             branch_id=branch_id,
             turn_id=turn_id,
             run_id=run_id,
             workspace=workspace,
-        )
-        run_manifest = RunManifestV1.from_frame(
-            submission_frame,
-            context_selection_version=CONTEXT_SELECTION_VERSION,
         )
         turn_payload = {
             "id": turn_id,
@@ -498,11 +514,15 @@ class SqliteRuntimeStore:
             "turnId": turn_id,
             "providerId": provider_id,
             "modelId": model_id,
-            "executionPolicy": submission_frame.execution_policy,
+            "executionPolicy": run_config.execution_policy,
             "status": "queued",
             "createdAt": timestamp,
             "settledAt": None,
-            "skills": [skill.to_wire() for skill in submission_frame.skills],
+            "skills": [skill.to_wire() for skill in run_config.skills],
+            "executionLimits": {
+                "maxModelCalls": run_config.max_model_calls,
+                "maxDurationSeconds": run_config.max_duration_seconds,
+            },
         }
         if client_request_id is not None:
             run_payload["clientRequestId"] = client_request_id
@@ -540,7 +560,7 @@ class SqliteRuntimeStore:
                     turn_id,
                     provider_id,
                     model_id,
-                    submission_frame.execution_policy,
+                    run_config.execution_policy,
                     timestamp,
                     client_request_id,
                 ),
@@ -556,14 +576,13 @@ class SqliteRuntimeStore:
             )
             self._connection.execute(
                 """
-                INSERT INTO run_inputs(
-                    run_id, submission_frame_json, run_manifest_json, context_snapshot_json
-                ) VALUES (?, ?, ?, NULL)
+                INSERT INTO run_configs(
+                    run_id, config_json
+                ) VALUES (?, ?)
                 """,
                 (
                     run_id,
-                    canonical_json(submission_frame.to_wire()),
-                    canonical_json(run_manifest.to_wire()),
+                    canonical_json(run_config.to_wire()),
                 ),
             )
             self._connection.execute(
@@ -582,8 +601,7 @@ class SqliteRuntimeStore:
                     "turn": turn_payload,
                     "run": run_payload,
                     "item": item_payload,
-                    "submissionFrame": submission_frame.to_wire(),
-                    "runManifest": run_manifest.to_wire(),
+                    "runConfig": run_config.to_wire(),
                     **(
                         {"clientRequestId": client_request_id}
                         if client_request_id is not None
@@ -612,16 +630,13 @@ class SqliteRuntimeStore:
     def get_run(self, run_id: str) -> RunDescriptor:
         return get_run(self._connection, run_id)
 
-    def get_submission_frame(self, run_id: str) -> SubmissionFrameV1:
-        return get_submission_frame(self._connection, run_id)
-
-    def get_run_manifest(self, run_id: str) -> RunManifestV1:
-        return get_run_manifest(self._connection, run_id)
+    def get_run_config(self, run_id: str) -> RunConfig:
+        return get_run_config(self._connection, run_id)
 
     def get_submission_user_content(self, run_id: str) -> str:
         """Read only the frozen Run's original User Item for deterministic retrieval."""
 
-        frame = get_submission_frame(self._connection, run_id)
+        frame = get_run_config(self._connection, run_id)
         row = self._connection.execute(
             """
             SELECT turn_id, run_id, kind, role, status, content
@@ -706,7 +721,7 @@ class SqliteRuntimeStore:
         *,
         step_ordinal: int,
         memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    ) -> PreparedModelStepV1:
+    ) -> PreparedModelStep:
         if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
             raise ValueError("model Step ordinal must be a positive integer")
         with self._connection:
@@ -723,36 +738,36 @@ class SqliteRuntimeStore:
         *,
         step_ordinal: int,
         memory_context: FrozenMemoryContextV1,
-    ) -> PreparedModelStepV1:
+    ) -> PreparedModelStep:
         run = self.get_run(run_id)
-        frame = get_submission_frame(self._connection, run_id)
-        run_manifest = get_run_manifest(self._connection, run_id)
-        snapshot = get_context_snapshot(self._connection, run_id)
+        frame = get_run_config(self._connection, run_id)
+        snapshot = get_context_revision(self._connection, run_id)
         if snapshot is None:
-            snapshot, records = select_context_snapshot(
+            snapshot, records = select_context_revision(
                 self._connection,
                 branch_id=run.branch_id,
                 turn_id=run.turn_id,
                 run_id=run_id,
-                frame=frame,
-                manifest=run_manifest,
+                config=frame,
                 memory_context=memory_context,
             )
         else:
-            if FrozenMemoryContextV1.from_snapshot(snapshot) != memory_context:
+            if FrozenMemoryContextV1.from_revision(snapshot) != memory_context:
                 raise RuntimeError("model Step changes the frozen Memory context")
-            records = load_context_for_snapshot(
+            records = load_context_for_revision(
                 self._connection,
                 run_id=run_id,
                 snapshot=snapshot,
             )
-        step_manifest = build_step_manifest(
+        step_input = build_step_input(
             step_ordinal,
             records,
             snapshot,
             current_run_id=run_id,
-            frame=frame,
+            config=frame,
         )
+        if step_ordinal > frame.max_model_calls:
+            raise RuntimeError("model_call_budget_exceeded")
         timestamp = utc_now()
         status = self._connection.execute(
             "SELECT status FROM runs WHERE id = ?",
@@ -760,40 +775,43 @@ class SqliteRuntimeStore:
         ).fetchone()
         if status is None or status["status"] != "running":
             raise RuntimeError("model input preparation requires a running Run")
-        if self._connection.execute(
-            "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
-            (run_id,),
-        ).fetchone() is not None:
+        if (
+            self._connection.execute(
+                "SELECT 1 FROM model_calls WHERE run_id = ? AND outcome IS NULL",
+                (run_id,),
+            ).fetchone()
+            is not None
+        ):
             raise RuntimeError("Run already has an unfinished model Step")
         expected_ordinal = int(
             self._connection.execute(
                 """
                 SELECT COALESCE(MAX(step_ordinal), 0) + 1
-                FROM model_steps WHERE run_id = ?
+                FROM model_calls WHERE run_id = ?
                 """,
                 (run_id,),
             ).fetchone()[0]
         )
         if step_ordinal != expected_ordinal:
             raise RuntimeError("model Step ordinal is not contiguous")
-        stored_snapshot = get_context_snapshot(self._connection, run_id)
+        stored_snapshot = get_context_revision(self._connection, run_id)
         if stored_snapshot is None:
             self._connection.execute(
-                "UPDATE run_inputs SET context_snapshot_json = ? WHERE run_id = ?",
-                (canonical_json(snapshot.to_wire()), run_id),
+                "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
+                (run_id, snapshot.revision, canonical_json(snapshot.to_wire())),
             )
         elif stored_snapshot != snapshot:
-            raise RuntimeError("model Step changes the frozen Context Snapshot")
+            raise RuntimeError("model Step changes the frozen Context Revision")
         self._connection.execute(
             """
-            INSERT INTO model_steps(
-                run_id, step_ordinal, step_manifest_json, prepared_at
+            INSERT INTO model_calls(
+                run_id, step_ordinal, input_json, prepared_at
             ) VALUES (?, ?, ?, ?)
             """,
             (
                 run_id,
                 step_ordinal,
-                canonical_json(step_manifest.to_wire()),
+                canonical_json(step_input.to_wire()),
                 timestamp,
             ),
         )
@@ -807,13 +825,13 @@ class SqliteRuntimeStore:
             payload={
                 "stepOrdinal": step_ordinal,
                 "preparedAt": timestamp,
-                "contextSnapshot": snapshot.to_wire(),
-                "stepManifest": step_manifest.to_wire(),
+                "contextRevision": snapshot.to_wire() if stored_snapshot is None else None,
+                "stepInput": step_input.to_wire(),
             },
         )
-        return PreparedModelStepV1(
-            context_snapshot=snapshot,
-            step_manifest=step_manifest,
+        return PreparedModelStep(
+            context_revision=snapshot,
+            step_input=step_input,
             items=tuple(record.to_context_item() for record in records),
             event=event,
         )
@@ -932,7 +950,7 @@ class SqliteRuntimeStore:
         row = self._connection.execute(
             """
             SELECT ms.outcome, r.status
-            FROM model_steps ms JOIN runs r ON r.id = ms.run_id
+            FROM model_calls ms JOIN runs r ON r.id = ms.run_id
             WHERE ms.run_id = ? AND ms.step_ordinal = ?
             """,
             (run_id, step_ordinal),
@@ -953,11 +971,7 @@ class SqliteRuntimeStore:
         step_id: str | None,
     ) -> JournalEvent:
         row = item_row(self._connection, item_id)
-        if (
-            row["kind"] != "message"
-            or row["role"] != "assistant"
-            or row["status"] != "streaming"
-        ):
+        if row["kind"] != "message" or row["role"] != "assistant" or row["status"] != "streaming":
             raise RuntimeError("assistant item is not streaming")
         data = json_loads(row["data_json"])
         if step_id is not None:
@@ -1072,7 +1086,7 @@ class SqliteRuntimeStore:
         usage_payload = _model_usage_payload(usage) if usage is not None else None
         updated = self._connection.execute(
             """
-            UPDATE model_steps
+            UPDATE model_calls
             SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
                 usage_json = ?, activity_date = ?, finished_at = ?
             WHERE run_id = ? AND step_ordinal = ? AND outcome IS NULL
@@ -1449,34 +1463,53 @@ class SqliteRuntimeStore:
             events = [call_event, result_event]
             if file_change is not None:
                 record = file_change.to_record(
-                    thread_id=str(row["thread_id"]), tool_call_item_id=tool_call_item_id,
+                    thread_id=str(row["thread_id"]),
+                    tool_call_item_id=tool_call_item_id,
                     recorded_at=timestamp,
                 )
                 # Include the actual event envelope and scoped payload fields in
                 # this byte cap; an oversized patch is never partially persisted.
                 predicted = JournalEvent(
-                    seq=result_event.seq + 1, schema_version=result_event.schema_version,
-                    type="file.change_recorded", thread_id=str(row["thread_id"]),
-                    branch_id=str(row["branch_id"]), turn_id=str(row["turn_id"]),
-                    run_id=str(row["run_id"]), item_id=tool_call_item_id, timestamp=timestamp,
-                    payload={**record, "turnId": row["turn_id"], "runId": row["run_id"],
-                             "itemId": tool_call_item_id},
+                    seq=result_event.seq + 1,
+                    schema_version=result_event.schema_version,
+                    type="file.change_recorded",
+                    thread_id=str(row["thread_id"]),
+                    branch_id=str(row["branch_id"]),
+                    turn_id=str(row["turn_id"]),
+                    run_id=str(row["run_id"]),
+                    item_id=tool_call_item_id,
+                    timestamp=timestamp,
+                    payload={
+                        **record,
+                        "turnId": row["turn_id"],
+                        "runId": row["run_id"],
+                        "itemId": tool_call_item_id,
+                    },
                 )
                 if (
                     len(canonical_json(predicted.to_wire()).encode("utf-8"))
                     > MAX_CHANGE_EVENT_BYTES
                 ):
                     record = FileChangeCapture(
-                        file_change.path, file_change.operation, file_change.before,
-                        file_change.after, reason="too_large",
+                        file_change.path,
+                        file_change.operation,
+                        file_change.before,
+                        file_change.after,
+                        reason="too_large",
                     ).to_record(
-                        thread_id=str(row["thread_id"]), tool_call_item_id=tool_call_item_id,
+                        thread_id=str(row["thread_id"]),
+                        tool_call_item_id=tool_call_item_id,
                         recorded_at=timestamp,
                     )
                 event = self._append_event(
-                    event_type="file.change_recorded", thread_id=row["thread_id"],
-                    branch_id=row["branch_id"], turn_id=row["turn_id"], run_id=row["run_id"],
-                    item_id=tool_call_item_id, timestamp=timestamp, payload=record,
+                    event_type="file.change_recorded",
+                    thread_id=row["thread_id"],
+                    branch_id=row["branch_id"],
+                    turn_id=row["turn_id"],
+                    run_id=row["run_id"],
+                    item_id=tool_call_item_id,
+                    timestamp=timestamp,
+                    payload=record,
                 )
                 self._connection.execute(
                     "INSERT INTO file_changes(tool_call_item_id, record_json) VALUES (?, ?)",
@@ -1506,7 +1539,7 @@ class SqliteRuntimeStore:
                 return ()
             open_steps = self._connection.execute(
                 """
-                SELECT step_ordinal FROM model_steps
+                SELECT step_ordinal FROM model_calls
                 WHERE run_id = ? AND outcome IS NULL
                 ORDER BY step_ordinal
                 """,
@@ -1516,7 +1549,9 @@ class SqliteRuntimeStore:
                 raise RuntimeError("Run has multiple unfinished model Steps")
             if open_steps and not _finish_open_model_step:
                 raise RuntimeError("Run cannot settle with an unfinished model Step")
-            if _finish_open_model_step and (status != "failed" or reason_code is None):
+            if _finish_open_model_step and (
+                status not in {"failed", "cancelled"} or reason_code is None
+            ):
                 raise RuntimeError("model Step recovery requires a failed Run reason")
             active_items = self._connection.execute(
                 """
@@ -1660,7 +1695,7 @@ class SqliteRuntimeStore:
                     self._finish_model_step_in_transaction(
                         run,
                         step_ordinal=int(open_steps[0]["step_ordinal"]),
-                        outcome="failed",
+                        outcome=status,
                         reason_code=reason_code,
                         usage=None,
                         response_model_id=None,
@@ -1854,11 +1889,7 @@ def _validate_model_step_metadata(
 ) -> None:
     if usage is not None:
         _validate_model_usage(step_ordinal, usage)
-    elif (
-        not isinstance(step_ordinal, int)
-        or isinstance(step_ordinal, bool)
-        or step_ordinal < 1
-    ):
+    elif not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
         raise ValueError("model Step ordinal must be a positive integer")
     _validate_response_identifier("response model ID", response_model_id)
     _validate_response_identifier("request ID", request_id)

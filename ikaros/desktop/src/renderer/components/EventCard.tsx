@@ -54,7 +54,7 @@ function isFileTool(toolName: string | undefined): toolName is "read" | "write" 
 }
 
 function processCommand(event: ToolCallEvent): string | undefined {
-  return event.toolName === "process.run" &&
+  return event.toolName === "process_start" &&
     typeof event.arguments.command === "string"
     ? event.arguments.command
     : undefined;
@@ -64,7 +64,7 @@ function toolIcon(toolName: string) {
   if (toolName === "read") return <FileText size={14} />;
   if (toolName === "write") return <FileOutput size={14} />;
   if (toolName === "edit") return <FilePenLine size={14} />;
-  if (toolName === "process.run" || toolName.includes("extract")) {
+  if (toolName.startsWith("process_") || toolName.includes("extract")) {
     return <SquareTerminal size={14} />;
   }
   return <Wrench size={14} />;
@@ -185,7 +185,7 @@ function ToolCallCard({
     },
     success: {
       icon: <CheckCircle2 size={15} />,
-      label: t("events.complete"),
+      label: t(event.toolName === "process_start" ? "events.processStarted" : "events.complete"),
       className: "text-[#72d3a7]",
     },
     error: {
@@ -289,6 +289,11 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
   const { t } = useTranslation();
   const isFileResult = isFileTool(event.toolName);
   const metadata = isFileResult ? fileToolResultDetails(event, t) : [];
+  if (event.toolName?.startsWith("process_") && event.details) {
+    if (typeof event.details.exitCode === "number") metadata.push(t("events.result.exitCode", { code: event.details.exitCode }));
+    if (event.details.processId) metadata.push(event.details.processId);
+    if (event.details.truncated) metadata.push(t("events.result.outputTruncated"));
+  }
   const presentation = {
     success: {
       icon: <Check size={13} className="mt-0.5 shrink-0 text-[#72d3a7]" />,
@@ -303,6 +308,10 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
       className: "border-[#8b6a44]/45 bg-[#4b3b26]/18",
     },
   }[event.status];
+  if (event.details?.processState === "running") {
+    presentation.icon = <LoaderCircle size={13} className="mt-0.5 shrink-0 animate-spin text-[var(--muted)]" />;
+    presentation.className = "border-[var(--border)] bg-[var(--panel)]";
+  }
   return (
     <div
       className={cx(

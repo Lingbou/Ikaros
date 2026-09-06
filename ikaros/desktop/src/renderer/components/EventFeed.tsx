@@ -12,6 +12,7 @@ import { activeBranch, type AgentEvent, type Turn } from "../domain";
 import { useTranslation } from "../i18n";
 import { selectCurrentThread, useAppStore } from "../store";
 import { EventCard } from "./EventCard";
+import { RuntimeRunProgress } from "./RuntimeRunProgress";
 import { RuntimeTurnOutcome } from "./RuntimeTurnOutcome";
 import { cx } from "./ui";
 import {
@@ -121,7 +122,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   const events = useMemo<FeedRow[]>(
     () => turns?.flatMap((turn): FeedRow[] => [
       ...turn.events,
-      ...(runtimeMode && turn.runId && (turn.status === "failed" || turn.status === "interrupted")
+      ...(runtimeMode && turn.runId && (turn.runProgress || turn.status === "failed" || turn.status === "interrupted")
         ? [{ type: "runtime_outcome" as const, id: `outcome:${turn.runId}`, turn }]
         : []),
     ]) ?? [],
@@ -176,7 +177,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     useFlushSync: false,
     estimateSize: (index) => {
       const event = events[index];
-      if (event?.type === "runtime_outcome") return 164;
+      if (event?.type === "runtime_outcome") return event.turn.status === "failed" || event.turn.status === "interrupted" ? 200 : 48;
       if (event?.type === "message") return event.role === "user" ? 72 : 128;
       if (event?.type === "permission_request" || event?.type === "interrupt") return 168;
       if (
@@ -481,7 +482,10 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
               >
                 <div className={shouldAnimate ? "event-enter" : undefined}>
                   {event.type === "runtime_outcome" ? (
-                    <RuntimeTurnOutcome turn={event.turn} />
+                    <>
+                      <RuntimeRunProgress turn={event.turn} />
+                      <RuntimeTurnOutcome turn={event.turn} />
+                    </>
                   ) : isMatchedToolResult ? (
                     <div
                       id={toolResultRegionId(event.toolCallId)}

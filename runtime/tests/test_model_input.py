@@ -1,40 +1,36 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 import ikaros_runtime.run_input as run_input_module
-from ikaros_runtime.agent import ModelInputPlanner, ModelInputPlanV1
+from ikaros_runtime.agent import ModelInputPlan, ModelInputPlanner
 from ikaros_runtime.domain import ContextItem, SkillDescriptor
+from ikaros_runtime.errors import ModelInputUnavailableError
 from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.run_input import (
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     INPUT_BUDGET_MEASUREMENT_VERSION,
     ContextItemRecordV1,
-    ContextSnapshotV1,
+    ContextRevision,
     FrozenMemoryContextV1,
     HistoryItemReferenceV1,
-    InputBudgetRecordV1,
+    InputBudgetRecord,
     MemoryReferenceV1,
     MemoryScope,
     OmissionRecordV1,
-    RunManifestV1,
-    StepManifestV1,
-    build_context_snapshot,
-    build_step_manifest,
+    StepInput,
+    build_context_revision,
+    build_step_input,
     canonical_json,
-    validate_run_manifest,
-)
-from ikaros_runtime.run_input import (
-    LEGACY_CONTEXT_SELECTION_VERSION as CONTEXT_SELECTION_VERSION,
 )
 from ikaros_runtime.tools.core import ToolDefinition
 
-from .helpers import bounded_budget, submission_frame
+from .helpers import bounded_budget, run_config
 
 
 def _memory_reference(
@@ -66,7 +62,7 @@ def test_model_input_plan_has_versioned_ordered_identity_style_and_skill_blocks(
 
     identity_core = load_identity_core()
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame(
+        config=run_config(
             "provider",
             "model-1",
             skills=(skill,),
@@ -76,7 +72,6 @@ def test_model_input_plan_has_versioned_ordered_identity_style_and_skill_blocks(
         budget_snapshot=bounded_budget(),
     )
 
-    assert plan.version == 1
     assert [block.id for block in plan.instructions] == [
         "ikaros-identity",
         "output-style",
@@ -122,7 +117,7 @@ def test_model_input_plan_has_versioned_ordered_identity_style_and_skill_blocks(
     assert "BODY-MUST-STAY-LAZY" not in plan.instructions[2].content
     assert plan.context_data == ()
     assert [block.authority for block in plan.instructions].count("runtime_identity") == 1
-    assert plan.generation_options.mode == "provider_defaults"
+    assert plan.generation_options.max_output_tokens == 4096
     assert plan.budget_snapshot.mode == "bounded"
 
 
@@ -138,7 +133,7 @@ def test_model_input_plan_owns_immutable_sequence_structure() -> None:
     skills: list[SkillDescriptor] = []
 
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1", tools=tools, skills=skills),
+        config=run_config("provider", "model-1", tools=tools, skills=skills),
         items=items,
         budget_snapshot=bounded_budget(),
     )
@@ -167,22 +162,18 @@ def test_model_input_plan_is_deterministic_for_equal_inputs() -> None:
         ),
     )
     planner = ModelInputPlanner()
-    frame = submission_frame("provider", "model-1", tools=tools)
+    frame = run_config("provider", "model-1", tools=tools)
 
-    first = planner.build_plan(
-        frame=frame, items=items, budget_snapshot=bounded_budget()
-    )
-    second = planner.build_plan(
-        frame=frame, items=items, budget_snapshot=bounded_budget()
-    )
+    first = planner.build_plan(config=frame, items=items, budget_snapshot=bounded_budget())
+    second = planner.build_plan(config=frame, items=items, budget_snapshot=bounded_budget())
 
-    assert isinstance(first, ModelInputPlanV1)
+    assert isinstance(first, ModelInputPlan)
     assert first == second
 
 
 def test_model_input_plan_constructor_defensively_copies_runtime_sequences() -> None:
     baseline = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1"),
+        config=run_config("provider", "model-1"),
         items=(),
         budget_snapshot=bounded_budget(),
     )
@@ -191,7 +182,7 @@ def test_model_input_plan_constructor_defensively_copies_runtime_sequences() -> 
     messages: list[ContextItem] = []
     tools: list[ToolDefinition] = []
 
-    plan = ModelInputPlanV1(
+    plan = ModelInputPlan(
         model_id="model-1",
         instructions=cast(Any, instructions),
         context_data=cast(Any, context_data),
@@ -212,13 +203,13 @@ def test_model_input_plan_constructor_defensively_copies_runtime_sequences() -> 
     assert plan.tools == ()
 
 
-def test_bounded_context_snapshot_accounts_for_all_actual_input_parts() -> None:
+def test_bounded_context_revision_accounts_for_all_actual_input_parts() -> None:
     tool = ToolDefinition(
         name="process_run",
         description="Run a process.",
         input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
     )
-    frame = submission_frame("provider", "model-1", tools=(tool,))
+    frame = run_config("provider", "model-1", tools=(tool,))
     records = (
         ContextItemRecordV1(
             item_id="item_history",
@@ -240,44 +231,34 @@ def test_bounded_context_snapshot_accounts_for_all_actual_input_parts() -> None:
         ),
     )
 
-    snapshot = build_context_snapshot(
+    snapshot = build_context_revision(
         records,
         current_run_id=frame.run_id,
-        frame=frame,
-        selection_version=CONTEXT_SELECTION_VERSION,
-        maximum_characters=48_000,
-        reserved_current_run_characters=12_000,
+        config=frame,
+        maximum_tokens=frame.maximum_input_tokens,
+        reserved_current_run_tokens=frame.reserved_current_run_tokens,
         omissions=(),
     )
     budget = snapshot.budget
-    expected_instructions = sum(len(block.content) for block in frame.instructions)
-    expected_tools = len(
-        canonical_json(
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "inputSchema": tool.input_schema,
-            }
-        )
-    )
+    expected_instructions, expected_tools = run_input_module.config_input_token_counts(frame)
 
     assert budget.mode == "bounded"
     assert budget.measurement_version == INPUT_BUDGET_MEASUREMENT_VERSION
-    assert budget.maximum_characters == 48_000
-    assert budget.reserved_current_run_characters == 12_000
-    assert budget.instruction_characters == expected_instructions
-    assert budget.context_data_characters == 0
-    assert budget.tool_characters == expected_tools
-    assert budget.history_characters == records[0].characters
-    assert budget.current_run_characters == records[1].characters
-    assert budget.memory_characters == 0
-    assert budget.total_characters == (
+    assert budget.maximum_tokens == frame.maximum_input_tokens
+    assert budget.reserved_current_run_tokens == frame.reserved_current_run_tokens
+    assert budget.instruction_tokens == expected_instructions
+    assert budget.context_data_tokens == 0
+    assert budget.tool_tokens == expected_tools
+    assert budget.history_tokens == records[0].estimated_tokens
+    assert budget.current_run_tokens == records[1].estimated_tokens
+    assert budget.memory_tokens == 0
+    assert budget.total_tokens == (
         expected_instructions
         + expected_tools
-        + records[0].characters
-        + records[1].characters
+        + records[0].estimated_tokens
+        + records[1].estimated_tokens
     )
-    assert InputBudgetRecordV1.from_wire(budget.to_wire()) == budget
+    assert InputBudgetRecord.from_wire(budget.to_wire()) == budget
 
 
 def test_context_item_character_measurement_matches_provider_facing_parts() -> None:
@@ -331,9 +312,11 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
         },
     )
 
-    assert message.characters == len("hello")
-    assert tool_call.characters == len(canonical_json(arguments)) + len("reason")
-    assert tool_result.characters == len(canonical_json(result))
+    assert message.estimated_tokens >= len(b"hello")
+    assert tool_call.estimated_tokens >= len(canonical_json(arguments).encode("utf-8")) + len(
+        "reason"
+    )
+    assert tool_result.estimated_tokens >= len(canonical_json(result).encode("utf-8"))
 
 
 @pytest.mark.parametrize(
@@ -372,30 +355,30 @@ def test_context_item_character_measurement_rejects_non_provider_shapes(
     record: ContextItemRecordV1,
 ) -> None:
     with pytest.raises(ValueError, match="context Item|context Item data"):
-        _ = record.characters
+        _ = record.estimated_tokens
 
 
 @pytest.mark.parametrize(
-    ("maximum_characters", "reserved_current_run_characters"),
+    ("maximum_tokens", "reserved_current_run_tokens"),
     ((None, 0), (100, 0), (1, 1), (1, 2)),
 )
 def test_bounded_input_budget_rejects_missing_or_invalid_limits(
-    maximum_characters: int | None,
-    reserved_current_run_characters: int,
+    maximum_tokens: int | None,
+    reserved_current_run_tokens: int,
 ) -> None:
     with pytest.raises(ValueError, match="bounded input budget"):
-        InputBudgetRecordV1(
+        InputBudgetRecord(
             mode="bounded",
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
-            maximum_characters=maximum_characters,
-            reserved_current_run_characters=reserved_current_run_characters,
-            instruction_characters=0,
-            context_data_characters=0,
-            tool_characters=0,
-            history_characters=0,
-            current_run_characters=0,
-            memory_characters=0,
-            total_characters=0,
+            maximum_tokens=cast(Any, maximum_tokens),
+            reserved_current_run_tokens=reserved_current_run_tokens,
+            instruction_tokens=0,
+            context_data_tokens=0,
+            tool_tokens=0,
+            history_tokens=0,
+            current_run_tokens=0,
+            memory_tokens=0,
+            total_tokens=0,
         )
 
 
@@ -420,7 +403,7 @@ def test_history_item_reference_rejects_invalid_kind_role_pairs(
             run_id="run_1",
             kind=kind,
             role=role,
-            characters=1,
+            tokens=1,
         )
 
 
@@ -432,40 +415,12 @@ def test_history_item_reference_rejects_empty_ids_from_wire(field: str) -> None:
         "runId": "run_1",
         "kind": "message",
         "role": "user",
-        "characters": 1,
+        "tokens": 1,
     }
     value[field] = ""
 
     with pytest.raises(ValueError):
         HistoryItemReferenceV1.from_wire(value)
-
-
-def test_run_manifest_validation_uses_persisted_registered_selector(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    frame = submission_frame("provider", "model-1")
-    persisted = RunManifestV1.from_frame(
-        frame,
-        context_selection_version=CONTEXT_SELECTION_VERSION,
-    ).to_wire()
-    monkeypatch.setattr(run_input_module, "CONTEXT_SELECTION_VERSION", "future-selector-v2")
-
-    manifest = validate_run_manifest(persisted, frame)
-
-    assert manifest.context_selection_version == "bounded-history-v1"
-    assert manifest.memory_context_version == 2
-
-
-def test_run_manifest_validation_rejects_unregistered_persisted_selector() -> None:
-    frame = submission_frame("provider", "model-1")
-    persisted = RunManifestV1.from_frame(
-        frame,
-        context_selection_version=CONTEXT_SELECTION_VERSION,
-    ).to_wire()
-    persisted["contextSelectionVersion"] = "unknown-selector"
-
-    with pytest.raises(ValueError, match="unsupported"):
-        validate_run_manifest(persisted, frame)
 
 
 @pytest.mark.parametrize(
@@ -493,13 +448,13 @@ def test_run_manifest_validation_rejects_unregistered_persisted_selector() -> No
         ("skillCatalog", "content", "replaced catalog"),
     ),
 )
-def test_submission_frame_rejects_instruction_slot_metadata_corruption(
+def test_run_config_rejects_instruction_slot_metadata_corruption(
     slot: str,
     field: str,
     replacement: object,
 ) -> None:
     skill = SkillDescriptor("demo", "Demo Skill", "C:/skills/demo/SKILL.md")
-    wire = submission_frame("provider", "model-1", skills=(skill,)).to_wire()
+    wire = run_config("provider", "model-1", skills=(skill,)).to_wire()
     instructions = cast(dict[str, Any], wire["instructions"])
     if slot == "identityCore":
         instructions["identityCore"] = load_identity_core().to_wire()
@@ -507,21 +462,17 @@ def test_submission_frame_rejects_instruction_slot_metadata_corruption(
     block[field] = replacement
 
     with pytest.raises(ValueError, match="instruction"):
-        run_input_module.SubmissionFrameV1.from_wire(wire)
+        run_input_module.RunConfig.from_wire(wire)
 
 
-def test_submission_frame_accepts_identity_but_keeps_memory_slot_empty() -> None:
+def test_run_config_accepts_identity_but_keeps_memory_slot_empty() -> None:
     identity_core = load_identity_core()
-    frame = submission_frame("provider", "model-1", identity_core=identity_core)
-    restored = run_input_module.SubmissionFrameV1.from_wire(frame.to_wire())
+    frame = run_config("provider", "model-1", identity_core=identity_core)
+    restored = run_input_module.RunConfig.from_wire(frame.to_wire())
     assert restored.identity_core == identity_core
     assert restored.instructions[0] == identity_core
 
-    wire = submission_frame("provider", "model-1").to_wire()
-    context_data = cast(dict[str, Any], wire["contextData"])
-    context_data["memory"] = [_memory_reference().to_wire()]
-    with pytest.raises(ValueError, match="Memory context is not available"):
-        run_input_module.SubmissionFrameV1.from_wire(wire)
+    assert "contextData" not in restored.to_wire()
 
 
 def test_memory_reference_wire_is_exact_and_omits_content_fingerprints() -> None:
@@ -620,12 +571,12 @@ def test_omission_wire_is_discriminated_and_history_precedes_memory() -> None:
         FrozenMemoryContextV1((), (history,), 0, 0)
 
 
-def _context_snapshot_fixture() -> tuple[
-    run_input_module.SubmissionFrameV1,
+def _context_revision_fixture() -> tuple[
+    run_input_module.RunConfig,
     tuple[ContextItemRecordV1, ...],
-    ContextSnapshotV1,
+    ContextRevision,
 ]:
-    frame = submission_frame("provider", "model-1")
+    frame = run_config("provider", "model-1")
     records = (
         ContextItemRecordV1(
             item_id="item_old",
@@ -646,20 +597,19 @@ def _context_snapshot_fixture() -> tuple[
             data={},
         ),
     )
-    snapshot = build_context_snapshot(
+    snapshot = build_context_revision(
         records,
         current_run_id=frame.run_id,
-        frame=frame,
-        selection_version=CONTEXT_SELECTION_VERSION,
-        maximum_characters=48_000,
-        reserved_current_run_characters=12_000,
+        config=frame,
+        maximum_tokens=frame.maximum_input_tokens,
+        reserved_current_run_tokens=frame.reserved_current_run_tokens,
         omissions=(),
     )
     return frame, records, snapshot
 
 
-def test_context_snapshot_rejects_non_bijective_or_misordered_history_groups() -> None:
-    _frame, _records, snapshot = _context_snapshot_fixture()
+def test_context_revision_rejects_non_bijective_or_misordered_history_groups() -> None:
+    _frame, _records, snapshot = _context_revision_fixture()
     baseline = snapshot.to_wire()
     corruptions: list[dict[str, Any]] = []
 
@@ -669,9 +619,7 @@ def test_context_snapshot_rejects_non_bijective_or_misordered_history_groups() -
 
     reordered = deepcopy(baseline)
     groups = cast(list[dict[str, Any]], reordered["historyGroups"])
-    groups[0]["itemIds"], groups[1]["itemIds"] = groups[1]["itemIds"], groups[0][
-        "itemIds"
-    ]
+    groups[0]["itemIds"], groups[1]["itemIds"] = groups[1]["itemIds"], groups[0]["itemIds"]
     corruptions.append(reordered)
 
     wrong_turn = deepcopy(baseline)
@@ -694,29 +642,26 @@ def test_context_snapshot_rejects_non_bijective_or_misordered_history_groups() -
 
     for corrupted in corruptions:
         with pytest.raises(ValueError, match="history"):
-            ContextSnapshotV1.from_wire(corrupted)
+            ContextRevision.from_wire(corrupted)
 
 
-def test_context_snapshot_rejects_empty_history() -> None:
-    _frame, _records, snapshot = _context_snapshot_fixture()
+def test_context_revision_rejects_empty_history() -> None:
+    _frame, _records, snapshot = _context_revision_fixture()
 
     empty = snapshot.to_wire()
     empty["historyGroups"] = []
     empty["historyItems"] = []
     empty_budget = cast(dict[str, Any], empty["budget"])
-    removed = cast(int, empty_budget["historyCharacters"]) + cast(
-        int, empty_budget["currentRunCharacters"]
-    )
-    empty_budget["historyCharacters"] = 0
-    empty_budget["currentRunCharacters"] = 0
-    empty_budget["totalCharacters"] = cast(int, empty_budget["totalCharacters"]) - removed
+    removed = cast(int, empty_budget["historyTokens"]) + cast(int, empty_budget["currentRunTokens"])
+    empty_budget["historyTokens"] = 0
+    empty_budget["currentRunTokens"] = 0
+    empty_budget["totalTokens"] = cast(int, empty_budget["totalTokens"]) - removed
     with pytest.raises(ValueError, match="current User Item"):
-        ContextSnapshotV1.from_wire(empty)
+        ContextRevision.from_wire(empty)
 
 
-
-def test_context_snapshot_accepts_frozen_memory_and_body_free_omissions() -> None:
-    frame, records, _snapshot = _context_snapshot_fixture()
+def test_context_revision_accepts_frozen_memory_and_body_free_omissions() -> None:
+    frame, records, _snapshot = _context_revision_fixture()
     selected = _memory_reference(characters=17)
     omitted = OmissionRecordV1(
         source_type="memory",
@@ -732,28 +677,26 @@ def test_context_snapshot_accepts_frozen_memory_and_body_free_omissions() -> Non
         context_data_characters=41,
     )
 
-    snapshot = build_context_snapshot(
+    snapshot = build_context_revision(
         records,
         current_run_id=frame.run_id,
-        frame=frame,
-        selection_version=CONTEXT_SELECTION_VERSION,
-        maximum_characters=48_000,
-        reserved_current_run_characters=12_000,
+        config=frame,
+        maximum_tokens=frame.maximum_input_tokens,
+        reserved_current_run_tokens=frame.reserved_current_run_tokens,
         omissions=(),
         memory_context=frozen,
     )
-    restored = ContextSnapshotV1.from_wire(snapshot.to_wire())
+    restored = ContextRevision.from_wire(snapshot.to_wire())
 
     assert restored.memory == (selected,)
     assert restored.omissions == (omitted,)
-    assert restored.budget.memory_characters == 17
-    assert restored.budget.context_data_characters == 41
-    assert FrozenMemoryContextV1.from_snapshot(restored) == frozen
+    assert restored.budget.memory_tokens == 17 * 4
+    assert restored.budget.context_data_tokens == 41 * 4
+    assert FrozenMemoryContextV1.from_revision(restored) == frozen
 
 
-
-def test_context_snapshot_accepts_one_unselected_budget_boundary() -> None:
-    _frame, _records, snapshot = _context_snapshot_fixture()
+def test_context_revision_accepts_one_unselected_budget_boundary() -> None:
+    _frame, _records, snapshot = _context_revision_fixture()
     omitted = snapshot.to_wire()
     omitted["omissions"] = [
         {
@@ -763,20 +706,9 @@ def test_context_snapshot_accepts_one_unselected_budget_boundary() -> None:
         }
     ]
 
-    parsed = ContextSnapshotV1.from_wire(omitted)
+    parsed = ContextRevision.from_wire(omitted)
 
     assert parsed.omissions[0].source_id == "turn_older_boundary"
-
-
-def test_context_snapshot_rejects_noncanonical_bounded_history_limits() -> None:
-    _frame, _records, snapshot = _context_snapshot_fixture()
-    wire = snapshot.to_wire()
-    budget = cast(dict[str, Any], wire["budget"])
-    budget["maximumCharacters"] = 47_000
-    budget["reservedCurrentRunCharacters"] = 11_000
-
-    with pytest.raises(ValueError, match="bounded-history-v1 limits"):
-        ContextSnapshotV1.from_wire(wire)
 
 
 @pytest.mark.parametrize(
@@ -810,92 +742,74 @@ def test_context_snapshot_rejects_noncanonical_bounded_history_limits() -> None:
         ],
     ),
 )
-def test_context_snapshot_rejects_invalid_budget_boundaries(
+def test_context_revision_rejects_invalid_budget_boundaries(
     omissions: list[dict[str, str]],
 ) -> None:
-    _frame, _records, snapshot = _context_snapshot_fixture()
+    _frame, _records, snapshot = _context_revision_fixture()
     wire = snapshot.to_wire()
     wire["omissions"] = omissions
 
     with pytest.raises(ValueError, match="omission"):
-        ContextSnapshotV1.from_wire(wire)
+        ContextRevision.from_wire(wire)
 
 
-@pytest.mark.parametrize("budget_field", ["historyCharacters", "currentRunCharacters"])
-def test_context_snapshot_rejects_budget_counts_that_disagree_with_items(
+@pytest.mark.parametrize("budget_field", ["historyTokens", "currentRunTokens"])
+def test_context_revision_rejects_budget_counts_that_disagree_with_items(
     budget_field: str,
 ) -> None:
-    _frame, _records, snapshot = _context_snapshot_fixture()
+    _frame, _records, snapshot = _context_revision_fixture()
     wire = snapshot.to_wire()
     budget = cast(dict[str, Any], wire["budget"])
     budget[budget_field] = cast(int, budget[budget_field]) + 1
-    budget["totalCharacters"] = cast(int, budget["totalCharacters"]) + 1
+    budget["totalTokens"] = cast(int, budget["totalTokens"]) + 1
 
     with pytest.raises(ValueError, match="history counts"):
-        ContextSnapshotV1.from_wire(wire)
+        ContextRevision.from_wire(wire)
 
 
 @pytest.mark.parametrize(
     ("field", "replacement"),
-    (("stepOrdinal", 0), ("contextSnapshotVersion", 2)),
+    (("stepOrdinal", 0), ("contextRevision", 0)),
 )
-def test_step_manifest_rejects_invalid_identity_fields(
+def test_step_input_rejects_invalid_identity_fields(
     field: str,
     replacement: int,
 ) -> None:
-    frame, records, snapshot = _context_snapshot_fixture()
-    manifest = build_step_manifest(
+    frame, records, snapshot = _context_revision_fixture()
+    manifest = build_step_input(
         1,
         records,
         snapshot,
         current_run_id=frame.run_id,
-        frame=frame,
+        config=frame,
     )
     wire = manifest.to_wire()
     wire[field] = replacement
 
     with pytest.raises(ValueError):
-        StepManifestV1.from_wire(wire)
+        StepInput.from_wire(wire)
 
 
-def test_step_manifest_rejects_budget_counts_that_disagree_with_items() -> None:
-    frame, records, snapshot = _context_snapshot_fixture()
-    manifest = build_step_manifest(
+def test_step_input_rejects_budget_counts_that_disagree_with_items() -> None:
+    frame, records, snapshot = _context_revision_fixture()
+    manifest = build_step_input(
         1,
         records,
         snapshot,
         current_run_id=frame.run_id,
-        frame=frame,
+        config=frame,
     )
     wire = manifest.to_wire()
     budget = cast(dict[str, Any], wire["budget"])
-    budget["currentRunCharacters"] = cast(int, budget["currentRunCharacters"]) + 1
-    budget["totalCharacters"] = cast(int, budget["totalCharacters"]) + 1
+    budget["currentRunTokens"] = cast(int, budget["currentRunTokens"]) + 1
+    budget["totalTokens"] = cast(int, budget["totalTokens"]) + 1
 
     with pytest.raises(ValueError, match="history counts"):
-        StepManifestV1.from_wire(wire)
+        StepInput.from_wire(wire)
 
 
-def test_step_manifest_rejects_noncanonical_bounded_history_limits() -> None:
-    frame, records, snapshot = _context_snapshot_fixture()
-    manifest = build_step_manifest(
-        1,
-        records,
-        snapshot,
-        current_run_id=frame.run_id,
-        frame=frame,
-    )
-    wire = manifest.to_wire()
-    budget = cast(dict[str, Any], wire["budget"])
-    budget["maximumCharacters"] = 47_000
-    budget["reservedCurrentRunCharacters"] = 11_000
-
-    with pytest.raises(ValueError, match="bounded-history-v1 limits"):
-        StepManifestV1.from_wire(wire)
-
-
-def test_step_manifest_preserves_frozen_memory_and_omissions() -> None:
-    frame, records, _snapshot = _context_snapshot_fixture()
+def test_step_input_preserves_frozen_memory_and_omissions() -> None:
+    frame, records, _snapshot = _context_revision_fixture()
     selected = _memory_reference(characters=23)
     omitted = OmissionRecordV1(
         source_type="memory",
@@ -904,13 +818,12 @@ def test_step_manifest_preserves_frozen_memory_and_omissions() -> None:
         characters=31,
         reason="omitted_by_budget",
     )
-    snapshot = build_context_snapshot(
+    snapshot = build_context_revision(
         records,
         current_run_id=frame.run_id,
-        frame=frame,
-        selection_version=CONTEXT_SELECTION_VERSION,
-        maximum_characters=48_000,
-        reserved_current_run_characters=12_000,
+        config=frame,
+        maximum_tokens=frame.maximum_input_tokens,
+        reserved_current_run_tokens=frame.reserved_current_run_tokens,
         omissions=(),
         memory_context=FrozenMemoryContextV1(
             memory=(selected,),
@@ -919,17 +832,107 @@ def test_step_manifest_preserves_frozen_memory_and_omissions() -> None:
             context_data_characters=47,
         ),
     )
-    manifest = build_step_manifest(
+    manifest = build_step_input(
         1,
         records,
         snapshot,
         current_run_id=frame.run_id,
-        frame=frame,
+        config=frame,
     )
 
-    restored = StepManifestV1.from_wire(manifest.to_wire())
+    restored = StepInput.from_wire(manifest.to_wire())
 
     assert restored.memory == snapshot.memory == (selected,)
     assert restored.omissions == snapshot.omissions == (omitted,)
-    assert restored.budget.memory_characters == 23
-    assert restored.budget.context_data_characters == 47
+    assert restored.budget.memory_tokens == 23 * 4
+    assert restored.budget.context_data_tokens == 47 * 4
+
+
+@pytest.mark.parametrize("window,output", [(32768, 4096), (131072, 8192)])
+def test_run_config_freezes_model_capacity_and_run_budget(window: int, output: int) -> None:
+    config = replace(
+        run_config("provider", "model"),
+        context_window=window,
+        max_output_tokens=output,
+        max_model_calls=73,
+        max_duration_seconds=900,
+    )
+    restored = run_input_module.RunConfig.from_wire(config.to_wire())
+    assert restored == config
+    assert restored.maximum_input_tokens == window - output
+    assert restored.reserved_current_run_tokens == (window - output) // 4
+    assert restored.max_model_calls == 73
+    assert restored.max_duration_seconds == 900
+    plan = ModelInputPlanner().build_plan(
+        config=restored, items=(), budget_snapshot=bounded_budget()
+    )
+    assert plan.generation_options.max_output_tokens == output
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"context_window": 0},
+        {"max_output_tokens": 0},
+        {"context_window": 4096, "max_output_tokens": 4096},
+        {"max_model_calls": 0},
+        {"max_model_calls": True},
+        {"max_duration_seconds": 0},
+    ],
+)
+def test_run_config_rejects_invalid_execution_limits(changes: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        replace(run_config("provider", "model"), **cast(Any, changes))
+
+
+def test_new_context_revision_is_append_only_and_step_binds_its_revision() -> None:
+    config, records, initial = _context_revision_fixture()
+    revised = replace(initial, revision=2)
+    step = build_step_input(3, records, revised, current_run_id=config.run_id, config=config)
+    assert initial.revision == 1
+    assert revised.revision == 2
+    assert step.context_revision == 2
+    assert ContextRevision.from_wire(revised.to_wire()) == revised
+    assert StepInput.from_wire(step.to_wire()) == step
+
+
+def test_current_input_formats_reject_obsolete_fields() -> None:
+    config, records, revision = _context_revision_fixture()
+    step = build_step_input(1, records, revision, current_run_id=config.run_id, config=config)
+    for value, parser in (
+        (config.to_wire(), run_input_module.RunConfig.from_wire),
+        (revision.to_wire(), ContextRevision.from_wire),
+        (step.to_wire(), StepInput.from_wire),
+    ):
+        value["schemaVersion"] = 1
+        with pytest.raises(ValueError, match="structure"):
+            parser(value)
+
+
+@pytest.mark.parametrize("field", ["context_window", "max_output_tokens"])
+def test_step_input_rejects_model_capacity_changed_after_revision(field: str) -> None:
+    config, records, revision = _context_revision_fixture()
+    changed = replace(config, **{field: getattr(config, field) + 1})
+    with pytest.raises(ModelInputUnavailableError):
+        build_step_input(1, records, revision, current_run_id=config.run_id, config=changed)
+
+
+def test_memory_metadata_is_not_reconstructed_from_budget_estimates() -> None:
+    config, records, _ = _context_revision_fixture()
+    memory = FrozenMemoryContextV1((_memory_reference(characters=7),), (), 7, 13)
+    revision = build_context_revision(
+        records,
+        current_run_id=config.run_id,
+        config=config,
+        maximum_tokens=config.maximum_input_tokens,
+        reserved_current_run_tokens=config.reserved_current_run_tokens,
+        omissions=(),
+        memory_context=memory,
+    )
+    assert revision.memory_context_characters == 13
+    assert revision.budget.memory_tokens == 28
+    assert revision.budget.context_data_tokens == 52
+    wire = revision.to_wire()
+    wire["memoryContextCharacters"] = 14
+    with pytest.raises(ValueError, match="context-data token estimate"):
+        ContextRevision.from_wire(wire)

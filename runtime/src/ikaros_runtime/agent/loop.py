@@ -1,22 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import replace
 from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JournalEvent, ModelUsage
 from ..errors import (
-    AgentStepLimitError,
     ContextBudgetExceededError,
     MemoryRetrievalError,
+    ModelCallBudgetExceededError,
     ModelInputUnavailableError,
     ProtectedValueError,
     ProviderFailure,
     RunInputDriftError,
 )
 from ..memory import (
+    MaterializedMemoryV1,
     MemoryRetrieverV1,
     MemorySnapshotReferenceV1,
 )
@@ -32,14 +35,15 @@ from ..providers.base import (
 )
 from ..run_input import (
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    EXECUTABLE_CONTEXT_SELECTION_VERSIONS,
     ContextDataBlockV1,
+    ContextItemRecordV1,
     FrozenMemoryContextV1,
     InstructionBlockV1,
     MemoryReferenceV1,
     OmissionRecordV1,
-    ProviderExecutionSnapshotV1,
-    SubmissionFrameV1,
+    ProviderExecutionSnapshot,
+    RunConfig,
+    config_input_token_counts,
     validate_tool_environment,
 )
 from ..security import (
@@ -51,10 +55,12 @@ from ..storage import SqliteRuntimeStore
 from ..tools.core import (
     ToolCall,
     ToolExecutionCancelled,
+    ToolExecutionContext,
     ToolExecutor,
     ToolResult,
     ToolTaskCancelled,
 )
+from ..tools.process_manager import ProcessManager
 from .context import (
     ContextBuilder,
     build_history_status_context_data,
@@ -65,7 +71,7 @@ from .model_input import ModelInputPlanner
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
 ProtectedValues = Callable[[], Sequence[str]]
-ProviderSnapshotResolver = Callable[[str, str], ProviderExecutionSnapshotV1]
+ProviderSnapshotResolver = Callable[[str, str], ProviderExecutionSnapshot]
 _LOGGER = logging.getLogger("ikaros_runtime.agent")
 _MAX_REASONING_CHARACTERS = 1_000_000
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
@@ -114,8 +120,8 @@ class AgentLoop:
         providers: Mapping[str, ProviderAdapter] | ProviderResolver,
         publish: EventPublisher,
         tool_executor: ToolExecutor | None = None,
-        max_steps: int = 16,
         *,
+        process_manager: ProcessManager | None = None,
         protected_values: ProtectedValues | None = None,
         context_builder: ContextBuilder | None = None,
         model_input_planner: ModelInputPlanner | None = None,
@@ -123,13 +129,11 @@ class AgentLoop:
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
         identity_core: InstructionBlockV1 | None = None,
     ) -> None:
-        if max_steps < 1:
-            raise ValueError("max_steps must be positive")
         self._store = store
         self._providers = providers
         self._publish = publish
         self._tool_executor = tool_executor
-        self._max_steps = max_steps
+        self._process_manager = process_manager
         self._protected_values = protected_values or _empty_protected_values
         self._context_builder = context_builder if context_builder is not None else ContextBuilder()
         self._model_input_planner = (
@@ -139,131 +143,146 @@ class AgentLoop:
         self._provider_snapshot_resolver = provider_snapshot_resolver
         self._identity_core = identity_core
 
-    @property
-    def max_steps(self) -> int:
-        return self._max_steps
-
     async def run(self, run_id: str, cancellation: CancellationToken) -> None:
+        work: asyncio.Task[None] | None = None
+        cancel_wait: asyncio.Task[None] | None = None
+        status = "completed"
+        reason: str | None = None
         try:
             cancellation.raise_if_cancelled()
-            run = self._store.get_run(run_id)
-            frame = self._store.get_submission_frame(run_id)
-            manifest = self._store.get_run_manifest(run_id)
-            if manifest.context_selection_version not in EXECUTABLE_CONTEXT_SELECTION_VERSIONS:
-                raise RunInputDriftError("model_input_unavailable")
-            self._validate_submission_environment(frame)
-            provider = self._resolve_provider(run.provider_id)
-            if provider is None:
-                raise ValueError(f"unknown provider: {run.provider_id}")
-
-            if self._tool_executor is not None:
-                if run.execution_policy != self._tool_executor.policy_name:
-                    raise RuntimeError("run execution policy is not available")
-            elif run.execution_policy != "full_access":
-                raise RuntimeError("run execution policy is not available")
-
-            submission_content = self._store.get_submission_user_content(run_id)
-            workspace_id = frame.workspace.id if frame.workspace is not None else None
+            config = self._store.get_run_config(run_id)
+            self._validate_submission_environment(config)
             await self._publish(self._store.mark_run_running(run_id))
-            cancellation.raise_if_cancelled()
-            memory_context = self._select_memory_context(
-                query=submission_content,
-                workspace_id=workspace_id,
+            work = asyncio.create_task(self._run_steps(run_id, cancellation))
+            cancel_wait = asyncio.create_task(cancellation.wait())
+            done, _ = await asyncio.wait(
+                {work, cancel_wait},
+                timeout=config.max_duration_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            for step_ordinal in range(1, frame.max_steps + 1):
+            if work in done:
+                await work
                 cancellation.raise_if_cancelled()
-                prepared_step = self._store.prepare_model_step(
-                    run_id,
-                    step_ordinal=step_ordinal,
-                    memory_context=memory_context,
-                )
-                try:
-                    await self._publish(prepared_step.event)
-                    cancellation.raise_if_cancelled()
-                    context_data = self._materialize_memory_context(
-                        prepared_step.context_snapshot.memory,
-                        workspace_id=workspace_id,
-                        expected_context_data_characters=(
-                            prepared_step.context_snapshot.budget.context_data_characters
-                            - prepared_step.context_snapshot.history_status.characters
-                        ),
-                    )
-                    context_data = (
-                        *context_data,
-                        *build_history_status_context_data(
-                            prepared_step.context_snapshot.history_status
-                        ),
-                    )
-                    plan = self._model_input_planner.build_plan(
-                        frame=frame,
-                        items=prepared_step.items,
-                        context_data=context_data,
-                        budget_snapshot=prepared_step.step_manifest.budget,
-                    )
-                    request = self._context_builder.build_request(plan)
-                except RunCancelled:
-                    await self._publish_terminal_events(
-                        self._store.fail_provider_step(
-                            run_id,
-                            step_ordinal=step_ordinal,
-                            outcome="cancelled",
-                            reason_code="cancelled",
-                            assistant_item_id=None,
-                        )
-                    )
-                    raise
-                except Exception as error:
-                    await self._publish_terminal_events(
-                        self._store.fail_provider_step(
-                            run_id,
-                            step_ordinal=step_ordinal,
-                            outcome="failed",
-                            reason_code=_failure_reason_code(error),
-                            assistant_item_id=None,
-                        )
-                    )
-                    raise
-                tool_calls, tool_call_item_ids = await self._provider_step(
-                    run_id,
-                    provider,
-                    request,
-                    cancellation,
-                    step_ordinal=step_ordinal,
-                )
-                if tool_calls:
-                    await self._execute_tool_calls(
-                        tool_calls,
-                        tool_call_item_ids,
-                        cancellation,
-                        default_cwd=(
-                            frame.workspace.root_uri if frame.workspace is not None else None
-                        ),
-                    )
-                    continue
-                cancellation.raise_if_cancelled()
-                await self._publish_terminal_events(
-                    self._store.terminalize_run(run_id, "completed")
-                )
-                return
-            raise AgentStepLimitError("maximum Agent step count reached")
-        except RunCancelled:
-            await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
+            else:
+                status = "cancelled" if cancellation.is_cancelled else "failed"
+                reason = "cancelled" if cancellation.is_cancelled else "run_time_limit"
+                cancellation.cancel()
+                work.cancel()
+                with suppress(asyncio.CancelledError, RunCancelled):
+                    await work
+        except (RunCancelled, asyncio.CancelledError):
+            cancellation.cancel()
+            status, reason = "cancelled", "cancelled"
         except Exception as error:
             _LOGGER.exception("Run %s failed", run_id)
+            status, reason = "failed", _failure_reason_code(error)
+        finally:
+            if cancel_wait is not None:
+                cancel_wait.cancel()
+                with suppress(asyncio.CancelledError):
+                    await cancel_wait
+            if work is not None and not work.done():
+                work.cancel()
+                with suppress(asyncio.CancelledError, RunCancelled):
+                    await work
+            if self._process_manager is not None:
+                try:
+                    await asyncio.wait_for(self._process_manager.close_run(run_id), timeout=10)
+                except Exception:
+                    status, reason = "failed", "process_cleanup_failed"
             await self._publish_terminal_events(
                 self._store.terminalize_run(
                     run_id,
-                    "failed",
-                    reason_code=_failure_reason_code(error),
+                    status,
+                    reason_code=reason,
+                    _finish_open_model_step=status != "completed",
                 )
             )
 
+    async def _run_steps(self, run_id: str, cancellation: CancellationToken) -> None:
+        config = self._store.get_run_config(run_id)
+        provider = self._resolve_provider(config.provider_id)
+        if provider is None:
+            raise ValueError(f"unknown provider: {config.provider_id}")
+        workspace_id = config.workspace.id if config.workspace is not None else None
+        memory_context = self._select_memory_context(
+            config=config,
+            query=self._store.get_submission_user_content(run_id),
+            workspace_id=workspace_id,
+        )
+        for step_ordinal in range(1, config.max_model_calls + 1):
+            cancellation.raise_if_cancelled()
+            prepared = self._store.prepare_model_step(
+                run_id,
+                step_ordinal=step_ordinal,
+                memory_context=memory_context,
+            )
+            await self._publish(prepared.event)
+            try:
+                context_data = self._materialize_memory_context(
+                    prepared.context_revision.memory,
+                    workspace_id=workspace_id,
+                    expected_context_data_characters=prepared.context_revision.memory_context_characters,
+                )
+                plan = self._model_input_planner.build_plan(
+                    config=config,
+                    items=prepared.items,
+                    context_data=(
+                        *context_data,
+                        *build_history_status_context_data(
+                            prepared.context_revision.history_status
+                        ),
+                    ),
+                    budget_snapshot=prepared.step_input.budget,
+                )
+                request = self._context_builder.build_request(plan)
+            except Exception as error:
+                await self._publish_terminal_events(
+                    self._store.fail_provider_step(
+                        run_id,
+                        step_ordinal=step_ordinal,
+                        outcome="cancelled" if isinstance(error, RunCancelled) else "failed",
+                        reason_code=_failure_reason_code(error),
+                        assistant_item_id=None,
+                    )
+                )
+                raise
+            calls, item_ids = await self._provider_step(
+                run_id,
+                provider,
+                request,
+                cancellation,
+                step_ordinal=step_ordinal,
+            )
+            if not calls:
+                return
+            await self._execute_tool_calls(
+                calls,
+                item_ids,
+                cancellation,
+                run_id=run_id,
+                thread_id=config.thread_id,
+                step_ordinal=step_ordinal,
+                default_cwd=config.workspace.root_uri if config.workspace is not None else None,
+            )
+        raise ModelCallBudgetExceededError("model call budget exhausted")
+
     async def cancel(self, run_id: str) -> None:
-        await self._publish_terminal_events(self._store.terminalize_run(run_id, "cancelled"))
+        if self._process_manager is not None:
+            await self._process_manager.close_run(run_id)
+        await self._publish_terminal_events(
+            self._store.terminalize_run(
+                run_id,
+                "cancelled",
+                reason_code="cancelled",
+                _finish_open_model_step=True,
+            )
+        )
 
     def _select_memory_context(
         self,
         *,
+        config: RunConfig,
         query: str,
         workspace_id: str | None,
     ) -> FrozenMemoryContextV1:
@@ -271,7 +290,33 @@ class AgentLoop:
         if retriever is None:
             return EMPTY_FROZEN_MEMORY_CONTEXT_V1
         self._assert_memory_read_outside_state_transaction()
-        retrieval = retriever.retrieve(query=query, workspace_id=workspace_id)
+        instruction_tokens, tool_tokens = config_input_token_counts(config)
+        user_tokens = ContextItemRecordV1(
+            config.user_item_id, config.turn_id, config.run_id, "message", "user", query, {}
+        ).estimated_tokens
+        remaining = (
+            config.maximum_input_tokens
+            - config.reserved_current_run_tokens
+            - instruction_tokens
+            - tool_tokens
+            - user_tokens
+        )
+        # Memory may use at most half of the remaining input capacity. Also leave
+        # 4 Ki estimated tokens for history and an omitted-failure status notice;
+        # a small model window therefore drops Memory before blocking user input.
+        memory_allowance = max(0, min(remaining // 2, remaining - 4096))
+
+        def fits_memory_capacity(records: Sequence[MaterializedMemoryV1]) -> bool:
+            return 4 * (
+                sum(record.characters for record in records)
+                + memory_context_data_characters(records)
+            ) <= memory_allowance
+
+        retrieval = retriever.retrieve(
+            query=query,
+            workspace_id=workspace_id,
+            accept_selection=fits_memory_capacity,
+        )
         references = tuple(
             MemoryReferenceV1(
                 memory_id=record.memory_id,
@@ -463,7 +508,7 @@ class AgentLoop:
             step_finished = True
             await self._publish_terminal_events(completion.events)
             return tuple(tool_calls), completion.tool_call_item_ids
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
             if step_finished:
                 raise
             # Only text already released by ProtectedStreamGuard is buffered.  Never
@@ -471,7 +516,7 @@ class AgentLoop:
             # release a protected trailing prefix.
             if self._current_protected_values() == tuple(protected_values):
                 await self._publish_text_delta(assistant_item_id, text_batch.flush())
-            terminal_error = error
+            terminal_error: Exception = error if isinstance(error, Exception) else RunCancelled()
             if isinstance(error, ProviderFailure) and error.request_id is not None:
                 try:
                     response_model_id, request_id = self._merge_response_metadata(
@@ -487,7 +532,7 @@ class AgentLoop:
                 request_id,
                 protected_snapshot=protected_values,
             )
-            outcome = "cancelled" if isinstance(error, RunCancelled) else "failed"
+            outcome = "cancelled" if isinstance(terminal_error, RunCancelled) else "failed"
             await self._publish_terminal_events(
                 self._store.fail_provider_step(
                     run_id,
@@ -517,6 +562,9 @@ class AgentLoop:
         cancellation: CancellationToken,
         *,
         default_cwd: str | None,
+        run_id: str,
+        thread_id: str,
+        step_ordinal: int,
     ) -> None:
         executor = self._tool_executor
         if executor is None:
@@ -529,11 +577,21 @@ class AgentLoop:
                 result = await executor.execute(
                     call,
                     cancellation=cancellation,
-                    default_cwd=default_cwd,
+                    context=ToolExecutionContext(
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        step_ordinal=step_ordinal,
+                        item_id=item_id,
+                        default_cwd=default_cwd,
+                    ),
                 )
             except (ToolExecutionCancelled, ToolTaskCancelled) as error:
                 await self._publish_tool_result(
-                    item_id, call, error.result, "cancelled", protected_snapshot=protected_snapshot,
+                    item_id,
+                    call,
+                    error.result,
+                    "cancelled",
+                    protected_snapshot=protected_snapshot,
                 )
                 await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
                 raise RunCancelled from error
@@ -548,7 +606,11 @@ class AgentLoop:
                 raise
             status = "completed" if result.ok else "failed"
             await self._publish_tool_result(
-                item_id, call, result, status, protected_snapshot=protected_snapshot,
+                item_id,
+                call,
+                result,
+                status,
+                protected_snapshot=protected_snapshot,
             )
 
     async def _publish_tool_result(
@@ -682,8 +744,11 @@ class AgentLoop:
                     "durationMs": 0,
                     "truncated": False,
                     "errorCode": "protected_output",
-                    **({"path": result.file_change.path} if result.file_change is not None
-                       and result.file_change.path is not None else {}),
+                    **(
+                        {"path": result.file_change.path}
+                        if result.file_change is not None and result.file_change.path is not None
+                        else {}
+                    ),
                 },
                 cancelled=result.cancelled,
                 file_change=result.file_change,
@@ -730,7 +795,7 @@ class AgentLoop:
             return self._providers.get(provider_id)
         return self._providers.resolve(provider_id)
 
-    def _validate_submission_environment(self, frame: SubmissionFrameV1) -> None:
+    def _validate_submission_environment(self, frame: RunConfig) -> None:
         if frame.identity_core != self._identity_core:
             raise RunInputDriftError("identity_core_changed")
 
@@ -739,7 +804,7 @@ class AgentLoop:
             if resolver is None:
                 if not isinstance(self._providers, Mapping):
                     raise RunInputDriftError("provider_configuration_changed")
-                current_provider = ProviderExecutionSnapshotV1(
+                current_provider = ProviderExecutionSnapshot(
                     provider_id=frame.provider_id,
                     origin="test",
                     base_url=None,
@@ -752,6 +817,11 @@ class AgentLoop:
             raise
         except Exception:
             raise RunInputDriftError("provider_configuration_changed") from None
+        current_provider = replace(
+            current_provider,
+            context_window=frame.context_window,
+            max_output_tokens=frame.max_output_tokens,
+        )
         if current_provider.fingerprint != frame.public_provider_config_fingerprint:
             raise RunInputDriftError("provider_configuration_changed")
 
@@ -766,8 +836,8 @@ class AgentLoop:
 
 
 def _failure_reason_code(error: Exception) -> str:
-    if isinstance(error, AgentStepLimitError):
-        return "agent_step_limit"
+    if isinstance(error, ModelCallBudgetExceededError):
+        return "model_call_budget_exceeded"
     if isinstance(error, RunCancelled):
         return "cancelled"
     if isinstance(error, RunInputDriftError):

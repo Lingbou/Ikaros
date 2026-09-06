@@ -106,18 +106,12 @@ def projection_events(connection: sqlite3.Connection) -> list[JournalEvent]:
 
 
 def journal_sequence_high_water(connection: sqlite3.Connection) -> int:
-    row = connection.execute(
-        "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
-    ).fetchone()
+    row = connection.execute("SELECT seq FROM sqlite_sequence WHERE name = 'events'").fetchone()
     return int(row[0]) if row is not None else 0
 
 
 def event_from_row(row: sqlite3.Row) -> JournalEvent:
     stored_version = _event_schema_version(row["schema_version"])
-    if row["event_type"] == "file.change_recorded" and stored_version < 6:
-        raise UnsupportedJournalEventVersionError(
-            "file.change_recorded requires journal event schema version 6"
-        )
     decoded_payload = json_loads(row["payload_json"])
     if not isinstance(decoded_payload, dict):
         raise RuntimeError("journal event payload is not an object")
@@ -138,9 +132,8 @@ def event_from_row(row: sqlite3.Row) -> JournalEvent:
 def _event_schema_version(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise UnsupportedJournalEventVersionError("journal event has an invalid schema version")
-    if value not in {5, JOURNAL_EVENT_SCHEMA_VERSION}:
+    if value != JOURNAL_EVENT_SCHEMA_VERSION:
         raise UnsupportedJournalEventVersionError(
-            f"journal event schema version {value} does not match supported versions "
-            f"5 and {JOURNAL_EVENT_SCHEMA_VERSION}"
+            f"journal event schema version {value} does not match {JOURNAL_EVENT_SCHEMA_VERSION}"
         )
     return value

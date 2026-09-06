@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ikaros_runtime.agent.history import HistorySelectorV1
+from ikaros_runtime.agent.history import HistorySelector
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent
@@ -16,12 +16,12 @@ from ikaros_runtime.providers.base import ProviderEvent, ProviderRequest, TextDe
 from ikaros_runtime.run_input import (
     ContextItemRecordV1,
     canonical_json,
-    frame_input_character_counts,
+    config_input_token_counts,
 )
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import ToolCall
 
-from .helpers import prepare_turn, submission_frame
+from .helpers import prepare_turn, run_config
 
 
 def _message_record(
@@ -67,7 +67,7 @@ def _complete_text_turn(
 
 
 def test_history_selector_stops_at_first_turn_that_does_not_fit() -> None:
-    frame = submission_frame("scripted", "scripted-v1")
+    frame = run_config("scripted", "scripted-v1")
     current = _message_record(
         frame.user_item_id,
         frame.turn_id,
@@ -75,15 +75,15 @@ def test_history_selector_stops_at_first_turn_that_does_not_fit() -> None:
         "user",
         "now",
     )
-    instruction_characters, tool_characters = frame_input_character_counts(frame)
-    selector = HistorySelectorV1(
-        frame=frame,
+    instruction_tokens, tool_tokens = config_input_token_counts(frame)
+    selector = HistorySelector(
+        config=frame,
         current_run_id=frame.run_id,
         current_turn_id=frame.turn_id,
         current_turn_ordinal=4,
         current_records=(current,),
-        maximum_characters=(instruction_characters + tool_characters + current.characters + 5 + 6),
-        reserved_current_run_characters=5,
+        maximum_tokens=(instruction_tokens + tool_tokens + current.estimated_tokens + 5 + 70),
+        reserved_current_run_tokens=5,
     )
     newest = _message_record("item_new", "turn_3", "run_3", "user", "123456")
     blocked = _message_record("item_blocked", "turn_2", "run_2", "user", "1234567")
@@ -104,7 +104,7 @@ def test_history_selector_stops_at_first_turn_that_does_not_fit() -> None:
 
 
 def test_history_selector_counts_unicode_and_accepts_an_exact_fit() -> None:
-    frame = submission_frame("scripted", "scripted-v1")
+    frame = run_config("scripted", "scripted-v1")
     current = _message_record(
         frame.user_item_id,
         frame.turn_id,
@@ -113,25 +113,27 @@ def test_history_selector_counts_unicode_and_accepts_an_exact_fit() -> None:
         "你😀",
     )
     candidate = _message_record("item_old", "turn_old", "run_old", "user", "甲😀乙")
-    instructions, tools = frame_input_character_counts(frame)
-    selector = HistorySelectorV1(
-        frame=frame,
+    instructions, tools = config_input_token_counts(frame)
+    selector = HistorySelector(
+        config=frame,
         current_run_id=frame.run_id,
         current_turn_id=frame.turn_id,
         current_turn_ordinal=2,
         current_records=(current,),
-        maximum_characters=(instructions + tools + current.characters + candidate.characters + 1),
-        reserved_current_run_characters=1,
+        maximum_tokens=(
+            instructions + tools + current.estimated_tokens + candidate.estimated_tokens + 1
+        ),
+        reserved_current_run_tokens=1,
     )
 
-    assert current.characters == 2
-    assert candidate.characters == 3
+    assert current.estimated_tokens >= len("你😀".encode())
+    assert candidate.estimated_tokens >= len("甲😀乙".encode())
     assert selector.consider_turn(turn_id="turn_old", ordinal=1, records=(candidate,)) is True
     assert selector.finish().omissions == ()
 
 
 def test_history_selector_rejects_non_atomic_tool_pairs() -> None:
-    frame = submission_frame("scripted", "scripted-v1")
+    frame = run_config("scripted", "scripted-v1")
     current = _message_record(
         frame.user_item_id,
         frame.turn_id,
@@ -139,8 +141,8 @@ def test_history_selector_rejects_non_atomic_tool_pairs() -> None:
         "user",
         "now",
     )
-    selector = HistorySelectorV1(
-        frame=frame,
+    selector = HistorySelector(
+        config=frame,
         current_run_id=frame.run_id,
         current_turn_id=frame.turn_id,
         current_turn_ordinal=2,
@@ -173,7 +175,7 @@ def test_history_selector_rejects_non_atomic_tool_pairs() -> None:
 
 
 def test_history_selector_allows_call_id_reuse_in_different_steps() -> None:
-    frame = submission_frame("scripted", "scripted-v1")
+    frame = run_config("scripted", "scripted-v1")
     current = _message_record(
         frame.user_item_id,
         frame.turn_id,
@@ -181,8 +183,8 @@ def test_history_selector_allows_call_id_reuse_in_different_steps() -> None:
         "user",
         "now",
     )
-    selector = HistorySelectorV1(
-        frame=frame,
+    selector = HistorySelector(
+        config=frame,
         current_run_id=frame.run_id,
         current_turn_id=frame.turn_id,
         current_turn_ordinal=2,
@@ -271,7 +273,7 @@ def test_large_budget_matches_existing_context_filter_and_order(tmp_path: Path) 
         prepared_step = store.prepare_model_step(current.run_id, step_ordinal=1)
 
         assert prepared_step.items == expected
-        assert prepared_step.context_snapshot.omissions == ()
+        assert prepared_step.context_revision.omissions == ()
     finally:
         store.close()
 
@@ -335,7 +337,7 @@ def test_multiple_runs_in_one_turn_have_stable_context_order(tmp_path: Path) -> 
 
         previous_ids = tuple(
             reference.item_id
-            for reference in prepared_step.context_snapshot.history_items
+            for reference in prepared_step.context_revision.history_items
             if reference.turn_id == "turn_previous"
         )
         assert previous_ids == ("item_user", "item_assistant")
@@ -374,11 +376,11 @@ def test_store_does_not_skip_a_large_recent_turn_for_an_older_small_turn(
         prepared_step = store.prepare_model_step(current.run_id, step_ordinal=1)
 
         selected_turns = tuple(
-            group.turn_id for group in prepared_step.context_snapshot.history_groups
+            group.turn_id for group in prepared_step.context_revision.history_groups
         )
         assert selected_turns == (current.turn_id,)
         assert old_turn_id not in selected_turns
-        assert prepared_step.context_snapshot.omissions[0].source_id == blocked_turn_id
+        assert prepared_step.context_revision.omissions[0].source_id == blocked_turn_id
     finally:
         store.close()
 
@@ -431,7 +433,7 @@ def test_multi_tool_call_turn_is_selected_as_one_atomic_group(tmp_path: Path) ->
         prepared_step = store.prepare_model_step(current.run_id, step_ordinal=1)
         previous_items = tuple(
             reference
-            for reference in prepared_step.context_snapshot.history_items
+            for reference in prepared_step.context_revision.history_items
             if reference.turn_id == previous.turn_id
         )
 
@@ -446,13 +448,9 @@ def test_multi_tool_call_turn_is_selected_as_one_atomic_group(tmp_path: Path) ->
         store.close()
 
 
-@pytest.mark.parametrize("selection_version", ["bounded-history-v1", "bounded-history-v2"])
 def test_cancelled_tool_items_do_not_create_orphan_provider_messages(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    selection_version: str,
 ) -> None:
-    monkeypatch.setattr("ikaros_runtime.storage.store.CONTEXT_SELECTION_VERSION", selection_version)
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Cancelled tools")
@@ -490,15 +488,11 @@ def test_cancelled_tool_items_do_not_create_orphan_provider_messages(
         prepared_step = store.prepare_model_step(current.run_id, step_ordinal=1)
         cancelled_kinds = tuple(
             reference.kind
-            for reference in prepared_step.context_snapshot.history_items
+            for reference in prepared_step.context_revision.history_items
             if reference.turn_id == cancelled.turn_id
         )
 
-        assert cancelled_kinds == (
-            ("message",)
-            if selection_version == "bounded-history-v1"
-            else ("message", "tool_call", "tool_result")
-        )
+        assert cancelled_kinds == ("message", "tool_call", "tool_result")
     finally:
         store.close()
 
@@ -516,13 +510,13 @@ def test_later_tool_steps_load_frozen_ids_and_current_run_without_branch_scan(
             content="repeat",
             provider_id="scripted",
             model_id="scripted-v1",
-            max_steps=16,
+            max_model_calls=16,
         )
         store.mark_run_running(current.run_id)
         first = store.prepare_model_step(current.run_id, step_ordinal=1)
         queries: list[str] = []
         store._connection.set_trace_callback(queries.append)
-        frozen_ids = tuple(item.item_id for item in first.context_snapshot.history_items)
+        frozen_ids = tuple(item.item_id for item in first.context_revision.history_items)
 
         for ordinal in range(1, 16):
             completed = store.complete_provider_step(
@@ -552,7 +546,7 @@ def test_later_tool_steps_load_frozen_ids_and_current_run_without_branch_scan(
                 step_ordinal=ordinal + 1,
             )
             assert (
-                tuple(item.item_id for item in next_step.context_snapshot.history_items)
+                tuple(item.item_id for item in next_step.context_revision.history_items)
                 == frozen_ids
             )
 
@@ -599,13 +593,13 @@ def test_current_run_may_grow_past_reserve_while_total_stays_within_budget(
         second_step = store.prepare_model_step(current.run_id, step_ordinal=2)
 
         growth = (
-            second_step.step_manifest.budget.current_run_characters
-            - second_step.context_snapshot.budget.current_run_characters
+            second_step.step_input.budget.current_run_tokens
+            - second_step.context_revision.budget.current_run_tokens
         )
-        maximum = second_step.step_manifest.budget.maximum_characters
-        assert growth > second_step.step_manifest.budget.reserved_current_run_characters
+        maximum = second_step.step_input.budget.maximum_tokens
+        assert growth > second_step.step_input.budget.reserved_current_run_tokens
         assert maximum is not None
-        assert second_step.step_manifest.budget.total_characters <= maximum
+        assert second_step.step_input.budget.total_tokens <= maximum
     finally:
         store.close()
 
@@ -678,14 +672,13 @@ def test_first_step_preparation_rolls_back_snapshot_and_event_together(
 
         assert store.latest_sequence() == latest_seq
         row = store._connection.execute(
-            "SELECT context_snapshot_json FROM run_inputs WHERE run_id = ?",
+            "SELECT record_json FROM context_revisions WHERE run_id = ?",
             (current.run_id,),
         ).fetchone()
-        assert row is not None
-        assert row["context_snapshot_json"] is None
+        assert row is None
         assert (
             store._connection.execute(
-                "SELECT COUNT(*) FROM model_steps WHERE run_id = ?",
+                "SELECT COUNT(*) FROM model_calls WHERE run_id = ?",
                 (current.run_id,),
             ).fetchone()[0]
             == 0
@@ -733,7 +726,7 @@ def test_later_step_rejects_a_missing_frozen_item(tmp_path: Path) -> None:
         )
         frozen_item_id = next(
             reference.item_id
-            for reference in first.context_snapshot.history_items
+            for reference in first.context_revision.history_items
             if reference.run_id != current.run_id
         )
         with store._connection:
@@ -744,7 +737,7 @@ def test_later_step_rejects_a_missing_frozen_item(tmp_path: Path) -> None:
 
         assert (
             store._connection.execute(
-                "SELECT COUNT(*) FROM model_steps WHERE run_id = ?",
+                "SELECT COUNT(*) FROM model_calls WHERE run_id = ?",
                 (current.run_id,),
             ).fetchone()[0]
             == 1
@@ -817,8 +810,8 @@ def test_1000_turn_history_stops_paging_after_budget_boundary(tmp_path: Path) ->
             if "FROM TURNS" in query.upper() and "ORDER BY ORDINAL DESC" in query.upper()
         ]
         assert 1 < len(page_queries) < 10
-        assert prepared_step.context_snapshot.omissions
-        assert len(prepared_step.context_snapshot.history_groups) < 1001
+        assert prepared_step.context_revision.omissions
+        assert len(prepared_step.context_revision.history_groups) < 1001
     finally:
         store.close()
 
@@ -846,18 +839,18 @@ def test_1000_turn_journal_rebuild_replays_the_same_bounded_snapshot(
         )
         store.mark_run_running(current.run_id)
         prepared_step = store.prepare_model_step(current.run_id, step_ordinal=1)
-        expected_snapshot = canonical_json(prepared_step.context_snapshot.to_wire())
+        expected_snapshot = canonical_json(prepared_step.context_revision.to_wire())
         queries: list[str] = []
         store._connection.set_trace_callback(queries.append)
 
         store.rebuild_projections()
 
         rebuilt_snapshot = store._connection.execute(
-            "SELECT context_snapshot_json FROM run_inputs WHERE run_id = ?",
+            "SELECT record_json FROM context_revisions WHERE run_id = ?",
             (current.run_id,),
         ).fetchone()
         assert rebuilt_snapshot is not None
-        assert rebuilt_snapshot["context_snapshot_json"] == expected_snapshot
+        assert rebuilt_snapshot["record_json"] == expected_snapshot
         page_queries = [
             query
             for query in queries
@@ -868,7 +861,7 @@ def test_1000_turn_journal_rebuild_replays_the_same_bounded_snapshot(
         store.close()
 
 
-def test_context_snapshot_rebuild_is_deterministic(tmp_path: Path) -> None:
+def test_context_revision_rebuild_is_deterministic(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Rebuild selection")
@@ -897,7 +890,7 @@ def test_context_snapshot_rebuild_is_deterministic(tmp_path: Path) -> None:
         store.prepare_model_step(current.run_id, step_ordinal=1)
         before = str(
             store._connection.execute(
-                "SELECT context_snapshot_json FROM run_inputs WHERE run_id = ?",
+                "SELECT record_json FROM context_revisions WHERE run_id = ?",
                 (current.run_id,),
             ).fetchone()[0]
         )
@@ -907,7 +900,7 @@ def test_context_snapshot_rebuild_is_deterministic(tmp_path: Path) -> None:
 
         after = str(
             store._connection.execute(
-                "SELECT context_snapshot_json FROM run_inputs WHERE run_id = ?",
+                "SELECT record_json FROM context_revisions WHERE run_id = ?",
                 (current.run_id,),
             ).fetchone()[0]
         )
@@ -951,7 +944,7 @@ def test_projection_rebuild_rejects_a_tampered_omission_boundary(tmp_path: Path)
             (current.run_id,),
         ).fetchone()
         payload = json_loads(str(row["payload_json"]))
-        for container in (payload["contextSnapshot"], payload["stepManifest"]):
+        for container in (payload["contextRevision"], payload["stepInput"]):
             container["omissions"][0]["sourceId"] = "turn_tampered_boundary"
         with store._connection:
             store._connection.execute(
@@ -962,7 +955,7 @@ def test_projection_rebuild_rejects_a_tampered_omission_boundary(tmp_path: Path)
                 ),
             )
 
-        with pytest.raises(RuntimeError, match="initial Context Snapshot is not canonical"):
+        with pytest.raises(RuntimeError, match="initial Context Revision is not canonical"):
             store.rebuild_projections()
     finally:
         store.close()
@@ -993,7 +986,7 @@ def test_turns_queued_after_the_context_boundary_are_never_selected(tmp_path: Pa
         prepared_step = store.prepare_model_step(current.run_id, step_ordinal=1)
 
         selected_turn_ids = {
-            reference.turn_id for reference in prepared_step.context_snapshot.history_items
+            reference.turn_id for reference in prepared_step.context_revision.history_items
         }
         assert current.turn_id in selected_turn_ids
         assert future.turn_id not in selected_turn_ids

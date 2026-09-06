@@ -76,6 +76,8 @@ function installRuntimeBridge(api: unknown): void {
         providerId: "test-provider",
         id: "test-model",
         displayName: "Test Model",
+        contextWindow: 32768,
+        maxOutputTokens: 4096,
         enabled: true,
       },
     ],
@@ -278,6 +280,7 @@ function singleTurnHistoryPage(
             providerId: "scripted",
             modelId: "scripted-v1",
             executionPolicy: "full_access",
+            startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
             status,
             reasonCode: null,
             createdAt,
@@ -694,6 +697,7 @@ describe("Runtime-backed renderer store", () => {
         runId: "run-runtime"
       };
     });
+    useAppStore.setState({ executionLimits: { maxModelCalls: 37, maxDurationSeconds: 1800 } });
     useAppStore.getState().setDraft("hello runtime");
     await useAppStore.getState().sendDraft();
 
@@ -704,6 +708,7 @@ describe("Runtime-backed renderer store", () => {
         threadId: thread.id,
         branchId: thread.defaultBranchId,
         content: "hello runtime",
+        executionLimits: { maxModelCalls: 37, maxDurationSeconds: 1800 },
         providerId: "test-provider",
         modelId: "test-model",
         clientRequestId: expect.any(String)
@@ -754,6 +759,8 @@ describe("Runtime-backed renderer store", () => {
               providerId: "deepseek",
               id: "deepseek-chat",
               displayName: "DeepSeek Chat",
+              contextWindow: 32768,
+              maxOutputTokens: 4096,
               enabled: true,
             },
           ],
@@ -822,12 +829,16 @@ describe("Runtime-backed renderer store", () => {
               providerId: "test-provider",
               id: "model-a",
               displayName: "Model A",
+              contextWindow: 32768,
+              maxOutputTokens: 4096,
               enabled: true,
             },
             {
               providerId: "test-provider",
               id: "model-b",
               displayName: "Model B",
+              contextWindow: 32768,
+              maxOutputTokens: 4096,
               enabled: true,
             },
           ],
@@ -887,12 +898,16 @@ describe("Runtime-backed renderer store", () => {
         providerId: "deepseek",
         id: "deepseek-chat",
         displayName: "DeepSeek Chat",
+        contextWindow: 32768,
+        maxOutputTokens: 4096,
         enabled: true,
       },
       {
         providerId: "custom-provider",
         id: "custom-model",
         displayName: "Custom Model",
+        contextWindow: 32768,
+        maxOutputTokens: 4096,
         enabled: true,
       },
     ];
@@ -1001,12 +1016,14 @@ describe("Runtime-backed renderer store", () => {
         providerId: "deepseek",
         id: "deepseek-chat",
         displayName: "DeepSeek Chat",
+        contextWindow: 32768,
+        maxOutputTokens: 4096,
         enabled: true,
       },
     ];
     const candidates = [
-      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },
-      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
+      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", contextWindow: 32768, maxOutputTokens: 4096 },
+      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", contextWindow: 32768, maxOutputTokens: 4096 },
     ];
     const listProviders = vi.fn(async () => ({ providers }));
     const listModels = vi.fn(async () => ({ models }));
@@ -1082,12 +1099,16 @@ describe("Runtime-backed renderer store", () => {
       providerId: "stale-provider",
       id: "stale-model",
       displayName: "Stale Model",
+      contextWindow: 32768,
+      maxOutputTokens: 4096,
       enabled: true,
     };
     const freshModel: RuntimeModelSummary = {
       providerId: "fresh-provider",
       id: "fresh-model",
       displayName: "Fresh Model",
+      contextWindow: 32768,
+      maxOutputTokens: 4096,
       enabled: true,
     };
     const listProviders = vi
@@ -1107,7 +1128,8 @@ describe("Runtime-backed renderer store", () => {
         replayEvents: vi.fn(),
         listProviders,
         listModels,
-        setModelEnabled: vi.fn(async () => freshModel),
+        setModelLimits: vi.fn(),
+    setModelEnabled: vi.fn(async () => freshModel),
         onEvent: vi.fn(() => () => undefined),
       },
       preferences: {},
@@ -1285,7 +1307,7 @@ describe("Runtime-backed renderer store", () => {
       data: {
         stepId: "step-runtime",
         callId: "provider-call-runtime",
-        toolName: "process_run",
+        toolName: "process_start",
         arguments: { command: "Write-Output runtime-tool" }
       },
       createdAt,
@@ -1321,7 +1343,7 @@ describe("Runtime-backed renderer store", () => {
             stepId: "step-runtime",
             callId: "provider-call-runtime",
             toolCallItemId: toolCall.id,
-            toolName: "process_run",
+            toolName: "process_start",
             result: {
               ok: true,
               output: "runtime-tool\nsecond-line",
@@ -1391,7 +1413,7 @@ describe("Runtime-backed renderer store", () => {
       {
         id: toolCall.id,
         type: "tool_call",
-        toolName: "process.run",
+        toolName: "process_start",
         status: "success",
         durationMs: 14
       },
@@ -1860,7 +1882,10 @@ describe("Runtime-backed renderer store", () => {
     await useAppStore.getState().initializeRuntime();
 
     useAppStore.getState().setDraft("long outage");
+    useAppStore.setState({ executionLimits: { maxModelCalls: 23, maxDurationSeconds: 900 } });
     const sending = useAppStore.getState().sendDraft();
+    await vi.advanceTimersByTimeAsync(100);
+    useAppStore.setState({ executionLimits: { maxModelCalls: 45, maxDurationSeconds: 2700 } });
     await vi.advanceTimersByTimeAsync(5_000);
     await sending;
 
@@ -1883,7 +1908,7 @@ describe("Runtime-backed renderer store", () => {
       updatedAt: createdAt
     };
     let startAttempts = 0;
-    const startTurn = vi.fn(async (params: { clientRequestId?: string }) => {
+    const startTurn = vi.fn(async (params: { clientRequestId?: string; executionLimits: { maxModelCalls: number; maxDurationSeconds: number } }) => {
       startAttempts += 1;
       if (startAttempts <= 5) throw new Error("Runtime connection unavailable");
       return {
@@ -1920,11 +1945,17 @@ describe("Runtime-backed renderer store", () => {
     await useAppStore.getState().selectThread(thread.id);
 
     useAppStore.getState().setDraft("long turn outage");
+    useAppStore.setState({ executionLimits: { maxModelCalls: 23, maxDurationSeconds: 900 } });
     const sending = useAppStore.getState().sendDraft();
+    await vi.advanceTimersByTimeAsync(100);
+    useAppStore.setState({ executionLimits: { maxModelCalls: 45, maxDurationSeconds: 2700 } });
     await vi.advanceTimersByTimeAsync(5_000);
     await sending;
 
     expect(startTurn).toHaveBeenCalledTimes(6);
+    for (const [params] of startTurn.mock.calls) {
+      expect(params.executionLimits).toEqual({ maxModelCalls: 23, maxDurationSeconds: 900 });
+    }
     expect(
       new Set(startTurn.mock.calls.map((call) => call[0].clientRequestId)).size
     ).toBe(1);
@@ -4241,6 +4272,8 @@ describe("Runtime-backed renderer store", () => {
       providerId: "provider-reconnect",
       id: "model-reconnect",
       displayName,
+      contextWindow: 32768,
+      maxOutputTokens: 4096,
       enabled: true,
     });
     let resolveStaleProviders!: (value: { providers: RuntimeProviderSummary[] }) => void;

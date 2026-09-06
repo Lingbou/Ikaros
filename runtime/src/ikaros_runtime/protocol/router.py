@@ -101,6 +101,8 @@ class RuntimeRouter:
                 result = self._providers.list_models(params)
             elif method == "model.set_enabled":
                 result = self._providers.set_model_enabled(params)
+            elif method == "model.set_limits":
+                result = self._providers.set_model_limits(params)
             elif method == "skill.list":
                 result = self._skills.list_skills(params)
             elif method == "skill.set_enabled":

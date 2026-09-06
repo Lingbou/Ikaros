@@ -23,6 +23,7 @@ import type {
   RuntimeMemoryListParams,
   RuntimeMemoryMutationResult,
   RuntimeModelSetEnabledParams,
+  RuntimeModelSetLimitsParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
@@ -142,6 +143,8 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>,
+    setModelLimits: (params: RuntimeModelSetLimitsParams) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.modelSetLimits, params) as Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>,
     listSkills: () =>
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.skillList) as Promise<
         RuntimeInvocationResult<RuntimeSkillListResult>

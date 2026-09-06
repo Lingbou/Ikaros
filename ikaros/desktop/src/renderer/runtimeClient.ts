@@ -24,6 +24,7 @@ import type {
   RuntimeMemoryMutationResult,
   RuntimeMemoryRpcMethod,
   RuntimeModelSetEnabledParams,
+  RuntimeModelSetLimitsParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
@@ -246,6 +247,10 @@ export class RuntimeClient implements IkarosRuntimeApi {
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeModelSetEnabledResult> {
     return unwrapRuntimeInvocation(this.api.setModelEnabled(params));
+  }
+
+  setModelLimits(params: RuntimeModelSetLimitsParams): Promise<RuntimeModelSetEnabledResult> {
+    return unwrapRuntimeInvocation(this.api.setModelLimits(params));
   }
 
   listSkills(): Promise<RuntimeSkillListResult> {

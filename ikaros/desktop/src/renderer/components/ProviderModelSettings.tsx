@@ -44,12 +44,15 @@ export interface ModelsSettingsProps {
   providers: readonly RuntimeProviderSummary[];
   models: readonly RuntimeModelSummary[];
   onSetModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<void>;
+  onSetModelLimits(providerId: string, modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
 }
 
 interface DraftModel {
   key: number;
   id: string;
   displayName: string;
+  contextWindow: string;
+  maxOutputTokens: string;
 }
 
 interface DraftHeader {
@@ -81,7 +84,7 @@ function nextDraftRowKey(): number {
 }
 
 function createModelDraft(): DraftModel {
-  return { key: nextDraftRowKey(), id: "", displayName: "" };
+  return { key: nextDraftRowKey(), id: "", displayName: "", contextWindow: "32768", maxOutputTokens: "4096" };
 }
 
 function createHeaderDraft(): DraftHeader {
@@ -93,7 +96,9 @@ function createModelDrafts(models: readonly RuntimeModelSummary[]): DraftModel[]
   return models.map((model) => ({
     key: nextDraftRowKey(),
     id: model.id,
-    displayName: model.displayName
+    displayName: model.displayName,
+    contextWindow: String(model.contextWindow),
+    maxOutputTokens: String(model.maxOutputTokens)
   }));
 }
 
@@ -106,7 +111,11 @@ function normalizedModels(drafts: readonly DraftModel[]): RuntimeModelInput[] | 
     if (!id && !displayName) continue;
     if (!id || seen.has(id)) return null;
     seen.add(id);
-    models.push({ id, displayName: displayName || id });
+    const contextWindow = Number(draft.contextWindow);
+    const maxOutputTokens = Number(draft.maxOutputTokens);
+    if (!Number.isSafeInteger(contextWindow) || !Number.isSafeInteger(maxOutputTokens) ||
+      maxOutputTokens <= 0 || maxOutputTokens >= contextWindow) return null;
+    models.push({ id, displayName: displayName || id, contextWindow, maxOutputTokens });
   }
   return models.length > 0 ? models : null;
 }
@@ -351,7 +360,8 @@ function ModelDraftEditor({
       ) : null}
       <div className="space-y-2">
         {models.map((model, rowIndex) => (
-          <div key={model.key} className="flex items-center gap-2">
+          <div key={model.key} className="rounded-lg border border-[var(--border-soft)] p-2">
+          <div className="flex items-center gap-2">
             <input
               value={model.displayName}
               onChange={(event) =>
@@ -429,6 +439,19 @@ function ModelDraftEditor({
             >
               <Trash2 size={14} aria-hidden="true" />
             </button>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Field label={t("settings.models.contextWindow")}>
+              <input type="number" min={2} step={1} value={model.contextWindow}
+                onChange={(event) => update(model.key, { contextWindow: event.currentTarget.value })}
+                className={inputClassName} />
+            </Field>
+            <Field label={t("settings.models.maxOutputTokens")}>
+              <input type="number" min={1} step={1} value={model.maxOutputTokens}
+                onChange={(event) => update(model.key, { maxOutputTokens: event.currentTarget.value })}
+                className={inputClassName} />
+            </Field>
+          </div>
           </div>
         ))}
       </div>
@@ -1008,6 +1031,47 @@ interface ModelGroup {
   custom: boolean;
   models: readonly RuntimeModelSummary[];
   onToggle(modelId: string, enabled: boolean): void;
+  onSetLimits(modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
+}
+
+function ModelLimitsEditor({ model, onSave }: {
+  model: RuntimeModelSummary;
+  onSave(modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [context, setContext] = useState(String(model.contextWindow));
+  const [output, setOutput] = useState(String(model.maxOutputTokens));
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setContext(String(model.contextWindow)); setOutput(String(model.maxOutputTokens)); }, [model.contextWindow, model.maxOutputTokens]);
+  const contextWindow = Number(context), maxOutputTokens = Number(output);
+  const valid = Number.isSafeInteger(contextWindow) && Number.isSafeInteger(maxOutputTokens) &&
+    maxOutputTokens > 0 && maxOutputTokens < contextWindow;
+  const changed = contextWindow !== model.contextWindow || maxOutputTokens !== model.maxOutputTokens;
+  return (
+    <form className="min-w-0 flex-1" onSubmit={(event) => {
+      event.preventDefault();
+      if (!valid || saving || !changed) return;
+      setSaving(true); setFailed(false);
+      void onSave(model.id, contextWindow, maxOutputTokens).catch(() => setFailed(true)).finally(() => setSaving(false));
+    }}>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-24 flex-1 text-[10px] text-[var(--muted)]">
+          {t("settings.models.contextWindow")}
+          <input type="number" min={2} step={1} value={context} onChange={(event) => setContext(event.currentTarget.value)}
+            className={cx(inputClassName, "mt-1")} />
+        </label>
+        <label className="min-w-24 flex-1 text-[10px] text-[var(--muted)]">
+          {t("settings.models.maxOutputTokens")}
+          <input type="number" min={1} step={1} value={output} onChange={(event) => setOutput(event.currentTarget.value)}
+            className={cx(inputClassName, "mt-1")} />
+        </label>
+        <SubmitButton disabled={!valid || !changed || saving}>{t("settings.models.saveLimits")}</SubmitButton>
+      </div>
+      {!valid ? <p role="alert" className="mt-1 text-[11px] text-[#e08b8b]">{t("settings.models.invalidLimits")}</p> : null}
+      {failed ? <p role="alert" className="mt-1 text-[11px] text-[#e08b8b]">{t("settings.providers.saveFailed")}</p> : null}
+    </form>
+  );
 }
 
 function ModelsGroup({
@@ -1052,7 +1116,7 @@ function ModelsGroup({
           {group.models.map((model) => (
             <div
               key={model.id}
-              className="flex min-h-[52px] items-center justify-between gap-5 border-t border-[var(--separator)] px-4 py-2 first:border-t-0"
+              className="flex min-h-[52px] flex-wrap items-center justify-between gap-5 border-t border-[var(--separator)] px-4 py-2 first:border-t-0"
             >
               <div className="min-w-0">
                 <div className="truncate text-[13px] font-semibold leading-5 text-[var(--text)]">
@@ -1064,6 +1128,7 @@ function ModelsGroup({
                   </div>
                 ) : null}
               </div>
+              <ModelLimitsEditor model={model} onSave={group.onSetLimits} />
               <ModelSwitch
                 label={t("settings.models.toggleModel", { model: model.displayName })}
                 checked={model.enabled}
@@ -1080,7 +1145,8 @@ function ModelsGroup({
 export function ModelsSettings({
   providers,
   models,
-  onSetModelEnabled
+  onSetModelEnabled,
+  onSetModelLimits
 }: ModelsSettingsProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -1099,6 +1165,8 @@ export function ModelsSettings({
           name: provider.displayName,
           custom: provider.origin === "custom",
           models: providerModels,
+          onSetLimits: (modelId: string, contextWindow: number, maxOutputTokens: number) =>
+            onSetModelLimits(provider.id, modelId, contextWindow, maxOutputTokens),
           onToggle: (modelId: string, enabled: boolean) => {
             setMutationFailed(false);
             void onSetModelEnabled(provider.id, modelId, enabled).catch(() =>
@@ -1108,7 +1176,7 @@ export function ModelsSettings({
         }
       ];
     });
-  }, [models, onSetModelEnabled, providers]);
+  }, [models, onSetModelEnabled, onSetModelLimits, providers]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleGroups = useMemo(

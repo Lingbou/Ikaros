@@ -233,7 +233,7 @@ describe("Composer input and clearance", () => {
     useAppStore.setState({
       runtimeMode: true,
       providers: [{ id: "custom", displayName: "Custom", origin: "custom", configured: true, credentialConfigured: true, health: "unknown" }],
-      models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false }],
+      models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false, contextWindow: 32768, maxOutputTokens: 4096 }],
       selectedModel: null,
       draft: "saved draft",
     });
@@ -313,7 +313,7 @@ describe("Composer input and clearance", () => {
           credentialConfigured: true,
           health: "unknown",
         }],
-        models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: true }],
+        models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: true, contextWindow: 32768, maxOutputTokens: 4096 }],
         selectedModel: { providerId: "custom", modelId: "model" },
       });
       useAppStore.getState().setSettingsOpen(false);
@@ -343,12 +343,16 @@ describe("Composer input and clearance", () => {
           providerId: "test-provider",
           id: "model-a",
           displayName: "Model A",
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
           enabled: true,
         },
         {
           providerId: "test-provider",
           id: "model-b",
           displayName: "Model B",
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
           enabled: true,
         },
       ],
@@ -395,5 +399,20 @@ describe("Composer input and clearance", () => {
     act(() => resizeCallback?.([], {} as ResizeObserver));
 
     expect(onClearanceChange).toHaveBeenLastCalledWith(275);
+  });
+});
+
+describe("task execution limits", () => {
+  it("keeps the current draft while configuring limits for the next task", () => {
+    useAppStore.setState({ runtimeMode: true, draft: "Keep this request", executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 } });
+    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "Task limits" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum model calls" }), { target: { value: "37" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum duration (minutes)" }), { target: { value: "25" } });
+    expect(useAppStore.getState().executionLimits).toEqual({ maxModelCalls: 37, maxDurationSeconds: 1500 });
+    expect(useAppStore.getState().draft).toBe("Keep this request");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum model calls" }), { target: { value: "0" } });
+    expect(useAppStore.getState().executionLimits.maxModelCalls).toBe(37);
+    localStorage.removeItem("ikaros.executionLimits");
   });
 });

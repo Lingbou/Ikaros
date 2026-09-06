@@ -27,14 +27,25 @@ from ikaros_runtime.identity import IdentityResourceError, load_identity_core
 from ikaros_runtime.memory import MemoryScope, SqliteMemoryStore
 from ikaros_runtime.protocol.spec import PROTOCOL_VERSION
 from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderConfig
+from ikaros_runtime.run_input import (
+    INPUT_BUDGET_MEASUREMENT_VERSION,
+    ContextRevision,
+    HistoryGroupReferenceV1,
+    HistoryItemReferenceV1,
+    InputBudgetRecord,
+    MemoryReferenceV1,
+    OmissionRecordV1,
+    StepInput,
+)
 from ikaros_runtime.security import response_values_contain_protected_value
 from ikaros_runtime.server.connection import handle_connection
 from ikaros_runtime.server.event_hub import EventHub
 from ikaros_runtime.server.host import ServerSettings, _parent_is_alive
 from ikaros_runtime.services.turns import TurnService
 from ikaros_runtime.storage import SqliteRuntimeStore
+from ikaros_runtime.tools.core import ToolDefinition
 
-from .helpers import prepare_turn
+from .helpers import prepare_turn, run_config
 
 _HIDDEN_PROCESS_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
@@ -61,137 +72,87 @@ def test_thread_catalog_keys_have_fixed_security_provenance(protected: str) -> N
 
 
 def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential() -> None:
-    sha256 = "a" * 64
+    config = run_config(
+        "scripted",
+        "scripted-v1",
+        identity_core=load_identity_core(),
+        tools=(
+            ToolDefinition(
+                name="runtime-owned-tool",
+                description="Runtime owned Tool description",
+                input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
+            ),
+        ),
+    )
+    budget = InputBudgetRecord(
+        mode="bounded",
+        measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
+        maximum_tokens=28672,
+        reserved_current_run_tokens=7168,
+        instruction_tokens=0,
+        context_data_tokens=96,
+        tool_tokens=0,
+        history_tokens=0,
+        current_run_tokens=1,
+        memory_tokens=48,
+        total_tokens=145,
+    )
+    memory = (MemoryReferenceV1("memory_00000000000000000000000000000001", 1, "global", 12),)
+    omissions = (
+        OmissionRecordV1(
+            "memory", "memory_00000000000000000000000000000002", "omitted_by_budget", 1, 13
+        ),
+    )
+    history_items = (
+        HistoryItemReferenceV1(
+            config.user_item_id, config.turn_id, config.run_id, "message", "user", 1
+        ),
+    )
+    revision = ContextRevision(
+        history_groups=(HistoryGroupReferenceV1(config.turn_id, (config.user_item_id,)),),
+        history_items=history_items,
+        memory=memory,
+        budget=budget,
+        omissions=omissions,
+        memory_context_characters=24,
+    )
+    step = StepInput(
+        step_ordinal=1,
+        context_revision=1,
+        history_items=history_items,
+        memory=memory,
+        budget=budget,
+        omissions=omissions,
+        memory_context_characters=24,
+    )
     value = {
         "payload": {
-            "submissionFrame": {
-                "providerId": "scripted",
-                "modelId": "scripted-v1",
-                "executionPolicy": "full_access",
-                "publicProviderConfigFingerprint": sha256,
-                "tools": [
-                    {
-                        "name": "runtime-owned-tool",
-                        "description": "Runtime owned Tool description",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {"command": {"type": "string"}},
-                        },
-                        "definitionSha256": sha256,
-                    }
-                ],
-                "instructions": {
-                    "outputStyle": {
-                        "id": "output-style",
-                        "authority": "runtime_instruction",
-                        "lifetime": "release",
-                        "content": "Runtime owned output style",
-                    },
-                    "identityCore": {
-                        "id": "ikaros-identity",
-                        "authority": "runtime_identity",
-                        "lifetime": "release",
-                        "content": "Runtime owned identity",
-                    },
-                    "skillCatalog": None,
-                },
-                "contextData": {"memory": []},
-            },
-            "runManifest": {
-                "contextSelectionVersion": "bounded-history-v1",
-                "instructions": [
-                    {
-                        "id": "output-style",
-                        "authority": "runtime_instruction",
-                        "contentSha256": sha256,
-                    }
-                ],
-                "tools": [
-                    {
-                        "name": "runtime-owned-tool",
-                        "definitionSha256": sha256,
-                    }
-                ],
-                "provider": {
-                    "providerId": "scripted",
-                    "modelId": "scripted-v1",
-                    "publicProviderConfigFingerprint": sha256,
-                },
-            },
-            "contextSnapshot": {
-                "selectionVersion": "bounded-history-v1",
-                "budget": {
-                    "mode": "bounded",
-                    "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                },
-                "historyItems": [],
-                "memory": [
-                    {
-                        "memoryId": "memory_00000000000000000000000000000001",
-                        "revision": 1,
-                        "scope": "global",
-                        "characters": 12,
-                    }
-                ],
-                "omissions": [
-                    {
-                        "sourceType": "memory",
-                        "sourceId": "memory_00000000000000000000000000000002",
-                        "revision": 1,
-                        "characters": 13,
-                        "reason": "omitted_by_budget",
-                    }
-                ],
-            },
-            "stepManifest": {
-                "budget": {
-                    "mode": "bounded",
-                    "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                },
-                "historyItems": [],
-                "memory": [
-                    {
-                        "memoryId": "memory_00000000000000000000000000000001",
-                        "revision": 1,
-                        "scope": "global",
-                        "characters": 12,
-                    }
-                ],
-                "omissions": [
-                    {
-                        "sourceType": "memory",
-                        "sourceId": "memory_00000000000000000000000000000002",
-                        "revision": 1,
-                        "characters": 13,
-                        "reason": "omitted_by_limit",
-                    }
-                ],
-            },
+            "runConfig": config.to_wire(),
+            "contextRevision": revision.to_wire(),
+            "stepInput": step.to_wire(),
         }
     }
-
+    assert config.identity_core is not None
     for protected in (
         "full_access",
         "scripted-v1",
         "runtime_instruction",
         "runtime_identity",
         "release",
-        "Runtime owned output style",
-        "Runtime owned identity",
+        config.output_style.content,
+        config.identity_core.content,
         "runtime-owned-tool",
         "Runtime owned Tool description",
         "object",
         "properties",
         "command",
         "string",
-        "bounded-history-v1",
         "bounded",
-        "unicode-codepoints-canonical-json-v1",
+        INPUT_BUDGET_MEASUREMENT_VERSION,
         "global",
         "memory",
         "omitted_by_budget",
-        "omitted_by_limit",
-        sha256,
+        config.public_provider_config_fingerprint,
     ):
         assert response_values_contain_protected_value(value, [protected]) is False
 
@@ -199,21 +160,13 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
 @pytest.mark.parametrize(
     "container",
     (
-        {"payload": {"submissionFrame": {"tools": [{"description": "dynamic-secret"}]}}},
+        {"payload": {"runConfig": {"tools": [{"description": "dynamic-secret"}]}}},
         {
             "params": {
-                "payload": {
-                    "contextSnapshot": {"historyItems": [{"kind": "dynamic-secret"}]}
-                }
+                "payload": {"contextRevision": {"historyItems": [{"kind": "dynamic-secret"}]}}
             }
         },
-        {
-            "result": {
-                "events": [
-                    {"payload": {"stepManifest": {"omissions": ["dynamic-secret"]}}}
-                ]
-            }
-        },
+        {"result": {"events": [{"payload": {"stepInput": {"omissions": ["dynamic-secret"]}}}]}},
     ),
 )
 def test_model_input_snapshot_provenance_accepts_only_legal_roots(
@@ -229,11 +182,7 @@ def test_nested_model_input_lookalike_does_not_bypass_protected_value_scan() -> 
                 "item": {
                     "data": {
                         "result": {
-                            "payload": {
-                                "submissionFrame": {
-                                    "tools": [{"description": "dynamic-secret"}]
-                                }
-                            }
+                            "payload": {"runConfig": {"tools": [{"description": "dynamic-secret"}]}}
                         }
                     }
                 }
@@ -247,10 +196,10 @@ def test_nested_model_input_lookalike_does_not_bypass_protected_value_scan() -> 
 @pytest.mark.parametrize(
     "value",
     (
-        {"payload": {"submissionFrame": {"workspace": {"name": "dynamic-secret"}}}},
+        {"payload": {"runConfig": {"workspace": {"name": "dynamic-secret"}}}},
         {
             "payload": {
-                "submissionFrame": {
+                "runConfig": {
                     "skills": [
                         {
                             "name": "dynamic-secret",
@@ -263,14 +212,12 @@ def test_nested_model_input_lookalike_does_not_bypass_protected_value_scan() -> 
         },
         {
             "payload": {
-                "submissionFrame": {
-                    "instructions": {"skillCatalog": {"content": "dynamic-secret"}}
-                }
+                "runConfig": {"instructions": {"skillCatalog": {"content": "dynamic-secret"}}}
             }
         },
         {
             "payload": {
-                "submissionFrame": {
+                "runConfig": {
                     "providerId": "custom-provider",
                     "modelId": "dynamic-secret",
                 }
@@ -290,7 +237,7 @@ def test_model_input_and_provider_dynamic_values_remain_guarded(
 def test_non_scripted_model_named_like_the_scripted_model_remains_guarded() -> None:
     value = {
         "payload": {
-            "submissionFrame": {
+            "runConfig": {
                 "providerId": "custom-provider",
                 "modelId": "scripted-v1",
             }
@@ -504,7 +451,15 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
             "usage": True,
             "skills": True,
             "memory": True,
-            "tools": ["process_run", "read", "write", "edit"],
+            "tools": [
+                "process_start",
+                "process_read",
+                "process_wait",
+                "process_stop",
+                "read",
+                "write",
+                "edit",
+            ],
             "executionPolicy": "full_access",
         },
     }
@@ -598,7 +553,7 @@ class FakeOpenAIEndpoint:
     async def _response_body(self, request: dict[str, Any]) -> bytes:
         messages = cast(list[dict[str, Any]], request["messages"])
         if messages[-1]["role"] == "tool":
-            return _fake_sse_text("Tool result received by fake provider.")
+            return _fake_process_followup(messages, "Tool result received by fake provider.")
         last_user = next(message for message in reversed(messages) if message["role"] == "user")
         if last_user["content"] == "run a tool":
             chunks = [
@@ -614,7 +569,7 @@ class FakeOpenAIEndpoint:
                                         "id": "call_fake_process",
                                         "type": "function",
                                         "function": {
-                                            "name": "process_run",
+                                            "name": "process_start",
                                             "arguments": '{"command":"echo gate6-tool"}',
                                         },
                                     }
@@ -768,7 +723,7 @@ class InvalidNumericToolArgumentsEndpoint(FakeOpenAIEndpoint):
                                         "id": "call_invalid_numeric",
                                         "type": "function",
                                         "function": {
-                                            "name": "process_run",
+                                            "name": "process_start",
                                             "arguments": arguments,
                                         },
                                     }
@@ -790,7 +745,7 @@ class ProtectedToolEndpoint(FakeOpenAIEndpoint):
     async def _response_body(self, request: dict[str, Any]) -> bytes:
         messages = cast(list[dict[str, Any]], request["messages"])
         if messages[-1]["role"] == "tool":
-            return _fake_sse_text("Protected tool result handled safely.")
+            return _fake_process_followup(messages, "Protected tool result handled safely.")
         arguments = json.dumps({"command": self._command}, separators=(",", ":"))
         return _fake_sse(
             [
@@ -805,7 +760,7 @@ class ProtectedToolEndpoint(FakeOpenAIEndpoint):
                                         "id": "call_read_config",
                                         "type": "function",
                                         "function": {
-                                            "name": "process_run",
+                                            "name": "process_start",
                                             "arguments": arguments,
                                         },
                                     }
@@ -887,6 +842,42 @@ def _fake_sse(chunks: list[dict[str, Any]]) -> bytes:
     return b"".join(payloads)
 
 
+def _fake_process_followup(messages: list[dict[str, Any]], final: str) -> bytes:
+    result = json.loads(messages[-1]["content"])
+    if result.get("state") == "running":
+        return _fake_sse(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": f"call_wait_{len(messages)}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "process_wait",
+                                            "arguments": json.dumps(
+                                                {
+                                                    "processId": result["processId"],
+                                                    "timeoutMs": 5000,
+                                                }
+                                            ),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+            ]
+        )
+    return _fake_sse_text(final)
+
+
 def _fake_sse_text(content: str) -> bytes:
     return _fake_sse(
         [
@@ -945,7 +936,14 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
             {
                 "kind": "deepseek",
                 "apiKey": deepseek_secret,
-                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+                "models": [
+                    {
+                        "id": "deepseek-chat",
+                        "displayName": "DeepSeek Chat",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed_responses.append(configured_deepseek)
@@ -969,7 +967,14 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "baseUrl": "http://127.0.0.1:8080/v1",
                 "apiKey": custom_secret,
                 "headers": {"X-Tenant": header_secret},
-                "models": [{"id": "local-model", "displayName": "Local Model"}],
+                "models": [
+                    {
+                        "id": "local-model",
+                        "displayName": "Local Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed_responses.append(configured_custom)
@@ -998,12 +1003,16 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "id": "deepseek-chat",
                 "displayName": "DeepSeek Chat",
                 "enabled": True,
+                "contextWindow": 32768,
+                "maxOutputTokens": 4096,
             },
             {
                 "providerId": "local",
                 "id": "local-model",
                 "displayName": "Local Model",
                 "enabled": False,
+                "contextWindow": 32768,
+                "maxOutputTokens": 4096,
             },
         ]
         assert replay["result"]["events"] == []
@@ -1044,6 +1053,8 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "id": "local-model",
                 "displayName": "Local Model",
                 "enabled": False,
+                "contextWindow": 32768,
+                "maxOutputTokens": 4096,
             }
         ]
         removed = await _rpc(
@@ -1133,7 +1144,14 @@ async def test_memory_rpc_is_durable_idempotent_and_event_free(tmp_path: Path) -
             {
                 "kind": "deepseek",
                 "apiKey": protected,
-                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+                "models": [
+                    {
+                        "id": "deepseek-chat",
+                        "displayName": "DeepSeek Chat",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert rejected["error"]["code"] == -32602
@@ -1179,9 +1197,7 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
 ) -> None:
     token = secrets.token_hex(32)
     process, readiness = await _start_runtime(token, tmp_path)
-    connection = await _initialize(
-        f"ws://{readiness['host']}:{readiness['port']}", token
-    )
+    connection = await _initialize(f"ws://{readiness['host']}:{readiness['port']}", token)
     source_params: dict[str, Any]
     source_memory_id = ""
     mutation_memory_id = ""
@@ -1220,9 +1236,7 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
         )
         items = history["result"]["turns"][0]["runs"][0]["items"]
         source_item = next(
-            item
-            for item in items
-            if item["kind"] == "message" and item["role"] == "user"
+            item for item in items if item["kind"] == "message" and item["role"] == "user"
         )
         source_params = {
             "kind": "fact",
@@ -1271,9 +1285,7 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
             "resultingRevision": 2,
             "created": True,
         }
-        repeated_correct = await _rpc(
-            connection, 9, "memory.correct", correction_params
-        )
+        repeated_correct = await _rpc(connection, 9, "memory.correct", correction_params)
         assert repeated_correct["result"]["created"] is False
         stale = await _rpc(
             connection,
@@ -1302,12 +1314,8 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
             "created": True,
         }
         active = await _rpc(connection, 12, "memory.list", {"state": "active"})
-        assert mutation_memory_id not in {
-            memory["id"] for memory in active["result"]["memories"]
-        }
-        tombstones = await _rpc(
-            connection, 13, "memory.list", {"state": "forgotten"}
-        )
+        assert mutation_memory_id not in {memory["id"] for memory in active["result"]["memories"]}
+        tombstones = await _rpc(connection, 13, "memory.list", {"state": "forgotten"})
         assert tombstones["result"]["memories"] == [
             {
                 **tombstones["result"]["memories"][0],
@@ -1317,9 +1325,7 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
                 "preview": None,
             }
         ]
-        tombstone = await _rpc(
-            connection, 14, "memory.get", {"memoryId": mutation_memory_id}
-        )
+        tombstone = await _rpc(connection, 14, "memory.get", {"memoryId": mutation_memory_id})
         assert tombstone["result"]["memory"]["content"] is None
         assert tombstone["result"]["memory"]["state"] == "forgotten"
         no_memory_events = await _rpc(
@@ -1349,9 +1355,7 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
         f"ws://{restarted_readiness['host']}:{restarted_readiness['port']}", token
     )
     try:
-        source_replayed = await _rpc(
-            restarted_connection, 2, "memory.create", source_params
-        )
+        source_replayed = await _rpc(restarted_connection, 2, "memory.create", source_params)
         assert source_replayed["result"] == {
             "memoryId": source_memory_id,
             "resultingRevision": 1,
@@ -1363,12 +1367,8 @@ async def test_memory_rpc_provenance_correction_forget_and_reset_replay(
             "memory.get",
             {"memoryId": source_memory_id},
         )
-        assert source_after_reset["result"]["memory"]["provenance"]["status"] == (
-            "unavailable"
-        )
-        forget_replayed = await _rpc(
-            restarted_connection, 4, "memory.forget", forget_params
-        )
+        assert source_after_reset["result"]["memory"]["provenance"]["status"] == ("unavailable")
+        forget_replayed = await _rpc(restarted_connection, 4, "memory.forget", forget_params)
         assert forget_replayed["result"] == {
             "memoryId": mutation_memory_id,
             "resultingRevision": 3,
@@ -1397,9 +1397,7 @@ async def test_memory_rpc_allows_credentials_equal_to_fixed_protocol_values(
 
     token = secrets.token_hex(32)
     process, readiness = await _start_runtime(token, tmp_path)
-    connection = await _initialize(
-        f"ws://{readiness['host']}:{readiness['port']}", token
-    )
+    connection = await _initialize(f"ws://{readiness['host']}:{readiness['port']}", token)
     try:
         created = await _rpc(
             connection,
@@ -1416,12 +1414,8 @@ async def test_memory_rpc_allows_credentials_equal_to_fixed_protocol_values(
         memory_id = cast(str, created["result"]["memoryId"])
 
         listed = await _rpc(connection, 3, "memory.list", {"state": "active"})
-        assert [entry["id"] for entry in listed["result"]["memories"]] == [
-            memory_id
-        ]
-        fetched = await _rpc(
-            connection, 4, "memory.get", {"memoryId": memory_id}
-        )
+        assert [entry["id"] for entry in listed["result"]["memories"]] == [memory_id]
+        fetched = await _rpc(connection, 4, "memory.get", {"memoryId": memory_id})
         assert fetched["result"]["memory"]["kind"] == "fact"
         await _shutdown(connection, process, 5)
     finally:
@@ -1435,9 +1429,7 @@ async def test_memory_rpc_rejects_unencodable_unicode_with_stable_invalid_params
 ) -> None:
     token = secrets.token_hex(32)
     process, readiness = await _start_runtime(token, tmp_path)
-    connection = await _initialize(
-        f"ws://{readiness['host']}:{readiness['port']}", token
-    )
+    connection = await _initialize(f"ws://{readiness['host']}:{readiness['port']}", token)
     try:
         requests: tuple[tuple[str, dict[str, Any], str], ...] = (
             (
@@ -1462,9 +1454,7 @@ async def test_memory_rpc_rejects_unencodable_unicode_with_stable_invalid_params
             ),
             ("memory.get", {"memoryId": "\ud800"}, "memoryId"),
         )
-        for request_id, (method, params, expected_message) in enumerate(
-            requests, start=2
-        ):
+        for request_id, (method, params, expected_message) in enumerate(requests, start=2):
             rejected = await _rpc(connection, request_id, method, params)
             assert rejected["error"]["code"] == -32602
             assert expected_message in rejected["error"]["message"]
@@ -1527,8 +1517,18 @@ async def test_provider_model_discovery_rpc_is_ephemeral_and_secret_guarded(
             "id": 3,
             "result": {
                 "models": [
-                    {"id": "deepseek-v4-flash", "displayName": "DeepSeek V4 Flash"},
-                    {"id": "deepseek-v4-pro", "displayName": "DeepSeek V4 Pro"},
+                    {
+                        "id": "deepseek-v4-flash",
+                        "displayName": "DeepSeek V4 Flash",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    },
+                    {
+                        "id": "deepseek-v4-pro",
+                        "displayName": "DeepSeek V4 Pro",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    },
                 ]
             },
         }
@@ -1610,7 +1610,14 @@ async def test_jsonrpc_envelope_and_schema_errors_never_echo_credentials(
                 "baseUrl": "http://127.0.0.1:9/v1",
                 "apiKey": api_key,
                 "headers": {"X-Protected": header_secret},
-                "models": [{"id": "safe-model", "displayName": "Safe Model"}],
+                "models": [
+                    {
+                        "id": "safe-model",
+                        "displayName": "Safe Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed.append(configured)
@@ -1713,7 +1720,14 @@ async def test_jsonrpc_envelope_and_schema_errors_never_echo_credentials(
                     "displayName": "Must Not Persist",
                     "baseUrl": "http://127.0.0.1:9/v1",
                     "apiKey": proposed_key,
-                    "models": [{"id": "model", "displayName": "Model"}],
+                    "models": [
+                        {
+                            "id": "model",
+                            "displayName": "Model",
+                            "contextWindow": 32768,
+                            "maxOutputTokens": 4096,
+                        }
+                    ],
                 },
             },
         )
@@ -1751,9 +1765,7 @@ async def test_jsonrpc_array_params_are_rejected_without_closing_connection(tmp_
         token,
     )
     try:
-        await connection.send(
-            '{"jsonrpc":"2.0","id":2,"method":"thread.list","params":[[0]]}'
-        )
+        await connection.send('{"jsonrpc":"2.0","id":2,"method":"thread.list","params":[[0]]}')
         response = json.loads(await connection.recv())
         assert response == {
             "jsonrpc": "2.0",
@@ -2053,7 +2065,14 @@ async def test_generated_identifiers_and_timestamps_keep_public_provenance(
                 "baseUrl": "http://127.0.0.1:9/v1",
                 "apiKey": thread["id"],
                 "headers": {"X-Timestamp-Provenance": thread["createdAt"]},
-                "models": [{"id": "model", "displayName": "Model"}],
+                "models": [
+                    {
+                        "id": "model",
+                        "displayName": "Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert configured["result"]["provider"]["credentialConfigured"] is True
@@ -2093,7 +2112,14 @@ async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
                 "displayName": "Invalid Public",
                 "baseUrl": "http://127.0.0.1:9/v1",
                 "apiKey": api_key,
-                "models": [{"id": api_key, "displayName": "Invalid Model"}],
+                "models": [
+                    {
+                        "id": api_key,
+                        "displayName": "Invalid Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed.append(invalid_public_model)
@@ -2115,7 +2141,14 @@ async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
             {
                 "kind": "deepseek",
                 "apiKey": historical,
-                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+                "models": [
+                    {
+                        "id": "deepseek-chat",
+                        "displayName": "DeepSeek Chat",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert historical_collision["error"]["code"] == -32602
@@ -2133,7 +2166,14 @@ async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
                 "baseUrl": "http://127.0.0.1:9/v1",
                 "apiKey": api_key,
                 "headers": {"X-Protected": header_secret},
-                "models": [{"id": "safe-model", "displayName": "Safe Model"}],
+                "models": [
+                    {
+                        "id": "safe-model",
+                        "displayName": "Safe Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed.append(configured)
@@ -2219,7 +2259,14 @@ async def test_credential_rotation_cannot_commit_an_old_secret_as_public_data(
                 "displayName": "Rotation Safe",
                 "baseUrl": "http://127.0.0.1:9/v1",
                 "apiKey": old_secret,
-                "models": [{"id": "model", "displayName": "Model"}],
+                "models": [
+                    {
+                        "id": "model",
+                        "displayName": "Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed.append(configured)
@@ -2234,7 +2281,14 @@ async def test_credential_rotation_cannot_commit_an_old_secret_as_public_data(
                 "displayName": old_secret,
                 "baseUrl": "http://127.0.0.1:9/v1",
                 "apiKey": new_secret,
-                "models": [{"id": "model", "displayName": "Model"}],
+                "models": [
+                    {
+                        "id": "model",
+                        "displayName": "Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         observed.append(rejected_rotation)
@@ -2288,7 +2342,14 @@ async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
                 "providerId": "fake",
                 "displayName": "Fake Provider",
                 "baseUrl": base_url,
-                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert configured["result"]["provider"]["configured"] is True
@@ -2368,7 +2429,7 @@ async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
             for item in completed_items
         )
 
-        assert len(endpoint.requests) == 4
+        assert len(endpoint.requests) >= 5
         assert any(
             message["role"] == "assistant" and message.get("content") == "First fake response."
             for message in endpoint.requests[1]["messages"]
@@ -2377,7 +2438,10 @@ async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
         assert tool_followup_messages[-2]["reasoning_content"] == "fake tool reasoning"
         assert tool_followup_messages[-2]["tool_calls"][0]["id"] == "call_fake_process"
         assert tool_followup_messages[-1]["role"] == "tool"
-        assert "gate6-tool" in tool_followup_messages[-1]["content"]
+        assert json.loads(tool_followup_messages[-1]["content"])["state"] == "running"
+        terminal_result = json.loads(endpoint.requests[-1]["messages"][-1]["content"])
+        assert terminal_result["state"] == "exited" and terminal_result["exitCode"] == 0
+        assert "gate6-tool" in terminal_result["output"]
 
         await _shutdown(connection, process, 7)
     finally:
@@ -2406,7 +2470,14 @@ async def test_openai_fake_endpoint_usage_reaches_journal_and_usage_read(
                 "providerId": "usage-fake",
                 "displayName": "Usage Fake Provider",
                 "baseUrl": base_url,
-                "models": [{"id": "usage-model", "displayName": "Usage Model"}],
+                "models": [
+                    {
+                        "id": "usage-model",
+                        "displayName": "Usage Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert configured["result"]["provider"]["configured"] is True
@@ -2435,8 +2506,7 @@ async def test_openai_fake_endpoint_usage_reaches_journal_and_usage_read(
         usage_events = [
             event
             for event in events
-            if event["type"] == "model.response_finished"
-            and event["payload"]["usage"] is not None
+            if event["type"] == "model.response_finished" and event["payload"]["usage"] is not None
         ]
         assert len(usage_events) == 1
         assert usage_events[0]["payload"]["stepOrdinal"] == 1
@@ -2494,7 +2564,14 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
                 "providerId": "file-tools-fake",
                 "displayName": "File Tools Fake",
                 "baseUrl": base_url,
-                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert configured["result"]["provider"]["configured"] is True
@@ -2557,8 +2634,7 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
 
         assert len(tool_results) == 4
         assert [
-            (item["data"]["callId"], item["data"]["toolName"])
-            for item in tool_results
+            (item["data"]["callId"], item["data"]["toolName"]) for item in tool_results
         ] == expected_calls
         assert [
             (
@@ -2573,9 +2649,7 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
         assert [item["data"]["result"]["ok"] for item in tool_results] == [True] * 4
 
         read_results = [
-            item["data"]["result"]
-            for item in tool_results
-            if item["data"]["toolName"] == "read"
+            item["data"]["result"] for item in tool_results if item["data"]["toolName"] == "read"
         ]
         assert len(read_results) == 2
         assert "alpha token" in read_results[0]["output"]
@@ -2619,7 +2693,10 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
         assert "omega token" in second_read_for_provider["output"]
 
         expected_schemas = {
-            "process_run": {"command"},
+            "process_start": {"command"},
+            "process_read": {"processId"},
+            "process_wait": {"processId"},
+            "process_stop": {"processId"},
             "read": {"filePath"},
             "write": {"filePath", "content"},
             "edit": {"filePath", "oldString", "newString"},
@@ -2644,9 +2721,7 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
         assert followup_messages[-1]["role"] == "tool"
 
         replay = await _rpc(connection, 5, "event.replay", {"afterSeq": 0, "limit": 1000})
-        replayed_run = [
-            event for event in replay["result"]["events"] if event["runId"] == run_id
-        ]
+        replayed_run = [event for event in replay["result"]["events"] if event["runId"] == run_id]
         assert [event["seq"] for event in replayed_run] == [
             event["seq"] for event in events if event["runId"] == run_id
         ]
@@ -2689,7 +2764,14 @@ async def test_invalid_provider_tool_numbers_fail_before_agent_or_sqlite(
                 "providerId": "non-finite",
                 "displayName": "Non-finite Provider",
                 "baseUrl": base_url,
-                "models": [{"id": "non-finite-model", "displayName": "Non-finite Model"}],
+                "models": [
+                    {
+                        "id": "non-finite-model",
+                        "displayName": "Non-finite Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         created = await _rpc(
@@ -2759,7 +2841,14 @@ async def test_process_tool_cannot_publish_or_persist_provider_credentials(
                 "baseUrl": base_url,
                 "apiKey": api_key,
                 "headers": {"X-Protected": header_secret},
-                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert configured["result"]["provider"]["credentialConfigured"] is True
@@ -2792,16 +2881,16 @@ async def test_process_tool_cannot_publish_or_persist_provider_credentials(
             if event["type"] == "item.completed"
             and event["payload"].get("item", {}).get("kind") == "tool_result"
         ]
-        assert len(result_items) == 1
-        result_item = result_items[0]
+        assert len(result_items) >= 2
+        result_item = result_items[-1]
         assert result_item["status"] == "failed"
         result = result_item["data"]["result"]
         assert result["ok"] is False
         assert result["errorCode"] == "protected_output"
         assert json.loads(result_item["content"]) == result
 
-        assert len(endpoint.requests) == 2
-        model_tool_result = endpoint.requests[1]["messages"][-1]
+        assert len(endpoint.requests) >= 3
+        model_tool_result = endpoint.requests[-1]["messages"][-1]
         assert model_tool_result["role"] == "tool"
         assert json.loads(model_tool_result["content"])["errorCode"] == "protected_output"
 
@@ -2861,7 +2950,14 @@ async def test_agent_boundary_blocks_split_credentials_from_another_provider(
             {
                 "kind": "deepseek",
                 "apiKey": protected,
-                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+                "models": [
+                    {
+                        "id": "deepseek-chat",
+                        "displayName": "DeepSeek Chat",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert deepseek["result"]["provider"]["credentialConfigured"] is True
@@ -2874,7 +2970,14 @@ async def test_agent_boundary_blocks_split_credentials_from_another_provider(
                 "providerId": "split-echo",
                 "displayName": "Split Echo",
                 "baseUrl": base_url,
-                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert custom["result"]["provider"]["credentialConfigured"] is False
@@ -2948,7 +3051,14 @@ async def test_active_run_blocks_cross_provider_credential_changes(
                 "providerId": "delayed-echo",
                 "displayName": "Delayed Echo",
                 "baseUrl": base_url,
-                "models": [{"id": "fake-model", "displayName": "Fake Model"}],
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
         )
         assert custom["result"]["provider"]["credentialConfigured"] is False
@@ -2980,12 +3090,33 @@ async def test_active_run_blocks_cross_provider_credential_changes(
             {
                 "kind": "deepseek",
                 "apiKey": protected,
-                "models": [{"id": "deepseek-chat", "displayName": "DeepSeek Chat"}],
+                "models": [
+                    {
+                        "id": "deepseek-chat",
+                        "displayName": "DeepSeek Chat",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             },
             live_events,
         )
         assert deepseek["error"]["code"] == -32602
         assert "Run is active" in deepseek["error"]["message"]
+        limits = await _rpc(
+            connection,
+            8,
+            "model.set_limits",
+            {
+                "providerId": "delayed-echo",
+                "modelId": "fake-model",
+                "contextWindow": 65536,
+                "maxOutputTokens": 8192,
+            },
+            live_events,
+        )
+        assert limits["result"]["model"]["maxOutputTokens"] == 8192
+        assert endpoint.requests[0]["max_tokens"] == 4096
         endpoint.release_response.set()
         live_events.extend(await _collect_run_events(connection, started["result"]["runId"]))
         assert live_events[-1]["payload"]["status"] == "completed"
@@ -3059,7 +3190,14 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
                 {
                     "kind": "deepseek",
                     "apiKey": "full_access",
-                    "models": [{"id": "model", "displayName": "Model"}],
+                    "models": [
+                        {
+                            "id": "model",
+                            "displayName": "Model",
+                            "contextWindow": 32768,
+                            "maxOutputTokens": 4096,
+                        }
+                    ],
                 }
             )
         store.terminalize_run(prepared.run_id, "cancelled")
@@ -3067,7 +3205,14 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
             {
                 "kind": "deepseek",
                 "apiKey": "full_access",
-                "models": [{"id": "model", "displayName": "Model"}],
+                "models": [
+                    {
+                        "id": "model",
+                        "displayName": "Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
             }
         )
         provider = cast(dict[str, object], configured["provider"])
@@ -3130,6 +3275,12 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
         assert repeated.run_after_ack is None
         with pytest.raises(InvalidParamsError, match="clientRequestId"):
             kernel.turns.start_turn({**params, "content": "different content"})
+        for changed_limits in (
+            {"maxModelCalls": 101, "maxDurationSeconds": 3600},
+            {"maxModelCalls": 100, "maxDurationSeconds": 3601},
+        ):
+            with pytest.raises(InvalidParamsError, match="different executionLimits"):
+                kernel.turns.start_turn({**params, "executionLimits": changed_limits})
         assert store._connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     finally:
         memory_store.close()
@@ -3185,15 +3336,21 @@ def test_online_provider_configuration_rejects_credentials_in_historical_events(
                 {
                     "kind": "deepseek",
                     "apiKey": protected,
-                    "models": [{"id": "model", "displayName": "Model"}],
+                    "models": [
+                        {
+                            "id": "model",
+                            "displayName": "Model",
+                            "contextWindow": 32768,
+                            "maxOutputTokens": 4096,
+                        }
+                    ],
                 }
             )
         assert protected not in str(captured.value)
         assert (config.path.read_bytes() if config.path.exists() else None) == before
         replayed, _ = store.replay_events(0, 100)
         assert any(
-            event.type == "thread.created"
-            and event.payload["thread"]["title"] == protected
+            event.type == "thread.created" and event.payload["thread"]["title"] == protected
             for event in replayed
         )
     finally:
@@ -3201,7 +3358,7 @@ def test_online_provider_configuration_rejects_credentials_in_historical_events(
         store.close()
 
 
-def test_queued_submission_frame_preserves_exact_user_content_across_restart_and_rebuild(
+def test_queued_run_config_preserves_exact_user_content_across_restart_and_rebuild(
     tmp_path: Path,
 ) -> None:
     content = " \r\nuser-body-sentinel\nwith trailing space  "
@@ -3233,7 +3390,7 @@ def test_queued_submission_frame_preserves_exact_user_content_across_restart_and
 
     def persisted_input(current: SqliteRuntimeStore) -> tuple[dict[str, object], str, str]:
         row = current._connection.execute(
-            "SELECT run_manifest_json FROM run_inputs WHERE run_id = ?",
+            "SELECT config_json FROM run_configs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         assert row is not None
@@ -3242,7 +3399,13 @@ def test_queued_submission_frame_preserves_exact_user_content_across_restart_and
             (run_id,),
         ).fetchone()
         assert user is not None
-        return current.get_submission_frame(run_id).to_wire(), str(row[0]), str(user[0])
+        assert (
+            current._connection.execute(
+                "SELECT COUNT(*) FROM context_revisions WHERE run_id = ?", (run_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        return current.get_run_config(run_id).to_wire(), str(row[0]), str(user[0])
 
     before = persisted_input(store)
     assert before[2] == content
@@ -4757,8 +4920,7 @@ async def test_thread_get_and_turn_list_read_the_complete_runtime_history(
             key: metadata_thread[key]
             for key in ("id", "title", "defaultBranchId", "workspace", "createdAt")
         } == {
-            key: thread[key]
-            for key in ("id", "title", "defaultBranchId", "workspace", "createdAt")
+            key: thread[key] for key in ("id", "title", "defaultBranchId", "workspace", "createdAt")
         }
         assert metadata_thread["updatedAt"] >= thread["updatedAt"]
         assert metadata["result"]["snapshotSeq"] == before["result"]["latestSeq"]
@@ -4842,15 +5004,25 @@ async def test_scripted_provider_runs_a_real_command_and_continues_the_conversat
         )
 
         assert [event["payload"]["item"]["status"] for event in tool_call_events] == [
-            "running",
-            "completed",
+            status for _ in tool_results for status in ("running", "completed")
         ]
-        assert len(tool_results) == 1
-        result = tool_results[0]["payload"]["item"]["data"]["result"]
-        assert result["toolName"] == "process_run"
+        assert len(tool_results) >= 2
+        results = [event["payload"]["item"]["data"]["result"] for event in tool_results]
+        assert results[0]["toolName"] == "process_start"
+        assert results[0]["state"] == "running"
+        assert all(result["toolName"] == "process_wait" for result in results[1:])
+        result = results[-1]
+        assert result["state"] == "exited"
         assert result["exitCode"] == 0
         assert result["ok"] is True
-        assert "gate5-tool-output" in result["stdout"]
+        assert "gate5-tool-output" in result["output"]
+        process_facts = [
+            event["payload"]["process"]
+            for event in run_events
+            if event["type"] == "process.recorded"
+        ]
+        assert process_facts[-1]["state"] == "exited"
+        assert "gate5-tool-output" in process_facts[-1]["stdout"]
         assert "gate5-tool-output" in assistant["content"]
         assert not any(event["type"].startswith("permission.") for event in run_events)
         assert sum(event["type"] == "run.settled" for event in run_events) == 1
@@ -4974,26 +5146,24 @@ async def test_skill_vertical_slice_reads_instructions_runs_script_and_persists_
             },
         )
         items = history["result"]["turns"][0]["runs"][0]["items"]
-        assert [(item["kind"], item["role"]) for item in items] == [
-            ("message", "user"),
-            ("tool_call", "assistant"),
-            ("tool_result", "tool"),
-            ("tool_call", "assistant"),
-            ("tool_result", "tool"),
-            ("message", "assistant"),
+        assert (items[0]["kind"], items[0]["role"]) == ("message", "user")
+        assert (items[-1]["kind"], items[-1]["role"]) == ("message", "assistant")
+        middle = items[1:-1]
+        assert len(middle) % 2 == 0
+        assert [(item["kind"], item["role"]) for item in middle] == [
+            pair
+            for _ in range(len(middle) // 2)
+            for pair in (("tool_call", "assistant"), ("tool_result", "tool"))
         ]
-        assert [
-            item["data"].get("toolName")
-            for item in items
-            if item["kind"] == "tool_call"
-        ] == ["read", "process_run"]
-        process_result = next(
-            item["data"]["result"]
-            for item in items
-            if item["kind"] == "tool_result" and item["data"]["toolName"] == "process_run"
-        )
+        tool_names = [item["data"]["toolName"] for item in items if item["kind"] == "tool_call"]
+        assert tool_names[:2] == ["read", "process_start"]
+        assert len(tool_names) >= 3 and all(name == "process_wait" for name in tool_names[2:])
+        process_result = [
+            item["data"]["result"] for item in items if item["kind"] == "tool_result"
+        ][-1]
+        assert process_result["state"] == "exited"
         assert process_result["exitCode"] == 0
-        assert "skill-script-output" in process_result["stdout"]
+        assert "skill-script-output" in process_result["output"]
         assert "skill-script-output" in items[-1]["content"]
         assert sum(event["type"] == "run.settled" for event in run_events) == 1
         await _shutdown(connection, process, 6)
@@ -5002,7 +5172,7 @@ async def test_skill_vertical_slice_reads_instructions_runs_script_and_persists_
 
 
 @pytest.mark.asyncio
-async def test_cancelling_process_run_preserves_partial_output_and_clears_running_tool(
+async def test_cancelling_process_wait_preserves_partial_output_and_clears_running_tool(
     tmp_path: Path,
 ) -> None:
     token = secrets.token_urlsafe(32)
@@ -5030,6 +5200,8 @@ async def test_cancelling_process_run_preserves_partial_output_and_clears_runnin
         )
         run_id = started["result"]["runId"]
         events: list[dict[str, Any]] = []
+        waiting = False
+        saw_output = False
         while True:
             message = json.loads(await asyncio.wait_for(connection.recv(), timeout=10))
             assert message["method"] == "event"
@@ -5038,10 +5210,14 @@ async def test_cancelling_process_run_preserves_partial_output_and_clears_runnin
             if (
                 event["runId"] == run_id
                 and event["type"] == "item.started"
-                and event["payload"].get("item", {}).get("kind") == "tool_call"
+                and event["payload"].get("item", {}).get("data", {}).get("toolName")
+                == "process_wait"
             ):
+                waiting = True
+            if event["type"] == "process.recorded":
+                saw_output = saw_output or "before-stop" in event["payload"]["process"]["stdout"]
+            if waiting and saw_output:
                 break
-        await asyncio.sleep(0.75)
         notifications: list[dict[str, Any]] = []
         cancelled = await _rpc(
             connection,
@@ -5063,19 +5239,28 @@ async def test_cancelling_process_run_preserves_partial_output_and_clears_runnin
             for event in run_events
             if event["type"] == "item.completed"
             and event["payload"].get("item", {}).get("kind") == "tool_call"
+            and event["payload"]["item"]["status"] == "cancelled"
         )
         tool_result = next(
             event["payload"]["item"]
             for event in run_events
             if event["type"] == "item.completed"
             and event["payload"].get("item", {}).get("kind") == "tool_result"
+            and event["payload"]["item"]["status"] == "cancelled"
         )
         settled = [event for event in run_events if event["type"] == "run.settled"]
 
         assert tool_call_terminal["status"] == "cancelled"
         assert tool_result["status"] == "cancelled"
         assert tool_result["data"]["result"]["cancelled"] is True
-        assert "before-stop" in tool_result["data"]["result"]["stdout"]
+        assert "before-stop" in tool_result["data"]["result"]["output"]
+        process_facts = [
+            event["payload"]["process"]
+            for event in run_events
+            if event["type"] == "process.recorded"
+        ]
+        assert process_facts[-1]["state"] == "terminated"
+        assert "before-stop" in process_facts[-1]["stdout"]
         assert len(settled) == 1
         assert settled[0]["payload"]["status"] == "cancelled"
         assert not any(
@@ -5583,9 +5768,10 @@ async def test_runtime_restart_fails_running_run_and_resumes_queued_run(
         ]
         assert len(prepared_steps) == 1
         assert len(finished_steps) == 1
-        assert finished_steps[0]["payload"]["stepOrdinal"] == prepared_steps[0]["payload"][
-            "stepOrdinal"
-        ]
+        assert (
+            finished_steps[0]["payload"]["stepOrdinal"]
+            == prepared_steps[0]["payload"]["stepOrdinal"]
+        )
         assert finished_steps[0]["payload"]["outcome"] == "failed"
         assert finished_steps[0]["payload"]["reasonCode"] == "runtime_interrupted"
         assert len(running_settled) == 1
@@ -5604,6 +5790,8 @@ async def test_runtime_restart_fails_running_run_and_resumes_queued_run(
 async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_run(
     tmp_path: Path,
 ) -> None:
+    endpoint = DelayedProtectedEndpoint("Owner response")
+    base_url = await endpoint.start()
     first_token = secrets.token_urlsafe(32)
     first_process, first_ready = await _start_runtime(first_token, tmp_path)
     first = await _initialize(
@@ -5613,6 +5801,26 @@ async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_r
     second_process: Process | None = None
     second: ClientConnection | None = None
     try:
+        configured = await _rpc(
+            first,
+            10,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "owner-test",
+                "displayName": "Owner test",
+                "baseUrl": base_url,
+                "models": [
+                    {
+                        "id": "model",
+                        "displayName": "Model",
+                        "contextWindow": 32768,
+                        "maxOutputTokens": 4096,
+                    }
+                ],
+            },
+        )
+        assert "result" in configured
         created = await _rpc(first, 2, "thread.create", {"title": "Single home owner"})
         thread = created["result"]["thread"]
         notifications: list[dict[str, Any]] = []
@@ -5623,9 +5831,9 @@ async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_r
             {
                 "threadId": thread["id"],
                 "branchId": thread["defaultBranchId"],
-                "content": "lock-owner-" + ("x" * 24_000),
-                "providerId": "scripted",
-                "modelId": "scripted-v1",
+                "content": "Wait while the other runtime starts",
+                "providerId": "owner-test",
+                "modelId": "model",
             },
             notifications,
         )
@@ -5639,6 +5847,7 @@ async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_r
             message = json.loads(await asyncio.wait_for(first.recv(), timeout=5))
             notifications.append(message["params"])
 
+        await asyncio.wait_for(endpoint.request_received.wait(), timeout=10)
         second_token = secrets.token_urlsafe(32)
         second_process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -5690,6 +5899,8 @@ async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_r
         )
         await _shutdown(second, second_process, 3)
     finally:
+        endpoint.release_response.set()
+        await endpoint.close()
         await first.close()
         if second is not None:
             await second.close()

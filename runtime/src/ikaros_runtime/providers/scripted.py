@@ -47,10 +47,32 @@ class ScriptedProvider:
         tool_results = [
             message for message in request.messages[last_user_index + 1 :] if message.role == "tool"
         ]
+        latest_result = None
+        if tool_results:
+            try:
+                parsed = json_loads(tool_results[-1].content)
+                latest_result = parsed if isinstance(parsed, dict) else None
+            except ValueError:
+                pass
+        if (
+            latest_result is not None
+            and latest_result.get("state") == "running"
+            and isinstance(latest_result.get("processId"), str)
+            and "process_wait" in {tool.name for tool in request.tools}
+        ):
+            yield ToolCallCompleted(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex}",
+                    name="process_wait",
+                    arguments={"processId": latest_result["processId"], "timeoutMs": 1000},
+                )
+            )
+            yield ResponseCompleted()
+            return
         if last_user.startswith(skill_prefix):
             skill_name = last_user.removeprefix(skill_prefix).strip()
             available = {tool.name for tool in request.tools}
-            if not skill_name or "read" not in available or "process_run" not in available:
+            if not skill_name or "read" not in available or "process_start" not in available:
                 response = "Usage: /skill.run <skill-name>"
             elif not tool_results:
                 location = _scripted_skill_location(request, skill_name)
@@ -74,7 +96,7 @@ class ScriptedProvider:
                     yield ToolCallCompleted(
                         ToolCall(
                             id=f"call_{uuid.uuid4().hex}",
-                            name="process_run",
+                            name="process_start",
                             arguments={"command": command},
                         )
                     )
@@ -85,11 +107,11 @@ class ScriptedProvider:
         elif last_user.startswith(command_prefix) and not tool_results:
             command = last_user.removeprefix(command_prefix).strip()
             available = {tool.name for tool in request.tools}
-            if command and "process_run" in available:
+            if command and "process_start" in available:
                 yield ToolCallCompleted(
                     ToolCall(
                         id=f"call_{uuid.uuid4().hex}",
-                        name="process_run",
+                        name="process_start",
                         arguments={"command": command},
                     )
                 )
@@ -129,6 +151,10 @@ def _scripted_tool_summary(content: str) -> str:
         return f"Command was cancelled.\n{output}".rstrip()
     if result.get("timedOut") is True:
         return f"Command timed out.\n{output}".rstrip()
+    if result.get("state") in {"unknown", "terminated"}:
+        return f"Command state: {result['state']}.\n{output}".rstrip()
+    if exit_code is None:
+        return f"Command result unavailable.\n{output}".rstrip()
     return f"Command exited with code {exit_code}.\n{output}".rstrip()
 
 

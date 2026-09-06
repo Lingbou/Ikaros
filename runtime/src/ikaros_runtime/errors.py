@@ -93,7 +93,7 @@ class UnsupportedJournalEventVersionError(RuntimeError):
 
 
 class RunInputDriftError(RuntimeError):
-    """The current execution environment no longer matches a queued Run Frame."""
+    """The current execution environment no longer matches a queued Run configuration."""
 
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
@@ -104,8 +104,8 @@ class ContextBudgetExceededError(RuntimeError):
     """The current Run cannot fit the frozen provider-neutral input budget."""
 
 
-class AgentStepLimitError(RuntimeError):
-    """The Run used all of its frozen model Steps without completing the task."""
+class ModelCallBudgetExceededError(RuntimeError):
+    """The Run exhausted its total model-call budget before completing the task."""
 
 
 class ModelInputUnavailableError(RuntimeError):

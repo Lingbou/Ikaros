@@ -8,6 +8,7 @@ import {
   Plus,
   ShieldAlert,
   ShieldCheck,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isRunActive } from "../domain";
@@ -67,6 +68,9 @@ export function Composer({
 }) {
   const { t } = useTranslation();
   const draft = useAppStore((state) => state.draft);
+  const executionLimits = useAppStore((state) => state.executionLimits);
+  const setExecutionLimits = useAppStore((state) => state.setExecutionLimits);
+  const [showLimits, setShowLimits] = useState(false);
   const runStatus = useAppStore((state) => state.runStatus);
   const runtimeMode = useAppStore((state) => state.runtimeMode);
   const providers = useAppStore((state) => state.providers);
@@ -481,6 +485,13 @@ export function Composer({
               </DropdownMenu.Root>
             )}
 
+            {runtimeMode ? (
+              <button type="button" aria-label={t("composer.executionLimits")}
+                aria-expanded={showLimits} onClick={() => setShowLimits(!showLimits)}
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] hover:bg-[var(--surface-hover)]">
+                <SlidersHorizontal size={14} />
+              </button>
+            ) : null}
             <button
               type="button"
               aria-label={canStop ? t("composer.stopRun") : t("composer.sendMessage")}
@@ -495,6 +506,26 @@ export function Composer({
               )}
             </button>
           </div>
+          {showLimits && runtimeMode ? (
+            <fieldset className="mt-2 rounded-lg border border-[var(--border-soft)] p-3">
+              <legend className="px-1 text-[11px] text-[var(--muted)]">{t("composer.executionLimits")}</legend>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-[11px] text-[var(--muted)]">
+                  {t("composer.maxModelCalls")}
+                  <input type="number" min={1} step={1} value={executionLimits.maxModelCalls}
+                    onChange={(event) => setExecutionLimits({ ...executionLimits, maxModelCalls: Number(event.currentTarget.value) })}
+                    className="mt-1 h-8 w-full rounded border border-[var(--border)] bg-[var(--panel)] px-2 text-[12px] text-[var(--text)]" />
+                </label>
+                <label className="text-[11px] text-[var(--muted)]">
+                  {t("composer.maxDurationMinutes")}
+                  <input type="number" min={1} step={1} value={executionLimits.maxDurationSeconds / 60}
+                    onChange={(event) => setExecutionLimits({ ...executionLimits, maxDurationSeconds: Number(event.currentTarget.value) * 60 })}
+                    className="mt-1 h-8 w-full rounded border border-[var(--border)] bg-[var(--panel)] px-2 text-[12px] text-[var(--text)]" />
+                </label>
+              </div>
+              <p className="mt-2 text-[11px] text-[var(--muted)]">{t("composer.executionLimitsHint")}</p>
+            </fieldset>
+          ) : null}
           {modelAccess ? (
             <p role="status" className="px-1 pt-1.5 text-[11px] leading-4 text-[var(--muted)]">
               {t(modelAccess.message)}

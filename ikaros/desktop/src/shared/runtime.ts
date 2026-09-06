@@ -16,7 +16,7 @@ export interface RuntimeThreadSummary {
 
 export interface RuntimeJournalEvent {
   seq: number;
-  schemaVersion: 5 | typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION;
+  schemaVersion: typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION;
   type: RuntimeJournalEventType;
   threadId: string | null;
   branchId: string | null;
@@ -265,7 +265,10 @@ export interface RuntimeRunHistory {
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   reasonCode: string | null;
   createdAt: string;
+  startedAt: string | null;
   settledAt: string | null;
+  executionLimits: { maxModelCalls: number; maxDurationSeconds: number };
+  modelCalls: number;
   items: RuntimeItemHistory[];
 }
 
@@ -304,6 +307,11 @@ export interface RuntimeThreadMutationResult {
   event: RuntimeJournalEvent | null;
 }
 
+export interface RuntimeExecutionLimits {
+  maxModelCalls: number;
+  maxDurationSeconds: number;
+}
+
 export interface RuntimeTurnStartParams {
   threadId: string;
   branchId: string;
@@ -311,6 +319,7 @@ export interface RuntimeTurnStartParams {
   providerId: string;
   modelId: string;
   clientRequestId?: string;
+  executionLimits?: RuntimeExecutionLimits;
 }
 
 export interface RuntimeTurnStartResult {
@@ -343,6 +352,8 @@ export interface RuntimeProviderSummary {
 }
 
 export interface RuntimeModelSummary {
+  contextWindow: number;
+  maxOutputTokens: number;
   providerId: string;
   id: string;
   displayName: string;
@@ -350,6 +361,8 @@ export interface RuntimeModelSummary {
 }
 
 export interface RuntimeModelInput {
+  contextWindow: number;
+  maxOutputTokens: number;
   id: string;
   displayName: string;
 }
@@ -394,6 +407,13 @@ export interface RuntimeModelSetEnabledParams {
   providerId: string;
   modelId: string;
   enabled: boolean;
+}
+
+export interface RuntimeModelSetLimitsParams {
+  providerId: string;
+  modelId: string;
+  contextWindow: number;
+  maxOutputTokens: number;
 }
 
 export interface RuntimeModelSetEnabledResult {
@@ -554,6 +574,7 @@ export interface IkarosRuntimeApi {
   setModelEnabled(
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeModelSetEnabledResult>;
+  setModelLimits(params: RuntimeModelSetLimitsParams): Promise<RuntimeModelSetEnabledResult>;
   listSkills(): Promise<RuntimeSkillListResult>;
   setSkillEnabled(
     params: RuntimeSkillSetEnabledParams
@@ -617,6 +638,7 @@ export interface IkarosRuntimeBridgeApi {
   setModelEnabled(
     params: RuntimeModelSetEnabledParams
   ): Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>;
+  setModelLimits(params: RuntimeModelSetLimitsParams): Promise<RuntimeInvocationResult<RuntimeModelSetEnabledResult>>;
   listSkills(): Promise<RuntimeInvocationResult<RuntimeSkillListResult>>;
   setSkillEnabled(
     params: RuntimeSkillSetEnabledParams

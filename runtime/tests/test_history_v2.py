@@ -10,7 +10,6 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest
@@ -28,24 +27,28 @@ from ikaros_runtime.memory import MemoryRetrieverV1, MemoryScope, SqliteMemorySt
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from ikaros_runtime.run_input import (
-    MAXIMUM_INPUT_CHARACTERS_V1,
-    RESERVED_CURRENT_RUN_CHARACTERS_V1,
     FrozenMemoryContextV1,
-    canonical_json,
-    frame_input_character_counts,
-    parse_context_snapshot,
-    parse_step_manifest,
+    StepInput,
+    config_input_token_counts,
+    history_status_tokens,
 )
 from ikaros_runtime.storage import SqliteRuntimeStore
-from ikaros_runtime.storage.context_history import load_context_for_snapshot
-from ikaros_runtime.storage.projections import get_context_snapshot
-from ikaros_runtime.tools.core import ToolCall, ToolExecutor, ToolRegistry, ToolResult
+from ikaros_runtime.storage.context_history import load_context_for_revision
+from ikaros_runtime.storage.projections import get_context_revision
+from ikaros_runtime.tools.core import (
+    ToolCall,
+    ToolExecutionContext,
+    ToolExecutor,
+    ToolRegistry,
+    ToolResult,
+)
 from ikaros_runtime.tools.policy import FullAccessPolicy
-from ikaros_runtime.tools.process import ProcessRunTool
+from ikaros_runtime.tools.process import ProcessStartTool, ProcessWaitTool
+from ikaros_runtime.tools.process_manager import ProcessManager
 from ikaros_runtime.tools.read import ReadTool
 from ikaros_runtime.tools.write import WriteTool
 
-from .helpers import prepare_turn, submission_frame
+from .helpers import prepare_turn, run_config
 
 
 def _provider() -> ProviderConfig:
@@ -113,20 +116,18 @@ def _persisted_inputs(store: SqliteRuntimeStore) -> tuple[list[tuple[Any, ...]],
     return tuple(
         [tuple(row) for row in store._connection.execute(query).fetchall()]
         for query in (
-            "SELECT run_id, context_snapshot_json FROM run_inputs ORDER BY run_id",
-            "SELECT run_id, step_ordinal, step_manifest_json FROM model_steps "
+            "SELECT run_id, revision, record_json FROM context_revisions ORDER BY run_id, revision",
+            "SELECT run_id, step_ordinal, input_json FROM model_calls "
             "ORDER BY run_id, step_ordinal",
         )
     )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("first_selection", ["bounded-history-v1", "bounded-history-v2"])
 @pytest.mark.parametrize("next_prompt", ["继续", "Explain the weather on Mars."])
 @pytest.mark.parametrize("fail_again", [False, True])
 async def test_next_turn_sees_successful_write_after_provider_failure_without_replay(
     tmp_path: Path,
-    first_selection: str,
     next_prompt: str,
     fail_again: bool,
 ) -> None:
@@ -160,22 +161,20 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
         )
         thread, _ = store.create_thread("Natural continuation")
         executor = ToolExecutor(ToolRegistry((WriteTool(), ReadTool())), FullAccessPolicy())
-        with patch("ikaros_runtime.storage.store.CONTEXT_SELECTION_VERSION", first_selection):
-            first = prepare_turn(
-                store,
-                thread_id=thread.id,
-                branch_id=thread.default_branch_id,
-                content="Write the file.",
-                provider_id="custom",
-                model_id="model",
-                tools=executor.definitions,
-            )
-        # A previously queued V1 Run executes after the default has changed to V2.
+        first = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Write the file.",
+            provider_id="custom",
+            model_id="model",
+            tools=executor.definitions,
+        )
         assert store.run_status(first.run_id) == "queued"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             loop = AgentLoop(
                 store,
-                {"custom": OpenAICompatibleAdapter(_provider(), client=client, max_retries=0)},
+                {"custom": OpenAICompatibleAdapter(_provider(), client=client)},
                 publish,
                 tool_executor=executor,
                 memory_retriever=MemoryRetrieverV1(memory),
@@ -225,20 +224,24 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
         )
         assert _status_messages(bodies[-2]) == _status_messages(bodies[-1])
         input_events = [event for event in events if event.type == "model.input_prepared"]
-        initial = input_events[0].payload["contextSnapshot"]
-        assert initial["schemaVersion"] == (1 if first_selection.endswith("v1") else 2)
-        assert ("historyStatus" in initial) is first_selection.endswith("v2")
+        initial = input_events[0].payload["contextRevision"]
+        assert initial["revision"] == 1
+        assert "historyStatus" in initial
         for event in input_events[2:]:
-            snapshot = parse_context_snapshot(event.payload["contextSnapshot"])
-            step = parse_step_manifest(event.payload["stepManifest"])
+            step = StepInput.from_wire(event.payload["stepInput"])
+            assert event.run_id is not None
+            snapshot = get_context_revision(store._connection, event.run_id)
+            assert snapshot is not None
             assert step.history_status == snapshot.history_status
             assert snapshot.memory
-            assert snapshot.budget.context_data_characters > snapshot.history_status.characters
-            assert FrozenMemoryContextV1.from_snapshot(snapshot).memory == snapshot.memory
+            assert snapshot.budget.context_data_tokens > history_status_tokens(
+                snapshot.history_status
+            )
+            assert FrozenMemoryContextV1.from_revision(snapshot).memory == snapshot.memory
         before = _persisted_inputs(store)
-        final_snapshot = get_context_snapshot(store._connection, next_turn.run_id)
+        final_snapshot = get_context_revision(store._connection, next_turn.run_id)
         assert final_snapshot is not None
-        records_before = load_context_for_snapshot(
+        records_before = load_context_for_revision(
             store._connection,
             run_id=next_turn.run_id,
             snapshot=final_snapshot,
@@ -246,14 +249,14 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
         store.rebuild_projections()
         assert _persisted_inputs(store) == before
         assert (
-            load_context_for_snapshot(
+            load_context_for_revision(
                 store._connection,
                 run_id=next_turn.run_id,
                 snapshot=final_snapshot,
             )
             == records_before
         )
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 10
     finally:
         memory.close()
         store.close()
@@ -265,9 +268,9 @@ class _CancelAfterWrite(WriteTool):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
-        await super().execute(call, cancellation=cancellation, default_cwd=default_cwd)
+        await super().execute(call, cancellation=cancellation, context=context)
         cancellation.cancel()
         raise RunCancelled
 
@@ -303,7 +306,7 @@ async def test_cancelled_or_recovered_write_is_unknown_in_next_provider_input(
             tools=executor.definitions,
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            adapter = OpenAICompatibleAdapter(_provider(), client=client, max_retries=0)
+            adapter = OpenAICompatibleAdapter(_provider(), client=client)
             if interruption == "cancelled":
                 await AgentLoop(store, {"custom": adapter}, publish, tool_executor=executor).run(
                     first.run_id,
@@ -312,7 +315,7 @@ async def test_cancelled_or_recovered_write_is_unknown_in_next_provider_input(
             else:
                 store.mark_run_running(first.run_id)
                 store.prepare_model_step(first.run_id, step_ordinal=1)
-                store.complete_provider_step(
+                completed = store.complete_provider_step(
                     first.run_id,
                     step_ordinal=1,
                     assistant_item_id=None,
@@ -323,7 +326,16 @@ async def test_cancelled_or_recovered_write_is_unknown_in_next_provider_input(
                     request_id=None,
                 )
                 # Crash after an actual write, before its completion is committed.
-                write_result = await WriteTool().execute(call, cancellation=CancellationToken())
+                write_result = await WriteTool().execute(
+                    call,
+                    cancellation=CancellationToken(),
+                    context=ToolExecutionContext(
+                        first.run_id,
+                        1,
+                        completed.tool_call_item_ids[0],
+                        thread.id,
+                    ),
+                )
                 assert write_result.ok
                 store.close()
                 store = SqliteRuntimeStore(tmp_path / "state.db")
@@ -351,14 +363,14 @@ async def test_cancelled_or_recovered_write_is_unknown_in_next_provider_input(
         assert "not started" not in result["output"]
         assert "may already have changed files" in result["executionNotice"]
         assert "do not prove that an action was not executed" in _status_messages(bodies[-1])[0]
-        snapshot = get_context_snapshot(store._connection, next_turn.run_id)
+        snapshot = get_context_revision(store._connection, next_turn.run_id)
         assert snapshot is not None
-        records = load_context_for_snapshot(
+        records = load_context_for_revision(
             store._connection, run_id=next_turn.run_id, snapshot=snapshot
         )
         normalized = next(record for record in records if record.kind == "tool_result")
         reference = next(ref for ref in snapshot.history_items if ref.item_id == normalized.item_id)
-        assert reference.characters == len(canonical_json(result))
+        assert reference.tokens == normalized.estimated_tokens
         stored = store._connection.execute(
             "SELECT content FROM items WHERE id = ?", (reference.item_id,)
         )
@@ -367,7 +379,7 @@ async def test_cancelled_or_recovered_write_is_unknown_in_next_provider_input(
         store.rebuild_projections()
         assert _persisted_inputs(store) == before
         assert (
-            load_context_for_snapshot(
+            load_context_for_revision(
                 store._connection,
                 run_id=next_turn.run_id,
                 snapshot=snapshot,
@@ -430,7 +442,7 @@ async def test_oversized_nearest_failed_turn_keeps_a_status_notice(tmp_path: Pat
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await AgentLoop(
                 store,
-                {"custom": OpenAICompatibleAdapter(_provider(), client=client, max_retries=0)},
+                {"custom": OpenAICompatibleAdapter(_provider(), client=client)},
                 publish,
             ).run(current.run_id, CancellationToken())
         assert store.run_status(current.run_id) == "completed"
@@ -445,13 +457,13 @@ async def test_oversized_nearest_failed_turn_keeps_a_status_notice(tmp_path: Pat
             "details": "omitted_by_budget",
         }
         assert "inspect the current state" in notice
-        snapshot = get_context_snapshot(store._connection, current.run_id)
+        snapshot = get_context_revision(store._connection, current.run_id)
         assert snapshot is not None
-        assert snapshot.budget.context_data_characters == len(notice)
+        assert snapshot.budget.context_data_tokens == len(notice.encode("utf-8")) + 64
         assert snapshot.omissions[0].source_id == first.turn_id
         assert all(ref.turn_id != first.turn_id for ref in snapshot.history_items)
         store.rebuild_projections()
-        assert get_context_snapshot(store._connection, current.run_id) == snapshot
+        assert get_context_revision(store._connection, current.run_id) == snapshot
     finally:
         store.close()
 
@@ -516,10 +528,10 @@ def test_frozen_failed_history_rejects_changed_status(tmp_path: Path) -> None:
             (old.run_id,),
         )
         with pytest.raises(ModelInputUnavailableError):
-            load_context_for_snapshot(
+            load_context_for_revision(
                 store._connection,
                 run_id=current.run_id,
-                snapshot=prepared.context_snapshot,
+                snapshot=prepared.context_revision,
             )
     finally:
         store.close()
@@ -554,14 +566,16 @@ def test_latest_failed_status_charges_actual_included_or_omitted_budget(
                 ),
             )
         )
-        instructions, tools = frame_input_character_counts(submission_frame("custom", "model"))
+        config = run_config("custom", "model")
+        instructions, tools = config_input_token_counts(config)
         prompt_length = (
-            MAXIMUM_INPUT_CHARACTERS_V1
-            - RESERVED_CURRENT_RUN_CHARACTERS_V1
+            config.maximum_input_tokens
+            - config.reserved_current_run_tokens
             - instructions
             - tools
-            - status.characters
-            - (1 if boundary == "included" else 0)
+            - history_status_tokens(status)
+            - 64
+            - (65 if boundary == "included" else 0)
             + (1 if boundary == "omitted_overflow" else 0)
         )
         current = prepare_turn(
@@ -576,17 +590,17 @@ def test_latest_failed_status_charges_actual_included_or_omitted_budget(
         if boundary == "omitted_overflow":
             with pytest.raises(ContextBudgetExceededError):
                 store.prepare_model_step(current.run_id, step_ordinal=1)
-            assert get_context_snapshot(store._connection, current.run_id) is None
+            assert get_context_revision(store._connection, current.run_id) is None
         else:
             prepared = store.prepare_model_step(current.run_id, step_ordinal=1)
-            snapshot = prepared.context_snapshot
+            snapshot = prepared.context_revision
             assert snapshot.history_status == status
             assert (
-                snapshot.budget.total_characters + snapshot.budget.reserved_current_run_characters
-                == snapshot.budget.maximum_characters
+                snapshot.budget.total_tokens + snapshot.budget.reserved_current_run_tokens
+                == snapshot.budget.maximum_tokens
             )
             store.rebuild_projections()
-            assert get_context_snapshot(store._connection, current.run_id) == snapshot
+            assert get_context_revision(store._connection, current.run_id) == snapshot
     finally:
         store.close()
 
@@ -610,22 +624,68 @@ async def test_cancelled_real_command_keeps_partial_output_in_next_turn_without_
     arguments = [sys.executable, "-u", str(script), str(marker)]
     command = (
         "& " + " ".join("'" + argument.replace("'", "''") + "'" for argument in arguments)
-        if os.name == "nt" else shlex.join(arguments)
+        if os.name == "nt"
+        else shlex.join(arguments)
     )
-    call = ToolCall("cancelled-command", "process_run", {"command": command})
+    call = ToolCall("start-command", "process_start", {"command": command})
     bodies: list[dict[str, Any]] = []
+    ready_to_cancel = asyncio.Event()
+    continuing = False
+    partial_call_id: str | None = None
+    process_id: str | None = None
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        bodies.append(json.loads(request.content))
-        return _response(call if len(bodies) == 1 else None)
+        nonlocal partial_call_id, process_id
+        body = json.loads(request.content)
+        bodies.append(body)
+        if continuing:
+            return _response()
+        if len(bodies) == 1:
+            return _response(call)
+        start = _assert_tool_pair(body, call.id)
+        process_id = start["processId"]
+        for message in reversed(body["messages"]):
+            if message["role"] != "tool":
+                continue
+            result = json.loads(message["content"])
+            if "partial-command-output" in result.get("output", ""):
+                partial_call_id = message["tool_call_id"]
+                ready_to_cancel.set()
+                return _response(
+                    ToolCall(
+                        "wait-cancel",
+                        "process_wait",
+                        {
+                            "processId": process_id,
+                            "timeoutMs": 60000,
+                        },
+                    )
+                )
+        return _response(
+            ToolCall(
+                f"wait-output-{len(bodies)}",
+                "process_wait",
+                {
+                    "processId": process_id,
+                    "timeoutMs": 100,
+                },
+            )
+        )
 
     async def publish(event: JournalEvent) -> None:
         del event
 
     store = SqliteRuntimeStore(tmp_path / "state.db")
+
+    def record_process(record: dict[str, Any]) -> None:
+        store.record_process(record)
+
+    manager = ProcessManager(record=record_process)
     try:
         thread, _ = store.create_thread("Cancel command and continue")
-        executor = ToolExecutor(ToolRegistry((ProcessRunTool(),)), FullAccessPolicy())
+        executor = ToolExecutor(
+            ToolRegistry((ProcessStartTool(manager), ProcessWaitTool(manager))), FullAccessPolicy()
+        )
         first = prepare_turn(
             store,
             thread_id=thread.id,
@@ -638,24 +698,22 @@ async def test_cancelled_real_command_keeps_partial_output_in_next_turn_without_
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             loop = AgentLoop(
                 store,
-                {"custom": OpenAICompatibleAdapter(_provider(), client=client, max_retries=0)},
+                {"custom": OpenAICompatibleAdapter(_provider(), client=client)},
                 publish,
                 tool_executor=executor,
+                process_manager=manager,
             )
             cancellation = CancellationToken()
             running = asyncio.create_task(loop.run(first.run_id, cancellation))
             try:
-                for _ in range(500):
-                    if marker.exists() and marker.read_text().strip():
-                        break
-                    await asyncio.sleep(0.01)
-                else:
-                    raise AssertionError("command did not publish its ready PID")
+                await asyncio.wait_for(ready_to_cancel.wait(), timeout=10)
+                await asyncio.sleep(0)
             finally:
                 cancellation.cancel()
                 await asyncio.wait_for(running, timeout=10)
             assert store.run_status(first.run_id) == "cancelled"
             assert len(marker.read_text().splitlines()) == 1
+            continuing = True
             current = prepare_turn(
                 store,
                 thread_id=thread.id,
@@ -668,12 +726,10 @@ async def test_cancelled_real_command_keeps_partial_output_in_next_turn_without_
             await loop.run(current.run_id, CancellationToken())
         assert store.run_status(current.run_id) == "completed"
         assert current.run_id != first.run_id
-        assert len(bodies) == 2
-        result = _assert_tool_pair(bodies[-1], call.id)
-        assert "partial-command-output" in result["stdout"]
+        assert partial_call_id is not None
+        result = _assert_tool_pair(bodies[-1], partial_call_id)
         assert "partial-command-output" in result["output"]
-        assert result["executionOutcome"] == "unknown"
-        assert "may already have changed files" in result["executionNotice"]
+        assert _assert_tool_pair(bodies[-1], call.id)["processId"] == process_id
         assert "Do not replay old Tool Calls" in _status_messages(bodies[-1])[0]
         assert len(marker.read_text().splitlines()) == 1
         assert (
@@ -686,4 +742,5 @@ async def test_cancelled_real_command_keeps_partial_output_in_next_turn_without_
         store.rebuild_projections()
         assert store.run_status(first.run_id) == "cancelled"
     finally:
+        await manager.close()
         store.close()

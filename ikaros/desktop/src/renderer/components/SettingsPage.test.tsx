@@ -115,6 +115,7 @@ function desktopApiWithPreferences(
           throw new Error("not used in preference settings tests");
         },
         listModels: async () => ({ ok: true, value: { models: [] } }),
+        setModelLimits: async () => { throw new Error("unused"); },
         setModelEnabled: async () => {
           throw new Error("not used in preference settings tests");
         },
@@ -352,6 +353,8 @@ describe("SettingsPage", () => {
           providerId: "deepseek",
           id: model.id,
           displayName: model.displayName,
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
           enabled: true
         }))
       });
@@ -413,7 +416,7 @@ describe("SettingsPage", () => {
       expect(configureProvider).toHaveBeenCalledWith({
         kind: "deepseek",
         apiKey: "mock-secret",
-        models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+        models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 }]
       })
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -472,6 +475,8 @@ describe("SettingsPage", () => {
           providerId: "deepseek",
           id: "deepseek-chat",
           displayName: "DeepSeek Chat",
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
           enabled: true
         }
       ],
@@ -498,8 +503,8 @@ describe("SettingsPage", () => {
     const discoverDeepSeekModels = vi.fn(async (apiKey: string) => {
       expect(apiKey).toBe("discovery-secret");
       return [
-        { id: "deepseek-chat", displayName: "DeepSeek Chat" },
-        { id: "deepseek-reasoner", displayName: "DeepSeek Reasoner" }
+        { id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 },
+        { id: "deepseek-reasoner", displayName: "DeepSeek Reasoner", contextWindow: 32768, maxOutputTokens: 4096 }
       ];
     });
     useAppStore.setState({ providers: [], models: [], discoverDeepSeekModels });
@@ -560,7 +565,7 @@ describe("SettingsPage", () => {
   it("fills only the model ID from discovery and falls back to it when saving", async () => {
     const configureProvider = vi.fn(async () => undefined);
     const discoverDeepSeekModels = vi.fn(async () => [
-      { id: "deepseek-reasoner", displayName: "DeepSeek Reasoner" }
+      { id: "deepseek-reasoner", displayName: "DeepSeek Reasoner", contextWindow: 32768, maxOutputTokens: 4096 }
     ]);
     useAppStore.setState({
       providers: [],
@@ -595,7 +600,7 @@ describe("SettingsPage", () => {
       expect(configureProvider).toHaveBeenCalledWith({
         kind: "deepseek",
         apiKey: "discovery-secret",
-        models: [{ id: "deepseek-reasoner", displayName: "deepseek-reasoner" }]
+        models: [{ id: "deepseek-reasoner", displayName: "deepseek-reasoner", contextWindow: 32768, maxOutputTokens: 4096 }]
       })
     );
   });
@@ -650,6 +655,8 @@ describe("SettingsPage", () => {
           providerId: params.providerId,
           id: model.id,
           displayName: model.displayName,
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
           enabled: true
         }))
       });
@@ -714,8 +721,8 @@ describe("SettingsPage", () => {
         apiKey: "custom-secret",
         headers: { "X-Mock-Auth": "header-secret" },
         models: [
-          { id: "mock-model-v1", displayName: "Mock Model V1" },
-          { id: "mock-model-v2", displayName: "Mock Model V2" }
+          { id: "mock-model-v1", displayName: "Mock Model V1", contextWindow: 32768, maxOutputTokens: 4096 },
+          { id: "mock-model-v2", displayName: "Mock Model V2", contextWindow: 32768, maxOutputTokens: 4096 }
         ]
       })
     );
@@ -846,6 +853,8 @@ describe("SettingsPage", () => {
           providerId: "deepseek",
           id: "persisted-model",
           displayName: "Persisted Model",
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
           enabled: false
         }
       ]
@@ -1084,5 +1093,26 @@ describe("SettingsPage", () => {
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Back to app" }));
     expect(useAppStore.getState().settingsOpen).toBe(false);
+  });
+});
+
+describe("model capacity settings", () => {
+  it("validates token limits and saves them without requesting credentials", async () => {
+    const setModelLimits = vi.fn(async () => undefined);
+    useAppStore.setState({
+      providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: true, credentialConfigured: true, health: "unknown" }],
+      models: [{ providerId: "deepseek", id: "model", displayName: "Model", enabled: true, contextWindow: 32768, maxOutputTokens: 4096 }],
+      setModelLimits,
+    });
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Context window (tokens)" }), { target: { value: "65536" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum output (tokens)" }), { target: { value: "65536" } });
+    expect(screen.getByRole("button", { name: "Save token limits" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("alert").textContent).toContain("output below");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum output (tokens)" }), { target: { value: "8192" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save token limits" }));
+    await waitFor(() => expect(setModelLimits).toHaveBeenCalledWith({ providerId: "deepseek", modelId: "model", contextWindow: 65536, maxOutputTokens: 8192 }));
+    expect(screen.queryByLabelText("DeepSeek API key")).toBeNull();
   });
 });

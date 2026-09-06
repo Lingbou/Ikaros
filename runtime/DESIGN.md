@@ -1,17 +1,17 @@
 # Ikaros Runtime Architecture
 
-Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
-2026-08-12. This is a living architecture record: sections describing the
-current vertical slice reflect the implementation, while explicitly marked
-future capabilities remain design direction rather than shipped behavior.
+Status (2026-09-07): daily-use Alpha plus stage one of
+[LONG_TASK_PLAN.md](LONG_TASK_PLAN.md) are implemented. Stage one adds model
+capacity, frozen Run budgets, and managed commands. Automatic compression,
+in-flight steering, and completion checking remain subsequent work.
 
-Development policy (2026-09-07): the project has no external users. The next
-milestone follows [LONG_TASK_PLAN.md](LONG_TASK_PLAN.md) and permits breaking
-refactors, replacing old protocols and rebuilding development databases.
-Compatibility and migration paths described below record the existing
-implementation; they are not requirements for future development.
+The project has no external users. This implementation replaces old execution,
+protocol, and Session-state formats directly. Only schema 10 / Journal 7 /
+protocol 4 are supported; no old selector, migration, or queued-Run adaptation
+is maintained. Incompatible development state requires an explicit reset or a
+fresh Runtime home; startup never deletes personal files automatically.
 
-The completed model-input and Memory foundation stage is specified in
+The earlier model-input and Memory foundation stage is specified in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–9
 are complete, including the Runtime-owned `IKAROS.md` Identity Core, the
 independent explicitly managed Memory Store/RPC/typed Desktop bridge and its
@@ -122,9 +122,10 @@ method/Event parsers, including scope-mirror validation for `turnId`, `runId`,
 and `itemId`. Unknown method/Event names or invalid discriminated payloads fail
 at the wire boundary and cannot silently advance the ordered event cursor.
 
-The provider Tool ID is `process_run`. The dotted `process.run` spelling is a
-presentation label and ScriptedProvider command syntax, not a machine protocol
-identifier.
+The command Tool IDs are `process_start`, `process_read`, `process_wait`, and
+`process_stop`. `/process.run` remains a deterministic ScriptedProvider input
+convention. The protocol is version 4 with 29 post-initialize methods and 13
+Journal event types.
 
 ## Runtime home and configuration
 
@@ -148,14 +149,12 @@ no SQLite `ATTACH`, cross-database foreign key, or two-phase commit. Startup
 requires both schema version 1 and the exact canonical table/index DDL; a
 same-version structural drift is rejected rather than silently accepted.
 
-An empty `state.db` is created atomically at canonical schema 9. A canonical
-schema 8 database is backed up through SQLite's backup API (including WAL),
-verified, and migrated by adding `file_changes` in one transaction. Backup or
-migration failure preserves the old database. This supported 8→9 transition
-does not rewrite old Journal events or touch configuration, Skills, Desktop
-preferences, or `memory.db`. Other incompatible or unversioned databases fail
-explicitly. Journal schema 5 and 6 coexist; only schema 6 introduces
-`file.change_recorded`.
+An empty `state.db` is created atomically at canonical schema 10. Startup
+requires that exact schema and canonical structure. There is no old-state
+migration or event upcasting. Incompatible/unversioned Session databases fail
+with an explicit reset-required error; rebuilding disposable development state
+is a deliberate operation, not a startup side effect. Configuration, Skills,
+Desktop preferences, and the separate `memory.db` are not Session projections.
 
 Offline maintenance uses the same `runtime.lock` as the server and never starts
 the Runtime application or loads `config.yaml`. `storage check` and `storage
@@ -229,6 +228,8 @@ providers:
         display_name: <model-label>
         enabled: true
         supports_tools: true
+        context_window: 32768
+        max_output_tokens: 4096
 
   myprovider:
     type: openai_compatible
@@ -240,6 +241,8 @@ providers:
         display_name: <model-label>
         enabled: true
         supports_tools: true
+        context_window: 32768
+        max_output_tokens: 4096
     headers: {}          # optional, normally omitted
 
 skills:
@@ -276,7 +279,7 @@ The implemented vertical slice makes the Runtime authoritative for:
 
 - Threads, each Thread's default Branch, Turns, Runs, Items, and their ordering;
 - Agent-loop and provider execution;
-- `process_run`, `read`, `write`, and `edit` validation, serial execution,
+- all seven command/file Tools: validation, serial invocation,
   cancellation, and normalized results;
 - the fixed `FullAccessPolicy` execution-policy snapshot;
 - Provider/model configuration and selection;
@@ -306,7 +309,7 @@ Thread                   one conversation, optionally carrying workspace metadat
 `Project` is a Desktop presentation concept, not a Runtime resource or API.
 Desktop deduplicates the optional `Thread.workspace` summaries into Project
 groups. Project and ordinary chats use the same Thread/Turn/Run path; a
-workspace root supplies the default `cwd` for `process_run` when the Tool Call
+workspace root supplies the default `cwd` for `process_start` when the Tool Call
 does not provide one and resolves relative `read`, `write`, and `edit` paths.
 Branch fork, retry/recovery links, Artifact records, and additional Item kinds
 remain compatible with this hierarchy but are not yet exposed by the first
@@ -322,11 +325,10 @@ Turn in the public model.
 V1 has no separate Session entity; `Thread` is the product conversation
 boundary. `state.db` is the canonical record of what happened in a Thread,
 including its Branches, Turns, Runs, Items, Provider-Step outcomes, usage,
-sequenced Events, and the four persisted audit records: Submission Frame, Run
-Manifest, Context Snapshot, and per-Step Manifest.
+sequenced Events, RunConfig, ContextRevision, and per-call StepInput audit records.
 
 Provider context is a bounded projection of that complete Session history, not
-the history itself. `HistorySelectorV1` walks prior Turns newest-first in pages
+the history itself. `HistorySelector` walks prior Turns newest-first in pages
 of 32, keeps only a contiguous suffix of complete Turn groups, freezes that
 selection for the Run, and records the first omitted Turn as a boundary. The
 UI continues to page the complete Thread history independently. Later Tool
@@ -355,7 +357,7 @@ An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
 client can resume from a cursor without guessing what it missed. Every
 persisted and wire Event also carries `schemaVersion`. The current Event schema
-is version 5. Readers require that exact version and reject unknown versions;
+is version 7. Readers require that exact version and reject unknown versions;
 there is no payload upcaster while the database itself follows the explicit
 development reset policy above.
 
@@ -370,6 +372,8 @@ run.state_changed
 item.started
 item.delta
 item.completed
+file.change_recorded
+process.recorded
 model.input_prepared
 model.response_finished
 run.settled
@@ -379,8 +383,10 @@ V1 represents Tool lifecycle records as typed Items instead of maintaining a
 second Tool-only event hierarchy. A Tool Call is written as a running
 `tool_call` Item before the side effect starts. Its terminal snapshot and the
 matching `tool_result` Item are committed together, then published in journal
-sequence. V1 does not emit `tool.progress`; process output is delivered once in
-the bounded terminal result.
+sequence. `process.recorded` carries separately persisted command facts and
+bounded output snapshots. Reads/waits also return bounded command output as
+ordinary Tool Results. Starting a command is a settled Tool operation, while
+the command itself can still be running.
 
 Names remain subject to a dedicated protocol specification. Their semantic
 distinctions are already locked: commands are acknowledged quickly, execution
@@ -577,65 +583,43 @@ change, not a protocol rewrite. Tool calls are also executed serially in the
 first slice.
 
 ```text
-client submits user input
-  -> runtime atomically appends Turn, Run, SubmissionFrameV1, and RunManifestV1
-  -> Scheduler reserves the persisted Run
-  -> server attempts the command ACK
-  -> Scheduler activates the Run
-  -> MemoryRetrieverV1 reads Global/current-workspace candidates outside the
-     state.db transaction and freezes bounded exact-revision metadata
-  -> first prepare_model_step pages backward and freezes bounded ContextSnapshotV2;
-     later Steps load frozen Item IDs plus current-Run Items
-  -> Runtime persists StepManifestV2 and emits model.input_prepared
-  -> Runtime re-materializes the exact frozen Memory revisions; Forget aborts
-     before the Provider sees a new Step
-  -> ModelInputPlanner creates a structurally immutable ModelInputPlanV1 from
-     the frozen Submission Frame, versioned Output Style, frozen IKAROS.md
-     Identity Core, frozen Skill Catalog, bounded Memory Context Data, frozen
-     ContextItems, and separate Tool definitions
-  -> ContextBuilder deterministically renders that Plan into ProviderRequest
-  -> provider streams assistant output or requests a tool
-  -> ToolRegistry resolves and validates the call
-  -> ExecutionPolicy returns allow under FullAccessPolicy
-  -> ToolExecutor runs the registered Tool and emits lifecycle events
-  -> normalized ToolResult is appended and returned to the model
-  -> Runtime emits exactly one model.response_finished for the prepared Step;
-     any Provider-reported usage is projected only from this Event
-  -> the model may continue another Step
-  -> final assistant Item is completed
-  -> Run emits exactly one settled terminal event
+turn.start
+  -> atomically append user Item, Turn, Run, and immutable RunConfig
+  -> reserve/activate the Run through the single scheduler worker
+  -> select Memory outside the Session transaction
+  -> select ContextRevision and persist the model call's StepInput
+  -> model.input_prepared exposes the revision on its first use
+  -> build ProviderRequest with frozen instructions, history, tools and limits
+  -> stream assistant output and complete the model-call record
+  -> execute each requested Tool with trusted Run/Step/Item/Thread context
+  -> persist Tool results; managed commands may remain active
+  -> prepare another model call while both Run budgets permit it
+  -> on completion/failure/cancel, clean owned commands and settle exactly once
 ```
 
-`ModelInputPlanner` consumes the frozen Submission Frame, while
-`ContextSnapshotV2`, `RunManifestV1`, and per-Step `StepManifestV2` provide the
-durable audit boundary for new Runs. Selection uses `bounded-history-v2`: a 48,000 Unicode
-character total limit, a 12,000-character first-Step current-Run reserve,
-complete-Turn atomic selection, and deterministic omission metadata. Later
-Steps may use capacity beyond that reserve, but actual total input may never
-exceed 48,000 characters. The Runtime loads its read-only `IKAROS.md` resource
-with `importlib.resources`, freezes the version 1 `ikaros-identity` Instruction
-Block into each Submission Frame at `turn.start`, and reuses that frozen input
-for every Step in the Run. Recovery validates the frozen block against the
-current release Identity and fails on drift rather than silently substituting
-new content. Memory retrieval remains a separate low-authority input: its body
-is absent from Session audit records, exact references are frozen in the Context
-Snapshot, and the ContextBuilder accepts only the canonical Runtime wrapper.
-Failed and cancelled Runs contribute persisted tool pairs and a separately
-budgeted `history-status` Context Data block. Partial assistant messages remain
-excluded. A budget-omitted latest failure keeps a short warning to inspect the
-current state; a normal new Turn can ask to continue or ask an unrelated question.
-Selection never dispatches historical calls. V1 snapshots, manifests, and queued
-Runs continue to use their frozen v1 selector; replay does not upgrade old events.
-Detailed limits and failure semantics are recorded in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
+`RunConfig` freezes the provider/model, identity, Skill catalog, Tool definitions,
+model capacity, and Run limits. The defaults are 100 model calls and 3,600
+seconds; a deadline spans provider waits and Tool execution. `ContextRevision`
+identifies selected history and exact Memory revisions; each `StepInput`
+identifies the actual selected Items and token budget for that model call.
+These are the only supported execution records. A Run currently uses its
+initial ContextRevision throughout; semantic compression and subsequent
+revisions will be implemented in the next stage.
 
-Gate 4 requires no `state.db` schema reset. Completed pre-Gate-4 history whose
-frozen `identityCore` is null remains readable and replayable. It does not make
-unfinished legacy execution compatible: a queued null-Identity Run fails with
-`identity_core_changed` before any Provider call, while startup recovery settles
-an already-running Run as `runtime_interrupted`. The Runtime neither substitutes
-the current release Identity into those Runs nor provides a compatibility
-fallback.
+The configured context window defaults to 32,768 tokens with a 4,096-token
+output reserve. Conservative token accounting covers instructions, tool
+schemas, current and previous conversation, Memory, and history-status blocks.
+It is an input-safety estimate, not billed usage. The provider receives the
+configured output-token limit. Oversized input currently fails explicitly;
+raising the Run's model-call limit does not enlarge its context window.
+
+Failed/cancelled Runs contribute persisted Tool pairs and a separately
+budgeted Runtime status block. Partial assistant messages are excluded. If a
+recent failed Turn cannot fit, its short status asks the model to verify the
+current state. Ordinary new Turns use these same rules for continuation and
+unrelated questions. Historical Tool calls are never automatically dispatched.
+The Runtime-owned `IKAROS.md` identity and Memory stay separate authorities;
+see [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).
 
 The provider boundary must not leak provider-specific request or streaming
 formats into the domain or protocol.
@@ -837,30 +821,43 @@ access.
 
 ## Built-in tools and Skills
 
-The current ToolRegistry contains four provider-facing Tools: `process_run`,
-`read`, `write`, and `edit`. Command and file operations share Tool definition,
-policy, cancellation, lifecycle, persistence, and result-normalization paths;
-they are not separate Agent loops.
+The ToolRegistry contains seven functions: `process_start`, `process_read`,
+`process_wait`, `process_stop`, `read`, `write`, and `edit`. The former
+`process_run` function is removed. All functions share the same execution and
+persistence path; the Runtime supplies a trusted `ToolExecutionContext` with
+Run, model-call ordinal, Tool Call Item, Thread, and default working directory.
 
-The first registered command Tool has the provider-facing function name
-`process_run`. OpenAI-compatible endpoints restrict function names to letters,
-digits, underscores, and hyphens, so the dot-separated product label
-`process.run` is not sent upstream. Desktop displays `process.run`, and the
-deterministic provider exposes `/process.run <command>` as its explicit test
-syntax. The adapter and ToolRegistry keep the mapping at the provider boundary.
+- `process_start(command, cwd?)` records intent, spawns one owned shell tree,
+  and returns a stable `processId`. The Run/Item identity is its idempotency key;
+  changed arguments under the same Item are rejected.
+- `process_read(processId, cursor?)` reports the current state and output page.
+- `process_wait(processId, cursor?, timeoutMs?)` waits at most 60 seconds
+  (default one second); timeout returns `running` without stopping the command.
+- `process_stop(processId, cursor?)` stops the owned tree. Repeated stop calls
+  within the owning Run are harmless.
 
-`process_run` accepts only `command`, optional `cwd`, and optional `timeoutMs`.
-On Windows it creates the shell suspended, assigns it to a kill-on-close Job
-Object, and only then resumes it; on POSIX it creates a new session/process
-group. The deadline covers root-process exit and both output pipes reaching
-EOF, so a root shell cannot evade timeout by exiting while a background child
-keeps a pipe open. The executor drains stdout and stderr concurrently, retains
-at most 64 KiB from each stream, and distinguishes normal non-zero exit,
-timeout, and user cancellation. Completion, timeout, cancellation, and task
-teardown all close the supervised tree; cancellation preserves bounded partial
-output in a matching Tool Result before the Run settles. The child receives an
-explicit allowlist of ordinary OS environment variables rather than Electron's
-entire environment, so unrelated launch-time secrets are not inherited.
+States are `running`, `exited`, `terminated`, and `unknown`. Only an observed
+successful exit proves command success. The manager permits four concurrent
+commands and 32 registered commands per Run. It drains stdout/stderr continuously,
+retains 64 KiB per stream, and returns 16 KiB pages with Unicode-character cursors.
+Secret guards cover stream chunk boundaries and the combined output before
+publication or persistence. Children inherit an OS environment allowlist.
+
+Windows creates the shell suspended, attaches it to a kill-on-close Job Object,
+and resumes it. POSIX creates a new session/process group. Root exit also
+terminates lingering descendants before draining final output, preventing
+inherited pipes from blocking completion. Cancellation preserves partial output
+in the wait Tool Result. Completion, failure, deadline, and Runtime shutdown
+clean all commands owned by that Run.
+
+The manager's callback writes `process.recorded` and its `process_sessions`
+projection. Intent is recorded before spawning; running/terminal records and
+bounded output snapshots follow. Output records are limited to four per second,
+with no repeated writes after buffers stop changing. Closing a Run releases
+live entries; SQLite retains its historical facts. Startup marks interrupted
+running/start-pending records `unknown` without reattaching PIDs or replaying
+commands. A new Turn must inspect current state before choosing new actions.
+Full log-panel UI and interactive PTY input remain deferred.
 
 The file primitives deliberately reuse the stable reference-project behavior
 instead of adding fuzzy or model-specific editing:
@@ -970,25 +967,19 @@ Timeouts, cancellation, output limits, child-process cleanup, and minimal
 environment construction are execution-reliability requirements even under
 Full access; they are not deferred as part of the permission UI.
 
-Full access means `process_run`, `read`, `write`, and `edit` can exercise the
+Full access means the managed command and file Tools can exercise the
 current operating-system user's authority. Skill scripts invoked through
-`process_run` exercise that same authority. This is an explicit
+`process_start` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-The current SQLite database schema is canonical version 9 with an 8→9 migration. Thread
-projections include optional `workspace_json`, nullable `archived_at`, and an
-indexed active/archived Thread Catalog ordering key; Run history hydration is
-indexed by `turn_id`. Each Run snapshots `execution_policy = full_access` and
-its enabled Skill descriptors, while each Item has structured `data_json` for
-Tool Call arguments and normalized results. Rebuilding projections from the
-journal restores these records and the provider context. `run_inputs` stores
-one Submission Frame, Run Manifest, and nullable frozen Context Snapshot per
-Run. `model_steps` stores one Step Manifest plus exactly one optional terminal
-outcome record per prepared Step. Both tables are rebuilt from the append-only
-Journal. A bounded Agent loop
-persists all calls from a provider Step before serial execution, returns every
-result under the original provider call ID, and stops a provider that exceeds
-the maximum Step count.
+Session storage uses canonical schema 10. `run_configs`, `context_revisions`,
+and `model_calls` hold the current input and response audit records;
+`process_sessions` and `file_changes` hold independently rebuildable operation
+facts. All projections reconstruct from the current append-only Journal.
+Each Run snapshots `full_access`, enabled Skill descriptors, provider/model
+capacity, and execution budgets. Each Item holds normalized tool arguments and
+results. All calls from one model response are persisted before serial Tool
+execution, and every result retains its original provider call ID.
 
 ## Desktop projection
 
@@ -1001,7 +992,7 @@ being frozen as the wire schema. Current mappings and explicit gaps are:
 | rename/archive/unarchive | Runtime Thread lifecycle commands and sequenced lifecycle Events; archived Threads use a separate settings catalog |
 | streaming response | message Item lifecycle events |
 | Stop | Run cancellation command and terminal event |
-| tool card | `process_run`, `read`, `write`, and `edit` Item lifecycle events |
+| tool card | Four managed-command and three file Tool Item lifecycle events |
 | edited earlier user message | mock-only UI; no Runtime Branch-fork command yet |
 | Turn Navigator | projected current Turn/Item records used only for navigation |
 | retry or recovery | mock-only UI; no Runtime retry/resume command yet |
@@ -1075,8 +1066,8 @@ pass through submission, cancellation, activity, and gap-control handling.
 This prevents both lost live updates and duplicate streaming deltas even when
 later history pages observe a newer Journal tail.
 
-Desktop projects `process_run` as `process.run` and projects `read`, `write`,
-and `edit` with file-specific icons, translated fixed labels, and bounded
+Desktop gives all four managed command Tools distinct translated labels and
+projects `read`, `write`, and `edit` with file-specific icons and bounded
 metadata such as path, line range, byte count, and replacement count. Write and
 edit arguments containing file content or replacement text are not copied into
 the visible card. File cards open the real inspector; Artifact fixtures remain mock-only.
@@ -1106,7 +1097,9 @@ semantics before those UI surfaces can become functional.
 ## Implemented vertical slice
 
 The first version deliberately implements one narrow but real conversation
-path. The following have been demonstrated end to end:
+path. The following are covered by deterministic integration checks and the earlier
+Alpha validation. The newly introduced command kernel still requires the planned
+Windows/Linux real-model long-task acceptance:
 
 1. Electron `RuntimeHost` starts one authenticated Python Runtime and keeps it
    alive across renderer navigation.
@@ -1116,8 +1109,8 @@ path. The following have been demonstrated end to end:
    later Provider request receives the selected prior completed conversation
    context within the frozen bounded-history budget.
 4. The built-in DeepSeek profile and configured Custom OpenAI-compatible
-   profiles share one streaming adapter and receive the `process_run`, `read`,
-   `write`, and `edit` Tool definitions.
+   profiles share one streaming adapter and receive all four managed-command
+   and three file Tool definitions.
 5. The Runtime executes requested Tools serially, captures normalized
    ToolResults, returns them to the model, and the model produces a final
    assistant answer. The most recently recorded opt-in live DeepSeek smoke
@@ -1132,8 +1125,8 @@ path. The following have been demonstrated end to end:
    descriptors into each Run, exposes the catalog through Desktop settings, and
    keeps full Skill bodies lazy. The most recently recorded live DeepSeek smoke
    verified that frozen descriptor path alongside the file-Tool chain.
-9. Gate 2 persists the four model-input audit objects, enforces Provider/Tool
-   drift checks, records actual response model/request IDs safely, and closes
+9. The Runtime persists RunConfig, ContextRevision, and StepInput audit objects,
+   enforces Provider/Tool drift checks, records actual response model/request IDs safely, and closes
    every prepared Provider Step through `model.response_finished`.
 10. Gate 3 bounds model input without changing UI history: it selects complete
     recent Turns through paged reads, preserves Tool Call/Result atomicity,
@@ -1154,7 +1147,8 @@ The live validation evidence, including credential containment checks, is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
 This slice does not implement web search, browser or desktop control,
-automatic Memory extraction, background or scheduled tasks, messaging channels, MCP/connectors,
+automatic Memory extraction, commands surviving their Run, scheduled tasks,
+messaging channels, MCP/connectors,
 Subagents, a plugin marketplace, or a complex approval system. Those remain
 later general-Agent capability packs, not rejected product directions. The
 provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded

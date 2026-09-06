@@ -22,6 +22,7 @@ import type {
   RuntimeMemoryListParams,
   RuntimeMemoryMutationResult,
   RuntimeModelSetEnabledParams,
+  RuntimeModelSetLimitsParams,
   RuntimeModelSetEnabledResult,
   RuntimeModelSummary,
   RuntimeProviderConfigureParams,
@@ -167,6 +168,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.providerRemove,
     DESKTOP_IPC_CHANNELS.runtime.modelList,
     DESKTOP_IPC_CHANNELS.runtime.modelSetEnabled,
+    DESKTOP_IPC_CHANNELS.runtime.modelSetLimits,
     DESKTOP_IPC_CHANNELS.runtime.skillList,
     DESKTOP_IPC_CHANNELS.runtime.skillSetEnabled,
     DESKTOP_IPC_CHANNELS.runtime.memoryCreate,
@@ -351,6 +353,11 @@ export function registerDesktopIpc(
       );
     }
   );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.modelSetLimits, async (event, params: RuntimeModelSetLimitsParams) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() => runtimeHost.request<RuntimeModelSetEnabledResult>("model.set_limits", { ...params }));
+  });
 
   ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.skillList, async (event) => {
     trustPolicy.assertTrustedIpc(event);

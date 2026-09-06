@@ -58,7 +58,17 @@ class ProviderService:
         except ConfigError as error:
             raise InvalidParamsError(str(error)) from None
         models = await self._model_discovery(provider)
-        return {"models": [{"id": model.id, "displayName": model.display_name} for model in models]}
+        return {
+            "models": [
+                {
+                    "id": model.id,
+                    "displayName": model.display_name,
+                    "contextWindow": model.context_window,
+                    "maxOutputTokens": model.max_output_tokens,
+                }
+                for model in models
+            ]
+        }
 
     def configure_provider(self, params: dict[str, Any]) -> dict[str, Any]:
         kind = params.get("kind")
@@ -166,6 +176,23 @@ class ProviderService:
         self._providers.configuration_changed(provider_id)
         return {"model": summary.to_wire()}
 
+    def set_model_limits(self, params: dict[str, Any]) -> dict[str, Any]:
+        if set(params) != {"providerId", "modelId", "contextWindow", "maxOutputTokens"}:
+            raise InvalidParamsError(
+                "model.set_limits requires providerId, modelId, contextWindow, maxOutputTokens"
+            )
+        provider_id, model_id = params["providerId"], params["modelId"]
+        if not isinstance(provider_id, str) or not isinstance(model_id, str):
+            raise InvalidParamsError("providerId and modelId must be strings")
+        try:
+            model = self._config.set_model_limits(
+                provider_id, model_id, params["contextWindow"], params["maxOutputTokens"]
+            )
+        except ConfigError as error:
+            raise InvalidParamsError(str(error)) from None
+        # Capacity settings affect future requests; keep an in-flight stream alive.
+        return {"model": model.to_wire()}
+
     def _assert_provider_mutable(self, provider_id: str) -> None:
         del provider_id
         if self._store.has_active_runs():
@@ -177,11 +204,30 @@ def _model_inputs(value: Any) -> tuple[ModelInput, ...]:
         raise InvalidParamsError("models must be an array")
     models: list[ModelInput] = []
     for item in value:
-        if not isinstance(item, dict) or set(item) != {"id", "displayName"}:
-            raise InvalidParamsError("each model requires exactly id and displayName")
+        if not isinstance(item, dict) or set(item) != {
+            "id",
+            "displayName",
+            "contextWindow",
+            "maxOutputTokens",
+        }:
+            raise InvalidParamsError(
+                "each model requires id, displayName, contextWindow, and maxOutputTokens"
+            )
         model_id = item["id"]
         display_name = item["displayName"]
         if not isinstance(model_id, str) or not isinstance(display_name, str):
             raise InvalidParamsError("model id and displayName must be strings")
-        models.append(ModelInput(model_id, display_name))
+        context_window = item["contextWindow"]
+        max_output_tokens = item["maxOutputTokens"]
+        if (
+            not isinstance(context_window, int)
+            or isinstance(context_window, bool)
+            or not isinstance(max_output_tokens, int)
+            or isinstance(max_output_tokens, bool)
+            or not 0 < max_output_tokens < context_window <= 9007199254740991
+        ):
+            raise InvalidParamsError(
+                "model token limits must be positive integers with output below context window"
+            )
+        models.append(ModelInput(model_id, display_name, context_window, max_output_tokens))
     return tuple(models)

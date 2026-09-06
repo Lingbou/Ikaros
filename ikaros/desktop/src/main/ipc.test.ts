@@ -375,14 +375,14 @@ describe("desktop window controls", () => {
         {
           kind: "deepseek",
           apiKey: "write-only-secret",
-          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 }]
         }
       ],
       "provider.configure",
       {
         kind: "deepseek",
         apiKey: "write-only-secret",
-        models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }]
+        models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 }]
       }
     ],
     [
@@ -467,9 +467,9 @@ describe("desktop window controls", () => {
     ["ikaros:runtime:usage-read", [], "usage.read", undefined],
     [
       "ikaros:runtime:model-set-enabled",
-      [{ providerId: "local", modelId: "model", enabled: false }],
+      [{ providerId: "local", modelId: "model", enabled: false, contextWindow: 32768, maxOutputTokens: 4096 }],
       "model.set_enabled",
-      { providerId: "local", modelId: "model", enabled: false }
+      { providerId: "local", modelId: "model", enabled: false, contextWindow: 32768, maxOutputTokens: 4096 }
     ]
   ])("forwards %s through the narrow Runtime RPC bridge", async (channel, args, method, params) => {
     const trustPolicy = {

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from .domain import ContextItem, JournalEvent, JsonObject, SkillDescriptor, WorkspaceSummary
@@ -31,16 +31,7 @@ type MemoryScope = Literal["global", "workspace"]
 type OmissionSourceType = Literal["history", "memory"]
 type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]
 
-SUBMISSION_FRAME_SCHEMA_VERSION = 1
-RUN_MANIFEST_SCHEMA_VERSION = 1
-CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
-STEP_MANIFEST_SCHEMA_VERSION = 1
-LEGACY_CONTEXT_SELECTION_VERSION = "bounded-history-v1"
-CONTEXT_SELECTION_VERSION = "bounded-history-v2"
-INPUT_BUDGET_MEASUREMENT_VERSION = "unicode-codepoints-canonical-json-v1"
-MEMORY_CONTEXT_VERSION = 2
-MAXIMUM_INPUT_CHARACTERS_V1 = 48_000
-RESERVED_CURRENT_RUN_CHARACTERS_V1 = 12_000
+INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound"
 MEMORY_CONTENT_MAX_CHARACTERS_V1 = 2_048
 MEMORY_RETRIEVAL_MAX_CANDIDATES_V1 = 2_000
 MEMORY_SELECTION_MAX_ITEMS_V1 = 8
@@ -49,14 +40,6 @@ IKAROS_IDENTITY_ID = "ikaros-identity"
 IKAROS_IDENTITY_VERSION = 1
 IKAROS_IDENTITY_SOURCE = "ikaros-runtime:identity"
 IDENTITY_CORE_MAX_CHARACTERS_V1 = 2_048
-
-REGISTERED_CONTEXT_SELECTION_VERSIONS = frozenset(
-    {LEGACY_CONTEXT_SELECTION_VERSION, CONTEXT_SELECTION_VERSION}
-)
-EXECUTABLE_CONTEXT_SELECTION_VERSIONS = frozenset(
-    {LEGACY_CONTEXT_SELECTION_VERSION, CONTEXT_SELECTION_VERSION}
-)
-REGISTERED_INPUT_BUDGET_MODES = frozenset({"bounded"})
 
 OUTPUT_STYLE_CONTENT = (
     "Use a restrained, professional response style. Do not use emoji or decorative "
@@ -163,12 +146,14 @@ class ContextDataBlockV1:
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderExecutionSnapshotV1:
+class ProviderExecutionSnapshot:
     provider_id: str
     origin: str
     base_url: str | None
     model_id: str
     supports_tools: bool
+    context_window: int = 32768
+    max_output_tokens: int = 4096
 
     def __post_init__(self) -> None:
         _nonempty("provider ID", self.provider_id)
@@ -178,6 +163,7 @@ class ProviderExecutionSnapshotV1:
         _nonempty("model ID", self.model_id)
         if not isinstance(self.supports_tools, bool):
             raise ValueError("model Tool capability is invalid")
+        _validate_model_window(self.context_window, self.max_output_tokens)
 
     def public_wire(self) -> JsonObject:
         return {
@@ -186,6 +172,8 @@ class ProviderExecutionSnapshotV1:
             "baseUrl": self.base_url,
             "modelId": self.model_id,
             "supportsTools": self.supports_tools,
+            "contextWindow": self.context_window,
+            "maxOutputTokens": self.max_output_tokens,
         }
 
     @property
@@ -298,23 +286,23 @@ class MemoryReferenceV1:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SubmissionFrameTemplateV1:
-    provider: ProviderExecutionSnapshotV1
+class RunConfigTemplate:
+    provider: ProviderExecutionSnapshot
     execution_policy: str
     skills: tuple[SkillDescriptor, ...]
     tools: tuple[ToolDefinitionSnapshotV1, ...]
     output_style: InstructionBlockV1
     identity_core: InstructionBlockV1 | None
     skill_catalog: InstructionBlockV1 | None
-    memory_context: tuple[MemoryReferenceV1, ...]
-    max_steps: int
+    max_model_calls: int = 100
+    max_duration_seconds: int = 3600
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "skills", _skill_snapshot(self.skills))
         object.__setattr__(self, "tools", tuple(self.tools))
-        object.__setattr__(self, "memory_context", tuple(self.memory_context))
         _nonempty("execution policy", self.execution_policy)
-        _positive("maximum Agent Steps", self.max_steps)
+        _positive("maximum model calls", self.max_model_calls)
+        _positive("maximum Run duration", self.max_duration_seconds)
         _unique_names("Tool", (tool.name for tool in self.tools))
         _unique_names("Skill", (skill.name for skill in self.skills))
         _validate_instruction_slots(
@@ -326,21 +314,20 @@ class SubmissionFrameTemplateV1:
             raise ValueError("Skill descriptors require a Skill catalog instruction")
         if not self.skills and self.skill_catalog is not None:
             raise ValueError("Skill catalog instruction has no Skill descriptors")
-        if self.memory_context:
-            raise ValueError("Memory context is not available in this Runtime version")
         _validate_skill_catalog_content(self.skills, self.skill_catalog)
 
     @classmethod
     def create(
         cls,
         *,
-        provider: ProviderExecutionSnapshotV1,
+        provider: ProviderExecutionSnapshot,
         execution_policy: str,
         skills: Sequence[SkillDescriptor],
         tools: Sequence[ToolDefinition],
         identity_core: InstructionBlockV1 | None,
-        max_steps: int,
-    ) -> SubmissionFrameTemplateV1:
+        max_model_calls: int = 100,
+        max_duration_seconds: int = 3600,
+    ) -> RunConfigTemplate:
         from .skills import build_skill_prompt
 
         frozen_skills = _skill_snapshot(skills)
@@ -373,14 +360,13 @@ class SubmissionFrameTemplateV1:
                 if skill_prompt is not None
                 else None
             ),
-            memory_context=(),
-            max_steps=max_steps,
+            max_model_calls=max_model_calls,
+            max_duration_seconds=max_duration_seconds,
         )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SubmissionFrameV1:
-    schema_version: Literal[1] = field(default=1, init=False)
+class RunConfig:
     user_item_id: str
     thread_id: str
     branch_id: str
@@ -396,10 +382,22 @@ class SubmissionFrameV1:
     output_style: InstructionBlockV1
     identity_core: InstructionBlockV1 | None
     skill_catalog: InstructionBlockV1 | None
-    memory_context: tuple[MemoryReferenceV1, ...]
-    max_steps: int
+    max_model_calls: int = 100
+    max_duration_seconds: int = 3600
+
+    context_window: int = 32768
+    max_output_tokens: int = 4096
+
+    @property
+    def maximum_input_tokens(self) -> int:
+        return self.context_window - self.max_output_tokens
+
+    @property
+    def reserved_current_run_tokens(self) -> int:
+        return max(1, self.maximum_input_tokens // 4)
 
     def __post_init__(self) -> None:
+        _validate_model_window(self.context_window, self.max_output_tokens)
         for label, value in (
             ("User Item ID", self.user_item_id),
             ("Thread ID", self.thread_id),
@@ -417,8 +415,8 @@ class SubmissionFrameV1:
         )
         object.__setattr__(self, "skills", _skill_snapshot(self.skills))
         object.__setattr__(self, "tools", tuple(self.tools))
-        object.__setattr__(self, "memory_context", tuple(self.memory_context))
-        _positive("maximum Agent Steps", self.max_steps)
+        _positive("maximum model calls", self.max_model_calls)
+        _positive("maximum Run duration", self.max_duration_seconds)
         _unique_names("Tool", (tool.name for tool in self.tools))
         _unique_names("Skill", (skill.name for skill in self.skills))
         if self.skills != tuple(sorted(self.skills, key=lambda skill: skill.name)):
@@ -430,14 +428,12 @@ class SubmissionFrameV1:
             identity_core=self.identity_core,
             skill_catalog=self.skill_catalog,
         )
-        if self.memory_context:
-            raise ValueError("Memory context is not available in this Runtime version")
         _validate_skill_catalog_content(self.skills, self.skill_catalog)
 
     @classmethod
     def from_template(
         cls,
-        template: SubmissionFrameTemplateV1,
+        template: RunConfigTemplate,
         *,
         user_item_id: str,
         thread_id: str,
@@ -445,7 +441,7 @@ class SubmissionFrameV1:
         turn_id: str,
         run_id: str,
         workspace: WorkspaceSummary | None,
-    ) -> SubmissionFrameV1:
+    ) -> RunConfig:
         return cls(
             user_item_id=user_item_id,
             thread_id=thread_id,
@@ -462,8 +458,10 @@ class SubmissionFrameV1:
             output_style=template.output_style,
             identity_core=template.identity_core,
             skill_catalog=template.skill_catalog,
-            memory_context=template.memory_context,
-            max_steps=template.max_steps,
+            max_model_calls=template.max_model_calls,
+            max_duration_seconds=template.max_duration_seconds,
+            context_window=template.provider.context_window,
+            max_output_tokens=template.provider.max_output_tokens,
         )
 
     @property
@@ -480,7 +478,6 @@ class SubmissionFrameV1:
 
     def to_wire(self) -> JsonObject:
         return {
-            "schemaVersion": self.schema_version,
             "userItemId": self.user_item_id,
             "threadId": self.thread_id,
             "branchId": self.branch_id,
@@ -502,28 +499,22 @@ class SubmissionFrameV1:
                     self.skill_catalog.to_wire() if self.skill_catalog is not None else None
                 ),
             },
-            "contextData": {
-                "memory": [reference.to_wire() for reference in self.memory_context],
-            },
-            "maxSteps": self.max_steps,
+            "maxModelCalls": self.max_model_calls,
+            "maxDurationSeconds": self.max_duration_seconds,
+            "contextWindow": self.context_window,
+            "maxOutputTokens": self.max_output_tokens,
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> SubmissionFrameV1:
-        row = _object(value, "Submission Frame", _SUBMISSION_FRAME_KEYS)
-        if row["schemaVersion"] != SUBMISSION_FRAME_SCHEMA_VERSION:
-            raise ValueError("Submission Frame schema version is unsupported")
+    def from_wire(cls, value: object) -> RunConfig:
+        row = _object(value, "Run configuration", _RUN_CONFIG_KEYS)
         workspace_value = row["workspace"]
         workspace = _workspace_from_wire(workspace_value)
         skills_value = row["skills"]
         tools_value = row["tools"]
         instructions = _object(row["instructions"], "instruction slots", _INSTRUCTION_SLOT_KEYS)
-        context_data = _object(row["contextData"], "context-data slots", {"memory"})
         if not isinstance(skills_value, list) or not isinstance(tools_value, list):
-            raise ValueError("Submission Frame snapshots are invalid")
-        memory_value = context_data["memory"]
-        if not isinstance(memory_value, list):
-            raise ValueError("Submission Frame Memory references are invalid")
+            raise ValueError("Run configuration snapshots are invalid")
         return cls(
             user_item_id=_as_str(row["userItemId"]),
             thread_id=_as_str(row["threadId"]),
@@ -548,122 +539,11 @@ class SubmissionFrameV1:
                 if instructions["skillCatalog"] is not None
                 else None
             ),
-            memory_context=tuple(
-                MemoryReferenceV1.from_wire(reference) for reference in memory_value
-            ),
-            max_steps=_as_int(row["maxSteps"]),
+            max_model_calls=_as_int(row["maxModelCalls"]),
+            max_duration_seconds=_as_int(row["maxDurationSeconds"]),
+            context_window=_as_int(row["contextWindow"]),
+            max_output_tokens=_as_int(row["maxOutputTokens"]),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ManifestInstructionV1:
-    id: str
-    version: int
-    source: str
-    authority: InstructionAuthority
-    scope: str
-    lifetime: InputLifetime
-    characters: int
-    content_sha256: str
-
-    @classmethod
-    def from_block(cls, block: InstructionBlockV1) -> ManifestInstructionV1:
-        return cls(
-            id=block.id,
-            version=block.version,
-            source=block.source,
-            authority=block.authority,
-            scope=block.scope,
-            lifetime=block.lifetime,
-            characters=len(block.content),
-            content_sha256=canonical_sha256(block.content),
-        )
-
-    def to_wire(self) -> JsonObject:
-        return {
-            "id": self.id,
-            "version": self.version,
-            "source": self.source,
-            "authority": self.authority,
-            "scope": self.scope,
-            "lifetime": self.lifetime,
-            "characters": self.characters,
-            "contentSha256": self.content_sha256,
-        }
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class RunManifestV1:
-    schema_version: Literal[1] = field(default=1, init=False)
-    run_id: str
-    model_input_plan_version: int
-    submission_frame_version: int
-    context_selection_version: str
-    memory_context_version: int
-    instructions: tuple[ManifestInstructionV1, ...]
-    skills: tuple[JsonObject, ...]
-    tools: tuple[JsonObject, ...]
-    provider_id: str
-    model_id: str
-    public_provider_config_fingerprint: str
-    execution_policy: str
-    max_steps: int
-
-    @classmethod
-    def from_frame(
-        cls,
-        frame: SubmissionFrameV1,
-        *,
-        context_selection_version: str,
-    ) -> RunManifestV1:
-        if context_selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
-            raise ValueError("Context selection version is unsupported")
-        return cls(
-            run_id=frame.run_id,
-            model_input_plan_version=1,
-            submission_frame_version=frame.schema_version,
-            context_selection_version=context_selection_version,
-            memory_context_version=MEMORY_CONTEXT_VERSION,
-            instructions=tuple(
-                ManifestInstructionV1.from_block(block) for block in frame.instructions
-            ),
-            skills=tuple(
-                {
-                    "name": skill.name,
-                    "descriptorSha256": canonical_sha256(skill.to_wire()),
-                }
-                for skill in frame.skills
-            ),
-            tools=tuple(
-                {"name": tool.name, "definitionSha256": tool.definition_sha256}
-                for tool in frame.tools
-            ),
-            provider_id=frame.provider_id,
-            model_id=frame.model_id,
-            public_provider_config_fingerprint=frame.public_provider_config_fingerprint,
-            execution_policy=frame.execution_policy,
-            max_steps=frame.max_steps,
-        )
-
-    def to_wire(self) -> JsonObject:
-        return {
-            "schemaVersion": self.schema_version,
-            "runId": self.run_id,
-            "modelInputPlanVersion": self.model_input_plan_version,
-            "submissionFrameVersion": self.submission_frame_version,
-            "contextSelectionVersion": self.context_selection_version,
-            "memoryContextVersion": self.memory_context_version,
-            "instructions": [instruction.to_wire() for instruction in self.instructions],
-            "skills": [deep_frozen_json_object(skill) for skill in self.skills],
-            "tools": [deep_frozen_json_object(tool) for tool in self.tools],
-            "provider": {
-                "providerId": self.provider_id,
-                "modelId": self.model_id,
-                "publicProviderConfigFingerprint": self.public_provider_config_fingerprint,
-            },
-            "executionPolicy": self.execution_policy,
-            "maxSteps": self.max_steps,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -680,30 +560,27 @@ class ContextItemRecordV1:
         object.__setattr__(self, "data", deep_frozen_json_object(self.data))
 
     @property
-    def characters(self) -> int:
+    def estimated_tokens(self) -> int:
         if self.kind == "message":
             if self.role not in {"user", "assistant"}:
                 raise ValueError("message context Item has an invalid role")
-            return len(self.content)
+            return estimate_tokens(self.content) + 64
         if self.kind == "tool_call":
-            if self.role != "assistant":
-                raise ValueError("Tool Call context Item has an invalid role")
-            arguments = self.data.get("arguments")
-            reasoning_content = self.data.get("reasoningContent")
-            if not isinstance(arguments, dict) or (
-                reasoning_content is not None and not isinstance(reasoning_content, str)
-            ):
+            if self.role != "assistant" or not isinstance(self.data.get("arguments"), dict):
                 raise ValueError("Tool Call context Item data is invalid")
-            return len(canonical_json(arguments)) + (
-                len(reasoning_content) if reasoning_content is not None else 0
-            )
+            reasoning = self.data.get("reasoningContent")
+            if reasoning is not None and not isinstance(reasoning, str):
+                raise ValueError("Tool Call reasoning content is invalid")
+            envelope = {
+                "id": self.data.get("callId"),
+                "name": self.data.get("toolName"),
+                "arguments": canonical_json(self.data["arguments"]),
+            }
+            return estimate_tokens(canonical_json(envelope)) + estimate_tokens(reasoning or "") + 64
         if self.kind == "tool_result":
-            if self.role != "tool":
-                raise ValueError("Tool Result context Item has an invalid role")
-            result = self.data.get("result")
-            if not isinstance(result, dict):
+            if self.role != "tool" or not isinstance(self.data.get("result"), dict):
                 raise ValueError("Tool Result context Item data is invalid")
-            return len(canonical_json(result))
+            return estimate_tokens(self.content) + 64
         raise ValueError("context Item kind is invalid")
 
     def to_context_item(self) -> ContextItem:
@@ -722,7 +599,7 @@ class HistoryItemReferenceV1:
     run_id: str
     kind: str
     role: str | None
-    characters: int
+    tokens: int
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -738,11 +615,7 @@ class HistoryItemReferenceV1:
         }
         if self.kind not in expected_roles or self.role not in expected_roles[self.kind]:
             raise ValueError("history Item kind and role are invalid")
-        if (
-            not isinstance(self.characters, int)
-            or isinstance(self.characters, bool)
-            or self.characters < 0
-        ):
+        if not isinstance(self.tokens, int) or isinstance(self.tokens, bool) or self.tokens < 0:
             raise ValueError("history Item character count is invalid")
 
     @classmethod
@@ -753,7 +626,7 @@ class HistoryItemReferenceV1:
             run_id=record.run_id,
             kind=record.kind,
             role=record.role,
-            characters=record.characters,
+            tokens=record.estimated_tokens,
         )
 
     def to_wire(self) -> JsonObject:
@@ -763,7 +636,7 @@ class HistoryItemReferenceV1:
             "runId": self.run_id,
             "kind": self.kind,
             "role": self.role,
-            "characters": self.characters,
+            "tokens": self.tokens,
         }
 
     @classmethod
@@ -778,7 +651,7 @@ class HistoryItemReferenceV1:
             run_id=_as_str(row["runId"]),
             kind=_as_str(row["kind"]),
             role=role,
-            characters=_as_int(row["characters"]),
+            tokens=_as_int(row["tokens"]),
         )
 
 
@@ -810,89 +683,86 @@ class HistoryGroupReferenceV1:
 
 
 @dataclass(frozen=True, slots=True)
-class InputBudgetRecordV1:
+class InputBudgetRecord:
     mode: str
     measurement_version: str
-    maximum_characters: int | None
-    reserved_current_run_characters: int
-    instruction_characters: int
-    context_data_characters: int
-    tool_characters: int
-    history_characters: int
-    current_run_characters: int
-    memory_characters: int
-    total_characters: int
+    maximum_tokens: int
+    reserved_current_run_tokens: int
+    instruction_tokens: int
+    context_data_tokens: int
+    tool_tokens: int
+    history_tokens: int
+    current_run_tokens: int
+    memory_tokens: int
+    total_tokens: int
 
     def __post_init__(self) -> None:
-        if self.mode not in REGISTERED_INPUT_BUDGET_MODES:
+        if self.mode != "bounded":
             raise ValueError("input budget mode is unsupported")
         if self.measurement_version != INPUT_BUDGET_MEASUREMENT_VERSION:
             raise ValueError("input budget measurement version is unsupported")
-        if self.maximum_characters is not None and (
-            not isinstance(self.maximum_characters, int)
-            or isinstance(self.maximum_characters, bool)
-            or self.maximum_characters < 1
+        if self.maximum_tokens is not None and (
+            not isinstance(self.maximum_tokens, int)
+            or isinstance(self.maximum_tokens, bool)
+            or self.maximum_tokens < 1
         ):
             raise ValueError("input budget maximum is invalid")
         if self.mode == "bounded" and (
-            self.maximum_characters is None
-            or self.reserved_current_run_characters == 0
-            or self.reserved_current_run_characters >= self.maximum_characters
+            self.maximum_tokens is None
+            or self.reserved_current_run_tokens == 0
+            or self.reserved_current_run_tokens >= self.maximum_tokens
         ):
             raise ValueError("bounded input budget limits are invalid")
         counts = (
-            self.reserved_current_run_characters,
-            self.instruction_characters,
-            self.context_data_characters,
-            self.tool_characters,
-            self.history_characters,
-            self.current_run_characters,
-            self.memory_characters,
-            self.total_characters,
+            self.reserved_current_run_tokens,
+            self.instruction_tokens,
+            self.context_data_tokens,
+            self.tool_tokens,
+            self.history_tokens,
+            self.current_run_tokens,
+            self.memory_tokens,
+            self.total_tokens,
         )
         if any(
             not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in counts
         ):
             raise ValueError("input budget counts are invalid")
         actual_parts = counts[1:7]
-        if self.total_characters != sum(actual_parts):
+        if self.total_tokens != sum(actual_parts):
             raise ValueError("input budget total is invalid")
-        if self.maximum_characters is not None and self.total_characters > self.maximum_characters:
+        if self.maximum_tokens is not None and self.total_tokens > self.maximum_tokens:
             raise ValueError("input budget exceeds its maximum")
 
     def to_wire(self) -> JsonObject:
         return {
             "mode": self.mode,
             "measurementVersion": self.measurement_version,
-            "maximumCharacters": self.maximum_characters,
-            "reservedCurrentRunCharacters": self.reserved_current_run_characters,
-            "instructionCharacters": self.instruction_characters,
-            "contextDataCharacters": self.context_data_characters,
-            "toolCharacters": self.tool_characters,
-            "historyCharacters": self.history_characters,
-            "currentRunCharacters": self.current_run_characters,
-            "memoryCharacters": self.memory_characters,
-            "totalCharacters": self.total_characters,
+            "maximumTokens": self.maximum_tokens,
+            "reservedCurrentRunTokens": self.reserved_current_run_tokens,
+            "instructionTokens": self.instruction_tokens,
+            "contextDataTokens": self.context_data_tokens,
+            "toolTokens": self.tool_tokens,
+            "historyTokens": self.history_tokens,
+            "currentRunTokens": self.current_run_tokens,
+            "memoryTokens": self.memory_tokens,
+            "totalTokens": self.total_tokens,
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> InputBudgetRecordV1:
+    def from_wire(cls, value: object) -> InputBudgetRecord:
         row = _object(value, "input budget", _INPUT_BUDGET_KEYS)
         result = cls(
             mode=_as_str(row["mode"]),
             measurement_version=_as_str(row["measurementVersion"]),
-            maximum_characters=_optional_positive_int(
-                row["maximumCharacters"],
-                label="input budget maximum",
-            ),
-            reserved_current_run_characters=_as_int(row["reservedCurrentRunCharacters"]),
-            instruction_characters=_as_int(row["instructionCharacters"]),
-            context_data_characters=_as_int(row["contextDataCharacters"]),
-            tool_characters=_as_int(row["toolCharacters"]),
-            history_characters=_as_int(row["historyCharacters"]),
-            current_run_characters=_as_int(row["currentRunCharacters"]),
-            memory_characters=_as_int(row["memoryCharacters"]),
-            total_characters=_as_int(row["totalCharacters"]),
+            maximum_tokens=_as_int(row["maximumTokens"]),
+            reserved_current_run_tokens=_as_int(row["reservedCurrentRunTokens"]),
+            instruction_tokens=_as_int(row["instructionTokens"]),
+            context_data_tokens=_as_int(row["contextDataTokens"]),
+            tool_tokens=_as_int(row["toolTokens"]),
+            history_tokens=_as_int(row["historyTokens"]),
+            current_run_tokens=_as_int(row["currentRunTokens"]),
+            memory_tokens=_as_int(row["memoryTokens"]),
+            total_tokens=_as_int(row["totalTokens"]),
         )
         return result
 
@@ -970,7 +840,7 @@ class OmissionRecordV1:
 
 @dataclass(frozen=True, slots=True)
 class FrozenMemoryContextV1:
-    """Body-free Memory selection frozen for every Provider Step in one Run."""
+    """Body-free Memory selection materialized independently for model input."""
 
     memory: tuple[MemoryReferenceV1, ...]
     omissions: tuple[OmissionRecordV1, ...]
@@ -1016,8 +886,8 @@ class FrozenMemoryContextV1:
             raise ValueError("Memory context-data character count is invalid")
 
     @classmethod
-    def from_snapshot(cls, snapshot: ContextSnapshotV1) -> FrozenMemoryContextV1:
-        """Extract only Memory metadata from a validated persisted Snapshot."""
+    def from_revision(cls, snapshot: ContextRevision) -> FrozenMemoryContextV1:
+        """Extract independently stored Memory metadata from a context revision."""
 
         memory_omissions: list[OmissionRecordV1] = []
         seen_memory_omission = False
@@ -1030,10 +900,8 @@ class FrozenMemoryContextV1:
         return cls(
             memory=snapshot.memory,
             omissions=tuple(memory_omissions),
-            memory_characters=snapshot.budget.memory_characters,
-            context_data_characters=(
-                snapshot.budget.context_data_characters - snapshot.history_status.characters
-            ),
+            memory_characters=sum(reference.characters for reference in snapshot.memory),
+            context_data_characters=snapshot.memory_context_characters,
         )
 
 
@@ -1041,29 +909,22 @@ EMPTY_FROZEN_MEMORY_CONTEXT_V1 = FrozenMemoryContextV1((), (), 0, 0)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ContextSnapshotV1:
-    schema_version: int = field(default=1, init=False)
-    selection_version: str
+class ContextRevision:
+    """Append-only selected context; later compaction creates another revision."""
+
+    revision: int = 1
     history_groups: tuple[HistoryGroupReferenceV1, ...]
     history_items: tuple[HistoryItemReferenceV1, ...]
     memory: tuple[MemoryReferenceV1, ...]
-    budget: InputBudgetRecordV1
+    budget: InputBudgetRecord
     omissions: tuple[OmissionRecordV1, ...]
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
+    memory_context_characters: int = 0
 
     def __post_init__(self) -> None:
-        if self.selection_version != (
-            LEGACY_CONTEXT_SELECTION_VERSION
-            if self.schema_version == 1
-            else CONTEXT_SELECTION_VERSION
-        ):
-            raise ValueError("Context selection version is unsupported")
-        if self.schema_version == 1 and self.history_status.runs:
-            raise ValueError("legacy Snapshot cannot contain history status")
-        object.__setattr__(self, "history_groups", tuple(self.history_groups))
-        object.__setattr__(self, "history_items", tuple(self.history_items))
-        object.__setattr__(self, "memory", tuple(self.memory))
-        object.__setattr__(self, "omissions", tuple(self.omissions))
+        _positive("Context revision", self.revision)
+        for name in ("history_groups", "history_items", "memory", "omissions"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
         _validate_history_groups(self.history_groups, self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
         _validate_context_snapshot_slots(
@@ -1072,80 +933,70 @@ class ContextSnapshotV1:
             budget=self.budget,
             history_status=self.history_status,
             history_items=self.history_items,
+            memory_context_characters=self.memory_context_characters,
             selected_turn_ids=tuple(group.turn_id for group in self.history_groups),
         )
-        maximum = self.budget.maximum_characters
         if (
-            maximum != MAXIMUM_INPUT_CHARACTERS_V1
-            or self.budget.reserved_current_run_characters != RESERVED_CURRENT_RUN_CHARACTERS_V1
+            self.budget.total_tokens + self.budget.reserved_current_run_tokens
+            > self.budget.maximum_tokens
         ):
-            raise ValueError("Context Snapshot bounded-history-v1 limits are invalid")
-        if self.budget.total_characters + self.budget.reserved_current_run_characters > maximum:
-            raise ValueError("Context Snapshot does not preserve current Run capacity")
+            raise ValueError("Context revision does not preserve current Run capacity")
 
     def to_wire(self) -> JsonObject:
         return {
-            "schemaVersion": self.schema_version,
-            "selectionVersion": self.selection_version,
+            "revision": self.revision,
             "historyGroups": [group.to_wire() for group in self.history_groups],
             "historyItems": [item.to_wire() for item in self.history_items],
             "memory": [memory.to_wire() for memory in self.memory],
             "budget": self.budget.to_wire(),
             "omissions": [omission.to_wire() for omission in self.omissions],
-            **(
-                {"historyStatus": self.history_status.to_wire()} if self.schema_version == 2 else {}
-            ),
+            "historyStatus": self.history_status.to_wire(),
+            "memoryContextCharacters": self.memory_context_characters,
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> ContextSnapshotV1:
-        version = 2 if cls is ContextSnapshotV2 else 1
-        keys = _CONTEXT_SNAPSHOT_KEYS | ({"historyStatus"} if version == 2 else set())
-        row = _object(value, "Context Snapshot", keys)
-        if type(row["schemaVersion"]) is not int or row["schemaVersion"] != version:
-            raise ValueError("Context Snapshot schema version is unsupported")
-        selection_version = _as_str(row["selectionVersion"])
-        if selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
-            raise ValueError("Context selection version is unsupported")
-        groups = _array(row["historyGroups"], "history groups")
-        items = _array(row["historyItems"], "history Items")
-        memory = _array(row["memory"], "Memory references")
-        omissions = _array(row["omissions"], "omissions")
+    def from_wire(cls, value: object) -> ContextRevision:
+        row = _object(value, "Context revision", _CONTEXT_REVISION_KEYS)
         return cls(
-            selection_version=selection_version,
-            history_groups=tuple(HistoryGroupReferenceV1.from_wire(group) for group in groups),
-            history_items=tuple(HistoryItemReferenceV1.from_wire(item) for item in items),
-            memory=tuple(MemoryReferenceV1.from_wire(reference) for reference in memory),
-            budget=InputBudgetRecordV1.from_wire(row["budget"]),
-            omissions=tuple(OmissionRecordV1.from_wire(item) for item in omissions),
-            history_status=(
-                FrozenHistoryStatusV1.from_wire(row["historyStatus"])
-                if version == 2
-                else EMPTY_HISTORY_STATUS_V1
+            revision=_as_int(row["revision"]),
+            history_groups=tuple(
+                HistoryGroupReferenceV1.from_wire(v)
+                for v in _array(row["historyGroups"], "history groups")
             ),
+            history_items=tuple(
+                HistoryItemReferenceV1.from_wire(v)
+                for v in _array(row["historyItems"], "history Items")
+            ),
+            memory=tuple(
+                MemoryReferenceV1.from_wire(v) for v in _array(row["memory"], "Memory references")
+            ),
+            budget=InputBudgetRecord.from_wire(row["budget"]),
+            omissions=tuple(
+                OmissionRecordV1.from_wire(v) for v in _array(row["omissions"], "omissions")
+            ),
+            history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
+            memory_context_characters=_as_int(row["memoryContextCharacters"]),
         )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class StepManifestV1:
-    schema_version: int = field(default=1, init=False)
+class StepInput:
+    """Frozen input boundary and accounting for one model call."""
+
     step_ordinal: int
-    context_snapshot_version: int
+    context_revision: int
     history_items: tuple[HistoryItemReferenceV1, ...]
     memory: tuple[MemoryReferenceV1, ...]
-    budget: InputBudgetRecordV1
+    budget: InputBudgetRecord
     omissions: tuple[OmissionRecordV1, ...]
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
+    memory_context_characters: int = 0
 
     def __post_init__(self) -> None:
-        if self.schema_version == 1 and self.history_status.runs:
-            raise ValueError("legacy Step Manifest cannot contain history status")
-        _positive("Step Manifest ordinal", self.step_ordinal)
-        if self.context_snapshot_version != self.schema_version:
-            raise ValueError("Step Manifest Context Snapshot version is unsupported")
-        object.__setattr__(self, "history_items", tuple(self.history_items))
-        object.__setattr__(self, "memory", tuple(self.memory))
-        object.__setattr__(self, "omissions", tuple(self.omissions))
+        _positive("Step ordinal", self.step_ordinal)
+        _positive("Context revision", self.context_revision)
+        for name in ("history_items", "memory", "omissions"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
         _validate_unique_history_items(self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
         _validate_context_snapshot_slots(
@@ -1154,79 +1005,48 @@ class StepManifestV1:
             budget=self.budget,
             history_status=self.history_status,
             history_items=self.history_items,
+            memory_context_characters=self.memory_context_characters,
             selected_turn_ids=tuple(item.turn_id for item in self.history_items),
         )
-        if (
-            self.budget.maximum_characters != MAXIMUM_INPUT_CHARACTERS_V1
-            or self.budget.reserved_current_run_characters != RESERVED_CURRENT_RUN_CHARACTERS_V1
-        ):
-            raise ValueError("Step Manifest bounded-history-v1 limits are invalid")
 
     def to_wire(self) -> JsonObject:
         return {
-            "schemaVersion": self.schema_version,
             "stepOrdinal": self.step_ordinal,
-            "contextSnapshotVersion": self.context_snapshot_version,
+            "contextRevision": self.context_revision,
             "historyItems": [item.to_wire() for item in self.history_items],
             "memory": [memory.to_wire() for memory in self.memory],
             "budget": self.budget.to_wire(),
             "omissions": [omission.to_wire() for omission in self.omissions],
-            **(
-                {"historyStatus": self.history_status.to_wire()} if self.schema_version == 2 else {}
-            ),
+            "historyStatus": self.history_status.to_wire(),
+            "memoryContextCharacters": self.memory_context_characters,
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> StepManifestV1:
-        version = 2 if cls is StepManifestV2 else 1
-        keys = _STEP_MANIFEST_KEYS | ({"historyStatus"} if version == 2 else set())
-        row = _object(value, "Step Manifest", keys)
-        if type(row["schemaVersion"]) is not int or row["schemaVersion"] != version:
-            raise ValueError("Step Manifest schema version is unsupported")
-        items = _array(row["historyItems"], "history Items")
-        memory = _array(row["memory"], "Memory references")
-        omissions = _array(row["omissions"], "omissions")
+    def from_wire(cls, value: object) -> StepInput:
+        row = _object(value, "Step input", _STEP_INPUT_KEYS)
         return cls(
             step_ordinal=_as_int(row["stepOrdinal"]),
-            context_snapshot_version=_as_int(row["contextSnapshotVersion"]),
-            history_items=tuple(HistoryItemReferenceV1.from_wire(item) for item in items),
-            memory=tuple(MemoryReferenceV1.from_wire(item) for item in memory),
-            budget=InputBudgetRecordV1.from_wire(row["budget"]),
-            omissions=tuple(OmissionRecordV1.from_wire(item) for item in omissions),
-            history_status=(
-                FrozenHistoryStatusV1.from_wire(row["historyStatus"])
-                if version == 2
-                else EMPTY_HISTORY_STATUS_V1
+            context_revision=_as_int(row["contextRevision"]),
+            history_items=tuple(
+                HistoryItemReferenceV1.from_wire(v)
+                for v in _array(row["historyItems"], "history Items")
             ),
+            memory=tuple(
+                MemoryReferenceV1.from_wire(v) for v in _array(row["memory"], "Memory references")
+            ),
+            budget=InputBudgetRecord.from_wire(row["budget"]),
+            omissions=tuple(
+                OmissionRecordV1.from_wire(v) for v in _array(row["omissions"], "omissions")
+            ),
+            history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
+            memory_context_characters=_as_int(row["memoryContextCharacters"]),
         )
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ContextSnapshotV2(ContextSnapshotV1):
-    schema_version: int = field(default=2, init=False)
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class StepManifestV2(StepManifestV1):
-    schema_version: int = field(default=2, init=False)
-
-
-def parse_context_snapshot(value: object) -> ContextSnapshotV1:
-    if isinstance(value, dict) and value.get("schemaVersion") == 2:
-        return ContextSnapshotV2.from_wire(value)
-    return ContextSnapshotV1.from_wire(value)
-
-
-def parse_step_manifest(value: object) -> StepManifestV1:
-    if isinstance(value, dict) and value.get("schemaVersion") == 2:
-        return StepManifestV2.from_wire(value)
-    return StepManifestV1.from_wire(value)
-
-
 @dataclass(frozen=True, slots=True)
-class PreparedModelStepV1:
-    context_snapshot: ContextSnapshotV1
-    step_manifest: StepManifestV1
+class PreparedModelStep:
+    context_revision: ContextRevision
+    step_input: StepInput
     items: tuple[ContextItem, ...]
     event: JournalEvent
 
@@ -1238,23 +1058,25 @@ class CompletedProviderStepV1:
     events: tuple[JournalEvent, ...]
 
 
-def build_context_snapshot(
+def build_context_revision(
     records: Sequence[ContextItemRecordV1],
     *,
     current_run_id: str,
-    frame: SubmissionFrameV1,
-    selection_version: str,
-    maximum_characters: int,
-    reserved_current_run_characters: int,
+    config: RunConfig,
+    maximum_tokens: int,
+    reserved_current_run_tokens: int,
     omissions: Sequence[OmissionRecordV1],
     memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
-) -> ContextSnapshotV1:
-    if selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
-        raise ValueError("Context selection version is unsupported")
+) -> ContextRevision:
+    if (
+        maximum_tokens != config.maximum_input_tokens
+        or reserved_current_run_tokens != config.reserved_current_run_tokens
+    ):
+        raise ValueError("context budget does not match the frozen model configuration")
     if any(omission.source_type != "history" for omission in omissions):
         raise ValueError("history selection contains a Memory omission")
-    _validate_memory_scope_for_frame(memory_context.memory, frame)
+    _validate_memory_scope_for_config(memory_context.memory, config)
     references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
     groups: list[HistoryGroupReferenceV1] = []
     for reference in references:
@@ -1271,58 +1093,55 @@ def build_context_snapshot(
                     item_ids=(reference.item_id,),
                 )
             )
-    history_characters = sum(
-        reference.characters for reference in references if reference.run_id != current_run_id
+    history_tokens = sum(
+        reference.tokens for reference in references if reference.run_id != current_run_id
     )
-    current_run_characters = sum(
-        reference.characters for reference in references if reference.run_id == current_run_id
+    current_run_tokens = sum(
+        reference.tokens for reference in references if reference.run_id == current_run_id
     )
-    snapshot_type = (
-        ContextSnapshotV2 if selection_version == CONTEXT_SELECTION_VERSION else ContextSnapshotV1
-    )
-    return snapshot_type(
+    return ContextRevision(
         history_status=history_status,
-        selection_version=selection_version,
+        memory_context_characters=memory_context.context_data_characters,
         history_groups=tuple(groups),
         history_items=references,
         memory=memory_context.memory,
-        budget=InputBudgetRecordV1(
+        budget=InputBudgetRecord(
             mode="bounded",
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
-            maximum_characters=maximum_characters,
-            reserved_current_run_characters=reserved_current_run_characters,
-            instruction_characters=_instruction_characters(frame),
-            context_data_characters=memory_context.context_data_characters
-            + history_status.characters,
-            tool_characters=_tool_definition_characters(frame),
-            history_characters=history_characters,
-            current_run_characters=current_run_characters,
-            memory_characters=memory_context.memory_characters,
-            total_characters=(
-                _instruction_characters(frame)
-                + memory_context.context_data_characters
-                + history_status.characters
-                + _tool_definition_characters(frame)
-                + history_characters
-                + current_run_characters
-                + memory_context.memory_characters
+            maximum_tokens=maximum_tokens,
+            reserved_current_run_tokens=reserved_current_run_tokens,
+            instruction_tokens=_instruction_tokens(config),
+            context_data_tokens=memory_context.context_data_characters * 4
+            + history_status_tokens(history_status),
+            tool_tokens=_tool_definition_tokens(config),
+            history_tokens=history_tokens,
+            current_run_tokens=current_run_tokens,
+            memory_tokens=memory_context.memory_characters * 4,
+            total_tokens=(
+                _instruction_tokens(config)
+                + memory_context.context_data_characters * 4
+                + history_status_tokens(history_status)
+                + _tool_definition_tokens(config)
+                + history_tokens
+                + current_run_tokens
+                + memory_context.memory_characters * 4
             ),
         ),
         omissions=(*tuple(omissions), *memory_context.omissions),
     )
 
 
-def build_step_manifest(
+def build_step_input(
     step_ordinal: int,
     records: Sequence[ContextItemRecordV1],
-    snapshot: ContextSnapshotV1,
+    snapshot: ContextRevision,
     *,
     current_run_id: str,
-    frame: SubmissionFrameV1,
-) -> StepManifestV1:
+    config: RunConfig,
+) -> StepInput:
     try:
         references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
-        _validate_memory_scope_for_frame(snapshot.memory, frame)
+        _validate_memory_scope_for_config(snapshot.memory, config)
     except (TypeError, ValueError):
         raise ModelInputUnavailableError("model_input_unavailable") from None
     frozen = snapshot.history_items
@@ -1330,49 +1149,51 @@ def build_step_manifest(
         raise ModelInputUnavailableError("model_input_unavailable")
     if any(reference.run_id != current_run_id for reference in references[len(frozen) :]):
         raise ModelInputUnavailableError("model_input_unavailable")
-    history_characters = sum(
-        reference.characters for reference in references if reference.run_id != current_run_id
+    history_tokens = sum(
+        reference.tokens for reference in references if reference.run_id != current_run_id
     )
-    current_run_characters = sum(
-        reference.characters for reference in references if reference.run_id == current_run_id
+    current_run_tokens = sum(
+        reference.tokens for reference in references if reference.run_id == current_run_id
     )
-    if history_characters != snapshot.budget.history_characters:
+    if history_tokens != snapshot.budget.history_tokens:
         raise ModelInputUnavailableError("model_input_unavailable")
     if (
-        _instruction_characters(frame) != snapshot.budget.instruction_characters
-        or _tool_definition_characters(frame) != snapshot.budget.tool_characters
+        _instruction_tokens(config) != snapshot.budget.instruction_tokens
+        or _tool_definition_tokens(config) != snapshot.budget.tool_tokens
+        or snapshot.budget.maximum_tokens != config.maximum_input_tokens
+        or snapshot.budget.reserved_current_run_tokens != config.reserved_current_run_tokens
     ):
         raise ModelInputUnavailableError("model_input_unavailable")
-    maximum_characters = snapshot.budget.maximum_characters
-    total_characters = (
-        snapshot.budget.instruction_characters
-        + snapshot.budget.context_data_characters
-        + snapshot.budget.tool_characters
-        + history_characters
-        + current_run_characters
-        + snapshot.budget.memory_characters
+    maximum_tokens = snapshot.budget.maximum_tokens
+    total_tokens = (
+        snapshot.budget.instruction_tokens
+        + snapshot.budget.context_data_tokens
+        + snapshot.budget.tool_tokens
+        + history_tokens
+        + current_run_tokens
+        + snapshot.budget.memory_tokens
     )
-    if maximum_characters is None or total_characters > maximum_characters:
+    if maximum_tokens is None or total_tokens > maximum_tokens:
         raise ContextBudgetExceededError("context_budget_exceeded")
-    manifest_type = StepManifestV2 if snapshot.schema_version == 2 else StepManifestV1
-    return manifest_type(
+    return StepInput(
         history_status=snapshot.history_status,
+        memory_context_characters=snapshot.memory_context_characters,
         step_ordinal=step_ordinal,
-        context_snapshot_version=snapshot.schema_version,
+        context_revision=snapshot.revision,
         history_items=references,
         memory=snapshot.memory,
-        budget=InputBudgetRecordV1(
+        budget=InputBudgetRecord(
             mode=snapshot.budget.mode,
             measurement_version=INPUT_BUDGET_MEASUREMENT_VERSION,
-            maximum_characters=maximum_characters,
-            reserved_current_run_characters=snapshot.budget.reserved_current_run_characters,
-            instruction_characters=snapshot.budget.instruction_characters,
-            context_data_characters=snapshot.budget.context_data_characters,
-            tool_characters=snapshot.budget.tool_characters,
-            history_characters=history_characters,
-            current_run_characters=current_run_characters,
-            memory_characters=snapshot.budget.memory_characters,
-            total_characters=total_characters,
+            maximum_tokens=maximum_tokens,
+            reserved_current_run_tokens=snapshot.budget.reserved_current_run_tokens,
+            instruction_tokens=snapshot.budget.instruction_tokens,
+            context_data_tokens=snapshot.budget.context_data_tokens,
+            tool_tokens=snapshot.budget.tool_tokens,
+            history_tokens=history_tokens,
+            current_run_tokens=current_run_tokens,
+            memory_tokens=snapshot.budget.memory_tokens,
+            total_tokens=total_tokens,
         ),
         omissions=snapshot.omissions,
     )
@@ -1388,20 +1209,6 @@ def validate_tool_environment(
         for tool in current
     }
     return frozen_by_name == current_by_name
-
-
-def validate_run_manifest(value: object, frame: SubmissionFrameV1) -> RunManifestV1:
-    row = _object(value, "Run Manifest", _RUN_MANIFEST_KEYS)
-    context_selection_version = _as_str(row["contextSelectionVersion"])
-    if context_selection_version not in REGISTERED_CONTEXT_SELECTION_VERSIONS:
-        raise ValueError("Context selection version is unsupported")
-    expected = RunManifestV1.from_frame(
-        frame,
-        context_selection_version=context_selection_version,
-    )
-    if value != expected.to_wire():
-        raise ValueError("Run Manifest does not match its Submission Frame")
-    return expected
 
 
 def _validate_instruction_slots(
@@ -1502,15 +1309,12 @@ def _validate_unique_history_items(items: Sequence[HistoryItemReferenceV1]) -> N
 
 def _validate_budget_history_counts(
     items: Sequence[HistoryItemReferenceV1],
-    budget: InputBudgetRecordV1,
+    budget: InputBudgetRecord,
 ) -> None:
     current_run_id = items[-1].run_id if items else None
-    history_characters = sum(item.characters for item in items if item.run_id != current_run_id)
-    current_run_characters = sum(item.characters for item in items if item.run_id == current_run_id)
-    if (
-        budget.history_characters != history_characters
-        or budget.current_run_characters != current_run_characters
-    ):
+    history_tokens = sum(item.tokens for item in items if item.run_id != current_run_id)
+    current_run_tokens = sum(item.tokens for item in items if item.run_id == current_run_id)
+    if budget.history_tokens != history_tokens or budget.current_run_tokens != current_run_tokens:
         raise ValueError("input budget history counts do not match history Items")
 
 
@@ -1530,10 +1334,11 @@ def _validate_context_snapshot_slots(
     *,
     memory: Sequence[MemoryReferenceV1],
     omissions: Sequence[OmissionRecordV1],
-    budget: InputBudgetRecordV1,
+    budget: InputBudgetRecord,
     selected_turn_ids: Sequence[str],
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
     history_items: Sequence[HistoryItemReferenceV1] = (),
+    memory_context_characters: int = 0,
 ) -> None:
     if budget.mode != "bounded":
         raise ValueError("history selection budget mode is invalid")
@@ -1556,9 +1361,15 @@ def _validate_context_snapshot_slots(
     FrozenMemoryContextV1(
         memory=tuple(memory),
         omissions=tuple(memory_omissions),
-        memory_characters=budget.memory_characters,
-        context_data_characters=budget.context_data_characters - history_status.characters,
+        memory_characters=sum(reference.characters for reference in memory),
+        context_data_characters=memory_context_characters,
     )
+    if budget.memory_tokens != sum(reference.characters for reference in memory) * 4:
+        raise ValueError("Memory token estimate does not match its frozen references")
+    if budget.context_data_tokens != memory_context_characters * 4 + history_status_tokens(
+        history_status
+    ):
+        raise ValueError("context-data token estimate does not match its frozen metadata")
     included_runs = {(item.turn_id, item.run_id) for item in history_items}
     ordered_runs = list(dict.fromkeys(item.run_id for item in history_items))
     current_run_id = history_items[-1].run_id if history_items else None
@@ -1583,21 +1394,32 @@ def _validate_context_snapshot_slots(
             raise ValueError("history status omission does not match history boundary")
 
 
-def _validate_memory_scope_for_frame(
+def _validate_memory_scope_for_config(
     memory: Sequence[MemoryReferenceV1],
-    frame: SubmissionFrameV1,
+    config: RunConfig,
 ) -> None:
-    if frame.workspace is None and any(reference.scope == "workspace" for reference in memory):
+    if config.workspace is None and any(reference.scope == "workspace" for reference in memory):
         raise ValueError("Workspace Memory requires a Run workspace")
 
 
-def _instruction_characters(frame: SubmissionFrameV1) -> int:
-    return sum(len(block.content) for block in frame.instructions)
+def estimate_tokens(content: str) -> int:
+    """UTF-8 bytes form a conservative token bound, never an exact tokenizer count."""
+
+    return len(content.encode("utf-8"))
 
 
-def _tool_definition_characters(frame: SubmissionFrameV1) -> int:
+def history_status_tokens(status: FrozenHistoryStatusV1) -> int:
+    return estimate_tokens(status.content) + 64 if status.runs else 0
+
+
+def _instruction_tokens(config: RunConfig) -> int:
+    # Reserve request/message framing in addition to visible instruction content.
+    return 512 + sum(estimate_tokens(block.content) + 64 for block in config.instructions)
+
+
+def _tool_definition_tokens(config: RunConfig) -> int:
     return sum(
-        len(
+        estimate_tokens(
             canonical_json(
                 {
                     "name": tool.name,
@@ -1606,14 +1428,20 @@ def _tool_definition_characters(frame: SubmissionFrameV1) -> int:
                 }
             )
         )
-        for tool in frame.tools
+        + 64
+        for tool in config.tools
     )
 
 
-def frame_input_character_counts(frame: SubmissionFrameV1) -> tuple[int, int]:
-    """Return canonical Instruction and Tool-definition character counts."""
+def config_input_token_counts(config: RunConfig) -> tuple[int, int]:
+    return _instruction_tokens(config), _tool_definition_tokens(config)
 
-    return _instruction_characters(frame), _tool_definition_characters(frame)
+
+def _validate_model_window(context_window: int, max_output_tokens: int) -> None:
+    _positive("model context window", context_window)
+    _positive("model output reserve", max_output_tokens)
+    if max_output_tokens >= context_window:
+        raise ValueError("model output reserve must be smaller than its context window")
 
 
 def _skill_snapshot(skills: Sequence[SkillDescriptor]) -> tuple[SkillDescriptor, ...]:
@@ -1656,14 +1484,6 @@ def _as_str(value: object, *, allow_empty: bool = False) -> str:
 def _as_int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError("expected an integer")
-    return value
-
-
-def _optional_positive_int(value: object, *, label: str) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"{label} is invalid")
     return value
 
 
@@ -1722,8 +1542,7 @@ _MEMORY_OMISSION_KEYS = {
     "reason",
 }
 _INSTRUCTION_SLOT_KEYS = {"outputStyle", "identityCore", "skillCatalog"}
-_SUBMISSION_FRAME_KEYS = {
-    "schemaVersion",
+_RUN_CONFIG_KEYS = {
     "userItemId",
     "threadId",
     "branchId",
@@ -1737,107 +1556,42 @@ _SUBMISSION_FRAME_KEYS = {
     "skills",
     "tools",
     "instructions",
-    "contextData",
-    "maxSteps",
+    "maxModelCalls",
+    "maxDurationSeconds",
+    "contextWindow",
+    "maxOutputTokens",
 }
-_HISTORY_ITEM_KEYS = {"itemId", "turnId", "runId", "kind", "role", "characters"}
+_HISTORY_ITEM_KEYS = {"itemId", "turnId", "runId", "kind", "role", "tokens"}
 _INPUT_BUDGET_KEYS = {
     "mode",
     "measurementVersion",
-    "maximumCharacters",
-    "reservedCurrentRunCharacters",
-    "instructionCharacters",
-    "contextDataCharacters",
-    "toolCharacters",
-    "historyCharacters",
-    "currentRunCharacters",
-    "memoryCharacters",
-    "totalCharacters",
+    "maximumTokens",
+    "reservedCurrentRunTokens",
+    "instructionTokens",
+    "contextDataTokens",
+    "toolTokens",
+    "historyTokens",
+    "currentRunTokens",
+    "memoryTokens",
+    "totalTokens",
 }
-_RUN_MANIFEST_KEYS = {
-    "schemaVersion",
-    "runId",
-    "modelInputPlanVersion",
-    "submissionFrameVersion",
-    "contextSelectionVersion",
-    "memoryContextVersion",
-    "instructions",
-    "skills",
-    "tools",
-    "provider",
-    "executionPolicy",
-    "maxSteps",
-}
-_CONTEXT_SNAPSHOT_KEYS = {
-    "schemaVersion",
-    "selectionVersion",
+_CONTEXT_REVISION_KEYS = {
+    "revision",
     "historyGroups",
     "historyItems",
     "memory",
     "budget",
     "omissions",
+    "historyStatus",
+    "memoryContextCharacters",
 }
-_STEP_MANIFEST_KEYS = {
-    "schemaVersion",
+_STEP_INPUT_KEYS = {
     "stepOrdinal",
-    "contextSnapshotVersion",
+    "contextRevision",
     "historyItems",
     "memory",
     "budget",
     "omissions",
+    "historyStatus",
+    "memoryContextCharacters",
 }
-
-
-__all__ = [
-    "CONTEXT_SELECTION_VERSION",
-    "LEGACY_CONTEXT_SELECTION_VERSION",
-    "ContextSnapshotV2",
-    "StepManifestV2",
-    "parse_context_snapshot",
-    "parse_step_manifest",
-    "EXECUTABLE_CONTEXT_SELECTION_VERSIONS",
-    "IDENTITY_CORE_MAX_CHARACTERS_V1",
-    "IKAROS_IDENTITY_ID",
-    "IKAROS_IDENTITY_SOURCE",
-    "IKAROS_IDENTITY_VERSION",
-    "INPUT_BUDGET_MEASUREMENT_VERSION",
-    "MAXIMUM_INPUT_CHARACTERS_V1",
-    "MEMORY_CONTENT_MAX_CHARACTERS_V1",
-    "MEMORY_RETRIEVAL_MAX_CANDIDATES_V1",
-    "MEMORY_SELECTION_MAX_CHARACTERS_V1",
-    "MEMORY_SELECTION_MAX_ITEMS_V1",
-    "REGISTERED_CONTEXT_SELECTION_VERSIONS",
-    "REGISTERED_INPUT_BUDGET_MODES",
-    "RESERVED_CURRENT_RUN_CHARACTERS_V1",
-    "CompletedProviderStepV1",
-    "ContextDataBlockV1",
-    "ContextItemRecordV1",
-    "ContextSnapshotV1",
-    "EMPTY_FROZEN_MEMORY_CONTEXT_V1",
-    "FrozenMemoryContextV1",
-    "HistoryItemReferenceV1",
-    "InputAuthority",
-    "InputBudgetRecordV1",
-    "InputLifetime",
-    "InstructionAuthority",
-    "InstructionBlockV1",
-    "MemoryReferenceV1",
-    "MemoryScope",
-    "ModelStepOutcome",
-    "OmissionRecordV1",
-    "PreparedModelStepV1",
-    "ProviderExecutionSnapshotV1",
-    "RunManifestV1",
-    "StepManifestV1",
-    "SubmissionFrameTemplateV1",
-    "SubmissionFrameV1",
-    "ToolDefinitionSnapshotV1",
-    "build_context_snapshot",
-    "build_step_manifest",
-    "canonical_json",
-    "canonical_sha256",
-    "deep_frozen_json_object",
-    "frame_input_character_counts",
-    "validate_run_manifest",
-    "validate_tool_environment",
-]

@@ -103,7 +103,7 @@ describe("preload Runtime bridge", () => {
     const expected = {
       ok: true as const,
       value: {
-        models: [{ id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" }]
+        models: [{ id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", contextWindow: 32768, maxOutputTokens: 4096 }]
       }
     };
     electron.ipcRenderer.invoke.mockResolvedValueOnce(expected);

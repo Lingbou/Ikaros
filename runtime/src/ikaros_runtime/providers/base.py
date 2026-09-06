@@ -23,12 +23,15 @@ class ProviderRequest:
     model_id: str
     messages: Sequence[ProviderMessage]
     tools: Sequence[ToolDefinition] = ()
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ModelInput:
     id: str
     display_name: str
+    context_window: int = 32768
+    max_output_tokens: int = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +40,8 @@ class ModelConfig:
     display_name: str
     enabled: bool
     supports_tools: bool
+    context_window: int = 32768
+    max_output_tokens: int = 4096
 
 
 @dataclass(frozen=True, slots=True, repr=False)

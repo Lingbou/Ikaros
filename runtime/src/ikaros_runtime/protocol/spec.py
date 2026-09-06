@@ -5,12 +5,12 @@ from typing import Final
 from ..errors import MEMORY_OPERATION_REASON_CODES
 
 PROTOCOL_SPEC_SCHEMA_VERSION: Final = 2
-PROTOCOL_VERSION: Final = 3
+PROTOCOL_VERSION: Final = 4
 JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
 EVENT_NOTIFICATION_METHOD: Final = "event"
-JOURNAL_EVENT_SCHEMA_VERSION: Final = 6
+JOURNAL_EVENT_SCHEMA_VERSION: Final = 7
 MEMORY_OPERATION_ERROR_CODE: Final = -32020
 MEMORY_OPERATION_ERROR_MESSAGE: Final = "memory operation failed"
 
@@ -29,6 +29,7 @@ RPC_METHODS: Final = (
     "provider.remove",
     "model.list",
     "model.set_enabled",
+    "model.set_limits",
     "skill.list",
     "skill.set_enabled",
     "memory.create",
@@ -56,6 +57,7 @@ JOURNAL_EVENT_TYPES: Final = (
     "item.delta",
     "item.completed",
     "file.change_recorded",
+    "process.recorded",
     "model.input_prepared",
     "model.response_finished",
     "run.settled",
@@ -64,7 +66,15 @@ JOURNAL_EVENT_TYPE_SET: Final = frozenset(JOURNAL_EVENT_TYPES)
 
 # These are Provider-facing Tool IDs. Renderer labels such as ``process.run``
 # are presentation details and deliberately do not belong to the wire contract.
-PROVIDER_TOOL_IDS: Final = ("process_run", "read", "write", "edit")
+PROVIDER_TOOL_IDS: Final = (
+    "process_start",
+    "process_read",
+    "process_wait",
+    "process_stop",
+    "read",
+    "write",
+    "edit",
+)
 PROVIDER_TOOL_ID_SET: Final = frozenset(PROVIDER_TOOL_IDS)
 EXECUTION_POLICY: Final = "full_access"
 

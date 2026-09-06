@@ -83,15 +83,11 @@ class OpenAICompatibleAdapter:
         *,
         client: httpx.AsyncClient | None = None,
         timeouts: ProviderTimeouts | None = None,
-        max_retries: int = 1,
     ) -> None:
-        if max_retries < 0:
-            raise ValueError("max_retries must be non-negative")
         self._provider = provider
         self._secrets = provider_secrets(provider)
         self._timeouts = timeouts or ProviderTimeouts()
         self._timeouts.validate()
-        self._max_retries = max_retries
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -103,7 +99,6 @@ class OpenAICompatibleAdapter:
             follow_redirects=False,
         )
         self._closed = False
-        self._usage_stream_options_supported: dict[str, bool] = {}
 
     async def aclose(self) -> None:
         if self._closed:
@@ -177,60 +172,9 @@ class OpenAICompatibleAdapter:
             raise ProviderFailure("unknown", "provider transport is closed")
         headers = self._request_headers()
         url = f"{self._provider.base_url.rstrip('/')}/chat/completions"
-        upstream_model_id = self._model(request.model_id).id
-        cached_usage_support = self._usage_stream_options_supported.get(upstream_model_id)
-        include_usage = (
-            self._provider.origin == "builtin" or cached_usage_support is not False
-        )
-        fallback_without_usage = (
-            self._provider.origin == "custom"
-            and cached_usage_support is None
-            and include_usage
-        )
-        fallback_attempt = False
-        attempt = 0
-        while True:
-            body = self._request_body(request, include_usage=include_usage)
-            attempt_emitted = False
-            try:
-                async for event in self._attempt(
-                    url,
-                    headers,
-                    body,
-                    cancellation=cancellation,
-                ):
-                    attempt_emitted = True
-                    yield event
-                if self._provider.origin == "custom":
-                    if include_usage:
-                        self._usage_stream_options_supported[upstream_model_id] = True
-                    elif fallback_attempt:
-                        self._usage_stream_options_supported[upstream_model_id] = False
-                return
-            except RunCancelled:
-                raise
-            except ProviderFailure as error:
-                if fallback_without_usage and error.status_code in {400, 422}:
-                    include_usage = False
-                    fallback_without_usage = False
-                    fallback_attempt = True
-                    continue
-                if attempt_emitted:
-                    raise ProviderFailure(
-                        error.category,
-                        str(error),
-                        status_code=error.status_code,
-                        request_id=error.request_id,
-                        retryable=False,
-                        retry_after=error.retry_after,
-                    ) from None
-                if attempt >= self._max_retries or not error.retryable:
-                    raise
-                delay = error.retry_after
-                if delay is None:
-                    delay = min(0.25 * (2**attempt), _MAX_RETRY_DELAY_SECONDS)
-                await cancellation.sleep(min(delay, _MAX_RETRY_DELAY_SECONDS))
-                attempt += 1
+        body = self._request_body(request)
+        async for event in self._attempt(url, headers, body, cancellation=cancellation):
+            yield event
 
     async def _attempt(
         self,
@@ -357,20 +301,16 @@ class OpenAICompatibleAdapter:
             with suppress(Exception):
                 await response.aclose()
 
-    def _request_body(
-        self,
-        request: ProviderRequest,
-        *,
-        include_usage: bool,
-    ) -> dict[str, object]:
+    def _request_body(self, request: ProviderRequest) -> dict[str, object]:
         model = self._model(request.model_id)
         body: dict[str, object] = {
             "model": model.id,
             "messages": [_message_to_openai(message) for message in request.messages],
             "stream": True,
         }
-        if include_usage:
-            body["stream_options"] = {"include_usage": True}
+        if request.max_output_tokens is not None:
+            body["max_tokens"] = request.max_output_tokens
+        body["stream_options"] = {"include_usage": True}
         if model.supports_tools and request.tools:
             body["tools"] = [_tool_to_openai(tool) for tool in request.tools]
         return body

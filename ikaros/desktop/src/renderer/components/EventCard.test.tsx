@@ -80,7 +80,7 @@ describe("EventCard localization boundary", () => {
       turnId: "process-turn",
       createdAt: "2026-08-12T00:00:00.000Z",
       type: "tool_call",
-      toolName: "process.run",
+      toolName: "process_start",
       label: appEventText("tool.runProcess"),
       status: "interrupted",
       arguments: { command: "Write-Output original-command" },
@@ -126,7 +126,7 @@ describe("EventCard localization boundary", () => {
       turnId: "process-turn-long",
       createdAt: "2026-08-12T00:00:00.000Z",
       type: "tool_call",
-      toolName: "process.run",
+      toolName: "process_start",
       label: appEventText("tool.runProcess"),
       status: "success",
       arguments: { command },
@@ -152,7 +152,7 @@ describe("EventCard localization boundary", () => {
     if (!preview || !disclosure) throw new Error("Expected process command controls");
 
     expect(preview).toHaveTextContent(command);
-    expect(preview).not.toHaveTextContent("process.run");
+    expect(preview).not.toHaveTextContent("process_start");
     expect(preview).not.toHaveTextContent('{"command"');
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(container.querySelectorAll("button")).toHaveLength(1);
@@ -591,5 +591,25 @@ describe("InterruptCard recovery states", () => {
     expect(container.querySelector('[data-tone="warning"]')).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Warning" })).toBeInTheDocument();
     expect(screen.queryByRole("img", { name: "Complete" })).not.toBeInTheDocument();
+  });
+});
+
+describe("managed process results", () => {
+  it("shows running separately from completion and preserves output and actual exit status", () => {
+    const event: ToolResultEvent = {
+      id: "process-result", turnId: "turn-process", createdAt: "2026-09-07T00:00:00Z",
+      type: "tool_result", toolCallId: "process-call", toolName: "process_start", status: "success",
+      summary: appEventText("result.processRunning"), output: "中文 output\r\n",
+      details: { processId: "process-1", processState: "running", exitCode: null },
+    };
+    const view = render(<Tooltip.Provider><EventCard event={event} /></Tooltip.Provider>);
+    expect(screen.getByText("Command is still running")).toBeVisible();
+    expect(screen.queryByText("Command completed")).toBeNull();
+    expect(screen.getByText("中文 output")).toBeVisible();
+    expect(screen.getByText("process-1")).toBeVisible();
+    view.rerender(<Tooltip.Provider><EventCard event={{ ...event, toolName: "process_wait", status: "error", summary: appEventText("result.processFailed"), details: { processId: "process-1", processState: "exited", exitCode: 2 } }} /></Tooltip.Provider>);
+    expect(screen.getByText("Command failed")).toBeVisible();
+    expect(screen.getByText(/Exit code 2/)).toBeVisible();
+    expect(screen.getByText("中文 output")).toBeVisible();
   });
 });

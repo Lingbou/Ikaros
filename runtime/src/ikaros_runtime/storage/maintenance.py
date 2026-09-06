@@ -21,9 +21,11 @@ _PROJECTION_TABLES = (
     ("branches", "id"),
     ("turns", "id"),
     ("runs", "id"),
-    ("run_inputs", "run_id"),
+    ("run_configs", "run_id"),
+    ("context_revisions", "run_id, revision"),
+    ("process_sessions", "process_id"),
     ("items", "id"),
-    ("model_steps", "run_id, step_ordinal"),
+    ("model_calls", "run_id, step_ordinal"),
     ("model_usages", "run_id, step_ordinal"),
     ("file_changes", "tool_call_item_id"),
 )

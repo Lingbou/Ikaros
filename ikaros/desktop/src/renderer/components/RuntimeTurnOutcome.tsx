@@ -3,7 +3,7 @@ import { AlertCircle, CircleStop } from "lucide-react";
 import type { ToolResultEvent, Turn } from "../domain";
 import { type TranslationKey, useTranslation } from "../i18n";
 
-const MUTATING_TOOLS = new Set(["write", "edit", "process.run", "process_run"]);
+const MUTATING_TOOLS = new Set(["write", "edit", "process_start"]);
 const REASON_KEYS: Readonly<Record<string, TranslationKey>> = {
   runtime_interrupted: "runtime.outcome.reason.runtimeInterrupted",
   cancelled: "runtime.outcome.reason.cancelled",
@@ -22,23 +22,33 @@ const REASON_KEYS: Readonly<Record<string, TranslationKey>> = {
   provider_unknown: "runtime.outcome.reason.providerUnavailable",
   provider_cancelled: "runtime.outcome.reason.cancelled",
   agent_error: "runtime.outcome.reason.agentError",
-  agent_step_limit: "runtime.outcome.reason.stepLimit",
+  model_call_budget_exceeded: "runtime.outcome.reason.modelCallLimit",
+  run_time_limit: "runtime.outcome.reason.timeLimit",
 };
 
 function hasUncertainChanges(turn: Turn): boolean {
   const results = new Map<string, ToolResultEvent>();
+  const latestProcessResults = new Map<string, ToolResultEvent>();
   for (const event of turn.events) {
-    if (event.type === "tool_result") results.set(event.toolCallId, event);
+    if (event.type === "tool_result") {
+      results.set(event.toolCallId, event);
+      if (event.details?.processId) latestProcessResults.set(event.details.processId, event);
+    }
   }
 
+  const uncertain = (result: ToolResultEvent) => {
+    const latest = result.details?.processId ? latestProcessResults.get(result.details.processId) ?? result : result;
+    return latest.status !== "success" ||
+      (latest.details?.processState !== undefined && latest.details.processState !== "exited");
+  };
   return turn.events.some((event) => {
     if (event.type === "tool_result") {
-      return MUTATING_TOOLS.has(event.toolName ?? "") && event.status !== "success";
+      return MUTATING_TOOLS.has(event.toolName ?? "") && uncertain(event);
     }
     if (event.type !== "tool_call" || !MUTATING_TOOLS.has(event.toolName)) return false;
     const result = results.get(event.id);
     // A recorded success remains authoritative even if a stale call still says running.
-    if (result) return result.status !== "success";
+    if (result) return uncertain(result);
     return event.status !== "success";
   });
 }

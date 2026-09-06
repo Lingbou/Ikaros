@@ -20,6 +20,7 @@ from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import (
     ToolCall,
     ToolDefinition,
+    ToolExecutionContext,
     ToolExecutor,
     ToolRegistry,
     ToolResult,
@@ -28,7 +29,7 @@ from ikaros_runtime.tools.policy import FullAccessPolicy
 
 from .helpers import prepare_turn
 
-_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model_input_plan_v1_openai_bodies.json"
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "model_input_openai_bodies.json"
 
 
 class GoldenProcessTool:
@@ -48,10 +49,10 @@ class GoldenProcessTool:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
-        del default_cwd
+        del context
         command = call.arguments.get("command")
         if not isinstance(command, str):
             raise AssertionError("golden process command must be a string")
@@ -126,7 +127,7 @@ def _response_body(ordinal: int) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path: Path) -> None:
+async def test_model_input_preserves_complete_openai_wire_body(tmp_path: Path) -> None:
     captured_bodies: list[dict[str, object]] = []
 
     async def handler(incoming: httpx.Request) -> httpx.Response:
@@ -195,7 +196,7 @@ async def test_model_input_plan_v1_preserves_complete_openai_wire_body(tmp_path:
                 client_request_id="golden-model-input-memory",
             )
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            adapter = OpenAICompatibleAdapter(configured, client=client, max_retries=0)
+            adapter = OpenAICompatibleAdapter(configured, client=client)
             await AgentLoop(
                 store,
                 {"custom": adapter},

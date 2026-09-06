@@ -25,10 +25,11 @@ from ikaros_runtime.providers.base import (
     ToolCallCompleted,
 )
 from ikaros_runtime.storage import SqliteRuntimeStore
-from ikaros_runtime.storage.projections import get_context_snapshot
+from ikaros_runtime.storage.projections import get_context_revision
 from ikaros_runtime.tools.core import (
     ToolCall,
     ToolDefinition,
+    ToolExecutionContext,
     ToolExecutor,
     ToolRegistry,
     ToolResult,
@@ -90,10 +91,10 @@ class _MutatingTool:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
-        del default_cwd
+        del context
         _ = self._mutate()
         return ToolResult(
             tool_call_id=call.id,
@@ -192,7 +193,7 @@ async def test_memory_correction_does_not_change_a_frozen_tool_loop(
             provider_id="memory-provider",
             model_id="memory-model",
             tools=executor.definitions,
-            max_steps=2,
+            max_model_calls=2,
         )
         reader = _TransactionCheckingMemoryReader(state_store, memory_store)
         loop = AgentLoop(
@@ -223,8 +224,11 @@ async def test_memory_correction_does_not_change_a_frozen_tool_loop(
 
         prepared_events = [event for event in events if event.type == "model.input_prepared"]
         assert len(prepared_events) == 2
-        assert prepared_events[0].payload["contextSnapshot"] == prepared_events[1].payload[
-            "contextSnapshot"
+        assert prepared_events[0].payload["contextRevision"]["revision"] == 1
+        assert prepared_events[1].payload["contextRevision"] is None
+        assert [event.payload["stepInput"]["contextRevision"] for event in prepared_events] == [
+            1,
+            1,
         ]
         audit = json.dumps([event.to_wire() for event in events], ensure_ascii=False)
         assert original not in audit
@@ -232,7 +236,7 @@ async def test_memory_correction_does_not_change_a_frozen_tool_loop(
 
         memory_store.close()
         state_store.rebuild_projections()
-        rebuilt = get_context_snapshot(state_store._connection, prepared.run_id)
+        rebuilt = get_context_revision(state_store._connection, prepared.run_id)
         assert rebuilt is not None
         assert rebuilt.memory[0].revision == 1
     finally:
@@ -272,7 +276,7 @@ async def test_memory_forget_between_tool_steps_stops_without_switching_revision
             provider_id="memory-provider",
             model_id="memory-model",
             tools=executor.definitions,
-            max_steps=2,
+            max_model_calls=2,
         )
         reader = _TransactionCheckingMemoryReader(state_store, memory_store)
         loop = AgentLoop(
@@ -289,10 +293,13 @@ async def test_memory_forget_between_tool_steps_stops_without_switching_revision
         assert state_store.run_status(prepared.run_id) == "failed"
         prepared_events = [event for event in events if event.type == "model.input_prepared"]
         assert len(prepared_events) == 2
-        assert prepared_events[0].payload["contextSnapshot"] == prepared_events[1].payload[
-            "contextSnapshot"
+        assert prepared_events[0].payload["contextRevision"]["revision"] == 1
+        assert prepared_events[1].payload["contextRevision"] is None
+        assert [event.payload["stepInput"]["contextRevision"] for event in prepared_events] == [
+            1,
+            1,
         ]
-        assert prepared_events[1].payload["contextSnapshot"]["memory"][0]["revision"] == 1
+        assert prepared_events[0].payload["contextRevision"]["memory"][0]["revision"] == 1
         assert events[-1].type == "run.settled"
         assert events[-1].payload["reasonCode"] == "memory_snapshot_unavailable"
         audit = json.dumps([event.to_wire() for event in events], ensure_ascii=False)
@@ -353,6 +360,157 @@ async def test_memory_forget_while_prepared_event_is_published_blocks_provider_s
             [event.to_wire() for event in events],
             ensure_ascii=False,
         )
+    finally:
+        memory_store.close()
+        state_store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_failed_history", [False, True])
+async def test_large_memory_selection_keeps_user_input_and_failure_history_usable(
+    tmp_path: Path,
+    include_failed_history: bool,
+) -> None:
+    state_store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    contents = [f"alpha {index} " + "界" * 1992 for index in range(3)]
+    assert sum(len(content) for content in contents) == 6000
+    memory_ids: set[str] = set()
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        for index, content in enumerate(contents):
+            memory_ids.add(
+                memory_store.create_memory_once(
+                    kind="preference",
+                    scope=MemoryScope("global", None),
+                    content=content,
+                    client_request_id=f"memory-budget-{index}",
+                ).memory_id
+            )
+        thread, _ = state_store.create_thread("Bounded Memory input")
+        if include_failed_history:
+            old = prepare_turn(
+                state_store,
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                content="old request " + "x" * 36000,
+                provider_id="memory-provider",
+                model_id="memory-model",
+            )
+            state_store.mark_run_running(old.run_id)
+            state_store.terminalize_run(old.run_id, "failed", reason_code="provider_transport")
+        prepared = prepare_turn(
+            state_store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Use alpha preferences and answer briefly",
+            provider_id="memory-provider",
+            model_id="memory-model",
+        )
+        provider = _RecordingTextProvider()
+        await AgentLoop(
+            state_store,
+            {"memory-provider": provider},
+            publish,
+            memory_retriever=MemoryRetrieverV1(memory_store),
+        ).run(prepared.run_id, CancellationToken())
+
+        assert state_store.run_status(prepared.run_id) == "completed"
+        assert len(provider.requests) == 1
+        revision = get_context_revision(state_store._connection, prepared.run_id)
+        assert revision is not None
+        assert 0 < len(revision.memory) < 3
+        omitted = [record for record in revision.omissions if record.source_type == "memory"]
+        assert {record.memory_id for record in revision.memory} | {
+            record.source_id for record in omitted
+        } == memory_ids
+        assert all(record.reason == "omitted_by_budget" for record in omitted)
+        assert (
+            revision.budget.total_tokens + revision.budget.reserved_current_run_tokens
+            <= revision.budget.maximum_tokens
+        )
+        payload = _memory_payload(provider.requests[0])
+        included = payload["records"]
+        assert isinstance(included, list)
+        assert all(record["content"] in contents for record in included)
+        if include_failed_history:
+            assert revision.history_status.runs[0].details == "omitted_by_budget"
+            assert any(
+                "Runtime history status" in message.content
+                for message in provider.requests[0].messages
+            )
+        state_store.rebuild_projections()
+        assert get_context_revision(state_store._connection, prepared.run_id) == revision
+    finally:
+        memory_store.close()
+        state_store.close()
+
+
+@pytest.mark.asyncio
+async def test_window_budget_admits_later_small_memories_with_exact_omission_reasons(
+    tmp_path: Path,
+) -> None:
+    state_store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    contents = ["key " + "y" * 2044] * 5 + [f"key small {index}" for index in range(9)]
+    ids: list[str] = []
+
+    async def publish(event: JournalEvent) -> None:
+        pass
+
+    try:
+        for index, content in enumerate(contents):
+            memory_id = memory_store.create_memory_once(
+                kind="preference",
+                scope=MemoryScope("global", None),
+                content=content,
+                client_request_id=f"memory-capacity-{index}",
+            ).memory_id
+            ids.append(memory_id)
+            with memory_store._connection:
+                memory_store._connection.execute(
+                    "UPDATE memory_records SET updated_at = ? WHERE id = ?",
+                    (f"2026-08-17T12:00:{50 - index:02d}.000Z", memory_id),
+                )
+        thread, _ = state_store.create_thread("Memory capacity ranking")
+        prepared = prepare_turn(
+            state_store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Use key preferences. " + "z" * 5000,
+            provider_id="memory-provider",
+            model_id="memory-model",
+        )
+        provider = _RecordingTextProvider()
+        await AgentLoop(
+            state_store,
+            {"memory-provider": provider},
+            publish,
+            memory_retriever=MemoryRetrieverV1(memory_store),
+        ).run(prepared.run_id, CancellationToken())
+
+        assert state_store.run_status(prepared.run_id) == "completed"
+        revision = get_context_revision(state_store._connection, prepared.run_id)
+        assert revision is not None
+        assert [record.memory_id for record in revision.memory] == ids[5:13]
+        assert [
+            (record.source_id, record.reason)
+            for record in revision.omissions
+            if record.source_type == "memory"
+        ] == [
+            *((memory_id, "omitted_by_budget") for memory_id in ids[:5]),
+            (ids[13], "omitted_by_limit"),
+        ]
+        payload = _memory_payload(provider.requests[0])
+        records = payload["records"]
+        assert isinstance(records, list)
+        assert [record["content"] for record in records] == contents[5:13]
+        state_store.rebuild_projections()
+        assert get_context_revision(state_store._connection, prepared.run_id) == revision
     finally:
         memory_store.close()
         state_store.close()

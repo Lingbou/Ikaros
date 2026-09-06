@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "protocolVersion": 3,
+  "protocolVersion": 4,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -19,6 +19,7 @@
     "provider.remove",
     "model.list",
     "model.set_enabled",
+    "model.set_limits",
     "skill.list",
     "skill.set_enabled",
     "memory.create",
@@ -38,7 +39,7 @@
     "event"
   ],
   "journal": {
-    "schemaVersion": 6,
+    "schemaVersion": 7,
     "eventTypes": [
       "thread.created",
       "thread.renamed",
@@ -49,6 +50,7 @@
       "item.delta",
       "item.completed",
       "file.change_recorded",
+      "process.recorded",
       "model.input_prepared",
       "model.response_finished",
       "run.settled"
@@ -80,7 +82,10 @@
     "skills": true,
     "memory": true,
     "tools": [
-      "process_run",
+      "process_start",
+      "process_read",
+      "process_wait",
+      "process_stop",
       "read",
       "write",
       "edit"
@@ -88,7 +93,10 @@
     "executionPolicy": "full_access"
   },
   "providerToolIds": [
-    "process_run",
+    "process_start",
+    "process_read",
+    "process_wait",
+    "process_stop",
     "read",
     "write",
     "edit"

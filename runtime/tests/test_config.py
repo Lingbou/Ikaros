@@ -68,6 +68,8 @@ def test_deepseek_write_is_explicit_atomic_and_redacted(tmp_path: Path) -> None:
                         "display_name": "DeepSeek Chat",
                         "enabled": True,
                         "supports_tools": True,
+                        "context_window": 32768,
+                        "max_output_tokens": 4096,
                     }
                 },
             }
@@ -695,3 +697,45 @@ def test_cumulative_size_failure_preserves_existing_disk_and_memory(
     assert reloaded.get_provider("deepseek") is not None
     assert len(reloaded.get_provider("deepseek").models) == 900  # type: ignore[union-attr]
     assert not list(tmp_path.glob(".config-*.tmp"))
+
+
+def test_model_limits_persist_and_frozen_snapshot_remains_unchanged(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(
+        api_key="test-model-limits-secret",
+        models=[ModelInput("model", "Model", 65536, 8192)],
+    )
+    frozen = store.execution_snapshot("deepseek", "model")
+    updated = store.set_model_limits("deepseek", "model", 131072, 16384)
+    reloaded = ConfigStore(tmp_path)
+    assert updated.to_wire() == {
+        "providerId": "deepseek",
+        "id": "model",
+        "displayName": "Model",
+        "enabled": True,
+        "contextWindow": 131072,
+        "maxOutputTokens": 16384,
+    }
+    assert reloaded.model_summaries()[0] == updated
+    assert frozen.context_window == 65536
+    assert frozen.max_output_tokens == 8192
+    store.set_model_enabled("deepseek", "model", False)
+    assert store.model_summaries()[0].context_window == 131072
+    assert store.model_summaries()[0].max_output_tokens == 16384
+
+
+@pytest.mark.parametrize(
+    "window,output",
+    [(0, 1), (100, 0), (100, 100), (100, 101), (True, 1), (100, False), (1.5, 1), (100, 1.5)],
+)
+def test_invalid_model_limits_do_not_change_configuration(
+    tmp_path: Path,
+    window: object,
+    output: object,
+) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(api_key="test-invalid-limits-secret", models=[model()])
+    before = store.path.read_bytes()
+    with pytest.raises(ConfigError, match="token limits"):
+        store.set_model_limits("deepseek", "deepseek-chat", window, output)  # type: ignore[arg-type]
+    assert store.path.read_bytes() == before

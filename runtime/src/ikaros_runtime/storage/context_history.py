@@ -15,15 +15,14 @@ from ..history_status import (
 from ..json_codec import loads as json_loads
 from ..run_input import (
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    LEGACY_CONTEXT_SELECTION_VERSION,
     ContextItemRecordV1,
-    ContextSnapshotV1,
+    ContextRevision,
     FrozenMemoryContextV1,
     HistoryItemReferenceV1,
-    RunManifestV1,
-    SubmissionFrameV1,
-    build_context_snapshot,
+    RunConfig,
+    build_context_revision,
     canonical_json,
+    history_status_tokens,
 )
 
 _FROZEN_ITEM_QUERY_CHUNK = 256
@@ -64,7 +63,6 @@ def list_context_turn_page(
     branch_id: str,
     before_ordinal: int,
     limit: int,
-    selection_version: str = LEGACY_CONTEXT_SELECTION_VERSION,
 ) -> ContextTurnPageV1:
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("context Turn page limit must be positive")
@@ -84,14 +82,8 @@ def list_context_turn_page(
         return ContextTurnPageV1((), None)
 
     turn_ids = tuple(str(row["id"]) for row in selected_rows)
-    records_by_turn = _records_for_turn_ids(
-        connection, turn_ids, selection_version=selection_version
-    )
-    statuses_by_turn = (
-        _statuses_for_turn_ids(connection, turn_ids)
-        if selection_version != LEGACY_CONTEXT_SELECTION_VERSION
-        else {}
-    )
+    records_by_turn = _records_for_turn_ids(connection, turn_ids)
+    statuses_by_turn = _statuses_for_turn_ids(connection, turn_ids)
     turns = tuple(
         ContextTurnRecordV1(
             turn_id=str(row["id"]),
@@ -126,11 +118,11 @@ def load_current_run_context(
     return tuple(_record_from_row(row) for row in rows if _row_is_context_eligible(row, run_id))
 
 
-def load_context_for_snapshot(
+def load_context_for_revision(
     connection: sqlite3.Connection,
     *,
     run_id: str,
-    snapshot: ContextSnapshotV1,
+    snapshot: ContextRevision,
 ) -> tuple[ContextItemRecordV1, ...]:
     frozen_ids = tuple(reference.item_id for reference in snapshot.history_items)
     frozen_by_id: dict[str, ContextItemRecordV1] = {}
@@ -148,8 +140,8 @@ def load_context_for_snapshot(
             chunk,
         ).fetchall()
         for row in rows:
-            record = _historical_record_from_row(row, snapshot.selection_version)
-            if _row_is_context_eligible(row, run_id, snapshot.selection_version):
+            record = _historical_record_from_row(row)
+            if _row_is_context_eligible(row, run_id):
                 frozen_by_id[record.item_id] = record
 
     try:
@@ -169,45 +161,41 @@ def load_context_for_snapshot(
     return (*frozen, *appended)
 
 
-def select_context_snapshot(
+def select_context_revision(
     connection: sqlite3.Connection,
     *,
     branch_id: str,
     turn_id: str,
     run_id: str,
-    frame: SubmissionFrameV1,
-    manifest: RunManifestV1,
+    config: RunConfig,
     memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-) -> tuple[ContextSnapshotV1, tuple[ContextItemRecordV1, ...]]:
+) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...]]:
     # Local import avoids the package-level agent -> loop -> storage dependency cycle.
-    from ..agent.history import HISTORY_TURN_PAGE_SIZE_V1, HistorySelectorV1
+    from ..agent.history import HISTORY_TURN_PAGE_SIZE_V1, HistorySelector
 
-    is_v2 = manifest.context_selection_version != LEGACY_CONTEXT_SELECTION_VERSION
     history_status = EMPTY_HISTORY_STATUS_V1
     nearest_turn_id: str | None = None
     omission_notice = EMPTY_HISTORY_STATUS_V1
-    omission_notice_characters = 0
+    omission_notice_tokens = 0
     first_page: ContextTurnPageV1 | None = None
     try:
         ordinal = context_turn_ordinal(connection, branch_id=branch_id, turn_id=turn_id)
-        if is_v2:
-            first_page = list_context_turn_page(
-                connection,
-                branch_id=branch_id,
-                before_ordinal=ordinal,
-                limit=HISTORY_TURN_PAGE_SIZE_V1,
-                selection_version=manifest.context_selection_version,
-            )
-            if first_page.turns:
-                nearest_turn_id = first_page.turns[0].turn_id
-                omission_notice = FrozenHistoryStatusV1(
-                    tuple(
-                        replace(run, details="omitted_by_budget")
-                        for run in first_page.turns[0].run_statuses
-                    )
+        first_page = list_context_turn_page(
+            connection,
+            branch_id=branch_id,
+            before_ordinal=ordinal,
+            limit=HISTORY_TURN_PAGE_SIZE_V1,
+        )
+        if first_page.turns:
+            nearest_turn_id = first_page.turns[0].turn_id
+            omission_notice = FrozenHistoryStatusV1(
+                tuple(
+                    replace(run, details="omitted_by_budget")
+                    for run in first_page.turns[0].run_statuses
                 )
-        selector = HistorySelectorV1(
-            frame=frame,
+            )
+        selector = HistorySelector(
+            config=config,
             current_run_id=run_id,
             current_turn_id=turn_id,
             current_turn_ordinal=ordinal,
@@ -223,7 +211,6 @@ def select_context_snapshot(
             branch_id=branch_id,
             before_ordinal=before_ordinal,
             limit=HISTORY_TURN_PAGE_SIZE_V1,
-            selection_version=manifest.context_selection_version,
         )
         first_page = None
         for turn in page.turns:
@@ -236,28 +223,28 @@ def select_context_snapshot(
                     turn_id=turn.turn_id,
                     ordinal=turn.ordinal,
                     records=turn.records,
-                    additional_characters=candidate_status.characters - history_status.characters,
+                    additional_tokens=history_status_tokens(candidate_status)
+                    - history_status_tokens(history_status),
                 )
             except ValueError:
                 raise ModelInputUnavailableError("model_input_unavailable") from None
             if not accepted:
                 if turn.turn_id == nearest_turn_id:
                     history_status = omission_notice
-                    omission_notice_characters = omission_notice.characters
+                    omission_notice_tokens = history_status_tokens(omission_notice)
                 break
             history_status = candidate_status
         if selector.stopped or page.next_before_ordinal is None:
             break
         before_ordinal = page.next_before_ordinal
 
-    selection = selector.finish(additional_characters=omission_notice_characters)
-    snapshot = build_context_snapshot(
+    selection = selector.finish(additional_tokens=omission_notice_tokens)
+    snapshot = build_context_revision(
         selection.records,
         current_run_id=run_id,
-        frame=frame,
-        selection_version=manifest.context_selection_version,
-        maximum_characters=selection.maximum_characters,
-        reserved_current_run_characters=selection.reserved_current_run_characters,
+        config=config,
+        maximum_tokens=selection.maximum_tokens,
+        reserved_current_run_tokens=selection.reserved_current_run_tokens,
         omissions=selection.omissions,
         memory_context=memory_context,
         history_status=history_status,
@@ -268,8 +255,6 @@ def select_context_snapshot(
 def _records_for_turn_ids(
     connection: sqlite3.Connection,
     turn_ids: tuple[str, ...],
-    *,
-    selection_version: str = LEGACY_CONTEXT_SELECTION_VERSION,
 ) -> dict[str, list[ContextItemRecordV1]]:
     placeholders = ",".join("?" for _ in turn_ids)
     rows = connection.execute(
@@ -285,9 +270,9 @@ def _records_for_turn_ids(
     ).fetchall()
     grouped: dict[str, list[ContextItemRecordV1]] = {}
     for row in rows:
-        if not _row_is_context_eligible(row, None, selection_version):
+        if not _row_is_context_eligible(row, None):
             continue
-        record = _historical_record_from_row(row, selection_version)
+        record = _historical_record_from_row(row)
         grouped.setdefault(record.turn_id, []).append(record)
     return grouped
 
@@ -295,26 +280,19 @@ def _records_for_turn_ids(
 def _row_is_context_eligible(
     row: sqlite3.Row,
     current_run_id: str | None,
-    selection_version: str = LEGACY_CONTEXT_SELECTION_VERSION,
 ) -> bool:
     kind = str(row["kind"])
     role = str(row["role"]) if row["role"] is not None else None
     status = str(row["status"])
     if kind == "message":
         return status == "completed" and role in {"user", "assistant"}
-    if selection_version != LEGACY_CONTEXT_SELECTION_VERSION:
-        return (
-            kind in {"tool_call", "tool_result"}
-            and status in {"completed", "failed", "cancelled"}
-            and (
-                str(row["run_id"]) == current_run_id
-                or str(row["run_status"]) in {"completed", "failed", "cancelled"}
-            )
-        )
     return (
         kind in {"tool_call", "tool_result"}
-        and status in {"completed", "failed"}
-        and (str(row["run_id"]) == current_run_id or str(row["run_status"]) == "completed")
+        and status in {"completed", "failed", "cancelled"}
+        and (
+            str(row["run_id"]) == current_run_id
+            or str(row["run_status"]) in {"completed", "failed", "cancelled"}
+        )
     )
 
 
@@ -370,17 +348,18 @@ def _validate_frozen_status(
 
 def _historical_record_from_row(
     row: sqlite3.Row,
-    selection_version: str,
 ) -> ContextItemRecordV1:
     record = _record_from_row(row)
-    if selection_version == LEGACY_CONTEXT_SELECTION_VERSION or record.kind != "tool_result":
+    if record.kind != "tool_result":
         return record
     result = record.data.get("result")
     if not isinstance(result, dict):
         raise ModelInputUnavailableError("model_input_unavailable")
     interrupted = (
-        ((row["status"] == "cancelled" or result.get("cancelled") is True)
-         and result.get("ok") is not True)
+        (
+            (row["status"] == "cancelled" or result.get("cancelled") is True)
+            and result.get("ok") is not True
+        )
         or result.get("errorCode") == "runtime_interrupted"
         or (
             row["status"] == "failed"
@@ -390,9 +369,8 @@ def _historical_record_from_row(
     )
     if not interrupted:
         return record
-    # Legacy terminalization can say "not started" even when cancellation was
-    # observed after a side effect. Keep recorded partial output, but make that
-    # ambiguous execution outcome explicit only in the V2 model projection.
+    # Cancellation can race with a side effect. Preserve recorded output and make
+    # the unknown execution outcome explicit without replaying the old call.
     normalized = dict(result)
     if normalized.get("output") in (
         "",
@@ -422,7 +400,7 @@ def _record_from_row(row: sqlite3.Row) -> ContextItemRecordV1:
             content=str(row["content"]),
             data=json_loads(row["data_json"]),
         )
-        _ = record.characters
+        _ = record.estimated_tokens
         return record
     except (TypeError, ValueError):
         raise ModelInputUnavailableError("model_input_unavailable") from None
@@ -433,7 +411,7 @@ __all__ = [
     "ContextTurnRecordV1",
     "context_turn_ordinal",
     "list_context_turn_page",
-    "load_context_for_snapshot",
+    "load_context_for_revision",
     "load_current_run_context",
-    "select_context_snapshot",
+    "select_context_revision",
 ]

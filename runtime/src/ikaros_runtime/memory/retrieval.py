@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -192,7 +192,14 @@ class MemoryRetrieverV1:
     def __init__(self, reader: MemoryRetrievalReader) -> None:
         self._reader = reader
 
-    def retrieve(self, *, query: str, workspace_id: str | None) -> MemoryRetrievalV1:
+    def retrieve(
+        self,
+        *,
+        query: str,
+        workspace_id: str | None,
+        accept_selection: Callable[[Sequence[MaterializedMemoryV1]], bool] | None = None,
+    ) -> MemoryRetrievalV1:
+        """Select whole ranked records within both retrieval and caller capacity."""
         candidates = self._reader.read_active_candidates(workspace_id=workspace_id)
         query_tokens = _tokenize(query)
         ranked = [
@@ -221,6 +228,11 @@ class MemoryRetrieverV1:
                 reference=candidate.to_reference(),
                 content=candidate.content,
             )
+            if accept_selection is not None and not accept_selection(
+                (*selected, materialized)
+            ):
+                omissions.append(_omission(candidate, "omitted_by_budget"))
+                continue
             selected.append(materialized)
             memory_characters += materialized.characters
 

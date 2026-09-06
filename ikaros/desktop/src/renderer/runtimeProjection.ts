@@ -9,6 +9,7 @@ import type {
   AgentEvent,
   AppEventTextKind,
   Project,
+  RuntimeRunProgress,
   Thread,
   ToolResultEvent,
   Turn,
@@ -119,7 +120,11 @@ export function projectRuntimeThreadHistory(
         runId: run.id,
         itemId: null,
         timestamp: run.settledAt ?? turn.updatedAt,
-        payload: { status: run.status, reasonCode: run.reasonCode },
+        payload: {
+          status: run.status, reasonCode: run.reasonCode,
+          executionLimits: run.executionLimits, modelCalls: run.modelCalls,
+          startedAt: run.startedAt, settledAt: run.settledAt, createdAt: run.createdAt,
+        },
       });
     }
   }
@@ -245,8 +250,29 @@ function toolStatus(status: unknown): "running" | "success" | "error" | "interru
   return "running";
 }
 
-function displayToolName(name: string): string {
-  return name === "process_run" ? "process.run" : name;
+const PROCESS_TOOL_LABELS = {
+  process_start: "tool.startProcess", process_read: "tool.readProcess",
+  process_wait: "tool.waitProcess", process_stop: "tool.stopProcess",
+} as const satisfies Record<string, AppEventTextKind>;
+
+function isProcessTool(name: string): name is keyof typeof PROCESS_TOOL_LABELS {
+  return Object.hasOwn(PROCESS_TOOL_LABELS, name);
+}
+
+function processSummary(result: Record<string, unknown>, status: ToolResultEvent["status"]): AppEventTextKind {
+  if (result.state === "running") return "result.processRunning";
+  if (result.state === "terminated") return "result.processStopped";
+  if (result.state === "unknown") return "result.processUnknown";
+  return status === "success" ? "result.processCompleted" : status === "interrupted" ? "result.processInterrupted" : "result.processFailed";
+}
+
+function processDetails(result: Record<string, unknown>): ToolResultEvent["details"] {
+  return {
+    ...(typeof result.processId === "string" ? { processId: result.processId } : {}),
+    ...(result.exitCode === null || Number.isSafeInteger(result.exitCode) ? { exitCode: result.exitCode as number | null } : {}),
+    ...(["running", "exited", "terminated", "unknown"].includes(String(result.state)) ? { processState: result.state as "running" | "exited" | "terminated" | "unknown" } : {}),
+    ...(typeof result.truncated === "boolean" ? { truncated: result.truncated } : {}),
+  };
 }
 
 type FileToolName = "read" | "write" | "edit";
@@ -376,8 +402,29 @@ export function applyRuntimeCatalogEvent(
   );
 }
 
+function progressFromEvent(previous: RuntimeRunProgress | undefined, event: RuntimeJournalEvent): RuntimeRunProgress | undefined {
+  const snapshot = isRecord(event.payload.run) ? event.payload.run : event.payload;
+  const limits = isRecord(snapshot.executionLimits) ? snapshot.executionLimits : null;
+  const maxModelCalls = limits && Number.isSafeInteger(limits.maxModelCalls) && Number(limits.maxModelCalls) > 0
+    ? Number(limits.maxModelCalls) : previous?.maxModelCalls;
+  const maxDurationSeconds = limits && Number.isSafeInteger(limits.maxDurationSeconds) && Number(limits.maxDurationSeconds) > 0
+    ? Number(limits.maxDurationSeconds) : previous?.maxDurationSeconds;
+  if (maxModelCalls === undefined || maxDurationSeconds === undefined) return previous;
+  const calls = event.type === "model.input_prepared" ? event.payload.stepOrdinal : snapshot.modelCalls;
+  return {
+    maxModelCalls, maxDurationSeconds,
+    modelCalls: Number.isSafeInteger(calls) && Number(calls) >= 0
+      ? Math.max(previous?.modelCalls ?? 0, Number(calls)) : previous?.modelCalls ?? 0,
+    queuedAt: typeof snapshot.createdAt === "string" ? snapshot.createdAt : previous?.queuedAt ?? event.timestamp,
+    startedAt: typeof snapshot.startedAt === "string" ? snapshot.startedAt : previous?.startedAt ??
+      (event.payload.status === "running" ? event.timestamp : null),
+    settledAt: typeof snapshot.settledAt === "string" ? snapshot.settledAt : previous?.settledAt ??
+      (event.type === "run.settled" ? event.timestamp : null),
+  };
+}
+
 export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent): Thread[] {
-  if (event.type === "model.input_prepared" || event.type === "model.response_finished") {
+  if (event.type === "model.response_finished") {
     return threads;
   }
   if (THREAD_SNAPSHOT_EVENTS.has(event.type)) {
@@ -425,7 +472,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
       typeof item.data.toolName === "string" &&
       isRecord(item.data.arguments)
     ) {
-      const toolName = displayToolName(item.data.toolName);
+      const toolName = item.data.toolName;
       next = upsertAgentEvent(thread, event, {
         id: item.id,
         turnId: event.turnId,
@@ -433,8 +480,8 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         toolName,
         label: isFileToolName(toolName)
           ? appEventText(FILE_TOOL_LABELS[toolName])
-          : item.data.toolName === "process_run"
-            ? appEventText("tool.runProcess")
+          : isProcessTool(toolName)
+            ? appEventText(PROCESS_TOOL_LABELS[toolName])
             : externalEventText(toolName),
         status: toolStatus(item.status),
         arguments: projectToolArguments(toolName, item.data.arguments),
@@ -454,12 +501,12 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
       const resultStatus = status === "running" ? "error" : status;
       const toolName =
         typeof item.data.toolName === "string"
-          ? displayToolName(item.data.toolName)
+          ? item.data.toolName
           : "tool";
       const fileTool = isFileToolName(toolName);
       const fileDetails = fileTool
         ? projectFileResultDetails(item.data.result)
-        : undefined;
+        : isProcessTool(toolName) ? processDetails(item.data.result) : undefined;
       const path =
         fileTool && typeof item.data.result.path === "string"
           ? item.data.result.path
@@ -478,14 +525,8 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         status: resultStatus,
         summary: fileTool
           ? appEventText(FILE_TOOL_RESULTS[toolName][resultStatus])
-          : item.data.toolName === "process_run"
-            ? appEventText(
-                resultStatus === "success"
-                  ? "result.processCompleted"
-                  : resultStatus === "interrupted"
-                    ? "result.processInterrupted"
-                    : "result.processFailed"
-              )
+          : isProcessTool(toolName)
+            ? appEventText(processSummary(item.data.result, resultStatus))
             : externalEventText(toolName),
         output: fileTool
           ? safeFileResultOutput(item.data.result.output, resultStatus)
@@ -530,6 +571,16 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
     }
   }
 
+  const priorTurn = thread.branches.find((branch) => branch.id === event.branchId)?.turns.find((turn) => turn.id === event.turnId);
+  const runProgress = progressFromEvent(priorTurn?.runId === event.runId ? priorTurn.runProgress : undefined, event);
+  if (runProgress) {
+    next = updateTurn(next, event.branchId, event.turnId, (turn) => ({
+      ...turn, id: event.turnId as string, branchId: event.branchId as string,
+      runId: event.runId ?? turn?.runId, status: turn?.status ?? "queued",
+      events: turn?.events ?? [], runProgress,
+    }));
+  }
+  if (next === thread) return threads;
   next = { ...next, updatedAt: event.timestamp };
   return threads.map((candidate) => (candidate.id === next.id ? next : candidate));
 }

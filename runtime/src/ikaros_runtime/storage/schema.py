@@ -1,18 +1,18 @@
-"""Canonical SQLite schema with a backed-up, data-preserving 8 to 9 migration."""
+"""Current Runtime schema. Development databases are reset across breaking changes."""
 
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _FILE_CHANGES_SCHEMA = """
 CREATE TABLE file_changes (
     tool_call_item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
     record_json TEXT NOT NULL
 );
 """
-_CANONICAL_SCHEMA = """
+_CANONICAL_SCHEMA = (
+    """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     schema_version INTEGER NOT NULL CHECK (schema_version >= 1),
@@ -89,18 +89,33 @@ ON runs(client_request_id) WHERE client_request_id IS NOT NULL;
 CREATE INDEX runs_turn_history_idx
 ON runs(turn_id, created_at ASC, id ASC);
 
-CREATE TABLE run_inputs (
+CREATE TABLE run_configs (
     run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
-    submission_frame_json TEXT NOT NULL,
-    run_manifest_json TEXT NOT NULL,
-    context_snapshot_json TEXT
+    config_json TEXT NOT NULL
 );
 
-CREATE TABLE model_steps (
+CREATE TABLE context_revisions (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(run_id, revision)
+);
+
+CREATE TABLE process_sessions (
+    process_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    record_json TEXT NOT NULL,
+    UNIQUE(run_id, item_id)
+);
+
+CREATE TABLE model_calls (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     step_ordinal INTEGER NOT NULL CHECK (step_ordinal >= 1),
-    step_manifest_json TEXT NOT NULL,
+    input_json TEXT NOT NULL,
     prepared_at TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'execution'
+        CHECK (purpose IN ('execution', 'compression', 'completion_check')),
     outcome TEXT CHECK (outcome IN ('completed', 'failed', 'cancelled')),
     reason_code TEXT,
     response_model_id TEXT,
@@ -142,7 +157,7 @@ CREATE TABLE model_usages (
     completed_at TEXT NOT NULL,
     PRIMARY KEY(run_id, step_ordinal),
     FOREIGN KEY(run_id, step_ordinal)
-        REFERENCES model_steps(run_id, step_ordinal) ON DELETE CASCADE
+        REFERENCES model_calls(run_id, step_ordinal) ON DELETE CASCADE
 );
 
 CREATE INDEX model_usages_completed_at_idx
@@ -167,7 +182,9 @@ CREATE TABLE items (
 
 CREATE INDEX items_turn_context_idx
 ON items(turn_id, ordinal ASC);
-""" + _FILE_CHANGES_SCHEMA
+"""
+    + _FILE_CHANGES_SCHEMA
+)
 
 _INCOMPATIBLE_MESSAGE = "state database schema is incompatible; reset required"
 
@@ -178,9 +195,6 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         if _application_objects(connection):
             raise RuntimeError(_INCOMPATIBLE_MESSAGE)
         _create_schema(connection)
-        return
-    if version == 8:
-        _migrate_file_changes(connection)
         return
     if version != SCHEMA_VERSION:
         raise RuntimeError(_INCOMPATIBLE_MESSAGE)
@@ -204,8 +218,7 @@ def _application_objects(connection: sqlite3.Connection) -> tuple[str, ...]:
 
 def _create_schema(connection: sqlite3.Connection) -> None:
     transaction = (
-        f"BEGIN IMMEDIATE;\n{_CANONICAL_SCHEMA}\n"
-        f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+        f"BEGIN IMMEDIATE;\n{_CANONICAL_SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
     )
     try:
         connection.executescript(transaction)
@@ -213,34 +226,6 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         if connection.in_transaction:
             connection.rollback()
         raise
-
-
-def _migrate_file_changes(connection: sqlite3.Connection) -> None:
-    # Import only at migration time: maintenance also imports the canonical version.
-    from .maintenance import create_state_backup
-
-    database = next(
-        (row[2] for row in connection.execute("PRAGMA database_list") if row[1] == "main"),
-        None,
-    )
-    if not database:
-        raise RuntimeError("schema 8 migration requires a file-backed database for its backup")
-    backup = create_state_backup(
-        connection,
-        Path(database),
-        expected_schema_version=8,
-    )
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute(_FILE_CHANGES_SCHEMA)
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        connection.commit()
-    except BaseException as error:
-        if connection.in_transaction:
-            connection.rollback()
-        raise RuntimeError(
-            f"schema 8 migration failed; backup preserved at {backup.backup_path}"
-        ) from error
 
 
 __all__ = ["SCHEMA_VERSION", "initialize_schema", "validate_existing_schema"]

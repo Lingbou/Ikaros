@@ -34,7 +34,13 @@ from ikaros_runtime.providers.base import (
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools import edit as edit_module
 from ikaros_runtime.tools import write as write_module
-from ikaros_runtime.tools.core import ToolCall, ToolExecutor, ToolRegistry, ToolResult
+from ikaros_runtime.tools.core import (
+    ToolCall,
+    ToolExecutionContext,
+    ToolExecutor,
+    ToolRegistry,
+    ToolResult,
+)
 from ikaros_runtime.tools.edit import EditTool
 from ikaros_runtime.tools.file_common import FileToolError, atomic_write_bytes
 from ikaros_runtime.tools.policy import FullAccessPolicy
@@ -225,7 +231,7 @@ async def test_agent_persists_captured_change_atomically_and_rebuilds_without_re
         changes = [event for event in events if event.type == "file.change_recorded"]
         assert len(changes) == 1
         event = changes[0]
-        assert event.item_id is not None and event.schema_version == 6
+        assert event.item_id is not None and event.schema_version == 7
         record = store.get_file_change(thread.id, event.item_id)
         assert record["status"] == "recorded"
         assert "-before\n+after\n" in record["diff"]
@@ -479,9 +485,9 @@ async def test_redacted_tool_output_keeps_safe_capture_path_for_rebuild(tmp_path
             call: ToolCall,
             *,
             cancellation: CancellationToken,
-            default_cwd: str | None = None,
+            context: ToolExecutionContext,
         ) -> ToolResult:
-            result = await super().execute(call, cancellation=cancellation, default_cwd=default_cwd)
+            result = await super().execute(call, cancellation=cancellation, context=context)
             return replace(result, output="secret-output-9380")
 
     workspace = tmp_path / "workspace"

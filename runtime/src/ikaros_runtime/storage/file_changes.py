@@ -19,9 +19,9 @@ def file_tool_call(
     allowed: frozenset[str] = frozenset({"read", "write", "edit"}),
 ) -> tuple[sqlite3.Row, JsonObject]:
     row = connection.execute(
-        """SELECT i.*, t.thread_id, t.branch_id, ri.submission_frame_json
+        """SELECT i.*, t.thread_id, t.branch_id, ri.config_json
         FROM items i JOIN turns t ON t.id = i.turn_id
-        JOIN run_inputs ri ON ri.run_id = i.run_id
+        JOIN run_configs ri ON ri.run_id = i.run_id
         WHERE i.id = ? AND t.thread_id = ? AND i.kind = 'tool_call'""",
         (tool_call_item_id, thread_id),
     ).fetchone()
@@ -56,7 +56,7 @@ def resolve_file_tool_path(
             return path
     arguments = data.get("arguments")
     path = arguments.get("filePath") if isinstance(arguments, dict) else None
-    frame = json_loads(row["submission_frame_json"])
+    frame = json_loads(row["config_json"])
     workspace = frame.get("workspace")
     cwd = workspace.get("rootUri") if isinstance(workspace, dict) else None
     if not isinstance(path, str) or (not Path(path).is_absolute() and not isinstance(cwd, str)):

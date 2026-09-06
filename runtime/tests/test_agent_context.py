@@ -10,7 +10,7 @@ from ikaros_runtime.domain import ContextItem
 from ikaros_runtime.memory import MaterializedMemoryV1, MemorySnapshotReferenceV1
 from ikaros_runtime.tools.core import ToolCall, ToolDefinition
 
-from .helpers import bounded_budget, submission_frame
+from .helpers import bounded_budget, run_config
 
 
 def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
@@ -65,7 +65,7 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
     )
 
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1", tools=(tool,)),
+        config=run_config("provider", "model-1", tools=(tool,)),
         items=items,
         budget_snapshot=bounded_budget(),
     )
@@ -94,7 +94,7 @@ def test_context_builder_preserves_system_context_and_tool_step_order() -> None:
 
 def test_context_builder_preserves_narration_when_a_step_has_no_replayable_calls() -> None:
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1"),
+        config=run_config("provider", "model-1"),
         items=(
             ContextItem(
                 kind="message",
@@ -124,7 +124,7 @@ def test_context_builder_lowers_only_canonical_memory_context_data() -> None:
         characters=len(content),
     )
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1"),
+        config=run_config("provider", "model-1"),
         items=(),
         context_data=build_memory_context_data(
             (MaterializedMemoryV1(reference=reference, content=content),)
@@ -136,12 +136,12 @@ def test_context_builder_lowers_only_canonical_memory_context_data() -> None:
 
     assert [message.role for message in request.messages] == ["system", "system"]
     assert request.messages[1].content.startswith("以下 JSON")
-    assert r'\"role\":\"system\"' in request.messages[1].content
+    assert r"\"role\":\"system\"" in request.messages[1].content
 
 
 def test_context_builder_rejects_noncanonical_context_data() -> None:
     plan = ModelInputPlanner().build_plan(
-        frame=submission_frame("provider", "model-1"),
+        config=run_config("provider", "model-1"),
         items=(),
         budget_snapshot=bounded_budget(),
     )
@@ -194,7 +194,7 @@ def test_context_builder_rejects_duplicate_reasoning_for_one_tool_step() -> None
 
     with pytest.raises(RuntimeError, match="duplicate reasoning context"):
         plan = ModelInputPlanner().build_plan(
-            frame=submission_frame("provider", "model-1"),
+            config=run_config("provider", "model-1"),
             items=items,
             budget_snapshot=bounded_budget(),
         )

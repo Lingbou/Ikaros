@@ -8,27 +8,25 @@ from dataclasses import dataclass
 from ..errors import ContextBudgetExceededError
 from ..run_input import (
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    MAXIMUM_INPUT_CHARACTERS_V1,
-    RESERVED_CURRENT_RUN_CHARACTERS_V1,
     ContextItemRecordV1,
     FrozenMemoryContextV1,
     OmissionRecordV1,
-    SubmissionFrameV1,
-    frame_input_character_counts,
+    RunConfig,
+    config_input_token_counts,
 )
 
 HISTORY_TURN_PAGE_SIZE_V1 = 32
 
 
 @dataclass(frozen=True, slots=True)
-class HistorySelectionV1:
+class HistorySelection:
     records: tuple[ContextItemRecordV1, ...]
-    maximum_characters: int
-    reserved_current_run_characters: int
+    maximum_tokens: int
+    reserved_current_run_tokens: int
     omissions: tuple[OmissionRecordV1, ...]
 
 
-class HistorySelectorV1:
+class HistorySelector:
     """Select a contiguous recent suffix of complete past Turns.
 
     Candidate Turns are offered newest-first.  The first Turn that does not fit
@@ -38,26 +36,34 @@ class HistorySelectorV1:
     def __init__(
         self,
         *,
-        frame: SubmissionFrameV1,
+        config: RunConfig,
         current_run_id: str,
         current_turn_id: str,
         current_turn_ordinal: int,
         current_records: Sequence[ContextItemRecordV1],
         memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-        maximum_characters: int = MAXIMUM_INPUT_CHARACTERS_V1,
-        reserved_current_run_characters: int = RESERVED_CURRENT_RUN_CHARACTERS_V1,
+        maximum_tokens: int | None = None,
+        reserved_current_run_tokens: int | None = None,
     ) -> None:
+        maximum_tokens = (
+            maximum_tokens if maximum_tokens is not None else config.maximum_input_tokens
+        )
+        reserved_current_run_tokens = (
+            reserved_current_run_tokens
+            if reserved_current_run_tokens is not None
+            else config.reserved_current_run_tokens
+        )
         if (
-            not isinstance(maximum_characters, int)
-            or isinstance(maximum_characters, bool)
-            or maximum_characters < 1
+            not isinstance(maximum_tokens, int)
+            or isinstance(maximum_tokens, bool)
+            or maximum_tokens < 1
         ):
-            raise ValueError("history maximum characters must be positive")
+            raise ValueError("history maximum token estimate must be positive")
         if (
-            not isinstance(reserved_current_run_characters, int)
-            or isinstance(reserved_current_run_characters, bool)
-            or reserved_current_run_characters < 1
-            or reserved_current_run_characters >= maximum_characters
+            not isinstance(reserved_current_run_tokens, int)
+            or isinstance(reserved_current_run_tokens, bool)
+            or reserved_current_run_tokens < 1
+            or reserved_current_run_tokens >= maximum_tokens
         ):
             raise ValueError("history current Run reserve is invalid")
         if (
@@ -66,7 +72,7 @@ class HistorySelectorV1:
             or current_turn_ordinal < 1
         ):
             raise ValueError("current Turn ordinal is invalid")
-        if frame.run_id != current_run_id:
+        if config.run_id != current_run_id:
             raise ValueError("history selector Run scope is invalid")
 
         current = tuple(current_records)
@@ -74,25 +80,25 @@ class HistorySelectorV1:
             current_turn_id,
             current,
             required_run_id=current_run_id,
-            required_user_item_id=frame.user_item_id,
+            required_user_item_id=config.user_item_id,
         )
-        instruction_characters, tool_characters = frame_input_character_counts(frame)
-        current_characters = sum(record.characters for record in current)
+        instruction_tokens, tool_tokens = config_input_token_counts(config)
+        current_tokens = sum(record.estimated_tokens for record in current)
         fixed_with_reserve = (
-            instruction_characters
-            + tool_characters
-            + memory_context.context_data_characters
-            + memory_context.memory_characters
-            + current_characters
-            + reserved_current_run_characters
+            instruction_tokens
+            + tool_tokens
+            + memory_context.context_data_characters * 4
+            + memory_context.memory_characters * 4
+            + current_tokens
+            + reserved_current_run_tokens
         )
-        if fixed_with_reserve > maximum_characters:
+        if fixed_with_reserve > maximum_tokens:
             raise ContextBudgetExceededError("context_budget_exceeded")
 
         self._current = current
-        self._maximum_characters = maximum_characters
-        self._reserved_current_run_characters = reserved_current_run_characters
-        self._remaining_history_characters = maximum_characters - fixed_with_reserve
+        self._maximum_tokens = maximum_tokens
+        self._reserved_current_run_tokens = reserved_current_run_tokens
+        self._remaining_history_tokens = maximum_tokens - fixed_with_reserve
         self._selected_newest_first: list[tuple[ContextItemRecordV1, ...]] = []
         self._omissions: tuple[OmissionRecordV1, ...] = ()
         self._last_ordinal = current_turn_ordinal
@@ -108,7 +114,7 @@ class HistorySelectorV1:
         turn_id: str,
         ordinal: int,
         records: Sequence[ContextItemRecordV1],
-        additional_characters: int = 0,
+        additional_tokens: int = 0,
     ) -> bool:
         if self._stopped:
             raise RuntimeError("history selection already reached its omission boundary")
@@ -121,8 +127,8 @@ class HistorySelectorV1:
             raise ValueError("history Turn order is invalid")
         group = tuple(records)
         _validate_turn_group(turn_id, group)
-        characters = sum(record.characters for record in group) + additional_characters
-        if characters > self._remaining_history_characters:
+        tokens = sum(record.estimated_tokens for record in group) + additional_tokens
+        if tokens > self._remaining_history_tokens:
             self._omissions = (
                 OmissionRecordV1(
                     source_type="history",
@@ -133,22 +139,20 @@ class HistorySelectorV1:
             self._stopped = True
             return False
         self._selected_newest_first.append(group)
-        self._remaining_history_characters -= characters
+        self._remaining_history_tokens -= tokens
         self._last_ordinal = ordinal
         return True
 
-    def finish(self, *, additional_characters: int = 0) -> HistorySelectionV1:
-        if additional_characters > self._remaining_history_characters:
+    def finish(self, *, additional_tokens: int = 0) -> HistorySelection:
+        if additional_tokens > self._remaining_history_tokens:
             raise ContextBudgetExceededError("context_budget_exceeded")
         chronological = tuple(
-            record
-            for group in reversed(self._selected_newest_first)
-            for record in group
+            record for group in reversed(self._selected_newest_first) for record in group
         )
-        return HistorySelectionV1(
+        return HistorySelection(
             records=(*chronological, *self._current),
-            maximum_characters=self._maximum_characters,
-            reserved_current_run_characters=self._reserved_current_run_characters,
+            maximum_tokens=self._maximum_tokens,
+            reserved_current_run_tokens=self._reserved_current_run_tokens,
             omissions=self._omissions,
         )
 
@@ -167,15 +171,11 @@ def _validate_turn_group(
     item_ids = tuple(record.item_id for record in records)
     if len(item_ids) != len(set(item_ids)):
         raise ValueError("history Turn group contains duplicate Items")
-    if required_run_id is not None and any(
-        record.run_id != required_run_id for record in records
-    ):
+    if required_run_id is not None and any(record.run_id != required_run_id for record in records):
         raise ValueError("current Turn group crosses Run boundaries")
 
     user_items = tuple(
-        record
-        for record in records
-        if record.kind == "message" and record.role == "user"
+        record for record in records if record.kind == "message" and record.role == "user"
     )
     if len(user_items) != 1:
         raise ValueError("history Turn group must contain exactly one User Item")
@@ -185,7 +185,7 @@ def _validate_turn_group(
     calls: dict[tuple[str, str, str], ContextItemRecordV1] = {}
     results: dict[tuple[str, str, str], ContextItemRecordV1] = {}
     for record in records:
-        _ = record.characters
+        _ = record.estimated_tokens
         if record.kind == "tool_call":
             call_id = record.data.get("callId")
             step_id = record.data.get("stepId")
@@ -231,8 +231,6 @@ def _validate_turn_group(
 
 __all__ = [
     "HISTORY_TURN_PAGE_SIZE_V1",
-    "MAXIMUM_INPUT_CHARACTERS_V1",
-    "RESERVED_CURRENT_RUN_CHARACTERS_V1",
-    "HistorySelectionV1",
-    "HistorySelectorV1",
+    "HistorySelection",
+    "HistorySelector",
 ]

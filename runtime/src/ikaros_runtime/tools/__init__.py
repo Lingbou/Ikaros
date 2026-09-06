@@ -5,6 +5,7 @@ from .core import (
     ToolCall,
     ToolDefinition,
     ToolExecutionCancelled,
+    ToolExecutionContext,
     ToolExecutor,
     ToolRegistry,
     ToolResult,
@@ -13,7 +14,8 @@ from .core import (
 )
 from .edit import EditTool
 from .policy import ExecutionPolicy, FullAccessPolicy
-from .process import ProcessRunTool
+from .process import ProcessReadTool, ProcessStartTool, ProcessStopTool, ProcessWaitTool
+from .process_manager import ProcessManager
 from .read import ReadTool
 from .write import WriteTool
 
@@ -21,12 +23,17 @@ __all__ = [
     "ExecutionPolicy",
     "EditTool",
     "FullAccessPolicy",
-    "ProcessRunTool",
+    "ProcessManager",
+    "ProcessReadTool",
+    "ProcessStartTool",
+    "ProcessStopTool",
+    "ProcessWaitTool",
     "ReadTool",
     "Tool",
     "ToolCall",
     "ToolDefinition",
     "ToolExecutionCancelled",
+    "ToolExecutionContext",
     "ToolExecutor",
     "ToolRegistry",
     "ToolResult",

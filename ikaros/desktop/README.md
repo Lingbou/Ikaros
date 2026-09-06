@@ -80,13 +80,12 @@ The Runtime currently owns:
 - `thread.rename`, `thread.archive`, and `thread.unarchive`, with sequenced
   lifecycle events persisted and projected through SQLite;
 - `turn.start`, streamed Item events, bounded multi-Turn model context, and
-  settled Run state. Runtime selects complete recent Turns under its fixed
-  48,000-character V1 budget while Desktop continues to page full UI history;
+  settled Run state. Runtime accounts for the model's context window and output
+  reserve while Desktop independently pages complete UI history;
 - `run.cancel`, event replay, sequence-based reconnect catch-up, and SQLite
   recovery across Runtime restarts;
-- ordinary new Turns after failure, with `bounded-history-v2` preserving tool
-  results and explicit incomplete/unknown-outcome context; old v1 Runs keep their
-  original selector and replay behavior;
+- ordinary new Turns after failure, preserving Tool results and explicit
+  incomplete/unknown-outcome context without replaying old commands;
 - `file.preview` and `file.change.get`, with a read-only right-hand panel opened
   from file tool cards or a workspace path. Current content supports refresh,
   revision-bound pagination and line numbers; immutable operation diffs show
@@ -112,28 +111,23 @@ The Runtime currently owns:
   `~/.ikaros/memory.db`. A lazy Settings page provides active/forgotten,
   kind, Global/exact-Workspace filters, cursor pagination, per-record provenance
   verification, Create/Correct/Forget, and conflict-safe refresh. Runtime recall
-  now freezes bounded exact revisions in Context Snapshot/Step Manifest audit
-  payloads; Electron main validates their scope, item/character limits,
+  freezes bounded exact revisions in ContextRevision/StepInput audit
+  payloads; Electron main validates their scope, token limits,
   omissions, and cross-Step consistency before advancing the Journal cursor;
-- Gate 2/3 audit DTOs and Events: Submission Frame and Run Manifest on Turn
-  creation, frozen Context Snapshot and Step Manifest on
-  `model.input_prepared`, and response metadata/usage on
-  `model.response_finished`. Electron main strictly validates
-  `bounded-history-v1`, its 48,000/12,000 budget constants, history groups, and
-  omission metadata before advancing the Event cursor;
-- Gate 4 Identity Core: the Runtime freezes its packaged `IKAROS.md` version 1
-  `runtime_identity` Instruction Block into every Submission Frame. Desktop
-  transports and validates the resulting audit DTO but does not configure,
-  edit, or render the Identity content as a conversation card;
-- the provider-facing `process_run`, `read`, `write`, and `edit` Tools under the
-  V1 `full_access` policy. Desktop labels `process_run` as `process.run`;
-  command execution provides timeout, cancellation, bounded output, and
-  process-tree cleanup, while the file Tools provide streaming bounded UTF-8
-  reads, verified atomic writes, and exact-match edits that reject common
-  stale-content races.
+- current execution audit DTOs: immutable `RunConfig` on Turn creation,
+  `ContextRevision` and per-call `StepInput` through `model.input_prepared`, and
+  response metadata/usage through `model.response_finished`. Only the current
+  protocol and persistence formats are parsed;
+- the Runtime-owned `IKAROS.md` identity frozen in each RunConfig;
+- model capacity settings (initially 32,768 context tokens / 4,096 output tokens)
+  and per-Run budgets (default 100 model calls / 60 minutes);
+- `process_start`, `process_read`, `process_wait`, `process_stop`, `read`, `write`,
+  and `edit` under `full_access`. Command start returns a process ID; read/wait
+  establish current state and observed exit. Wait timeouts leave commands alive.
+  Run completion, cancellation, or deadline cleans owned process trees.
 
 The renderer projects canonical Runtime messages, streamed deltas,
-`process.run`/`read`/`write`/`edit` Tool Calls and Tool Results, and Run state
+managed-command and `read`/`write`/`edit` Tool Calls and Tool Results, and Run state
 into the conversation UI. File cards expose bounded metadata such as path, line
 range, bytes written, and replacement count without displaying the full write
 or replacement arguments. It does not use `MockAgentClient` when the Electron
@@ -147,10 +141,9 @@ explanation plus a bounded `reasonCode`, including after history reload. An
 unsuccessful file or command operation is identified as potentially having changed
 files; starting a new Turn neither resumes that Run nor rolls its operations back.
 
-Electron main strictly validates the Gate 2 audit DTO relationships before
-advancing the Event cursor. The renderer intentionally treats
-`model.input_prepared` and `model.response_finished` as non-visual audit Events;
-they do not create fake conversation cards.
+Electron main validates current execution DTO relationships before advancing the
+Event cursor. `model.input_prepared` and `model.response_finished` update the Run's
+budget/progress display without becoming assistant conversation messages.
 
 Conversation-history cold startup reads only the active Thread catalog and its
 sequence waterline; it does not replay the full Journal from sequence zero.
@@ -173,7 +166,7 @@ Project is a Desktop grouping derived from a Thread's optional workspace.
 Project chats and ordinary chats both use `thread.create -> turn.start`; the
 only difference is that a project Thread carries a workspace snapshot. That
 workspace is persisted by the Runtime and becomes the default working
-directory for `process.run` and the base for relative `read`, `write`, and
+directory for `process_start` and the base for relative `read`, `write`, and
 `edit` paths. A selected folder without a Thread exists only as temporary
 Desktop state until the first message creates that Thread.
 
@@ -226,26 +219,22 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses canonical SQLite schema 9. Runtime creates a
-verified backup including WAL before migrating canonical schema 8 data, then
-adds the rebuildable file-change projection without rewriting old events.
-Other incompatible versions fail explicitly and are never silently deleted.
-Provider/model configuration and API keys in `~/.ikaros/config.yaml` are not
-conversation history and must be preserved, as must `skills/`, Desktop
-preferences, and the separately owned `memory.db`. An incompatible Memory
-schema stops Runtime startup explicitly and is never silently reset.
+Conversation persistence uses **SQLite schema 10, Journal schema 7, and protocol
+4**. Old selectors, execution DTOs, and migration paths have been removed.
+Incompatible development state fails with an explicit reset-required error;
+Runtime never automatically deletes it. Use a fresh development Runtime home or
+rebuild disposable Session state deliberately with Runtime stopped. Provider/model
+configuration, API keys, Skills, Desktop preferences, and `memory.db` are separate.
 
-New Journal events use schema 6 with 12 supported Event discriminators; schema
-5 remains readable. File preview/diff bodies do not add to model input, and
-script-created files can be previewed without promising script diff tracking.
+The 13 Journal event types include `process.recorded`: durable command intent,
+state, and bounded output, independent of Tool Call completion. Restart marks
+active commands unknown and never reattaches their PID. Preview and historical
+diff bodies remain outside model input. Commands can create files available for
+preview, but their changes are not automatically diff-tracked.
 
-Persistent input Frames/Manifests, bounded history selection, and the frozen
-Runtime-owned `IKAROS.md` Identity Core are Runtime-backed and validated at the
-Desktop wire boundary. The Runtime owns identity, selection, and budget policy;
-Desktop exposes no Identity editor or budget control. Durable cross-Thread
-Memory has a Create/Correct/Forget/Provenance Store/RPC/typed-client foundation,
-a real Settings management page, and deterministic bounded recall through a
-Runtime-owned contextual-data wrapper. Gate 9 has completed the offline gates,
-real DeepSeek recall/tool/history vertical slice, credential containment checks,
-and final scope audit. The completed Gate record is documented in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](../../runtime/MODEL_INPUT_AND_MEMORY_DESIGN.md).
+The first long-task stage provides budgets and managed command execution.
+Automatic context compression, runtime user steering, completion checking, and
+a full process-log panel remain planned. Larger Run budgets alone do not solve
+context overflow. Python Runtime bundling, attachments, web tools, and multi-Agent
+execution remain outside this stage. See
+[the development plan](../../runtime/LONG_TASK_PLAN.md) for subsequent milestones.

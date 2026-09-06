@@ -29,12 +29,19 @@ export type AppEventTextKind =
   | "tool.testArchiveExtraction"
   | "tool.exportReportPackage"
   | "tool.runProcess"
+  | "tool.startProcess"
+  | "tool.readProcess"
+  | "tool.waitProcess"
+  | "tool.stopProcess"
   | "tool.readFile"
   | "tool.writeFile"
   | "tool.editFile"
   | "result.archiveManifestVerified"
   | "result.windowsReservedNames"
   | "result.processCompleted"
+  | "result.processRunning"
+  | "result.processStopped"
+  | "result.processUnknown"
   | "result.processFailed"
   | "result.processInterrupted"
   | "result.readCompleted"
@@ -114,6 +121,9 @@ export interface ToolResultEvent extends EventBase {
     replacements?: number;
     created?: boolean;
     truncated?: boolean;
+    processId?: string;
+    processState?: "running" | "exited" | "terminated" | "unknown";
+    exitCode?: number | null;
   };
 }
 
@@ -193,12 +203,22 @@ export type AgentEvent =
   | StatusEvent
   | BranchEvent;
 
+export interface RuntimeRunProgress {
+  queuedAt: string;
+  startedAt: string | null;
+  settledAt: string | null;
+  modelCalls: number;
+  maxModelCalls: number;
+  maxDurationSeconds: number;
+}
+
 export interface Turn {
   id: string;
   branchId: string;
   runId?: string;
   status: TurnStatus;
   reasonCode?: string | null;
+  runProgress?: RuntimeRunProgress;
   events: AgentEvent[];
 }
 

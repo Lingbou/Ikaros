@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 3,
+          "protocolVersion": 4,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
@@ -34,7 +34,10 @@
             "skills": true,
             "memory": true,
             "tools": [
-              "process_run",
+              "process_start",
+              "process_read",
+              "process_wait",
+              "process_stop",
               "read",
               "write",
               "edit"
@@ -68,7 +71,7 @@
           ],
           "nextCursor": null,
           "hasMore": false,
-          "snapshotSeq": 19
+          "snapshotSeq": 27
         }
       }
     },
@@ -93,7 +96,7 @@
               "ordinal": 1,
               "status": "completed",
               "createdAt": "2026-08-15T12:00:00.004Z",
-              "updatedAt": "2026-08-15T12:00:00.017Z",
+              "updatedAt": "2026-08-15T12:00:00.026Z",
               "runs": [
                 {
                   "id": "run_00000000000000000000000000000004",
@@ -103,7 +106,13 @@
                   "executionPolicy": "full_access",
                   "status": "completed",
                   "createdAt": "2026-08-15T12:00:00.004Z",
-                  "settledAt": "2026-08-15T12:00:00.017Z",
+                  "startedAt": "2026-08-15T12:00:00.006Z",
+                  "executionLimits": {
+                    "maxModelCalls": 4,
+                    "maxDurationSeconds": 3600
+                  },
+                  "modelCalls": 3,
+                  "settledAt": "2026-08-15T12:00:00.026Z",
                   "reasonCode": null,
                   "items": [
                     {
@@ -131,15 +140,14 @@
                       "data": {
                         "stepId": "step_00000000000000000000000000000008",
                         "callId": "call_00000000000000000000000000000007",
-                        "toolName": "process_run",
+                        "toolName": "process_start",
                         "arguments": {
                           "command": "golden"
                         },
-                        "outcome": "completed",
-                        "durationMs": 3
+                        "outcome": "completed"
                       },
                       "createdAt": "2026-08-15T12:00:00.008Z",
-                      "updatedAt": "2026-08-15T12:00:00.010Z"
+                      "updatedAt": "2026-08-15T12:00:00.013Z"
                     },
                     {
                       "id": "item_0000000000000000000000000000000a",
@@ -149,42 +157,106 @@
                       "kind": "tool_result",
                       "role": "tool",
                       "status": "completed",
-                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
+                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_start\",\"ok\":true,\"output\":\"\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"running\",\"exitCode\":null,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":null,\"cursor\":0,\"nextCursor\":0,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
                       "data": {
                         "stepId": "step_00000000000000000000000000000008",
                         "callId": "call_00000000000000000000000000000007",
                         "toolCallItemId": "item_00000000000000000000000000000009",
-                        "toolName": "process_run",
+                        "toolName": "process_start",
                         "result": {
                           "toolCallId": "call_00000000000000000000000000000007",
-                          "toolName": "process_run",
+                          "toolName": "process_start",
                           "ok": true,
-                          "output": "golden-output",
+                          "output": "",
                           "cancelled": false,
-                          "stdout": "golden-output\n",
-                          "stderr": "",
+                          "processId": "process_022566fb2be55053ac8716649d851bef",
+                          "state": "running",
+                          "exitCode": null,
                           "cwd": "C:/golden-workspace",
-                          "exitCode": 0,
-                          "durationMs": 3,
-                          "timedOut": false,
-                          "truncated": false
+                          "pid": 4242,
+                          "startedAt": "2026-08-15T12:00:00.010Z",
+                          "finishedAt": null,
+                          "cursor": 0,
+                          "nextCursor": 0,
+                          "hasMore": false,
+                          "truncated": false,
+                          "errorCode": null
                         }
                       },
-                      "createdAt": "2026-08-15T12:00:00.010Z",
-                      "updatedAt": "2026-08-15T12:00:00.010Z"
+                      "createdAt": "2026-08-15T12:00:00.013Z",
+                      "updatedAt": "2026-08-15T12:00:00.013Z"
                     },
                     {
-                      "id": "item_0000000000000000000000000000000b",
+                      "id": "item_0000000000000000000000000000000d",
                       "turnId": "turn_00000000000000000000000000000003",
                       "runId": "run_00000000000000000000000000000004",
                       "ordinal": 4,
+                      "kind": "tool_call",
+                      "role": "assistant",
+                      "status": "completed",
+                      "content": "",
+                      "data": {
+                        "stepId": "step_0000000000000000000000000000000c",
+                        "callId": "call_0000000000000000000000000000000b",
+                        "toolName": "process_wait",
+                        "arguments": {
+                          "processId": "process_022566fb2be55053ac8716649d851bef",
+                          "timeoutMs": 1000
+                        },
+                        "outcome": "completed"
+                      },
+                      "createdAt": "2026-08-15T12:00:00.015Z",
+                      "updatedAt": "2026-08-15T12:00:00.019Z"
+                    },
+                    {
+                      "id": "item_0000000000000000000000000000000e",
+                      "turnId": "turn_00000000000000000000000000000003",
+                      "runId": "run_00000000000000000000000000000004",
+                      "ordinal": 5,
+                      "kind": "tool_result",
+                      "role": "tool",
+                      "status": "completed",
+                      "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+                      "data": {
+                        "stepId": "step_0000000000000000000000000000000c",
+                        "callId": "call_0000000000000000000000000000000b",
+                        "toolCallItemId": "item_0000000000000000000000000000000d",
+                        "toolName": "process_wait",
+                        "result": {
+                          "toolCallId": "call_0000000000000000000000000000000b",
+                          "toolName": "process_wait",
+                          "ok": true,
+                          "output": "golden-output\n",
+                          "cancelled": false,
+                          "processId": "process_022566fb2be55053ac8716649d851bef",
+                          "state": "exited",
+                          "exitCode": 0,
+                          "cwd": "C:/golden-workspace",
+                          "pid": 4242,
+                          "startedAt": "2026-08-15T12:00:00.010Z",
+                          "finishedAt": "2026-08-15T12:00:00.017Z",
+                          "cursor": 0,
+                          "nextCursor": 14,
+                          "hasMore": false,
+                          "truncated": false,
+                          "errorCode": null
+                        }
+                      },
+                      "createdAt": "2026-08-15T12:00:00.019Z",
+                      "updatedAt": "2026-08-15T12:00:00.019Z"
+                    },
+                    {
+                      "id": "item_0000000000000000000000000000000f",
+                      "turnId": "turn_00000000000000000000000000000003",
+                      "runId": "run_00000000000000000000000000000004",
+                      "ordinal": 6,
                       "kind": "message",
                       "role": "assistant",
                       "status": "completed",
                       "content": "Command exited with code 0.\ngolden-output",
                       "data": {},
-                      "createdAt": "2026-08-15T12:00:00.012Z",
-                      "updatedAt": "2026-08-15T12:00:00.015Z"
+                      "createdAt": "2026-08-15T12:00:00.021Z",
+                      "updatedAt": "2026-08-15T12:00:00.024Z"
                     }
                   ]
                 }
@@ -193,7 +265,7 @@
           ],
           "nextCursor": null,
           "hasMore": false,
-          "snapshotSeq": 19
+          "snapshotSeq": 27
         }
       }
     },
@@ -387,7 +459,7 @@
               "status": "not_applicable"
             },
             "createdAt": "2026-08-15T12:00:00.005Z",
-            "updatedAt": "2026-08-15T12:00:00.018Z",
+            "updatedAt": "2026-08-15T12:00:00.027Z",
             "forgottenAt": null
           }
         }
@@ -440,8 +512,8 @@
               "state": "forgotten",
               "preview": null,
               "createdAt": "2026-08-15T12:00:00.005Z",
-              "updatedAt": "2026-08-15T12:00:00.019Z",
-              "forgottenAt": "2026-08-15T12:00:00.019Z"
+              "updatedAt": "2026-08-15T12:00:00.028Z",
+              "forgottenAt": "2026-08-15T12:00:00.028Z"
             }
           ],
           "nextCursor": null,
@@ -478,8 +550,8 @@
               "status": "not_applicable"
             },
             "createdAt": "2026-08-15T12:00:00.005Z",
-            "updatedAt": "2026-08-15T12:00:00.019Z",
-            "forgottenAt": "2026-08-15T12:00:00.019Z"
+            "updatedAt": "2026-08-15T12:00:00.028Z",
+            "forgottenAt": "2026-08-15T12:00:00.028Z"
           }
         }
       }
@@ -490,7 +562,7 @@
       "method": "file.change.get",
       "requestParams": {
         "threadId": "thread_00000000000000000000000000000001",
-        "toolCallItemId": "item_00000000000000000000000000000010"
+        "toolCallItemId": "item_00000000000000000000000000000014"
       },
       "envelope": {
         "jsonrpc": "2.0",
@@ -519,10 +591,10 @@
           "diff": "--- before\n+++ after\n@@ -0,0 +1 @@\n+你好\n",
           "operation": "write",
           "path": "C:/golden-workspace/hello.txt",
-          "recordedAt": "2026-08-15T12:00:00.025Z",
+          "recordedAt": "2026-08-15T12:00:00.034Z",
           "status": "recorded",
           "threadId": "thread_00000000000000000000000000000001",
-          "toolCallItemId": "item_00000000000000000000000000000010"
+          "toolCallItemId": "item_00000000000000000000000000000014"
         }
       }
     },
@@ -561,7 +633,7 @@
         "method": "event",
         "params": {
           "seq": 1,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "thread.created",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -597,7 +669,7 @@
         "method": "event",
         "params": {
           "seq": 2,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "thread.renamed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -627,7 +699,7 @@
         "method": "event",
         "params": {
           "seq": 3,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "thread.archived",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -657,7 +729,7 @@
         "method": "event",
         "params": {
           "seq": 4,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "thread.unarchived",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -687,7 +759,7 @@
         "method": "event",
         "params": {
           "seq": 5,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -714,7 +786,11 @@
               "status": "queued",
               "createdAt": "2026-08-15T12:00:00.004Z",
               "settledAt": null,
-              "skills": []
+              "skills": [],
+              "executionLimits": {
+                "maxModelCalls": 4,
+                "maxDurationSeconds": 3600
+              }
             },
             "item": {
               "id": "item_00000000000000000000000000000005",
@@ -729,8 +805,7 @@
               "createdAt": "2026-08-15T12:00:00.004Z",
               "updatedAt": "2026-08-15T12:00:00.004Z"
             },
-            "submissionFrame": {
-              "schemaVersion": 1,
+            "runConfig": {
               "userItemId": "item_00000000000000000000000000000005",
               "threadId": "thread_00000000000000000000000000000001",
               "branchId": "branch_00000000000000000000000000000002",
@@ -739,28 +814,25 @@
               "workspace": null,
               "providerId": "scripted",
               "modelId": "scripted-v1",
-              "publicProviderConfigFingerprint": "65741dfe5d43ccf1f8c288575327150253cfbca15f4817deb867b4cb33105ac5",
+              "publicProviderConfigFingerprint": "7b98cb18c0e8b2db95515f3f2e41384df5089850493d5e57cdf8ffd5025d1233",
               "executionPolicy": "full_access",
               "skills": [],
               "tools": [
                 {
-                  "name": "process_run",
-                  "description": "Run a command in the local operating system shell and capture its output. Commands default to the current Thread workspace when one is attached.",
+                  "name": "process_start",
+                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this Run and are stopped when the Run ends.",
                   "inputSchema": {
                     "additionalProperties": false,
                     "properties": {
                       "command": {
+                        "maxLength": 32768,
                         "minLength": 1,
                         "type": "string"
                       },
                       "cwd": {
+                        "maxLength": 4096,
                         "minLength": 1,
                         "type": "string"
-                      },
-                      "timeoutMs": {
-                        "maximum": 600000,
-                        "minimum": 1,
-                        "type": "integer"
                       }
                     },
                     "required": [
@@ -768,7 +840,78 @@
                     ],
                     "type": "object"
                   },
-                  "definitionSha256": "8b37624e85ff41f3a6cd05995cce845264599020a7c57477e33695449fc196dd"
+                  "definitionSha256": "501442228a4183f513b36e456c3f08cba0e9884a2d801dea5d24628bb95e9614"
+                },
+                {
+                  "name": "process_read",
+                  "description": "Read current command status and up to 16 KiB of output. Pass nextCursor to read subsequent output without repeating it. This never starts or reruns a command.",
+                  "inputSchema": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cursor": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "processId": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "processId"
+                    ],
+                    "type": "object"
+                  },
+                  "definitionSha256": "e968143238b0c81f2be20bc17275f70858a1a77a28478ecd92b907c3ceed1fd9"
+                },
+                {
+                  "name": "process_wait",
+                  "description": "Wait up to timeoutMs (default 1000, maximum 60000) for a command to finish, then read status and output. A wait timeout returns running and leaves the command alive. Use nextCursor on subsequent calls. Check state and exitCode before claiming success.",
+                  "inputSchema": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cursor": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "processId": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "timeoutMs": {
+                        "maximum": 60000,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "processId"
+                    ],
+                    "type": "object"
+                  },
+                  "definitionSha256": "9cd2e5254f62f503783f6abec037d0301b831f1d5a2450f220bd512102b59a52"
+                },
+                {
+                  "name": "process_stop",
+                  "description": "Stop a command and its descendant processes, and return the final status and output. Stopping an already finished command is harmless and never starts a new process.",
+                  "inputSchema": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cursor": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "processId": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "processId"
+                    ],
+                    "type": "object"
+                  },
+                  "definitionSha256": "88d268e14123028b47842508d620512c4aff05e83ef86b755390f854fd809c85"
                 }
               ],
               "instructions": {
@@ -792,54 +935,10 @@
                 },
                 "skillCatalog": null
               },
-              "contextData": {
-                "memory": []
-              },
-              "maxSteps": 2
-            },
-            "runManifest": {
-              "schemaVersion": 1,
-              "runId": "run_00000000000000000000000000000004",
-              "modelInputPlanVersion": 1,
-              "submissionFrameVersion": 1,
-              "contextSelectionVersion": "bounded-history-v1",
-              "memoryContextVersion": 2,
-              "instructions": [
-                {
-                  "id": "ikaros-identity",
-                  "version": 1,
-                  "source": "ikaros-runtime:identity",
-                  "authority": "runtime_identity",
-                  "scope": "global",
-                  "lifetime": "release",
-                  "characters": 576,
-                  "contentSha256": "ee203265222115d59d5d848235c7290b27d86ba2c63ab653cef2b0038c28276e"
-                },
-                {
-                  "id": "output-style",
-                  "version": 1,
-                  "source": "ikaros-runtime:output-style-v1",
-                  "authority": "runtime_instruction",
-                  "scope": "global",
-                  "lifetime": "release",
-                  "characters": 315,
-                  "contentSha256": "31d6f8eaa858c3cc9648f97986897a8a1e7238677f3187cdd1150e2300703ecb"
-                }
-              ],
-              "skills": [],
-              "tools": [
-                {
-                  "definitionSha256": "8b37624e85ff41f3a6cd05995cce845264599020a7c57477e33695449fc196dd",
-                  "name": "process_run"
-                }
-              ],
-              "provider": {
-                "providerId": "scripted",
-                "modelId": "scripted-v1",
-                "publicProviderConfigFingerprint": "65741dfe5d43ccf1f8c288575327150253cfbca15f4817deb867b4cb33105ac5"
-              },
-              "executionPolicy": "full_access",
-              "maxSteps": 2
+              "maxModelCalls": 4,
+              "maxDurationSeconds": 3600,
+              "contextWindow": 32768,
+              "maxOutputTokens": 4096
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
@@ -856,7 +955,7 @@
         "method": "event",
         "params": {
           "seq": 6,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -880,7 +979,7 @@
         "method": "event",
         "params": {
           "seq": 7,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -904,7 +1003,7 @@
         "method": "event",
         "params": {
           "seq": 8,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -915,9 +1014,8 @@
           "payload": {
             "stepOrdinal": 1,
             "preparedAt": "2026-08-15T12:00:00.007Z",
-            "contextSnapshot": {
-              "schemaVersion": 1,
-              "selectionVersion": "bounded-history-v1",
+            "contextRevision": {
+              "revision": 1,
               "historyGroups": [
                 {
                   "turnId": "turn_00000000000000000000000000000003",
@@ -933,7 +1031,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "user",
-                  "characters": 19
+                  "tokens": 83
                 }
               ],
               "memory": [
@@ -946,23 +1044,28 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                "maximumCharacters": 48000,
-                "reservedCurrentRunCharacters": 12000,
-                "instructionCharacters": 891,
-                "contextDataCharacters": 186,
-                "toolCharacters": 422,
-                "historyCharacters": 0,
-                "currentRunCharacters": 19,
-                "memoryCharacters": 69,
-                "totalCharacters": 1587
+                "measurementVersion": "conservative-utf8-upper-bound",
+                "maximumTokens": 28672,
+                "reservedCurrentRunTokens": 7168,
+                "instructionTokens": 1531,
+                "contextDataTokens": 744,
+                "toolTokens": 2038,
+                "historyTokens": 0,
+                "currentRunTokens": 83,
+                "memoryTokens": 276,
+                "totalTokens": 4672
               },
-              "omissions": []
+              "omissions": [],
+              "historyStatus": {
+                "version": 1,
+                "characters": 0,
+                "runs": []
+              },
+              "memoryContextCharacters": 186
             },
-            "stepManifest": {
-              "schemaVersion": 1,
+            "stepInput": {
               "stepOrdinal": 1,
-              "contextSnapshotVersion": 1,
+              "contextRevision": 1,
               "historyItems": [
                 {
                   "itemId": "item_00000000000000000000000000000005",
@@ -970,7 +1073,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "user",
-                  "characters": 19
+                  "tokens": 83
                 }
               ],
               "memory": [
@@ -983,18 +1086,24 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                "maximumCharacters": 48000,
-                "reservedCurrentRunCharacters": 12000,
-                "instructionCharacters": 891,
-                "contextDataCharacters": 186,
-                "toolCharacters": 422,
-                "historyCharacters": 0,
-                "currentRunCharacters": 19,
-                "memoryCharacters": 69,
-                "totalCharacters": 1587
+                "measurementVersion": "conservative-utf8-upper-bound",
+                "maximumTokens": 28672,
+                "reservedCurrentRunTokens": 7168,
+                "instructionTokens": 1531,
+                "contextDataTokens": 744,
+                "toolTokens": 2038,
+                "historyTokens": 0,
+                "currentRunTokens": 83,
+                "memoryTokens": 276,
+                "totalTokens": 4672
               },
-              "omissions": []
+              "omissions": [],
+              "historyStatus": {
+                "version": 1,
+                "characters": 0,
+                "runs": []
+              },
+              "memoryContextCharacters": 186
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
@@ -1010,7 +1119,7 @@
         "method": "event",
         "params": {
           "seq": 9,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1031,7 +1140,7 @@
               "data": {
                 "stepId": "step_00000000000000000000000000000008",
                 "callId": "call_00000000000000000000000000000007",
-                "toolName": "process_run",
+                "toolName": "process_start",
                 "arguments": {
                   "command": "golden"
                 }
@@ -1054,7 +1163,7 @@
         "method": "event",
         "params": {
           "seq": 10,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1086,21 +1195,107 @@
       }
     },
     {
-      "name": "tool-call-completed",
+      "name": "process-recorded-1",
       "kind": "notification",
       "envelope": {
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
           "seq": 11,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
+          "type": "process.recorded",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.011Z",
+          "payload": {
+            "process": {
+              "processId": "process_022566fb2be55053ac8716649d851bef",
+              "threadId": "thread_00000000000000000000000000000001",
+              "runId": "run_00000000000000000000000000000004",
+              "stepOrdinal": 1,
+              "itemId": "item_00000000000000000000000000000009",
+              "command": "golden",
+              "cwd": "C:/golden-workspace",
+              "state": "unknown",
+              "exitCode": null,
+              "pid": null,
+              "startedAt": "2026-08-15T12:00:00.010Z",
+              "finishedAt": null,
+              "stdout": "",
+              "stderr": "",
+              "output": "",
+              "truncated": false,
+              "errorCode": "start_pending"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000009"
+          }
+        }
+      }
+    },
+    {
+      "name": "process-recorded-2",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 12,
+          "schemaVersion": 7,
+          "type": "process.recorded",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.012Z",
+          "payload": {
+            "process": {
+              "processId": "process_022566fb2be55053ac8716649d851bef",
+              "threadId": "thread_00000000000000000000000000000001",
+              "runId": "run_00000000000000000000000000000004",
+              "stepOrdinal": 1,
+              "itemId": "item_00000000000000000000000000000009",
+              "command": "golden",
+              "cwd": "C:/golden-workspace",
+              "state": "running",
+              "exitCode": null,
+              "pid": 4242,
+              "startedAt": "2026-08-15T12:00:00.010Z",
+              "finishedAt": null,
+              "stdout": "",
+              "stderr": "",
+              "output": "",
+              "truncated": false,
+              "errorCode": null
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000009"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-call-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 13,
+          "schemaVersion": 7,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": "item_00000000000000000000000000000009",
-          "timestamp": "2026-08-15T12:00:00.010Z",
+          "timestamp": "2026-08-15T12:00:00.013Z",
           "payload": {
             "item": {
               "id": "item_00000000000000000000000000000009",
@@ -1114,15 +1309,14 @@
               "data": {
                 "stepId": "step_00000000000000000000000000000008",
                 "callId": "call_00000000000000000000000000000007",
-                "toolName": "process_run",
+                "toolName": "process_start",
                 "arguments": {
                   "command": "golden"
                 },
-                "outcome": "completed",
-                "durationMs": 3
+                "outcome": "completed"
               },
               "createdAt": "2026-08-15T12:00:00.008Z",
-              "updatedAt": "2026-08-15T12:00:00.010Z"
+              "updatedAt": "2026-08-15T12:00:00.013Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
@@ -1138,15 +1332,15 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 12,
-          "schemaVersion": 5,
+          "seq": 14,
+          "schemaVersion": 7,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": "item_0000000000000000000000000000000a",
-          "timestamp": "2026-08-15T12:00:00.010Z",
+          "timestamp": "2026-08-15T12:00:00.013Z",
           "payload": {
             "item": {
               "id": "item_0000000000000000000000000000000a",
@@ -1156,29 +1350,34 @@
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
-              "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_run\",\"ok\":true,\"output\":\"golden-output\",\"cancelled\":false,\"stdout\":\"golden-output\\n\",\"stderr\":\"\",\"cwd\":\"C:/golden-workspace\",\"exitCode\":0,\"durationMs\":3,\"timedOut\":false,\"truncated\":false}",
+              "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_start\",\"ok\":true,\"output\":\"\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"running\",\"exitCode\":null,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":null,\"cursor\":0,\"nextCursor\":0,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
               "data": {
                 "stepId": "step_00000000000000000000000000000008",
                 "callId": "call_00000000000000000000000000000007",
                 "toolCallItemId": "item_00000000000000000000000000000009",
-                "toolName": "process_run",
+                "toolName": "process_start",
                 "result": {
                   "toolCallId": "call_00000000000000000000000000000007",
-                  "toolName": "process_run",
+                  "toolName": "process_start",
                   "ok": true,
-                  "output": "golden-output",
+                  "output": "",
                   "cancelled": false,
-                  "stdout": "golden-output\n",
-                  "stderr": "",
+                  "processId": "process_022566fb2be55053ac8716649d851bef",
+                  "state": "running",
+                  "exitCode": null,
                   "cwd": "C:/golden-workspace",
-                  "exitCode": 0,
-                  "durationMs": 3,
-                  "timedOut": false,
-                  "truncated": false
+                  "pid": 4242,
+                  "startedAt": "2026-08-15T12:00:00.010Z",
+                  "finishedAt": null,
+                  "cursor": 0,
+                  "nextCursor": 0,
+                  "hasMore": false,
+                  "truncated": false,
+                  "errorCode": null
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.010Z",
-              "updatedAt": "2026-08-15T12:00:00.010Z"
+              "createdAt": "2026-08-15T12:00:00.013Z",
+              "updatedAt": "2026-08-15T12:00:00.013Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
@@ -1194,66 +1393,22 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 13,
-          "schemaVersion": 5,
+          "seq": 15,
+          "schemaVersion": 7,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.011Z",
+          "timestamp": "2026-08-15T12:00:00.014Z",
           "payload": {
             "stepOrdinal": 2,
-            "preparedAt": "2026-08-15T12:00:00.011Z",
-            "contextSnapshot": {
-              "schemaVersion": 1,
-              "selectionVersion": "bounded-history-v1",
-              "historyGroups": [
-                {
-                  "turnId": "turn_00000000000000000000000000000003",
-                  "itemIds": [
-                    "item_00000000000000000000000000000005"
-                  ]
-                }
-              ],
-              "historyItems": [
-                {
-                  "itemId": "item_00000000000000000000000000000005",
-                  "turnId": "turn_00000000000000000000000000000003",
-                  "runId": "run_00000000000000000000000000000004",
-                  "kind": "message",
-                  "role": "user",
-                  "characters": 19
-                }
-              ],
-              "memory": [
-                {
-                  "memoryId": "memory_00000000000000000000000000000006",
-                  "revision": 1,
-                  "scope": "global",
-                  "characters": 69
-                }
-              ],
-              "budget": {
-                "mode": "bounded",
-                "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                "maximumCharacters": 48000,
-                "reservedCurrentRunCharacters": 12000,
-                "instructionCharacters": 891,
-                "contextDataCharacters": 186,
-                "toolCharacters": 422,
-                "historyCharacters": 0,
-                "currentRunCharacters": 19,
-                "memoryCharacters": 69,
-                "totalCharacters": 1587
-              },
-              "omissions": []
-            },
-            "stepManifest": {
-              "schemaVersion": 1,
+            "preparedAt": "2026-08-15T12:00:00.014Z",
+            "contextRevision": null,
+            "stepInput": {
               "stepOrdinal": 2,
-              "contextSnapshotVersion": 1,
+              "contextRevision": 1,
               "historyItems": [
                 {
                   "itemId": "item_00000000000000000000000000000005",
@@ -1261,7 +1416,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "user",
-                  "characters": 19
+                  "tokens": 83
                 },
                 {
                   "itemId": "item_00000000000000000000000000000009",
@@ -1269,7 +1424,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_call",
                   "role": "assistant",
-                  "characters": 20
+                  "tokens": 172
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000a",
@@ -1277,7 +1432,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "characters": 262
+                  "tokens": 447
                 }
               ],
               "memory": [
@@ -1290,18 +1445,24 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                "maximumCharacters": 48000,
-                "reservedCurrentRunCharacters": 12000,
-                "instructionCharacters": 891,
-                "contextDataCharacters": 186,
-                "toolCharacters": 422,
-                "historyCharacters": 0,
-                "currentRunCharacters": 301,
-                "memoryCharacters": 69,
-                "totalCharacters": 1869
+                "measurementVersion": "conservative-utf8-upper-bound",
+                "maximumTokens": 28672,
+                "reservedCurrentRunTokens": 7168,
+                "instructionTokens": 1531,
+                "contextDataTokens": 744,
+                "toolTokens": 2038,
+                "historyTokens": 0,
+                "currentRunTokens": 702,
+                "memoryTokens": 276,
+                "totalTokens": 5291
               },
-              "omissions": []
+              "omissions": [],
+              "historyStatus": {
+                "version": 1,
+                "characters": 0,
+                "runs": []
+              },
+              "memoryContextCharacters": 186
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
@@ -1310,125 +1471,46 @@
       }
     },
     {
-      "name": "assistant-item-started",
-      "kind": "notification",
-      "envelope": {
-        "jsonrpc": "2.0",
-        "method": "event",
-        "params": {
-          "seq": 14,
-          "schemaVersion": 5,
-          "type": "item.started",
-          "threadId": "thread_00000000000000000000000000000001",
-          "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_00000000000000000000000000000003",
-          "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000b",
-          "timestamp": "2026-08-15T12:00:00.012Z",
-          "payload": {
-            "item": {
-              "id": "item_0000000000000000000000000000000b",
-              "turnId": "turn_00000000000000000000000000000003",
-              "runId": "run_00000000000000000000000000000004",
-              "ordinal": 4,
-              "kind": "message",
-              "role": "assistant",
-              "status": "streaming",
-              "content": "",
-              "data": {},
-              "createdAt": "2026-08-15T12:00:00.012Z",
-              "updatedAt": "2026-08-15T12:00:00.012Z"
-            },
-            "turnId": "turn_00000000000000000000000000000003",
-            "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000b"
-          }
-        }
-      }
-    },
-    {
-      "name": "assistant-item-delta",
-      "kind": "notification",
-      "envelope": {
-        "jsonrpc": "2.0",
-        "method": "event",
-        "params": {
-          "seq": 15,
-          "schemaVersion": 5,
-          "type": "item.delta",
-          "threadId": "thread_00000000000000000000000000000001",
-          "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_00000000000000000000000000000003",
-          "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000b",
-          "timestamp": "2026-08-15T12:00:00.013Z",
-          "payload": {
-            "delta": "Command exit",
-            "turnId": "turn_00000000000000000000000000000003",
-            "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000b"
-          }
-        }
-      }
-    },
-    {
-      "name": "assistant-item-delta-2",
+      "name": "tool-call-started-2",
       "kind": "notification",
       "envelope": {
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
           "seq": 16,
-          "schemaVersion": 5,
-          "type": "item.delta",
+          "schemaVersion": 7,
+          "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000b",
-          "timestamp": "2026-08-15T12:00:00.014Z",
-          "payload": {
-            "delta": "ed with code 0.\ngolden-output",
-            "turnId": "turn_00000000000000000000000000000003",
-            "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000b"
-          }
-        }
-      }
-    },
-    {
-      "name": "assistant-item-completed",
-      "kind": "notification",
-      "envelope": {
-        "jsonrpc": "2.0",
-        "method": "event",
-        "params": {
-          "seq": 17,
-          "schemaVersion": 5,
-          "type": "item.completed",
-          "threadId": "thread_00000000000000000000000000000001",
-          "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_00000000000000000000000000000003",
-          "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_0000000000000000000000000000000b",
+          "itemId": "item_0000000000000000000000000000000d",
           "timestamp": "2026-08-15T12:00:00.015Z",
           "payload": {
             "item": {
-              "id": "item_0000000000000000000000000000000b",
+              "id": "item_0000000000000000000000000000000d",
               "turnId": "turn_00000000000000000000000000000003",
               "runId": "run_00000000000000000000000000000004",
               "ordinal": 4,
-              "kind": "message",
+              "kind": "tool_call",
               "role": "assistant",
-              "status": "completed",
-              "content": "Command exited with code 0.\ngolden-output",
-              "data": {},
-              "createdAt": "2026-08-15T12:00:00.012Z",
+              "status": "running",
+              "content": "",
+              "data": {
+                "stepId": "step_0000000000000000000000000000000c",
+                "callId": "call_0000000000000000000000000000000b",
+                "toolName": "process_wait",
+                "arguments": {
+                  "processId": "process_022566fb2be55053ac8716649d851bef",
+                  "timeoutMs": 1000
+                }
+              },
+              "createdAt": "2026-08-15T12:00:00.015Z",
               "updatedAt": "2026-08-15T12:00:00.015Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_0000000000000000000000000000000b"
+            "itemId": "item_0000000000000000000000000000000d"
           }
         }
       }
@@ -1440,8 +1522,8 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 18,
-          "schemaVersion": 5,
+          "seq": 17,
+          "schemaVersion": 7,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1473,24 +1555,437 @@
       }
     },
     {
-      "name": "run-settled",
+      "name": "process-recorded-3",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 18,
+          "schemaVersion": 7,
+          "type": "process.recorded",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.018Z",
+          "payload": {
+            "process": {
+              "processId": "process_022566fb2be55053ac8716649d851bef",
+              "threadId": "thread_00000000000000000000000000000001",
+              "runId": "run_00000000000000000000000000000004",
+              "stepOrdinal": 1,
+              "itemId": "item_00000000000000000000000000000009",
+              "command": "golden",
+              "cwd": "C:/golden-workspace",
+              "state": "exited",
+              "exitCode": 0,
+              "pid": 4242,
+              "startedAt": "2026-08-15T12:00:00.010Z",
+              "finishedAt": "2026-08-15T12:00:00.017Z",
+              "stdout": "golden-output\n",
+              "stderr": "",
+              "output": "golden-output\n",
+              "truncated": false,
+              "errorCode": null
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000009"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-call-completed-4",
       "kind": "notification",
       "envelope": {
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
           "seq": 19,
-          "schemaVersion": 5,
+          "schemaVersion": 7,
+          "type": "item.completed",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000d",
+          "timestamp": "2026-08-15T12:00:00.019Z",
+          "payload": {
+            "item": {
+              "id": "item_0000000000000000000000000000000d",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 4,
+              "kind": "tool_call",
+              "role": "assistant",
+              "status": "completed",
+              "content": "",
+              "data": {
+                "stepId": "step_0000000000000000000000000000000c",
+                "callId": "call_0000000000000000000000000000000b",
+                "toolName": "process_wait",
+                "arguments": {
+                  "processId": "process_022566fb2be55053ac8716649d851bef",
+                  "timeoutMs": 1000
+                },
+                "outcome": "completed"
+              },
+              "createdAt": "2026-08-15T12:00:00.015Z",
+              "updatedAt": "2026-08-15T12:00:00.019Z"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000d"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-result-completed-5",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 20,
+          "schemaVersion": 7,
+          "type": "item.completed",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000e",
+          "timestamp": "2026-08-15T12:00:00.019Z",
+          "payload": {
+            "item": {
+              "id": "item_0000000000000000000000000000000e",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 5,
+              "kind": "tool_result",
+              "role": "tool",
+              "status": "completed",
+              "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+              "data": {
+                "stepId": "step_0000000000000000000000000000000c",
+                "callId": "call_0000000000000000000000000000000b",
+                "toolCallItemId": "item_0000000000000000000000000000000d",
+                "toolName": "process_wait",
+                "result": {
+                  "toolCallId": "call_0000000000000000000000000000000b",
+                  "toolName": "process_wait",
+                  "ok": true,
+                  "output": "golden-output\n",
+                  "cancelled": false,
+                  "processId": "process_022566fb2be55053ac8716649d851bef",
+                  "state": "exited",
+                  "exitCode": 0,
+                  "cwd": "C:/golden-workspace",
+                  "pid": 4242,
+                  "startedAt": "2026-08-15T12:00:00.010Z",
+                  "finishedAt": "2026-08-15T12:00:00.017Z",
+                  "cursor": 0,
+                  "nextCursor": 14,
+                  "hasMore": false,
+                  "truncated": false,
+                  "errorCode": null
+                }
+              },
+              "createdAt": "2026-08-15T12:00:00.019Z",
+              "updatedAt": "2026-08-15T12:00:00.019Z"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000e"
+          }
+        }
+      }
+    },
+    {
+      "name": "model-input-prepared-step-3",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 21,
+          "schemaVersion": 7,
+          "type": "model.input_prepared",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": null,
+          "timestamp": "2026-08-15T12:00:00.020Z",
+          "payload": {
+            "stepOrdinal": 3,
+            "preparedAt": "2026-08-15T12:00:00.020Z",
+            "contextRevision": null,
+            "stepInput": {
+              "stepOrdinal": 3,
+              "contextRevision": 1,
+              "historyItems": [
+                {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "tokens": 83
+                },
+                {
+                  "itemId": "item_00000000000000000000000000000009",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 172
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000a",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 447
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000d",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 226
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000e",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 480
+                }
+              ],
+              "memory": [
+                {
+                  "memoryId": "memory_00000000000000000000000000000006",
+                  "revision": 1,
+                  "scope": "global",
+                  "characters": 69
+                }
+              ],
+              "budget": {
+                "mode": "bounded",
+                "measurementVersion": "conservative-utf8-upper-bound",
+                "maximumTokens": 28672,
+                "reservedCurrentRunTokens": 7168,
+                "instructionTokens": 1531,
+                "contextDataTokens": 744,
+                "toolTokens": 2038,
+                "historyTokens": 0,
+                "currentRunTokens": 1408,
+                "memoryTokens": 276,
+                "totalTokens": 5997
+              },
+              "omissions": [],
+              "historyStatus": {
+                "version": 1,
+                "characters": 0,
+                "runs": []
+              },
+              "memoryContextCharacters": 186
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-started",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 22,
+          "schemaVersion": 7,
+          "type": "item.started",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000f",
+          "timestamp": "2026-08-15T12:00:00.021Z",
+          "payload": {
+            "item": {
+              "id": "item_0000000000000000000000000000000f",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 6,
+              "kind": "message",
+              "role": "assistant",
+              "status": "streaming",
+              "content": "",
+              "data": {},
+              "createdAt": "2026-08-15T12:00:00.021Z",
+              "updatedAt": "2026-08-15T12:00:00.021Z"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000f"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-delta",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 23,
+          "schemaVersion": 7,
+          "type": "item.delta",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000f",
+          "timestamp": "2026-08-15T12:00:00.022Z",
+          "payload": {
+            "delta": "Command exit",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000f"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-delta-2",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 24,
+          "schemaVersion": 7,
+          "type": "item.delta",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000f",
+          "timestamp": "2026-08-15T12:00:00.023Z",
+          "payload": {
+            "delta": "ed with code 0.\ngolden-output",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000f"
+          }
+        }
+      }
+    },
+    {
+      "name": "assistant-item-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 25,
+          "schemaVersion": 7,
+          "type": "item.completed",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_0000000000000000000000000000000f",
+          "timestamp": "2026-08-15T12:00:00.024Z",
+          "payload": {
+            "item": {
+              "id": "item_0000000000000000000000000000000f",
+              "turnId": "turn_00000000000000000000000000000003",
+              "runId": "run_00000000000000000000000000000004",
+              "ordinal": 6,
+              "kind": "message",
+              "role": "assistant",
+              "status": "completed",
+              "content": "Command exited with code 0.\ngolden-output",
+              "data": {},
+              "createdAt": "2026-08-15T12:00:00.021Z",
+              "updatedAt": "2026-08-15T12:00:00.024Z"
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_0000000000000000000000000000000f"
+          }
+        }
+      }
+    },
+    {
+      "name": "model-response-finished-step-3",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 26,
+          "schemaVersion": 7,
+          "type": "model.response_finished",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": null,
+          "timestamp": "2026-08-15T12:00:00.025Z",
+          "payload": {
+            "stepOrdinal": 3,
+            "providerId": "scripted",
+            "modelId": "scripted-v1",
+            "outcome": "completed",
+            "reasonCode": null,
+            "responseModelId": "scripted-v1",
+            "requestId": "request_golden_3",
+            "usage": {
+              "inputTokens": 13,
+              "cachedInputTokens": null,
+              "outputTokens": 7,
+              "reasoningOutputTokens": null,
+              "totalTokens": 20
+            },
+            "activityDate": "2026-08-15",
+            "finishedAt": "2026-08-15T12:00:00.025Z",
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004"
+          }
+        }
+      }
+    },
+    {
+      "name": "run-settled",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 27,
+          "schemaVersion": 7,
           "type": "run.settled",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.017Z",
+          "timestamp": "2026-08-15T12:00:00.026Z",
           "payload": {
             "status": "completed",
-            "settledAt": "2026-08-15T12:00:00.017Z",
+            "settledAt": "2026-08-15T12:00:00.026Z",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
           }
@@ -1504,60 +1999,63 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 20,
-          "schemaVersion": 6,
+          "seq": 28,
+          "schemaVersion": 7,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
-          "itemId": "item_0000000000000000000000000000000e",
-          "timestamp": "2026-08-15T12:00:00.020Z",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
+          "itemId": "item_00000000000000000000000000000012",
+          "timestamp": "2026-08-15T12:00:00.029Z",
           "payload": {
             "turn": {
-              "id": "turn_0000000000000000000000000000000c",
+              "id": "turn_00000000000000000000000000000010",
               "threadId": "thread_00000000000000000000000000000001",
               "branchId": "branch_00000000000000000000000000000002",
               "ordinal": 2,
               "status": "queued",
-              "createdAt": "2026-08-15T12:00:00.020Z",
-              "updatedAt": "2026-08-15T12:00:00.020Z"
+              "createdAt": "2026-08-15T12:00:00.029Z",
+              "updatedAt": "2026-08-15T12:00:00.029Z"
             },
             "run": {
-              "id": "run_0000000000000000000000000000000d",
-              "turnId": "turn_0000000000000000000000000000000c",
+              "id": "run_00000000000000000000000000000011",
+              "turnId": "turn_00000000000000000000000000000010",
               "providerId": "scripted",
               "modelId": "scripted-v1",
               "executionPolicy": "full_access",
               "status": "queued",
-              "createdAt": "2026-08-15T12:00:00.020Z",
+              "createdAt": "2026-08-15T12:00:00.029Z",
               "settledAt": null,
-              "skills": []
+              "skills": [],
+              "executionLimits": {
+                "maxModelCalls": 2,
+                "maxDurationSeconds": 3600
+              }
             },
             "item": {
-              "id": "item_0000000000000000000000000000000e",
-              "turnId": "turn_0000000000000000000000000000000c",
-              "runId": "run_0000000000000000000000000000000d",
+              "id": "item_00000000000000000000000000000012",
+              "turnId": "turn_00000000000000000000000000000010",
+              "runId": "run_00000000000000000000000000000011",
               "ordinal": 1,
               "kind": "message",
               "role": "user",
               "status": "completed",
               "content": "Write hello.txt",
               "data": {},
-              "createdAt": "2026-08-15T12:00:00.020Z",
-              "updatedAt": "2026-08-15T12:00:00.020Z"
+              "createdAt": "2026-08-15T12:00:00.029Z",
+              "updatedAt": "2026-08-15T12:00:00.029Z"
             },
-            "submissionFrame": {
-              "schemaVersion": 1,
-              "userItemId": "item_0000000000000000000000000000000e",
+            "runConfig": {
+              "userItemId": "item_00000000000000000000000000000012",
               "threadId": "thread_00000000000000000000000000000001",
               "branchId": "branch_00000000000000000000000000000002",
-              "turnId": "turn_0000000000000000000000000000000c",
-              "runId": "run_0000000000000000000000000000000d",
+              "turnId": "turn_00000000000000000000000000000010",
+              "runId": "run_00000000000000000000000000000011",
               "workspace": null,
               "providerId": "scripted",
               "modelId": "scripted-v1",
-              "publicProviderConfigFingerprint": "65741dfe5d43ccf1f8c288575327150253cfbca15f4817deb867b4cb33105ac5",
+              "publicProviderConfigFingerprint": "7b98cb18c0e8b2db95515f3f2e41384df5089850493d5e57cdf8ffd5025d1233",
               "executionPolicy": "full_access",
               "skills": [],
               "tools": [
@@ -1605,58 +2103,14 @@
                 },
                 "skillCatalog": null
               },
-              "contextData": {
-                "memory": []
-              },
-              "maxSteps": 2
+              "maxModelCalls": 2,
+              "maxDurationSeconds": 3600,
+              "contextWindow": 32768,
+              "maxOutputTokens": 4096
             },
-            "runManifest": {
-              "schemaVersion": 1,
-              "runId": "run_0000000000000000000000000000000d",
-              "modelInputPlanVersion": 1,
-              "submissionFrameVersion": 1,
-              "contextSelectionVersion": "bounded-history-v2",
-              "memoryContextVersion": 2,
-              "instructions": [
-                {
-                  "id": "ikaros-identity",
-                  "version": 1,
-                  "source": "ikaros-runtime:identity",
-                  "authority": "runtime_identity",
-                  "scope": "global",
-                  "lifetime": "release",
-                  "characters": 576,
-                  "contentSha256": "ee203265222115d59d5d848235c7290b27d86ba2c63ab653cef2b0038c28276e"
-                },
-                {
-                  "id": "output-style",
-                  "version": 1,
-                  "source": "ikaros-runtime:output-style-v1",
-                  "authority": "runtime_instruction",
-                  "scope": "global",
-                  "lifetime": "release",
-                  "characters": 315,
-                  "contentSha256": "31d6f8eaa858c3cc9648f97986897a8a1e7238677f3187cdd1150e2300703ecb"
-                }
-              ],
-              "skills": [],
-              "tools": [
-                {
-                  "definitionSha256": "dd59706e312d97393bcb04d2fee99bb16f7d89d612e664bf79bd7dcdda74031f",
-                  "name": "write"
-                }
-              ],
-              "provider": {
-                "providerId": "scripted",
-                "modelId": "scripted-v1",
-                "publicProviderConfigFingerprint": "65741dfe5d43ccf1f8c288575327150253cfbca15f4817deb867b4cb33105ac5"
-              },
-              "executionPolicy": "full_access",
-              "maxSteps": 2
-            },
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d",
-            "itemId": "item_0000000000000000000000000000000e"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011",
+            "itemId": "item_00000000000000000000000000000012"
           }
         }
       }
@@ -1668,19 +2122,19 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 21,
-          "schemaVersion": 6,
+          "seq": 29,
+          "schemaVersion": 7,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.020Z",
+          "timestamp": "2026-08-15T12:00:00.029Z",
           "payload": {
             "status": "queued",
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011"
           }
         }
       }
@@ -1692,19 +2146,19 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 22,
-          "schemaVersion": 6,
+          "seq": 30,
+          "schemaVersion": 7,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.021Z",
+          "timestamp": "2026-08-15T12:00:00.030Z",
           "payload": {
             "status": "running",
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011"
           }
         }
       }
@@ -1716,21 +2170,20 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 23,
-          "schemaVersion": 6,
+          "seq": 31,
+          "schemaVersion": 7,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.022Z",
+          "timestamp": "2026-08-15T12:00:00.031Z",
           "payload": {
             "stepOrdinal": 1,
-            "preparedAt": "2026-08-15T12:00:00.022Z",
-            "contextSnapshot": {
-              "schemaVersion": 2,
-              "selectionVersion": "bounded-history-v2",
+            "preparedAt": "2026-08-15T12:00:00.031Z",
+            "contextRevision": {
+              "revision": 1,
               "historyGroups": [
                 {
                   "turnId": "turn_00000000000000000000000000000003",
@@ -1738,13 +2191,15 @@
                     "item_00000000000000000000000000000005",
                     "item_00000000000000000000000000000009",
                     "item_0000000000000000000000000000000a",
-                    "item_0000000000000000000000000000000b"
+                    "item_0000000000000000000000000000000d",
+                    "item_0000000000000000000000000000000e",
+                    "item_0000000000000000000000000000000f"
                   ]
                 },
                 {
-                  "turnId": "turn_0000000000000000000000000000000c",
+                  "turnId": "turn_00000000000000000000000000000010",
                   "itemIds": [
-                    "item_0000000000000000000000000000000e"
+                    "item_00000000000000000000000000000012"
                   ]
                 }
               ],
@@ -1755,7 +2210,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "user",
-                  "characters": 19
+                  "tokens": 83
                 },
                 {
                   "itemId": "item_00000000000000000000000000000009",
@@ -1763,7 +2218,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_call",
                   "role": "assistant",
-                  "characters": 20
+                  "tokens": 172
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000a",
@@ -1771,50 +2226,66 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "characters": 262
+                  "tokens": 447
                 },
                 {
-                  "itemId": "item_0000000000000000000000000000000b",
+                  "itemId": "item_0000000000000000000000000000000d",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 226
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000e",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 480
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000f",
                   "turnId": "turn_00000000000000000000000000000003",
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "assistant",
-                  "characters": 41
+                  "tokens": 105
                 },
                 {
-                  "itemId": "item_0000000000000000000000000000000e",
-                  "turnId": "turn_0000000000000000000000000000000c",
-                  "runId": "run_0000000000000000000000000000000d",
+                  "itemId": "item_00000000000000000000000000000012",
+                  "turnId": "turn_00000000000000000000000000000010",
+                  "runId": "run_00000000000000000000000000000011",
                   "kind": "message",
                   "role": "user",
-                  "characters": 15
+                  "tokens": 79
                 }
               ],
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                "maximumCharacters": 48000,
-                "reservedCurrentRunCharacters": 12000,
-                "instructionCharacters": 891,
-                "contextDataCharacters": 0,
-                "toolCharacters": 336,
-                "historyCharacters": 342,
-                "currentRunCharacters": 15,
-                "memoryCharacters": 0,
-                "totalCharacters": 1584
+                "measurementVersion": "conservative-utf8-upper-bound",
+                "maximumTokens": 28672,
+                "reservedCurrentRunTokens": 7168,
+                "instructionTokens": 1531,
+                "contextDataTokens": 0,
+                "toolTokens": 400,
+                "historyTokens": 1513,
+                "currentRunTokens": 79,
+                "memoryTokens": 0,
+                "totalTokens": 3523
               },
               "omissions": [],
               "historyStatus": {
                 "version": 1,
                 "characters": 0,
                 "runs": []
-              }
+              },
+              "memoryContextCharacters": 0
             },
-            "stepManifest": {
-              "schemaVersion": 2,
+            "stepInput": {
               "stepOrdinal": 1,
-              "contextSnapshotVersion": 2,
+              "contextRevision": 1,
               "historyItems": [
                 {
                   "itemId": "item_00000000000000000000000000000005",
@@ -1822,7 +2293,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "user",
-                  "characters": 19
+                  "tokens": 83
                 },
                 {
                   "itemId": "item_00000000000000000000000000000009",
@@ -1830,7 +2301,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_call",
                   "role": "assistant",
-                  "characters": 20
+                  "tokens": 172
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000a",
@@ -1838,48 +2309,65 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "characters": 262
+                  "tokens": 447
                 },
                 {
-                  "itemId": "item_0000000000000000000000000000000b",
+                  "itemId": "item_0000000000000000000000000000000d",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 226
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000e",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 480
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000f",
                   "turnId": "turn_00000000000000000000000000000003",
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "message",
                   "role": "assistant",
-                  "characters": 41
+                  "tokens": 105
                 },
                 {
-                  "itemId": "item_0000000000000000000000000000000e",
-                  "turnId": "turn_0000000000000000000000000000000c",
-                  "runId": "run_0000000000000000000000000000000d",
+                  "itemId": "item_00000000000000000000000000000012",
+                  "turnId": "turn_00000000000000000000000000000010",
+                  "runId": "run_00000000000000000000000000000011",
                   "kind": "message",
                   "role": "user",
-                  "characters": 15
+                  "tokens": 79
                 }
               ],
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "unicode-codepoints-canonical-json-v1",
-                "maximumCharacters": 48000,
-                "reservedCurrentRunCharacters": 12000,
-                "instructionCharacters": 891,
-                "contextDataCharacters": 0,
-                "toolCharacters": 336,
-                "historyCharacters": 342,
-                "currentRunCharacters": 15,
-                "memoryCharacters": 0,
-                "totalCharacters": 1584
+                "measurementVersion": "conservative-utf8-upper-bound",
+                "maximumTokens": 28672,
+                "reservedCurrentRunTokens": 7168,
+                "instructionTokens": 1531,
+                "contextDataTokens": 0,
+                "toolTokens": 400,
+                "historyTokens": 1513,
+                "currentRunTokens": 79,
+                "memoryTokens": 0,
+                "totalTokens": 3523
               },
               "omissions": [],
               "historyStatus": {
                 "version": 1,
                 "characters": 0,
                 "runs": []
-              }
+              },
+              "memoryContextCharacters": 0
             },
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011"
           }
         }
       }
@@ -1891,27 +2379,27 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 24,
-          "schemaVersion": 6,
+          "seq": 32,
+          "schemaVersion": 7,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
-          "itemId": "item_00000000000000000000000000000010",
-          "timestamp": "2026-08-15T12:00:00.023Z",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
+          "itemId": "item_00000000000000000000000000000014",
+          "timestamp": "2026-08-15T12:00:00.032Z",
           "payload": {
             "item": {
-              "id": "item_00000000000000000000000000000010",
-              "turnId": "turn_0000000000000000000000000000000c",
-              "runId": "run_0000000000000000000000000000000d",
+              "id": "item_00000000000000000000000000000014",
+              "turnId": "turn_00000000000000000000000000000010",
+              "runId": "run_00000000000000000000000000000011",
               "ordinal": 2,
               "kind": "tool_call",
               "role": "assistant",
               "status": "running",
               "content": "",
               "data": {
-                "stepId": "step_0000000000000000000000000000000f",
+                "stepId": "step_00000000000000000000000000000013",
                 "callId": "golden-write",
                 "toolName": "write",
                 "arguments": {
@@ -1919,12 +2407,12 @@
                   "content": "你好\n"
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.023Z",
-              "updatedAt": "2026-08-15T12:00:00.023Z"
+              "createdAt": "2026-08-15T12:00:00.032Z",
+              "updatedAt": "2026-08-15T12:00:00.032Z"
             },
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d",
-            "itemId": "item_00000000000000000000000000000010"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011",
+            "itemId": "item_00000000000000000000000000000014"
           }
         }
       }
@@ -1936,15 +2424,15 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 25,
-          "schemaVersion": 6,
+          "seq": 33,
+          "schemaVersion": 7,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.024Z",
+          "timestamp": "2026-08-15T12:00:00.033Z",
           "payload": {
             "stepOrdinal": 1,
             "providerId": "scripted",
@@ -1955,9 +2443,9 @@
             "requestId": null,
             "usage": null,
             "activityDate": null,
-            "finishedAt": "2026-08-15T12:00:00.024Z",
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d"
+            "finishedAt": "2026-08-15T12:00:00.033Z",
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011"
           }
         }
       }
@@ -1969,27 +2457,27 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 26,
-          "schemaVersion": 6,
+          "seq": 34,
+          "schemaVersion": 7,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
-          "itemId": "item_00000000000000000000000000000010",
-          "timestamp": "2026-08-15T12:00:00.025Z",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
+          "itemId": "item_00000000000000000000000000000014",
+          "timestamp": "2026-08-15T12:00:00.034Z",
           "payload": {
             "item": {
-              "id": "item_00000000000000000000000000000010",
-              "turnId": "turn_0000000000000000000000000000000c",
-              "runId": "run_0000000000000000000000000000000d",
+              "id": "item_00000000000000000000000000000014",
+              "turnId": "turn_00000000000000000000000000000010",
+              "runId": "run_00000000000000000000000000000011",
               "ordinal": 2,
               "kind": "tool_call",
               "role": "assistant",
               "status": "completed",
               "content": "",
               "data": {
-                "stepId": "step_0000000000000000000000000000000f",
+                "stepId": "step_00000000000000000000000000000013",
                 "callId": "golden-write",
                 "toolName": "write",
                 "arguments": {
@@ -1998,12 +2486,12 @@
                 },
                 "outcome": "completed"
               },
-              "createdAt": "2026-08-15T12:00:00.023Z",
-              "updatedAt": "2026-08-15T12:00:00.025Z"
+              "createdAt": "2026-08-15T12:00:00.032Z",
+              "updatedAt": "2026-08-15T12:00:00.034Z"
             },
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d",
-            "itemId": "item_00000000000000000000000000000010"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011",
+            "itemId": "item_00000000000000000000000000000014"
           }
         }
       }
@@ -2015,29 +2503,29 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 27,
-          "schemaVersion": 6,
+          "seq": 35,
+          "schemaVersion": 7,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
-          "itemId": "item_00000000000000000000000000000011",
-          "timestamp": "2026-08-15T12:00:00.025Z",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
+          "itemId": "item_00000000000000000000000000000015",
+          "timestamp": "2026-08-15T12:00:00.034Z",
           "payload": {
             "item": {
-              "id": "item_00000000000000000000000000000011",
-              "turnId": "turn_0000000000000000000000000000000c",
-              "runId": "run_0000000000000000000000000000000d",
+              "id": "item_00000000000000000000000000000015",
+              "turnId": "turn_00000000000000000000000000000010",
+              "runId": "run_00000000000000000000000000000011",
               "ordinal": 3,
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
               "content": "{\"toolCallId\":\"golden-write\",\"toolName\":\"write\",\"ok\":true,\"output\":\"Created file successfully\",\"cancelled\":false,\"path\":\"C:/golden-workspace/hello.txt\",\"created\":true,\"bytesWritten\":7,\"verified\":true,\"bom\":false,\"newline\":\"lf\",\"truncated\":false}",
               "data": {
-                "stepId": "step_0000000000000000000000000000000f",
+                "stepId": "step_00000000000000000000000000000013",
                 "callId": "golden-write",
-                "toolCallItemId": "item_00000000000000000000000000000010",
+                "toolCallItemId": "item_00000000000000000000000000000014",
                 "toolName": "write",
                 "result": {
                   "toolCallId": "golden-write",
@@ -2054,12 +2542,12 @@
                   "truncated": false
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.025Z",
-              "updatedAt": "2026-08-15T12:00:00.025Z"
+              "createdAt": "2026-08-15T12:00:00.034Z",
+              "updatedAt": "2026-08-15T12:00:00.034Z"
             },
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d",
-            "itemId": "item_00000000000000000000000000000011"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011",
+            "itemId": "item_00000000000000000000000000000015"
           }
         }
       }
@@ -2071,21 +2559,21 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 28,
-          "schemaVersion": 6,
+          "seq": 36,
+          "schemaVersion": 7,
           "type": "file.change_recorded",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
-          "itemId": "item_00000000000000000000000000000010",
-          "timestamp": "2026-08-15T12:00:00.025Z",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
+          "itemId": "item_00000000000000000000000000000014",
+          "timestamp": "2026-08-15T12:00:00.034Z",
           "payload": {
             "threadId": "thread_00000000000000000000000000000001",
-            "toolCallItemId": "item_00000000000000000000000000000010",
+            "toolCallItemId": "item_00000000000000000000000000000014",
             "path": "C:/golden-workspace/hello.txt",
             "operation": "write",
-            "recordedAt": "2026-08-15T12:00:00.025Z",
+            "recordedAt": "2026-08-15T12:00:00.034Z",
             "before": {
               "exists": false,
               "byteCount": 0,
@@ -2108,9 +2596,9 @@
             "diff": "--- before\n+++ after\n@@ -0,0 +1 @@\n+你好\n",
             "additions": 1,
             "deletions": 0,
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d",
-            "itemId": "item_00000000000000000000000000000010"
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011",
+            "itemId": "item_00000000000000000000000000000014"
           }
         }
       }
@@ -2122,20 +2610,20 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 29,
-          "schemaVersion": 6,
+          "seq": 37,
+          "schemaVersion": 7,
           "type": "run.settled",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_0000000000000000000000000000000c",
-          "runId": "run_0000000000000000000000000000000d",
+          "turnId": "turn_00000000000000000000000000000010",
+          "runId": "run_00000000000000000000000000000011",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.026Z",
+          "timestamp": "2026-08-15T12:00:00.035Z",
           "payload": {
             "status": "completed",
-            "settledAt": "2026-08-15T12:00:00.026Z",
-            "turnId": "turn_0000000000000000000000000000000c",
-            "runId": "run_0000000000000000000000000000000d"
+            "settledAt": "2026-08-15T12:00:00.035Z",
+            "turnId": "turn_00000000000000000000000000000010",
+            "runId": "run_00000000000000000000000000000011"
           }
         }
       }

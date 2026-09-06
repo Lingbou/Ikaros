@@ -145,6 +145,8 @@ function runtimeBridge(
           ? TValue
           : never>("model.list"),
       ),
+    setModelLimits: (params) => bridgeInvocation(() =>
+      host.request<RuntimeModelSetEnabledResult>("model.set_limits", { ...params })),
     setModelEnabled: (params) =>
       bridgeInvocation(() =>
         host.request<RuntimeModelSetEnabledResult>("model.set_enabled", { ...params }),
@@ -705,7 +707,7 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
         await useAppStore.getState().configureProvider({
           kind: "deepseek",
           apiKey,
-          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat" }],
+          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 }],
         });
         providerConfigured = true;
         expect(useAppStore.getState().providers).toContainEqual(

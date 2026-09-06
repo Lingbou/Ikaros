@@ -1,18 +1,18 @@
 """Agent execution loop and serial scheduler."""
 
+from ..run_input import InputBudgetRecord
 from .context import ContextBuilder
-from .history import HistorySelectionV1, HistorySelectorV1
+from .history import HistorySelection, HistorySelector
 from .loop import AgentLoop, EventPublisher, ProtectedValues
 from .model_input import (
     ContextDataBlockV1,
-    GenerationOptionsV1,
+    GenerationOptions,
     InputAuthority,
-    InputBudgetSnapshotV1,
     InputLifetime,
     InstructionAuthority,
     InstructionBlockV1,
+    ModelInputPlan,
     ModelInputPlanner,
-    ModelInputPlanV1,
 )
 from .scheduler import AgentScheduler, RunExecutor
 
@@ -22,15 +22,15 @@ __all__ = [
     "ContextDataBlockV1",
     "ContextBuilder",
     "EventPublisher",
-    "GenerationOptionsV1",
-    "HistorySelectionV1",
-    "HistorySelectorV1",
+    "GenerationOptions",
+    "HistorySelection",
+    "HistorySelector",
     "InputAuthority",
-    "InputBudgetSnapshotV1",
+    "InputBudgetRecord",
     "InputLifetime",
     "InstructionAuthority",
     "InstructionBlockV1",
-    "ModelInputPlanV1",
+    "ModelInputPlan",
     "ModelInputPlanner",
     "ProtectedValues",
     "RunExecutor",

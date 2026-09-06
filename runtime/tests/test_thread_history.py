@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,11 @@ def test_turn_list_hydrates_every_run_and_materialized_item(
                 """,
                 (retry_run_id, prepared.turn_id, retry_timestamp, retry_timestamp),
             )
+            config = replace(store.get_run_config(prepared.run_id), run_id=retry_run_id)
+            store._connection.execute(
+                "INSERT INTO run_configs(run_id, config_json) VALUES (?, ?)",
+                (retry_run_id, json_dumps(config.to_wire())),
+            )
             store._connection.execute(
                 """
                 INSERT INTO items(
@@ -151,9 +157,7 @@ def test_turn_list_hydrates_every_run_and_materialized_item(
             "tool_result",
         ]
         assert first_run["items"][1]["content"] == "materialized answer"
-        assert first_run["items"][2]["data"]["arguments"] == {
-            "command": "echo history"
-        }
+        assert first_run["items"][2]["data"]["arguments"] == {"command": "echo history"}
         assert first_run["items"][3]["data"]["result"]["stdout"] == "history"
         assert retry_run["status"] == "failed"
         assert retry_run["items"][0]["data"] == {"reason": "test"}
@@ -172,7 +176,9 @@ def test_turn_list_hydrates_every_run_and_materialized_item(
     ],
 )
 def test_run_failure_reason_survives_history_restart_and_rebuild(
-    tmp_path: Path, status: str, reason: str | None,
+    tmp_path: Path,
+    status: str,
+    reason: str | None,
 ) -> None:
     database_path = tmp_path / "state.db"
     store = SqliteRuntimeStore(database_path)
@@ -187,7 +193,10 @@ def test_run_failure_reason_survives_history_restart_and_rebuild(
             model_id="scripted-v1",
         )
         queued = store.list_turn_page(
-            thread_id=thread.id, branch_id=thread.default_branch_id, cursor=None, limit=50,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            cursor=None,
+            limit=50,
         ).to_wire()["turns"][0]["runs"][0]
         assert queued["reasonCode"] is None
         store.mark_run_running(prepared.run_id)
@@ -203,7 +212,10 @@ def test_run_failure_reason_survives_history_restart_and_rebuild(
             if rebuild:
                 reopened.rebuild_projections()
             run = reopened.list_turn_page(
-                thread_id=thread.id, branch_id=thread.default_branch_id, cursor=None, limit=50,
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                cursor=None,
+                limit=50,
             ).to_wire()["turns"][0]["runs"][0]
             assert run["status"] == status
             assert run["reasonCode"] == reason
@@ -264,11 +276,7 @@ def test_turn_history_pages_latest_first_but_each_page_is_chronological(
         assert second.snapshot_seq > first_snapshot
         assert third.has_more is False
         assert third.next_cursor is None
-        loaded = [
-            turn.ordinal
-            for page in (first, second, third)
-            for turn in page.turns
-        ]
+        loaded = [turn.ordinal for page in (first, second, third) for turn in page.turns]
         assert sorted(loaded) == [1, 2, 3, 4, 5, 6]
         assert len(loaded) == len(set(loaded))
     finally:
@@ -296,11 +304,14 @@ def test_turn_history_empty_page_and_cursor_scope_validation(tmp_path: Path) -> 
                 ordinal=1,
             )
         )
-        assert decode_turn_history_cursor(
-            cursor,
-            thread_id=thread.id,
-            branch_id=thread.default_branch_id,
-        ).ordinal == 1
+        assert (
+            decode_turn_history_cursor(
+                cursor,
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+            ).ordinal
+            == 1
+        )
         with pytest.raises(ValueError, match="turn.list cursor is invalid"):
             decode_turn_history_cursor(
                 cursor,
@@ -503,11 +514,17 @@ def test_turn_history_queries_use_projection_indexes(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("protected", ["runs", "items"])
 def test_history_collection_keys_have_fixed_security_provenance(protected: str) -> None:
-    assert response_values_contain_protected_value(
-        {"turns": [{"runs": [{"items": []}]}]},
-        [protected],
-    ) is False
-    assert response_values_contain_protected_value(
-        {"turns": [{"runs": [{"items": [{"content": protected}]}]}]},
-        [protected],
-    ) is True
+    assert (
+        response_values_contain_protected_value(
+            {"turns": [{"runs": [{"items": []}]}]},
+            [protected],
+        )
+        is False
+    )
+    assert (
+        response_values_contain_protected_value(
+            {"turns": [{"runs": [{"items": [{"content": protected}]}]}]},
+            [protected],
+        )
+        is True
+    )

@@ -315,14 +315,14 @@ async def test_request_lowering_headers_and_text_stream() -> None:
                     ProviderMessage(
                         role="assistant",
                         content="I will run it now.",
-                        tool_calls=(ToolCall("call_1", "process_run", {"command": "echo one"}),),
+                        tool_calls=(ToolCall("call_1", "process_start", {"command": "echo one"}),),
                         reasoning_content="private reasoning replay",
                     ),
                     ProviderMessage(role="tool", content='{"ok":true}', tool_call_id="call_1"),
                 ],
                 tools=[
                     ToolDefinition(
-                        name="process_run",
+                        name="process_start",
                         description="Run a process",
                         input_schema={"type": "object"},
                     )
@@ -357,7 +357,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
                 "id": "call_1",
                 "type": "function",
                 "function": {
-                    "name": "process_run",
+                    "name": "process_start",
                     "arguments": '{"command":"echo one"}',
                 },
             }
@@ -369,7 +369,7 @@ async def test_request_lowering_headers_and_text_stream() -> None:
         "tool_call_id": "call_1",
         "content": '{"ok":true}',
     }
-    assert lowered["tools"][0]["function"]["name"] == "process_run"
+    assert lowered["tools"][0]["function"]["name"] == "process_start"
 
 
 @pytest.mark.asyncio
@@ -388,7 +388,7 @@ async def test_stream_rejects_conflicting_upstream_model_ids() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
 
@@ -414,7 +414,7 @@ async def test_custom_provider_without_key_and_tool_disabled_omits_optional_fiel
         await collect(
             adapter,
             request(
-                tools=[ToolDefinition("process_run", "Run", {"type": "object"})],
+                tools=[ToolDefinition("process_start", "Run", {"type": "object"})],
             ),
         )
 
@@ -540,107 +540,26 @@ async def test_invalid_usage_is_a_protocol_failure(usage: object) -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rejected_status", [400, 422])
-async def test_custom_provider_falls_back_without_usage_options_and_caches_support(
-    rejected_status: int,
-) -> None:
+@pytest.mark.parametrize("status", [400, 422, 429, 500])
+async def test_one_stream_request_is_exactly_one_http_attempt(status: int) -> None:
     bodies: list[dict[str, Any]] = []
 
     async def handler(incoming: httpx.Request) -> httpx.Response:
-        body = cast(dict[str, Any], json.loads(incoming.content))
-        bodies.append(body)
-        if len(bodies) == 1:
-            return httpx.Response(rejected_status)
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
-        )
+        bodies.append(cast(dict[str, Any], json.loads(incoming.content)))
+        return httpx.Response(status)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(), client=client, max_retries=0)
-        assert await collect(adapter) == [TextDelta("ok"), ResponseCompleted()]
-        assert await collect(adapter) == [TextDelta("ok"), ResponseCompleted()]
-
-    assert bodies[0]["stream_options"] == {"include_usage": True}
-    assert "stream_options" not in bodies[1]
-    assert "stream_options" not in bodies[2]
-
-
-@pytest.mark.asyncio
-async def test_failed_custom_fallback_does_not_cache_usage_as_unsupported() -> None:
-    bodies: list[dict[str, Any]] = []
-
-    async def handler(incoming: httpx.Request) -> httpx.Response:
-        body = cast(dict[str, Any], json.loads(incoming.content))
-        bodies.append(body)
-        if len(bodies) <= 2:
-            return httpx.Response(400)
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
-        )
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(), client=client, max_retries=0)
         with pytest.raises(ProviderFailure):
-            await collect(adapter)
-        assert await collect(adapter) == [TextDelta("ok"), ResponseCompleted()]
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
+    assert len(bodies) == 1
     assert bodies[0]["stream_options"] == {"include_usage": True}
-    assert "stream_options" not in bodies[1]
-    assert bodies[2]["stream_options"] == {"include_usage": True}
-
-
-@pytest.mark.asyncio
-async def test_custom_usage_support_cache_is_scoped_to_the_upstream_model() -> None:
-    bodies: list[dict[str, Any]] = []
-    configured = ProviderConfig(
-        id="custom",
-        display_name="Custom",
-        origin="custom",
-        base_url="https://provider.invalid/v1",
-        api_key="sk-provider-secret",
-        headers=(),
-        models=(
-            ModelConfig("model-a", "Model A", True, True),
-            ModelConfig("model-b", "Model B", True, True),
-        ),
-    )
-
-    async def handler(incoming: httpx.Request) -> httpx.Response:
-        body = cast(dict[str, Any], json.loads(incoming.content))
-        bodies.append(body)
-        if body["model"] == "model-a" and "stream_options" in body:
-            return httpx.Response(400)
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
-        )
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(configured, client=client, max_retries=0)
-        for model_id in ("model-a", "model-b"):
-            events = await collect(
-                adapter,
-                ProviderRequest(
-                    model_id=model_id,
-                    messages=[ProviderMessage(role="user", content="Hello")],
-                ),
-            )
-            assert events == [TextDelta("ok"), ResponseCompleted()]
-
-    assert bodies[0]["stream_options"] == {"include_usage": True}
-    assert "stream_options" not in bodies[1]
-    assert bodies[2]["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.asyncio
@@ -655,7 +574,6 @@ async def test_builtin_provider_does_not_hide_usage_options_after_rejection() ->
         adapter = OpenAICompatibleAdapter(
             provider(origin="builtin"),
             client=client,
-            max_retries=0,
         )
         with pytest.raises(ProviderFailure):
             await collect(adapter)
@@ -680,7 +598,7 @@ async def test_reasoning_and_interleaved_tool_calls_are_assembled_by_index() -> 
                                     "id": "call_2",
                                     "type": "function",
                                     "function": {
-                                        "name": "process_run",
+                                        "name": "process_start",
                                         "arguments": '{"command":"two',
                                     },
                                 }
@@ -704,7 +622,7 @@ async def test_reasoning_and_interleaved_tool_calls_are_assembled_by_index() -> 
                                     "id": "call_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "process_run",
+                                        "name": "process_start",
                                         "arguments": '{"command":"one"}',
                                     },
                                 },
@@ -743,8 +661,8 @@ async def test_reasoning_and_interleaved_tool_calls_are_assembled_by_index() -> 
     assert events == [
         ReasoningDelta("plan"),
         ReasoningDelta(""),
-        ToolCallCompleted(ToolCall("call_1", "process_run", {"command": "one"})),
-        ToolCallCompleted(ToolCall("call_2", "process_run", {"command": "two"})),
+        ToolCallCompleted(ToolCall("call_1", "process_start", {"command": "one"})),
+        ToolCallCompleted(ToolCall("call_2", "process_start", {"command": "two"})),
         ResponseCompleted(),
     ]
 
@@ -758,7 +676,7 @@ async def test_reasoning_and_interleaved_tool_calls_are_assembled_by_index() -> 
                 "index": 0,
                 "id": "call",
                 "type": "function",
-                "function": {"name": "process_run", "arguments": "{"},
+                "function": {"name": "process_start", "arguments": "{"},
             }
         ],
         [
@@ -766,7 +684,7 @@ async def test_reasoning_and_interleaved_tool_calls_are_assembled_by_index() -> 
                 "index": 0,
                 "id": "call",
                 "type": "function",
-                "function": {"name": "process_run", "arguments": "[]"},
+                "function": {"name": "process_start", "arguments": "[]"},
             }
         ],
         [
@@ -805,7 +723,7 @@ async def test_invalid_tool_calls_fail_before_executor(
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(), client=client, max_retries=0)
+        adapter = OpenAICompatibleAdapter(provider(), client=client)
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
 
@@ -839,7 +757,7 @@ async def test_invalid_json_numbers_never_reach_tool_arguments(invalid_number: s
                                 "id": "call",
                                 "type": "function",
                                 "function": {
-                                    "name": "process_run",
+                                    "name": "process_start",
                                     "arguments": f'{{"timeoutMs":{invalid_number}}}',
                                 },
                             }
@@ -860,7 +778,7 @@ async def test_invalid_json_numbers_never_reach_tool_arguments(invalid_number: s
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
 
@@ -881,7 +799,7 @@ async def test_nonstandard_json_constant_in_ignored_sse_field_is_rejected() -> N
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
 
@@ -900,7 +818,7 @@ async def test_deeply_nested_sse_json_is_a_protocol_failure() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
 
@@ -918,7 +836,7 @@ async def test_tool_call_without_terminal_finish_reason_is_rejected() -> None:
                                 "index": 0,
                                 "id": "call",
                                 "type": "function",
-                                "function": {"name": "process_run", "arguments": "{}"},
+                                "function": {"name": "process_start", "arguments": "{}"},
                             }
                         ]
                     },
@@ -937,7 +855,7 @@ async def test_tool_call_without_terminal_finish_reason_is_rejected() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure, match="invalid streaming"):
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
 
 @pytest.mark.asyncio
@@ -953,7 +871,7 @@ async def test_empty_tool_arguments_are_normalized_to_an_empty_object() -> None:
                                 "index": 0,
                                 "id": "call",
                                 "type": "function",
-                                "function": {"name": "process_run", "arguments": ""},
+                                "function": {"name": "process_start", "arguments": ""},
                             }
                         ]
                     },
@@ -974,7 +892,7 @@ async def test_empty_tool_arguments_are_normalized_to_an_empty_object() -> None:
         events = await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert events == [
-        ToolCallCompleted(ToolCall("call", "process_run", {})),
+        ToolCallCompleted(ToolCall("call", "process_start", {})),
         ResponseCompleted(),
     ]
 
@@ -997,7 +915,7 @@ async def test_api_key_echo_split_across_text_deltas_is_rejected_before_leaking(
 
     emitted: list[ProviderEvent] = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(api_key=secret), client=client, max_retries=0)
+        adapter = OpenAICompatibleAdapter(provider(api_key=secret), client=client)
         with pytest.raises(ProviderFailure) as captured:
             async for event in adapter.stream(request(), cancellation=CancellationToken()):
                 emitted.append(event)
@@ -1046,7 +964,7 @@ async def test_header_echo_split_across_reasoning_deltas_is_rejected() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
     assert secret not in str(captured.value)
@@ -1069,7 +987,7 @@ async def test_header_echo_split_across_tool_argument_fragments_is_rejected() ->
                                     "id": "call",
                                     "type": "function",
                                     "function": {
-                                        "name": "process_run",
+                                        "name": "process_start",
                                         "arguments": f'{{"command":"{secret[:7]}',
                                     },
                                 }
@@ -1110,7 +1028,7 @@ async def test_header_echo_split_across_tool_argument_fragments_is_rejected() ->
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure) as captured:
-            await collect(OpenAICompatibleAdapter(provider(), client=client, max_retries=0))
+            await collect(OpenAICompatibleAdapter(provider(), client=client))
 
     assert captured.value.category == "protocol"
     assert secret not in str(captured.value)
@@ -1147,7 +1065,7 @@ async def test_http_errors_are_normalized_without_body_or_secret_values(
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(api_key=secret), client=client, max_retries=0)
+        adapter = OpenAICompatibleAdapter(provider(api_key=secret), client=client)
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
 
@@ -1174,7 +1092,6 @@ async def test_short_header_value_cannot_escape_as_request_id() -> None:
         adapter = OpenAICompatibleAdapter(
             provider(api_key=None, headers=(("X-Protected", secret),)),
             client=client,
-            max_retries=0,
         )
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
@@ -1197,7 +1114,7 @@ async def test_unexpected_transport_error_is_detached_and_redacted(
             raise RuntimeError(secret)
 
         monkeypatch.setattr(client, "build_request", explode)
-        adapter = OpenAICompatibleAdapter(provider(), client=client, max_retries=3)
+        adapter = OpenAICompatibleAdapter(provider(), client=client)
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
 
@@ -1208,50 +1125,6 @@ async def test_unexpected_transport_error_is_detached_and_redacted(
     assert secret not in repr(error)
     assert error.__cause__ is None
     assert error.__context__ is None
-
-
-@pytest.mark.asyncio
-async def test_retry_occurs_only_before_stream_output() -> None:
-    attempts = 0
-
-    async def handler(_incoming: httpx.Request) -> httpx.Response:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            return httpx.Response(500, headers={"retry-after": "0"})
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=ChunkStream([sse(text_chunk("retried", finish_reason="stop"))]),
-        )
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        events = await collect(OpenAICompatibleAdapter(provider(), client=client))
-
-    assert attempts == 2
-    assert events == [TextDelta("retried"), ResponseCompleted()]
-
-
-@pytest.mark.asyncio
-async def test_non_finite_retry_after_uses_safe_default_backoff() -> None:
-    attempts = 0
-
-    async def handler(_incoming: httpx.Request) -> httpx.Response:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            return httpx.Response(429, headers={"retry-after": "NaN"})
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=ChunkStream([sse(text_chunk("retried", finish_reason="stop"))]),
-        )
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        events = await collect(OpenAICompatibleAdapter(provider(), client=client))
-
-    assert attempts == 2
-    assert events == [TextDelta("retried"), ResponseCompleted()]
 
 
 @pytest.mark.asyncio
@@ -1323,7 +1196,6 @@ async def test_partial_stream_failure_persists_early_response_metadata_without_s
             adapter = OpenAICompatibleAdapter(
                 provider(api_key=secret, headers=()),
                 client=client,
-                max_retries=0,
             )
             loop = AgentLoop(
                 store,
@@ -1341,7 +1213,7 @@ async def test_partial_stream_failure_persists_early_response_metadata_without_s
         row = store._connection.execute(
             """
             SELECT outcome, response_model_id, request_id
-            FROM model_steps WHERE run_id = ? AND step_ordinal = 1
+            FROM model_calls WHERE run_id = ? AND step_ordinal = 1
             """,
             (prepared.run_id,),
         ).fetchone()
@@ -1416,7 +1288,7 @@ async def test_stream_cancellation_persists_early_response_metadata_without_secr
         row = store._connection.execute(
             """
             SELECT outcome, response_model_id, request_id
-            FROM model_steps WHERE run_id = ? AND step_ordinal = 1
+            FROM model_calls WHERE run_id = ? AND step_ordinal = 1
             """,
             (prepared.run_id,),
         ).fetchone()
@@ -1503,7 +1375,6 @@ async def test_response_header_timeout_cancels_transport_and_is_normalized() -> 
             provider(),
             client=client,
             timeouts=ProviderTimeouts(connect=1, response_header=0.01, stream_idle=1),
-            max_retries=0,
         )
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
@@ -1530,7 +1401,6 @@ async def test_stream_idle_timeout_and_cancellation_close_response() -> None:
             provider(),
             client=client,
             timeouts=ProviderTimeouts(connect=1, response_header=1, stream_idle=0.01),
-            max_retries=0,
         )
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
@@ -1594,3 +1464,27 @@ async def test_provider_registry_caches_replaces_and_closes_clients(tmp_path: Pa
     assert len(created) == 2
     await registry.close()
     assert all(adapter._closed for adapter in created)
+
+
+@pytest.mark.asyncio
+async def test_request_output_limit_is_sent_even_if_live_model_config_differs() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        bodies.append(cast(dict[str, Any], json.loads(incoming.content)))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkStream([sse(text_chunk("ok", finish_reason="stop"))]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await collect(
+            OpenAICompatibleAdapter(provider(), client=client),
+            ProviderRequest(
+                model_id="model",
+                messages=[ProviderMessage("user", "Continue")],
+                max_output_tokens=2048,
+            ),
+        )
+    assert bodies[0]["max_tokens"] == 2048

@@ -12,7 +12,7 @@ from websockets.asyncio.server import ServerConnection
 from .agent.loop import AgentLoop, EventPublisher
 from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
-from .domain import CommandOutcome
+from .domain import CommandOutcome, JournalEvent
 from .identity import load_identity_core
 from .memory import MemoryRetrieverV1, SqliteMemoryStore
 from .paths import RuntimePaths
@@ -21,7 +21,7 @@ from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
 from .providers.scripted import ScriptedProvider
-from .run_input import InstructionBlockV1, ProviderExecutionSnapshotV1
+from .run_input import InstructionBlockV1, ProviderExecutionSnapshot
 from .security import RuntimeSecurity
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
@@ -35,7 +35,16 @@ from .services.turns import TurnService
 from .services.usage import UsageService
 from .skills import SkillCatalog
 from .storage import SqliteRuntimeStore
-from .tools import EditTool, ProcessRunTool, ReadTool, WriteTool
+from .tools import (
+    EditTool,
+    ProcessManager,
+    ProcessReadTool,
+    ProcessStartTool,
+    ProcessStopTool,
+    ProcessWaitTool,
+    ReadTool,
+    WriteTool,
+)
 from .tools.core import ToolExecutor, ToolRegistry
 from .tools.policy import FullAccessPolicy
 
@@ -56,13 +65,13 @@ class RuntimeApplication:
         self._store = store
         self._memory_store = memory_store
         paths = RuntimePaths.from_home(store.database_path.parent)
-        self._config = config_store or ConfigStore(
-            ConfigDocumentStore(paths.home)
-        )
+        self._config = config_store or ConfigStore(ConfigDocumentStore(paths.home))
         self.security = RuntimeSecurity(
             self._config.protected_values,
-            lambda values: self._store.journal_contains_protected_values(values)
-            or self._memory_store.contains_protected_values(tuple(values)),
+            lambda values: (
+                self._store.journal_contains_protected_values(values)
+                or self._memory_store.contains_protected_values(tuple(values))
+            ),
         )
         self.security.assert_configuration_safe()
         self.identity_core = identity_core or load_identity_core()
@@ -79,19 +88,51 @@ class RuntimeApplication:
             self._config,
             adapter_factory=OpenAICompatibleAdapter,
         )
+        self._process_events: set[asyncio.Task[None]] = set()
+
+        async def publish_process(event: JournalEvent) -> None:
+            await publish(event)
+
+        def record_process(record: dict[str, object]) -> None:
+            event = self._store.record_process(record)
+            task = asyncio.create_task(publish_process(event))
+            self._process_events.add(task)
+            task.add_done_callback(self._process_events.discard)
+
+        self._process_manager = ProcessManager(
+            record=record_process,
+            protected_values=self.security.protected_values,
+        )
+        self._process_manager.restore(
+            tuple(
+                record
+                for record in self._store.process_records()
+                if record["state"] == "running" or record["errorCode"] == "start_pending"
+            )
+        )
         tool_executor = ToolExecutor(
-            ToolRegistry([ProcessRunTool(), ReadTool(), WriteTool(), EditTool()]),
+            ToolRegistry(
+                [
+                    ProcessStartTool(self._process_manager),
+                    ProcessReadTool(self._process_manager),
+                    ProcessWaitTool(self._process_manager),
+                    ProcessStopTool(self._process_manager),
+                    ReadTool(),
+                    WriteTool(),
+                    EditTool(),
+                ]
+            ),
             FullAccessPolicy(),
         )
 
         def provider_execution_snapshot(
             provider_id: str,
             model_id: str,
-        ) -> ProviderExecutionSnapshotV1:
+        ) -> ProviderExecutionSnapshot:
             if provider_id == ScriptedProvider.id:
                 if model_id != ScriptedProvider.model_id:
                     raise ValueError("scripted model is unavailable")
-                return ProviderExecutionSnapshotV1(
+                return ProviderExecutionSnapshot(
                     provider_id=ScriptedProvider.id,
                     origin="scripted",
                     base_url=None,
@@ -105,6 +146,7 @@ class RuntimeApplication:
             self._provider_registry,
             publish,
             tool_executor,
+            process_manager=self._process_manager,
             protected_values=self.security.protected_values,
             provider_snapshot_resolver=provider_execution_snapshot,
             identity_core=self.identity_core,
@@ -123,7 +165,6 @@ class RuntimeApplication:
             self.skills.enabled_descriptors,
             lambda: tool_executor.definitions,
             tool_executor.policy_name,
-            loop.max_steps,
         )
         self.providers = ProviderService(
             self._config,
@@ -163,6 +204,9 @@ class RuntimeApplication:
     async def close(self) -> None:
         try:
             await self._scheduler.close()
+            await self._process_manager.close()
+            if self._process_events:
+                await asyncio.gather(*self._process_events)
             await self._provider_registry.close()
         finally:
             self._memory_store.close()
@@ -188,8 +232,10 @@ async def run_runtime_server(settings: ServerSettings) -> None:
 
         pre_recovery_security = RuntimeSecurity(
             config_store.protected_values,
-            lambda values: store.journal_contains_protected_values(values)
-            or opened_memory_store.contains_protected_values(tuple(values)),
+            lambda values: (
+                store.journal_contains_protected_values(values)
+                or opened_memory_store.contains_protected_values(tuple(values))
+            ),
         )
         pre_recovery_security.assert_configuration_safe()
         recovery = store.recover_incomplete_runs()

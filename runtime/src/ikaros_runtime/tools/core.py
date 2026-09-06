@@ -13,6 +13,17 @@ from .policy import ExecutionPolicy
 
 
 @dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    """Trusted execution ownership; never supplied by model tool arguments."""
+
+    run_id: str
+    step_ordinal: int
+    item_id: str
+    thread_id: str
+    default_cwd: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolDefinition:
     name: str
     description: str
@@ -76,7 +87,7 @@ class ToolExecutionCancelled(RunCancelled):
 
 class ToolTaskCancelled(asyncio.CancelledError):
     def __init__(self, result: ToolResult) -> None:
-        super().__init__("task cancelled after the file mutation settled")
+        super().__init__("task cancelled after the tool state was captured")
         self.result = result
 
 
@@ -88,7 +99,7 @@ class Tool(Protocol):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult: ...
 
 
@@ -127,7 +138,7 @@ class ToolExecutor:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
         tool = self._registry.resolve(call.name)
@@ -142,7 +153,7 @@ class ToolExecutor:
         return await tool.execute(
             call,
             cancellation=cancellation,
-            default_cwd=default_cwd,
+            context=context,
         )
 
 

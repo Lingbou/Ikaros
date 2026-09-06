@@ -7,8 +7,6 @@ from .errors import ProtectedValueError as ProtectedValueError
 from .protocol.spec import JOURNAL_EVENT_TYPE_SET, PROVIDER_TOOL_ID_SET, SERVER_NAME
 from .run_input import (
     INPUT_BUDGET_MEASUREMENT_VERSION,
-    REGISTERED_CONTEXT_SELECTION_VERSIONS,
-    REGISTERED_INPUT_BUDGET_MODES,
 )
 
 type ProtectedValuesSource = Callable[[], Sequence[str]]
@@ -344,25 +342,31 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "contentSha256",
         "contextData",
         "contextDataCharacters",
-        "contextSelectionVersion",
-        "contextSnapshot",
-        "contextSnapshotVersion",
-        "currentRunCharacters",
+        "contextRevision",
+        "contextWindow",
+        "maxOutputTokens",
+        "maxModelCalls",
+        "maxDurationSeconds",
+        "executionLimits",
+        "maximumTokens",
+        "reservedCurrentRunTokens",
+        "instructionTokens",
+        "contextDataTokens",
+        "toolTokens",
+        "historyTokens",
+        "currentRunTokens",
+        "memoryTokens",
         "definitionSha256",
         "descriptorSha256",
         "finishedAt",
         "forgottenAt",
-        "historyCharacters",
         "historyGroups",
         "historyItems",
         "identityCore",
         "inputSchema",
-        "instructionCharacters",
         "instructions",
         "itemIds",
         "lifetime",
-        "maxSteps",
-        "maximumCharacters",
         "measurementVersion",
         "memory",
         "memoryCharacters",
@@ -370,7 +374,6 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "memoryId",
         "memories",
         "mode",
-        "modelInputPlanVersion",
         "omissions",
         "outputStyle",
         "preparedAt",
@@ -382,22 +385,16 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "resultingRevision",
         "responseModelId",
         "revision",
-        "reservedCurrentRunCharacters",
-        "runManifest",
-        "selectionVersion",
         "skillCatalog",
         "source",
         "sourceId",
         "sourceKind",
         "sourceType",
-        "stepManifest",
+        "stepInput",
         "scope",
         "state",
-        "submissionFrame",
-        "submissionFrameVersion",
+        "runConfig",
         "supportsTools",
-        "totalCharacters",
-        "toolCharacters",
         "userItemId",
         # Runtime-owned file inspector metadata; body/path/diff remain guarded.
         "before",
@@ -499,20 +496,6 @@ def _is_fixed_response_value(
         return True
     if (
         path
-        and path[-1] == "contextSelectionVersion"
-        and value in REGISTERED_CONTEXT_SELECTION_VERSIONS
-    ):
-        return True
-    if (
-        path
-        and path[-1] == "selectionVersion"
-        and value in REGISTERED_CONTEXT_SELECTION_VERSIONS
-    ):
-        return True
-    if path and path[-1] == "mode" and value in REGISTERED_INPUT_BUDGET_MODES:
-        return True
-    if (
-        path
         and path[-1] == "measurementVersion"
         and value == INPUT_BUDGET_MEASUREMENT_VERSION
     ):
@@ -600,11 +583,11 @@ def _is_runtime_owned_model_input_path(path: tuple[str, ...]) -> bool:
 
     Snapshot roots must be direct Journal-event payload fields. This prevents a
     Tool result from smuggling protected text under look-alike object names.
-    Submission Frames and Run Manifests are deliberately handled field by
-    field because their Workspace, Skill, and Provider/Model values are dynamic.
+    Run configurations are handled field by field because their Workspace,
+    Skill, and Provider/Model values are dynamic.
     """
 
-    frame_index = _journal_payload_child_index(path, "submissionFrame")
+    frame_index = _journal_payload_child_index(path, "runConfig")
     if frame_index is not None:
         relative = path[frame_index + 1 :]
         if relative[:1] == ("tools",):
@@ -616,18 +599,10 @@ def _is_runtime_owned_model_input_path(path: tuple[str, ...]) -> bool:
             return True
         if relative[:2] == ("instructions", "skillCatalog"):
             return relative[-1:] != ("content",)
-        if relative[:1] == ("contextData",):
-            return True
-
-    manifest_index = _journal_payload_child_index(path, "runManifest")
-    if manifest_index is not None:
-        relative = path[manifest_index + 1 :]
-        if relative[:1] in {("instructions",), ("tools",)}:
-            return True
 
     return any(
         _journal_payload_child_index(path, field) is not None
-        for field in ("contextSnapshot", "stepManifest")
+        for field in ("contextRevision", "stepInput")
     )
 
 

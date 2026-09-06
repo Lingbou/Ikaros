@@ -25,20 +25,15 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
         thread_columns = {
             row["name"] for row in store._connection.execute("PRAGMA table_info(threads)")
         }
-        run_columns = {
-            row["name"] for row in store._connection.execute("PRAGMA table_info(runs)")
-        }
+        run_columns = {row["name"] for row in store._connection.execute("PRAGMA table_info(runs)")}
         usage_columns = {
-            row["name"]
-            for row in store._connection.execute("PRAGMA table_info(model_usages)")
+            row["name"] for row in store._connection.execute("PRAGMA table_info(model_usages)")
         }
         run_input_columns = {
-            row["name"]
-            for row in store._connection.execute("PRAGMA table_info(run_inputs)")
+            row["name"] for row in store._connection.execute("PRAGMA table_info(run_configs)")
         }
         model_step_columns = {
-            row["name"]
-            for row in store._connection.execute("PRAGMA table_info(model_steps)")
+            row["name"] for row in store._connection.execute("PRAGMA table_info(model_calls)")
         }
         item_columns = {
             row["name"] for row in store._connection.execute("PRAGMA table_info(items)")
@@ -57,8 +52,10 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             "branches",
             "turns",
             "runs",
-            "run_inputs",
-            "model_steps",
+            "run_configs",
+            "context_revisions",
+            "process_sessions",
+            "model_calls",
             "items",
             "model_usages",
             "file_changes",
@@ -84,14 +81,13 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
         } <= usage_columns
         assert {
             "run_id",
-            "submission_frame_json",
-            "run_manifest_json",
-            "context_snapshot_json",
+            "config_json",
         } == run_input_columns
         assert {
             "run_id",
             "step_ordinal",
-            "step_manifest_json",
+            "input_json",
+            "purpose",
             "prepared_at",
             "outcome",
             "reason_code",
@@ -141,7 +137,7 @@ def test_current_database_reopens_without_rewriting_state(tmp_path: Path) -> Non
         reopened.close()
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 999])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8, 9, 999])
 def test_non_current_schema_version_requires_explicit_reset(
     tmp_path: Path,
     version: int,

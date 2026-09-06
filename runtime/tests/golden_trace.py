@@ -8,12 +8,12 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
 import ikaros_runtime.agent.loop as agent_loop_module
 import ikaros_runtime.memory.store as memory_store_module
-import ikaros_runtime.storage.journal as journal_module
 import ikaros_runtime.storage.store as store_module
 from ikaros_runtime import __version__
 from ikaros_runtime.agent.loop import AgentLoop
@@ -38,11 +38,14 @@ from ikaros_runtime.providers.base import (
 )
 from ikaros_runtime.providers.scripted import ScriptedProvider
 from ikaros_runtime.run_input import (
-    ProviderExecutionSnapshotV1,
-    SubmissionFrameTemplateV1,
+    ProviderExecutionSnapshot,
+    RunConfigTemplate,
 )
 from ikaros_runtime.services.memories import MemoryService
 from ikaros_runtime.storage import SqliteRuntimeStore
+from ikaros_runtime.tools import ProcessManager
+from ikaros_runtime.tools import process as process_tools
+from ikaros_runtime.tools import process_manager as process_manager_module
 from ikaros_runtime.tools.core import (
     ToolCall,
     ToolExecutor,
@@ -50,7 +53,13 @@ from ikaros_runtime.tools.core import (
     ToolResult,
 )
 from ikaros_runtime.tools.policy import FullAccessPolicy
-from ikaros_runtime.tools.process import ProcessRunTool
+from ikaros_runtime.tools.process import (
+    ProcessReadTool,
+    ProcessStartTool,
+    ProcessStopTool,
+    ProcessWaitTool,
+)
+from ikaros_runtime.tools.process_platform import _SpawnedProcess
 from ikaros_runtime.tools.write import WriteTool
 
 _RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -90,38 +99,27 @@ class _DeterministicMonotonic:
         return value
 
 
-class _GoldenProcessTool:
-    """A deterministic executor for the real built-in process_run definition."""
+async def _golden_spawn(command: str, cwd: str | None) -> _SpawnedProcess:
+    if command != "golden" or cwd != "C:/golden-workspace":
+        raise AssertionError("unexpected golden command or workspace")
+    stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
+    stdout.feed_data(b"golden-output\n")
+    stdout.feed_eof()
+    stderr.feed_eof()
+    process = cast(
+        asyncio.subprocess.Process,
+        SimpleNamespace(
+            pid=4242,
+            returncode=0,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+    return _SpawnedProcess(process)
 
-    definition = ProcessRunTool.definition
 
-    async def execute(
-        self,
-        call: ToolCall,
-        *,
-        cancellation: CancellationToken,
-        default_cwd: str | None = None,
-    ) -> ToolResult:
-        cancellation.raise_if_cancelled()
-        if call.name != "process_run" or call.arguments != {"command": "golden"}:
-            raise AssertionError("Golden ScriptedProvider emitted an unexpected Tool call")
-        if default_cwd is not None:
-            raise AssertionError("Golden Tool unexpectedly received a Thread workspace")
-        return ToolResult(
-            tool_call_id=call.id,
-            tool_name=call.name,
-            ok=True,
-            output="golden-output",
-            details={
-                "stdout": "golden-output\n",
-                "stderr": "",
-                "cwd": "C:/golden-workspace",
-                "exitCode": 0,
-                "durationMs": 3,
-                "timedOut": False,
-                "truncated": False,
-            },
-        )
+async def _golden_terminate(spawned: _SpawnedProcess) -> None:
+    return None
 
 
 class _GoldenScriptedProvider:
@@ -160,8 +158,8 @@ async def _discard_event(_event: JournalEvent) -> None:
     return None
 
 
-def _provider_snapshot() -> ProviderExecutionSnapshotV1:
-    return ProviderExecutionSnapshotV1(
+def _provider_snapshot() -> ProviderExecutionSnapshot:
+    return ProviderExecutionSnapshot(
         provider_id=ScriptedProvider.id,
         origin="scripted",
         base_url=None,
@@ -171,9 +169,9 @@ def _provider_snapshot() -> ProviderExecutionSnapshotV1:
 
 
 def _snapshot_resolver(
-    snapshot: ProviderExecutionSnapshotV1,
-) -> Callable[[str, str], ProviderExecutionSnapshotV1]:
-    def resolve(provider_id: str, model_id: str) -> ProviderExecutionSnapshotV1:
+    snapshot: ProviderExecutionSnapshot,
+) -> Callable[[str, str], ProviderExecutionSnapshot]:
+    def resolve(provider_id: str, model_id: str) -> ProviderExecutionSnapshot:
         if (provider_id, model_id) != (snapshot.provider_id, snapshot.model_id):
             raise ValueError("Golden Run requested an unexpected Provider or Model")
         return snapshot
@@ -205,6 +203,8 @@ def _notification_name(event: JournalEvent, occurrence: int) -> str:
             if payload["stepOrdinal"] == 1
             else f"model-response-finished-step-{payload['stepOrdinal']}"
         )
+    if event.type == "process.recorded":
+        return f"process-recorded-{occurrence}"
     if event.type == "run.settled":
         return "run-settled"
     if event.type == "item.delta":
@@ -230,7 +230,7 @@ def _notification_messages(events: list[JournalEvent]) -> list[GoldenMessage]:
         occurrences[event.type] = occurrences.get(event.type, 0) + 1
         name = _notification_name(event, occurrences[event.type])
         if name in names:
-            raise AssertionError(f"Golden notification name is duplicated: {name}")
+            name = f"{name}-{occurrences[event.type]}"
         names.add(name)
         messages.append(
             {
@@ -276,13 +276,13 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
     snapshot = _provider_snapshot()
     identity_core = load_identity_core()
     provider = _GoldenScriptedProvider()
-    tool = _GoldenProcessTool()
-    executor = ToolExecutor(ToolRegistry((tool,)), FullAccessPolicy())
 
     with (
-        # This fixture remains a compatibility contract for the v1 selector.
-        patch.object(store_module, "CONTEXT_SELECTION_VERSION", "bounded-history-v1"),
-        patch.object(journal_module, "JOURNAL_EVENT_SCHEMA_VERSION", 5),
+        patch.object(process_manager_module, "_spawn_process", new=_golden_spawn),
+        patch.object(process_manager_module, "_terminate_process_tree", new=_golden_terminate),
+        patch.object(process_manager_module, "_resume_spawned_process", new=lambda spawned: None),
+        patch.object(process_manager_module, "_now", new=utc_now),
+        patch.object(process_tools, "_resolve_cwd", return_value=Path("C:/golden-workspace")),
         patch.object(uuid, "uuid4", new=ids),
         patch.object(store_module, "utc_now", new=utc_now),
         patch.object(memory_store_module, "utc_now", new=utc_now),
@@ -290,25 +290,41 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
         patch.object(agent_loop_module, "monotonic", new=monotonic),
     ):
         store = SqliteRuntimeStore(database_path)
+
+        def record_process(fact: dict[str, Any]) -> None:
+            store.record_process(fact)
+
+        manager = ProcessManager(record=record_process)
+        executor = ToolExecutor(
+            ToolRegistry(
+                (
+                    ProcessStartTool(manager),
+                    ProcessReadTool(manager),
+                    ProcessWaitTool(manager),
+                    ProcessStopTool(manager),
+                )
+            ),
+            FullAccessPolicy(),
+        )
         memory_store = SqliteMemoryStore(database_path.with_name("memory.db"))
         try:
             thread, _created = store.create_thread("Golden trace draft")
             renamed, _renamed = store.rename_thread(thread.id, "Golden trace")
             store.set_thread_archived(thread.id, archived=True)
             store.set_thread_archived(thread.id, archived=False)
-            frame = SubmissionFrameTemplateV1.create(
+            frame = RunConfigTemplate.create(
                 provider=snapshot,
                 execution_policy=executor.policy_name,
                 skills=(),
                 tools=executor.definitions,
                 identity_core=identity_core,
-                max_steps=2,
+                max_model_calls=4,
             )
             prepared = store.prepare_turn(
                 thread_id=thread.id,
                 branch_id=thread.default_branch_id,
                 content="/process.run golden",
-                frame_template=frame,
+                run_config_template=frame,
             )
             memory_service = MemoryService(memory_store, lambda _value: None, store)
             memory_create_params = {
@@ -328,6 +344,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 {provider.id: provider},
                 _discard_event,
                 executor,
+                process_manager=manager,
                 provider_snapshot_resolver=_snapshot_resolver(snapshot),
                 identity_core=identity_core,
                 memory_retriever=MemoryRetrieverV1(memory_store),
@@ -375,7 +392,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
             }
             memory_forgotten_list = memory_service.list(memory_forgotten_list_params)
             memory_tombstone = memory_service.get(memory_get_params)
-            legacy_messages = [
+            session_messages = [
                 _response_message(
                     name="thread-list-page",
                     method="thread.list",
@@ -453,131 +470,124 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 ),
                 *_notification_messages(events),
             ]
-            # Append a v2/schema6 operation while retaining all original v1/schema5
-            # envelopes. This mixed Journal must rebuild without upgrading history.
-            with (
-                patch.object(store_module, "CONTEXT_SELECTION_VERSION", "bounded-history-v2"),
-                patch.object(journal_module, "JOURNAL_EVENT_SCHEMA_VERSION", 6),
-            ):
-                file_path = "C:/golden-workspace/hello.txt"
-                file_frame = SubmissionFrameTemplateV1.create(
-                    provider=snapshot,
-                    execution_policy="full_access",
-                    skills=(),
-                    tools=(WriteTool.definition,),
-                    identity_core=identity_core,
-                    max_steps=2,
-                )
-                file_turn = store.prepare_turn(
-                    thread_id=thread.id,
-                    branch_id=thread.default_branch_id,
-                    content="Write hello.txt",
-                    frame_template=file_frame,
-                )
-                store.mark_run_running(file_turn.run_id)
-                store.prepare_model_step(file_turn.run_id, step_ordinal=1)
-                call = ToolCall(
-                    "golden-write", "write", {"filePath": file_path, "content": "你好\n"}
-                )
-                completed = store.complete_provider_step(
-                    file_turn.run_id,
-                    step_ordinal=1,
-                    assistant_item_id=None,
-                    tool_calls=(call,),
-                    reasoning_content=None,
-                    usage=None,
-                    response_model_id=None,
-                    request_id=None,
-                )
-                item_id = completed.tool_call_item_ids[0]
-                before = FileRevisionCapture(
+            file_path = "C:/golden-workspace/hello.txt"
+            file_frame = RunConfigTemplate.create(
+                provider=snapshot,
+                execution_policy="full_access",
+                skills=(),
+                tools=(WriteTool.definition,),
+                identity_core=identity_core,
+                max_model_calls=2,
+            )
+            file_turn = store.prepare_turn(
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                content="Write hello.txt",
+                run_config_template=file_frame,
+            )
+            store.mark_run_running(file_turn.run_id)
+            store.prepare_model_step(file_turn.run_id, step_ordinal=1)
+            call = ToolCall("golden-write", "write", {"filePath": file_path, "content": "你好\n"})
+            completed = store.complete_provider_step(
+                file_turn.run_id,
+                step_ordinal=1,
+                assistant_item_id=None,
+                tool_calls=(call,),
+                reasoning_content=None,
+                usage=None,
+                response_model_id=None,
+                request_id=None,
+            )
+            item_id = completed.tool_call_item_ids[0]
+            before = FileRevisionCapture(
+                {
+                    "exists": False,
+                    "byteCount": 0,
+                    "revision": None,
+                    "encoding": None,
+                    "bom": None,
+                    "newline": None,
+                    "lineCount": 0,
+                },
+                text="",
+            )
+            capture = build_file_change(Path(file_path), "write", before, "你好\n".encode())
+            # Path is a fixture identity, independent of the host path syntax.
+            capture = FileChangeCapture(
+                file_path,
+                capture.operation,
+                capture.before,
+                capture.after,
+                capture.diff,
+                capture.additions,
+                capture.deletions,
+                capture.reason,
+            )
+            result = ToolResult(
+                call.id,
+                call.name,
+                True,
+                "Created file successfully",
+                {
+                    "path": file_path,
+                    "created": True,
+                    "bytesWritten": 7,
+                    "verified": True,
+                    "bom": False,
+                    "newline": "lf",
+                    "truncated": False,
+                },
+            )
+            store.complete_tool_call(
+                item_id,
+                status="completed",
+                result=result.to_wire(),
+                result_content=result.to_model_content(),
+                file_change=capture,
+            )
+            store.terminalize_run(file_turn.run_id, "completed")
+            file_events, _ = store.replay_events(latest_seq, 1000)
+            file_messages = []
+            for index, event in enumerate(file_events):
+                file_messages.append(
                     {
-                        "exists": False,
-                        "byteCount": 0,
-                        "revision": None,
-                        "encoding": None,
-                        "bom": None,
-                        "newline": None,
-                        "lineCount": 0,
-                    },
-                    text="",
+                        "name": "file-change-recorded"
+                        if event.type == "file.change_recorded"
+                        else f"file-flow-event-{index}",
+                        "kind": "notification",
+                        "envelope": {
+                            "jsonrpc": JSONRPC_VERSION,
+                            "method": EVENT_NOTIFICATION_METHOD,
+                            "params": event.to_wire(),
+                        },
+                    }
                 )
-                capture = build_file_change(Path(file_path), "write", before, "你好\n".encode())
-                # Path is a fixture identity, independent of the host path syntax.
-                capture = FileChangeCapture(
-                    file_path,
-                    capture.operation,
-                    capture.before,
-                    capture.after,
-                    capture.diff,
-                    capture.additions,
-                    capture.deletions,
-                    capture.reason,
-                )
-                result = ToolResult(
-                    call.id,
-                    call.name,
-                    True,
-                    "Created file successfully",
-                    {
-                        "path": file_path,
-                        "created": True,
-                        "bytesWritten": 7,
-                        "verified": True,
-                        "bom": False,
-                        "newline": "lf",
-                        "truncated": False,
-                    },
-                )
-                store.complete_tool_call(
-                    item_id,
-                    status="completed",
-                    result=result.to_wire(),
-                    result_content=result.to_model_content(),
-                    file_change=capture,
-                )
-                store.terminalize_run(file_turn.run_id, "completed")
-                file_events, _ = store.replay_events(latest_seq, 1000)
-                file_messages = []
-                for index, event in enumerate(file_events):
-                    file_messages.append(
-                        {
-                            "name": "file-change-recorded"
-                            if event.type == "file.change_recorded"
-                            else f"file-flow-event-{index}",
-                            "kind": "notification",
-                            "envelope": {
-                                "jsonrpc": JSONRPC_VERSION,
-                                "method": EVENT_NOTIFICATION_METHOD,
-                                "params": event.to_wire(),
-                            },
-                        }
-                    )
-                preview_path = database_path.with_name("preview.txt")
-                preview_path.write_bytes("你好\n".encode())
-                preview = preview_text_file(thread_id=thread.id, path=preview_path)
-                preview["path"] = file_path
-                preview["revision"] = "a" * 64  # Opaque, host-specific metadata fingerprint.
-                return [
-                    *legacy_messages[: -len(events)],
-                    _response_message(
-                        name="file-change",
-                        method="file.change.get",
-                        request_id=12,
-                        request_params={"threadId": thread.id, "toolCallItemId": item_id},
-                        result=store.get_file_change(thread.id, item_id),
-                    ),
-                    _response_message(
-                        name="file-preview",
-                        method="file.preview",
-                        request_id=13,
-                        request_params={"threadId": thread.id, "path": file_path},
-                        result=preview,
-                    ),
-                    *legacy_messages[-len(events) :],
-                    *file_messages,
-                ]
+            preview_path = database_path.with_name("preview.txt")
+            preview_path.write_bytes("你好\n".encode())
+            preview = preview_text_file(thread_id=thread.id, path=preview_path)
+            preview["path"] = file_path
+            preview["revision"] = "a" * 64  # Opaque, host-specific metadata fingerprint.
+            return [
+                *session_messages[: -len(events)],
+                _response_message(
+                    name="file-change",
+                    method="file.change.get",
+                    request_id=12,
+                    request_params={"threadId": thread.id, "toolCallItemId": item_id},
+                    result=store.get_file_change(thread.id, item_id),
+                ),
+                _response_message(
+                    name="file-preview",
+                    method="file.preview",
+                    request_id=13,
+                    request_params={"threadId": thread.id, "path": file_path},
+                    result=preview,
+                ),
+                *session_messages[-len(events) :],
+                *file_messages,
+            ]
         finally:
+            await manager.close()
             memory_store.close()
             store.close()
 

@@ -14,6 +14,7 @@ from .core import (
     ToolCall,
     ToolDefinition,
     ToolExecutionCancelled,
+    ToolExecutionContext,
     ToolResult,
     ToolTaskCancelled,
     require_exact_arguments,
@@ -57,9 +58,9 @@ class EditTool:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
-        validated = _validate_arguments(call, default_cwd=default_cwd)
+        validated = _validate_arguments(call, default_cwd=context.default_cwd)
         if isinstance(validated, ToolResult):
             return validated
         path, old_string, new_string, replace_all = validated

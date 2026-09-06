@@ -10,8 +10,8 @@ from ..providers.registry import ConfigStore
 from ..providers.scripted import ScriptedProvider
 from ..run_input import (
     InstructionBlockV1,
-    ProviderExecutionSnapshotV1,
-    SubmissionFrameTemplateV1,
+    ProviderExecutionSnapshot,
+    RunConfigTemplate,
 )
 from ..storage import SqliteRuntimeStore
 from ..storage.thread_history import TURN_HISTORY_DEFAULT_LIMIT, TURN_HISTORY_MAX_LIMIT
@@ -33,7 +33,7 @@ class TurnService:
         skill_snapshot: SkillSnapshotSource | None = None,
         tool_definitions: ToolDefinitionSource | None = None,
         execution_policy: str = "full_access",
-        max_steps: int = 16,
+        max_model_calls: int = 100,
     ) -> None:
         self._store = store
         self._scheduler = scheduler
@@ -43,11 +43,11 @@ class TurnService:
         self._skill_snapshot = skill_snapshot or _empty_skill_snapshot
         self._tool_definitions = tool_definitions or _empty_tool_definitions
         self._execution_policy = execution_policy
-        self._max_steps = max_steps
+        self._max_model_calls = max_model_calls
 
     def start_turn(self, params: dict[str, Any]) -> CommandOutcome:
         required = {"threadId", "branchId", "content", "providerId", "modelId"}
-        allowed = required | {"clientRequestId"}
+        allowed = required | {"clientRequestId", "executionLimits"}
         if not required <= set(params) or not set(params) <= allowed:
             raise InvalidParamsError("turn.start fields do not match the required schema")
         values = {name: params[name] for name in required}
@@ -56,6 +56,17 @@ class TurnService:
         content = values["content"]
         if not content.strip():
             raise InvalidParamsError("content must not be empty")
+        limits = params.get(
+            "executionLimits", {"maxModelCalls": self._max_model_calls, "maxDurationSeconds": 3600}
+        )
+        if not isinstance(limits, dict) or set(limits) != {"maxModelCalls", "maxDurationSeconds"}:
+            raise InvalidParamsError(
+                "executionLimits requires maxModelCalls and maxDurationSeconds"
+            )
+        for key, maximum in (("maxModelCalls", 1000), ("maxDurationSeconds", 86400)):
+            value = limits[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise InvalidParamsError(f"{key} must be an integer between 1 and {maximum}")
         client_request_id = client_request_id_from(params)
         self._assert_request_safe((*values.values(), content, client_request_id))
         if client_request_id is not None:
@@ -71,6 +82,14 @@ class TurnService:
             except LookupError as error:
                 raise InvalidParamsError(str(error)) from error
             if existing is not None:
+                config = self._store.get_run_config(existing.run_id)
+                if (
+                    config.max_model_calls != limits["maxModelCalls"]
+                    or config.max_duration_seconds != limits["maxDurationSeconds"]
+                ):
+                    raise InvalidParamsError(
+                        "clientRequestId was already used with different executionLimits"
+                    )
                 return CommandOutcome(
                     result={
                         "turnId": existing.turn_id,
@@ -82,7 +101,7 @@ class TurnService:
         if values["providerId"] == ScriptedProvider.id:
             if values["modelId"] != ScriptedProvider.model_id:
                 raise InvalidParamsError("model is not available")
-            provider_snapshot = ProviderExecutionSnapshotV1(
+            provider_snapshot = ProviderExecutionSnapshot(
                 provider_id=ScriptedProvider.id,
                 origin="scripted",
                 base_url=None,
@@ -98,20 +117,21 @@ class TurnService:
             except ConfigError as error:
                 raise InvalidParamsError(str(error)) from None
         skills = self._skill_snapshot()
-        frame_template = SubmissionFrameTemplateV1.create(
+        run_config_template = RunConfigTemplate.create(
             provider=provider_snapshot,
             execution_policy=self._execution_policy,
             skills=skills,
             tools=self._tool_definitions(),
             identity_core=self._identity_core,
-            max_steps=self._max_steps,
+            max_model_calls=limits["maxModelCalls"],
+            max_duration_seconds=limits["maxDurationSeconds"],
         )
         try:
             prepared = self._store.prepare_turn(
                 thread_id=values["threadId"],
                 branch_id=values["branchId"],
                 content=content,
-                frame_template=frame_template,
+                run_config_template=run_config_template,
                 client_request_id=client_request_id,
             )
         except LookupError as error:

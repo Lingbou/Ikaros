@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any, cast
 
 from ..domain import (
+    JOURNAL_EVENT_SCHEMA_VERSION,
     ContextItem,
     JournalEvent,
     PreparedTurn,
@@ -20,23 +21,21 @@ from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
     ContextItemRecordV1,
-    ContextSnapshotV1,
+    ContextRevision,
     FrozenMemoryContextV1,
-    RunManifestV1,
-    SubmissionFrameV1,
-    build_step_manifest,
+    RunConfig,
+    StepInput,
+    build_step_input,
     canonical_json,
-    parse_context_snapshot,
-    parse_step_manifest,
-    validate_run_manifest,
 )
 from ..security import (
     contains_protected_value,
     json_contains_protected_value,
     json_values_contain_protected_value,
 )
-from .context_history import load_context_for_snapshot, select_context_snapshot
+from .context_history import load_context_for_revision, select_context_revision
 from .file_changes import file_tool_call, resolve_file_tool_path
+from .processes import project_process
 
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
 
@@ -113,47 +112,24 @@ def contains_protected_projection_values(
             data, values
         ):
             return True
-    for row in connection.execute(
-        """
-        SELECT submission_frame_json, run_manifest_json, context_snapshot_json
-        FROM run_inputs
-        """
-    ).fetchall():
-        frame = SubmissionFrameV1.from_wire(
-            json_loads(str(row["submission_frame_json"]))
-        )
-        manifest = validate_run_manifest(
-            json_loads(str(row["run_manifest_json"])),
-            frame,
-        )
-        if json_contains_protected_value(
-            _submission_frame_dynamic_values(frame),
-            values,
-        ) or json_contains_protected_value(
-            (
-                *_dynamic_provider_model_references(
-                    manifest.provider_id,
-                    manifest.model_id,
-                ),
-                *(skill["name"] for skill in manifest.skills),
-            ),
-            values,
-        ):
+    for row in connection.execute("SELECT config_json FROM run_configs"):
+        config = RunConfig.from_wire(json_loads(str(row["config_json"])))
+        if json_contains_protected_value(_run_config_dynamic_values(config), values):
             return True
-        context_snapshot = row["context_snapshot_json"]
-        if context_snapshot is not None:
-            # Context Snapshots contain only Runtime-generated references,
-            # controlled selectors, numeric budgets, and omission enums.
-            parse_context_snapshot(json_loads(str(context_snapshot)))
+    for row in connection.execute("SELECT record_json FROM context_revisions"):
+        ContextRevision.from_wire(json_loads(str(row["record_json"])))
+    for row in connection.execute("SELECT record_json FROM process_sessions"):
+        if json_contains_protected_value(json_loads(str(row["record_json"])), values):
+            return True
     for row in connection.execute(
         """
-        SELECT step_manifest_json, response_model_id, request_id, usage_json
-        FROM model_steps
+        SELECT input_json, response_model_id, request_id, usage_json
+        FROM model_calls
         """
     ).fetchall():
         # Step Manifests and usage contain no user/Provider text: only frozen
         # references, controlled provenance, and numeric counters.
-        parse_step_manifest(json_loads(str(row["step_manifest_json"])))
+        StepInput.from_wire(json_loads(str(row["input_json"])))
         usage_json = row["usage_json"]
         if usage_json is not None:
             json_loads(str(usage_json))
@@ -181,21 +157,13 @@ def _dynamic_provider_model_references(
     return tuple(references)
 
 
-def _submission_frame_dynamic_values(frame: SubmissionFrameV1) -> tuple[object, ...]:
+def _run_config_dynamic_values(frame: RunConfig) -> tuple[object, ...]:
     workspace = frame.workspace
-    skill_catalog_content = (
-        frame.skill_catalog.content if frame.skill_catalog is not None else None
-    )
+    skill_catalog_content = frame.skill_catalog.content if frame.skill_catalog is not None else None
     return (
         *_dynamic_provider_model_references(frame.provider_id, frame.model_id),
-        (
-            (workspace.id, workspace.name, workspace.root_uri)
-            if workspace is not None
-            else None
-        ),
-        tuple(
-            (skill.name, skill.description, skill.location) for skill in frame.skills
-        ),
+        ((workspace.id, workspace.name, workspace.root_uri) if workspace is not None else None),
+        tuple((skill.name, skill.description, skill.location) for skill in frame.skills),
         skill_catalog_content,
     )
 
@@ -254,7 +222,7 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunDescriptor:
     ).fetchone()
     if row is None:
         raise LookupError("run was not found")
-    skills = get_submission_frame(connection, run_id).skills
+    skills = get_run_config(connection, run_id).skills
     return RunDescriptor(
         id=row["id"],
         turn_id=row["turn_id"],
@@ -268,18 +236,18 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunDescriptor:
     )
 
 
-def get_submission_frame(
+def get_run_config(
     connection: sqlite3.Connection,
     run_id: str,
-) -> SubmissionFrameV1:
+) -> RunConfig:
     row = connection.execute(
-        "SELECT submission_frame_json FROM run_inputs WHERE run_id = ?",
+        "SELECT config_json FROM run_configs WHERE run_id = ?",
         (run_id,),
     ).fetchone()
     if row is None:
         raise RuntimeError("Run Submission Frame is unavailable")
     try:
-        frame = SubmissionFrameV1.from_wire(json_loads(str(row["submission_frame_json"])))
+        frame = RunConfig.from_wire(json_loads(str(row["config_json"])))
     except (TypeError, ValueError):
         raise RuntimeError("Run Submission Frame is invalid") from None
     if frame.run_id != run_id:
@@ -287,43 +255,22 @@ def get_submission_frame(
     return frame
 
 
-def get_run_manifest(
+def get_context_revision(
     connection: sqlite3.Connection,
     run_id: str,
-) -> RunManifestV1:
+    revision: int | None = None,
+) -> ContextRevision | None:
     row = connection.execute(
-        "SELECT submission_frame_json, run_manifest_json FROM run_inputs WHERE run_id = ?",
-        (run_id,),
+        "SELECT record_json FROM context_revisions WHERE run_id = ? "
+        "AND (? IS NULL OR revision = ?) ORDER BY revision DESC LIMIT 1",
+        (run_id, revision, revision),
     ).fetchone()
     if row is None:
-        raise RuntimeError("Run Manifest is unavailable")
-    try:
-        frame = SubmissionFrameV1.from_wire(json_loads(str(row["submission_frame_json"])))
-        manifest = validate_run_manifest(json_loads(str(row["run_manifest_json"])), frame)
-    except (TypeError, ValueError):
-        raise RuntimeError("Run Manifest is invalid") from None
-    if manifest.run_id != run_id:
-        raise RuntimeError("Run Manifest scope is invalid")
-    return manifest
-
-
-def get_context_snapshot(
-    connection: sqlite3.Connection,
-    run_id: str,
-) -> ContextSnapshotV1 | None:
-    row = connection.execute(
-        "SELECT context_snapshot_json FROM run_inputs WHERE run_id = ?",
-        (run_id,),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("Run input projection is unavailable")
-    value = row["context_snapshot_json"]
-    if value is None:
         return None
     try:
-        return parse_context_snapshot(json_loads(str(value)))
+        return ContextRevision.from_wire(json_loads(str(row["record_json"])))
     except (TypeError, ValueError):
-        raise RuntimeError("Run Context Snapshot is invalid") from None
+        raise RuntimeError("Run Context Revision is invalid") from None
 
 
 def run_status(connection: sqlite3.Connection, run_id: str) -> str:
@@ -414,13 +361,13 @@ def context_item_records(
     ]
 
 
-def context_item_records_for_snapshot(
+def context_item_records_for_revision(
     connection: sqlite3.Connection,
     *,
     run_id: str,
-    snapshot: ContextSnapshotV1,
+    snapshot: ContextRevision,
 ) -> list[ContextItemRecordV1]:
-    return list(load_context_for_snapshot(connection, run_id=run_id, snapshot=snapshot))
+    return list(load_context_for_revision(connection, run_id=run_id, snapshot=snapshot))
 
 
 def workspace_to_json(workspace: WorkspaceSummary | None) -> str | None:
@@ -463,9 +410,7 @@ def apply_event(
 ) -> None:
     event_type = event.type
     payload = event.payload
-    if event.schema_version not in {5, 6} or (
-        event_type == "file.change_recorded" and event.schema_version != 6
-    ):
+    if event.schema_version != JOURNAL_EVENT_SCHEMA_VERSION:
         raise RuntimeError("journal event schema version is unsupported")
     if event_type == "thread.created":
         _require_keys(payload, {"thread", "branch"}, {"clientRequestId"})
@@ -555,8 +500,7 @@ def apply_event(
                 "turn",
                 "run",
                 "item",
-                "submissionFrame",
-                "runManifest",
+                "runConfig",
                 "turnId",
                 "runId",
                 "itemId",
@@ -564,15 +508,14 @@ def apply_event(
             {"clientRequestId"},
         )
         turn = _record(payload, "turn", _TURN_KEYS)
-        run = _record(payload, "run", _RUN_KEYS, {"clientRequestId"})
+        run = _record(payload, "run", _RUN_KEYS | {"executionLimits"}, {"clientRequestId"})
         item = _record(payload, "item", _ITEM_KEYS)
         _validate_turn(turn)
         _validate_run(run)
         _validate_item(item)
         _validate_optional_client_request(payload)
         try:
-            submission_frame = SubmissionFrameV1.from_wire(payload["submissionFrame"])
-            run_manifest = validate_run_manifest(payload["runManifest"], submission_frame)
+            run_config = RunConfig.from_wire(payload["runConfig"])
         except (TypeError, ValueError):
             raise RuntimeError("initial Turn input snapshots are invalid") from None
         if (
@@ -606,27 +549,34 @@ def apply_event(
         _require_equal("run turn", run["turnId"], turn["id"])
         _require_equal("item turn", item["turnId"], turn["id"])
         _require_equal("item run", item["runId"], run["id"])
-        _require_equal("Frame User Item", submission_frame.user_item_id, item["id"])
-        _require_equal("Frame Thread", submission_frame.thread_id, turn["threadId"])
-        _require_equal("Frame Branch", submission_frame.branch_id, turn["branchId"])
-        _require_equal("Frame Turn", submission_frame.turn_id, turn["id"])
-        _require_equal("Frame Run", submission_frame.run_id, run["id"])
-        _require_equal("Manifest Run", run_manifest.run_id, run["id"])
-        _require_equal("Frame Provider", submission_frame.provider_id, run["providerId"])
-        _require_equal("Frame Model", submission_frame.model_id, run["modelId"])
+        _require_equal("Frame User Item", run_config.user_item_id, item["id"])
+        _require_equal("Frame Thread", run_config.thread_id, turn["threadId"])
+        _require_equal("Frame Branch", run_config.branch_id, turn["branchId"])
+        _require_equal("Frame Turn", run_config.turn_id, turn["id"])
+        _require_equal("Frame Run", run_config.run_id, run["id"])
+        _require_equal("Frame Provider", run_config.provider_id, run["providerId"])
+        _require_equal("Frame Model", run_config.model_id, run["modelId"])
         _require_equal(
             "Frame execution policy",
-            submission_frame.execution_policy,
+            run_config.execution_policy,
             run["executionPolicy"],
         )
         _require_equal(
+            "Run execution limits",
+            run["executionLimits"],
+            {
+                "maxModelCalls": run_config.max_model_calls,
+                "maxDurationSeconds": run_config.max_duration_seconds,
+            },
+        )
+        _require_equal(
             "Frame Skills",
-            tuple(skill.to_wire() for skill in submission_frame.skills),
+            tuple(skill.to_wire() for skill in run_config.skills),
             tuple(skill.to_wire() for skill in skill_descriptors_from_wire(run["skills"])),
         )
         _require_equal(
             "Frame workspace",
-            submission_frame.workspace,
+            run_config.workspace,
             workspace_from_json(
                 connection.execute(
                     "SELECT workspace_json FROM threads WHERE id = ?",
@@ -677,14 +627,13 @@ def apply_event(
         insert_item(connection, item)
         connection.execute(
             """
-            INSERT INTO run_inputs(
-                run_id, submission_frame_json, run_manifest_json, context_snapshot_json
-            ) VALUES (?, ?, ?, NULL)
+            INSERT INTO run_configs(
+                run_id, config_json
+            ) VALUES (?, ?)
             """,
             (
                 run["id"],
-                canonical_json(submission_frame.to_wire()),
-                canonical_json(run_manifest.to_wire()),
+                canonical_json(run_config.to_wire()),
             ),
         )
         updated = connection.execute(
@@ -751,14 +700,27 @@ def apply_event(
             (event.timestamp, payload["turnId"]),
         )
         _require_one_update(updated_turn, event_type)
+    elif event_type == "process.recorded":
+        _require_keys(payload, {"process", "turnId", "runId", "itemId"})
+        _require_payload_scope(payload, event)
+        _require_existing_run_scope(connection, event)
+        record = payload["process"]
+        if (
+            not isinstance(record, dict)
+            or record.get("runId") != event.run_id
+            or record.get("itemId") != event.item_id
+            or record.get("threadId") != event.thread_id
+        ):
+            raise RuntimeError("process event scope is invalid")
+        project_process(connection, record)
     elif event_type == "model.input_prepared":
         _require_keys(
             payload,
             {
                 "stepOrdinal",
                 "preparedAt",
-                "contextSnapshot",
-                "stepManifest",
+                "contextRevision",
+                "stepInput",
                 "turnId",
                 "runId",
             },
@@ -783,69 +745,74 @@ def apply_event(
         if run is None or run["status"] != "running":
             raise RuntimeError("model input preparation requires a running Run")
         open_step = connection.execute(
-            "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
+            "SELECT 1 FROM model_calls WHERE run_id = ? AND outcome IS NULL",
             (event.run_id,),
         ).fetchone()
         if open_step is not None:
             raise RuntimeError("Run already has an unfinished model Step")
         expected_ordinal = int(
             connection.execute(
-                "SELECT COALESCE(MAX(step_ordinal), 0) + 1 FROM model_steps WHERE run_id = ?",
+                "SELECT COALESCE(MAX(step_ordinal), 0) + 1 FROM model_calls WHERE run_id = ?",
                 (event.run_id,),
             ).fetchone()[0]
         )
         _require_equal("model Step ordinal", payload["stepOrdinal"], expected_ordinal)
+        if expected_ordinal > get_run_config(connection, str(event.run_id)).max_model_calls:
+            raise RuntimeError("model_call_budget_exceeded")
         try:
-            snapshot = parse_context_snapshot(payload["contextSnapshot"])
-            step_manifest = parse_step_manifest(payload["stepManifest"])
+            step_input = StepInput.from_wire(payload["stepInput"])
         except (TypeError, ValueError):
-            raise RuntimeError("model input preparation snapshots are invalid") from None
-        _require_equal("Step Manifest ordinal", step_manifest.step_ordinal, expected_ordinal)
-        stored_snapshot = get_context_snapshot(connection, str(event.run_id))
-        if stored_snapshot is None:
-            submission_frame = get_submission_frame(connection, str(event.run_id))
-            run_manifest = get_run_manifest(connection, str(event.run_id))
-            expected_snapshot, _records = select_context_snapshot(
+            raise RuntimeError("model Step input is invalid") from None
+        _require_equal("Step input ordinal", step_input.step_ordinal, expected_ordinal)
+        snapshot = get_context_revision(
+            connection, str(event.run_id), step_input.context_revision
+        )
+        if snapshot is None:
+            try:
+                snapshot = ContextRevision.from_wire(payload["contextRevision"])
+            except (TypeError, ValueError):
+                raise RuntimeError("initial Context Revision is invalid") from None
+            config = get_run_config(connection, str(event.run_id))
+            expected_snapshot, _records = select_context_revision(
                 connection,
                 branch_id=str(event.branch_id),
                 turn_id=str(event.turn_id),
                 run_id=str(event.run_id),
-                frame=submission_frame,
-                manifest=run_manifest,
-                memory_context=FrozenMemoryContextV1.from_snapshot(snapshot),
+                config=config,
+                memory_context=FrozenMemoryContextV1.from_revision(snapshot),
             )
-            if snapshot != expected_snapshot:
-                raise RuntimeError("initial Context Snapshot is not canonical")
+            if snapshot != expected_snapshot or snapshot.revision != step_input.context_revision:
+                raise RuntimeError("initial Context Revision is not canonical")
             connection.execute(
-                "UPDATE run_inputs SET context_snapshot_json = ? WHERE run_id = ?",
-                (canonical_json(snapshot.to_wire()), event.run_id),
+                "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
+                (event.run_id, snapshot.revision, canonical_json(snapshot.to_wire())),
             )
-        elif snapshot != stored_snapshot:
-            raise RuntimeError("model Step changes the frozen Context Snapshot")
-        records = context_item_records_for_snapshot(
+        elif payload["contextRevision"] is not None:
+            raise RuntimeError("model Step must reference an existing Context Revision")
+        records = context_item_records_for_revision(
             connection,
             run_id=str(event.run_id),
             snapshot=snapshot,
         )
-        expected_manifest = build_step_manifest(
+        expected_input = build_step_input(
             expected_ordinal,
             records,
             snapshot,
             current_run_id=str(event.run_id),
-            frame=get_submission_frame(connection, str(event.run_id)),
+            config=get_run_config(connection, str(event.run_id)),
         )
-        if step_manifest != expected_manifest:
-            raise RuntimeError("Step Manifest is not canonical")
+        if step_input != expected_input:
+            raise RuntimeError("Step Input is not canonical")
         connection.execute(
             """
-            INSERT INTO model_steps(
-                run_id, step_ordinal, step_manifest_json, prepared_at
+            INSERT INTO model_calls(
+                run_id, step_ordinal, input_json, prepared_at
             ) VALUES (?, ?, ?, ?)
             """,
             (
                 event.run_id,
                 expected_ordinal,
-                canonical_json(step_manifest.to_wire()),
+                canonical_json(step_input.to_wire()),
                 payload["preparedAt"],
             ),
         )
@@ -892,7 +859,7 @@ def apply_event(
             raise RuntimeError("model response Provider or Model does not match its Run")
         step = connection.execute(
             """
-            SELECT outcome FROM model_steps
+            SELECT outcome FROM model_calls
             WHERE run_id = ? AND step_ordinal = ?
             """,
             (event.run_id, payload["stepOrdinal"]),
@@ -925,7 +892,7 @@ def apply_event(
             raise RuntimeError("model response activity date has no Token usage")
         updated = connection.execute(
             """
-            UPDATE model_steps
+            UPDATE model_calls
             SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
                 usage_json = ?, activity_date = ?, finished_at = ?
             WHERE run_id = ? AND step_ordinal = ? AND outcome IS NULL
@@ -1068,19 +1035,25 @@ def apply_event(
             or current["turn_status"] != current["run_status"]
         ):
             raise RuntimeError("Run settlement requires a matching active Run and Turn")
-        if connection.execute(
-            "SELECT 1 FROM model_steps WHERE run_id = ? AND outcome IS NULL",
-            (event.run_id,),
-        ).fetchone() is not None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM model_calls WHERE run_id = ? AND outcome IS NULL",
+                (event.run_id,),
+            ).fetchone()
+            is not None
+        ):
             raise RuntimeError("Run cannot settle with an unfinished model Step")
-        if connection.execute(
-            """
+        if (
+            connection.execute(
+                """
             SELECT 1 FROM items
             WHERE run_id = ? AND status IN ('streaming', 'running')
             LIMIT 1
             """,
-            (event.run_id,),
-        ).fetchone() is not None:
+                (event.run_id,),
+            ).fetchone()
+            is not None
+        ):
             raise RuntimeError("Run cannot settle with an active Item")
         updated_run = connection.execute(
             """
@@ -1118,30 +1091,44 @@ def _apply_file_change_event(connection: sqlite3.Connection, event: JournalEvent
     if event.thread_id is None or event.item_id is None:
         raise RuntimeError("file change event has no source Tool Call")
     try:
-        record = validate_file_change_record({
-            key: value for key, value in event.payload.items()
-            if key not in {"turnId", "runId", "itemId"}
-        })
+        record = validate_file_change_record(
+            {
+                key: value
+                for key, value in event.payload.items()
+                if key not in {"turnId", "runId", "itemId"}
+            }
+        )
         row, call_data = file_tool_call(
-            connection, event.thread_id, event.item_id, allowed=frozenset({"write", "edit"}),
+            connection,
+            event.thread_id,
+            event.item_id,
+            allowed=frozenset({"write", "edit"}),
         )
     except (ValueError, LookupError):
         raise RuntimeError("file change event is invalid") from None
     _require_payload_scope(event.payload, event)
     _require_event_scope(
-        event, thread_id=str(row["thread_id"]), branch_id=str(row["branch_id"]),
-        turn_id=str(row["turn_id"]), run_id=str(row["run_id"]), item_id=str(row["id"]),
+        event,
+        thread_id=str(row["thread_id"]),
+        branch_id=str(row["branch_id"]),
+        turn_id=str(row["turn_id"]),
+        run_id=str(row["run_id"]),
+        item_id=str(row["id"]),
     )
     if (
-        record["threadId"] != event.thread_id or record["toolCallItemId"] != event.item_id
-        or record["recordedAt"] != event.timestamp or record["operation"] != call_data["toolName"]
+        record["threadId"] != event.thread_id
+        or record["toolCallItemId"] != event.item_id
+        or record["recordedAt"] != event.timestamp
+        or record["operation"] != call_data["toolName"]
         or row["status"] not in {"completed", "failed", "cancelled"}
         or row["updated_at"] != event.timestamp
         or len(canonical_json(event.to_wire()).encode("utf-8")) > MAX_CHANGE_EVENT_BYTES
     ):
         raise RuntimeError("file change event does not match its Tool Call")
     if record["path"] is not None and record["path"] != resolve_file_tool_path(
-        connection, event.thread_id, event.item_id,
+        connection,
+        event.thread_id,
+        event.item_id,
     ):
         raise RuntimeError("file change event path does not match its Tool Call")
     has_result = any(
@@ -1387,8 +1374,7 @@ def _require_existing_item_completion(
         for key in ("turn_id", "run_id", "ordinal", "kind", "role", "content", "created_at")
     )
     immutable_payload = tuple(
-        item[key]
-        for key in ("turnId", "runId", "ordinal", "kind", "role", "content", "createdAt")
+        item[key] for key in ("turnId", "runId", "ordinal", "kind", "role", "content", "createdAt")
     )
     if immutable_payload != immutable_existing:
         raise RuntimeError("item.completed changes immutable Item fields")

@@ -3,48 +3,41 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
 
 from ..domain import ContextItem
 from ..run_input import (
     ContextDataBlockV1,
     InputAuthority,
-    InputBudgetRecordV1,
+    InputBudgetRecord,
     InputLifetime,
     InstructionAuthority,
     InstructionBlockV1,
-    SubmissionFrameV1,
+    RunConfig,
 )
 from ..tools.core import ToolDefinition
 
 
 @dataclass(frozen=True, slots=True)
-class GenerationOptionsV1:
-    """Gate 1 delegates generation controls to the selected Provider defaults."""
-
-    mode: Literal["provider_defaults"] = "provider_defaults"
-
-
-InputBudgetSnapshotV1 = InputBudgetRecordV1
+class GenerationOptions:
+    max_output_tokens: int = 4096
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ModelInputPlanV1:
+class ModelInputPlan:
     """Immutable ordered structure consumed by :class:`ContextBuilder`.
 
-    Plan-owned sequences are copied to tuples.  Gate 2 supplies messages and Tool
-    definitions from the durable Run snapshots before this short-lived plan is built.
+    Plan-owned sequences are copied to tuples; durable Run configuration and
+    context revisions supply the exact input for this short-lived structure.
     """
 
-    version: Literal[1] = field(default=1, init=False)
     model_id: str
     instructions: tuple[InstructionBlockV1, ...]
     context_data: tuple[ContextDataBlockV1, ...]
     messages: tuple[ContextItem, ...]
     tools: tuple[ToolDefinition, ...]
-    generation_options: GenerationOptionsV1
-    budget_snapshot: InputBudgetSnapshotV1
+    generation_options: GenerationOptions
+    budget_snapshot: InputBudgetRecord
 
     def __post_init__(self) -> None:
         """Defensively enforce the public Plan's sequence invariants at runtime."""
@@ -56,35 +49,34 @@ class ModelInputPlanV1:
 
 
 class ModelInputPlanner:
-    """Build one deterministic plan from a persisted Submission Frame."""
+    """Build one deterministic plan from a persisted Run configuration."""
 
     def build_plan(
         self,
         *,
-        frame: SubmissionFrameV1,
+        config: RunConfig,
         items: Sequence[ContextItem],
         context_data: Sequence[ContextDataBlockV1] = (),
-        budget_snapshot: InputBudgetRecordV1,
-    ) -> ModelInputPlanV1:
-        return ModelInputPlanV1(
-            model_id=frame.model_id,
-            instructions=frame.instructions,
+        budget_snapshot: InputBudgetRecord,
+    ) -> ModelInputPlan:
+        return ModelInputPlan(
+            model_id=config.model_id,
+            instructions=config.instructions,
             context_data=tuple(context_data),
             messages=tuple(items),
-            tools=frame.tool_definitions,
-            generation_options=GenerationOptionsV1(),
+            tools=config.tool_definitions,
+            generation_options=GenerationOptions(max_output_tokens=config.max_output_tokens),
             budget_snapshot=budget_snapshot,
         )
 
 
 __all__ = [
     "ContextDataBlockV1",
-    "GenerationOptionsV1",
+    "GenerationOptions",
     "InputAuthority",
-    "InputBudgetSnapshotV1",
     "InputLifetime",
     "InstructionAuthority",
     "InstructionBlockV1",
-    "ModelInputPlanV1",
+    "ModelInputPlan",
     "ModelInputPlanner",
 ]

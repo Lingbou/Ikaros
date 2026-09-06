@@ -3,7 +3,7 @@
 
 export const RUNTIME_PROTOCOL_MANIFEST = {
   "schemaVersion": 2,
-  "protocolVersion": 3,
+  "protocolVersion": 4,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -22,6 +22,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "provider.remove",
     "model.list",
     "model.set_enabled",
+    "model.set_limits",
     "skill.list",
     "skill.set_enabled",
     "memory.create",
@@ -41,7 +42,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "event"
   ],
   "journal": {
-    "schemaVersion": 6,
+    "schemaVersion": 7,
     "eventTypes": [
       "thread.created",
       "thread.renamed",
@@ -52,6 +53,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
       "item.delta",
       "item.completed",
       "file.change_recorded",
+      "process.recorded",
       "model.input_prepared",
       "model.response_finished",
       "run.settled"
@@ -83,7 +85,10 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "skills": true,
     "memory": true,
     "tools": [
-      "process_run",
+      "process_start",
+      "process_read",
+      "process_wait",
+      "process_stop",
       "read",
       "write",
       "edit"
@@ -91,7 +96,10 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "executionPolicy": "full_access"
   },
   "providerToolIds": [
-    "process_run",
+    "process_start",
+    "process_read",
+    "process_wait",
+    "process_stop",
     "read",
     "write",
     "edit"

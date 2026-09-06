@@ -24,11 +24,12 @@ from ikaros_runtime.providers.base import (
     TextDelta,
     ToolCallCompleted,
 )
-from ikaros_runtime.run_input import ProviderExecutionSnapshotV1
+from ikaros_runtime.run_input import ProviderExecutionSnapshot
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import (
     ToolCall,
     ToolDefinition,
+    ToolExecutionContext,
     ToolExecutor,
     ToolRegistry,
     ToolResult,
@@ -176,11 +177,11 @@ class RecordingTool:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
         self.calls.append(call)
-        self.default_cwds.append(default_cwd)
+        self.default_cwds.append(context.default_cwd)
         return ToolResult(
             tool_call_id=call.id,
             tool_name=call.name,
@@ -223,10 +224,10 @@ class ProtectedResultTool(RecordingTool):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
-        del default_cwd
+        del context
         self.calls.append(call)
         return ToolResult(
             tool_call_id=self.protected,
@@ -243,10 +244,10 @@ class StaleResultTool(RecordingTool):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
-        del default_cwd
+        del context
         self.calls.append(call)
         return ToolResult(
             tool_call_id=call.id,
@@ -263,10 +264,10 @@ class ExplodingTool(RecordingTool):
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
         cancellation.raise_if_cancelled()
-        del call, default_cwd
+        del call, context
         raise RuntimeError("expected tool failure")
 
 
@@ -831,28 +832,20 @@ async def test_agent_executes_a_scripted_tool_loop_and_persists_provider_context
         assert tool_content["stdout"] == "tool-output\n"
 
         run_events = [event for event in events if event.run_id == prepared.run_id]
-        prepared_events = [
-            event for event in run_events if event.type == "model.input_prepared"
-        ]
+        prepared_events = [event for event in run_events if event.type == "model.input_prepared"]
         assert [event.payload["stepOrdinal"] for event in prepared_events] == [1, 2]
-        assert prepared_events[0].payload["contextSnapshot"] == prepared_events[1].payload[
-            "contextSnapshot"
+        assert prepared_events[0].payload["contextRevision"]["revision"] == 1
+        assert prepared_events[1].payload["contextRevision"] is None
+        assert [event.payload["stepInput"]["contextRevision"] for event in prepared_events] == [
+            1,
+            1,
         ]
-        assert prepared_events[0].payload["stepManifest"] != prepared_events[1].payload[
-            "stepManifest"
-        ]
+        assert prepared_events[0].payload["stepInput"] != prepared_events[1].payload["stepInput"]
 
-        frame_wire = store.get_submission_frame(prepared.run_id).to_wire()
-        run_manifest_wire = json.loads(
-            store._connection.execute(
-                "SELECT run_manifest_json FROM run_inputs WHERE run_id = ?",
-                (prepared.run_id,),
-            ).fetchone()[0]
-        )
+        frame_wire = store.get_run_config(prepared.run_id).to_wire()
         audit_wire = json.dumps(
             {
                 "frame": frame_wire,
-                "runManifest": run_manifest_wire,
                 "prepared": [event.payload for event in prepared_events],
             },
             ensure_ascii=False,
@@ -934,14 +927,12 @@ async def test_agent_rejects_provider_configuration_drift_before_model_input(
             store,
             {"provider-drift": ChunkedTextProvider(["must not run"])},
             publish,
-            provider_snapshot_resolver=lambda provider_id, model_id: (
-                ProviderExecutionSnapshotV1(
-                    provider_id=provider_id,
-                    origin="custom",
-                    base_url="https://changed.invalid/v1",
-                    model_id=model_id,
-                    supports_tools=True,
-                )
+            provider_snapshot_resolver=lambda provider_id, model_id: ProviderExecutionSnapshot(
+                provider_id=provider_id,
+                origin="custom",
+                base_url="https://changed.invalid/v1",
+                model_id=model_id,
+                supports_tools=True,
             ),
         )
 
@@ -1028,49 +1019,6 @@ async def test_agent_rejects_pre_gate4_null_identity_before_model_input(
         assert events[-1].type == "run.settled"
         assert events[-1].payload["status"] == "failed"
         assert events[-1].payload["reasonCode"] == "identity_core_changed"
-    finally:
-        store.close()
-
-
-@pytest.mark.asyncio
-async def test_agent_rejects_registered_but_non_executable_context_selector(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = SqliteRuntimeStore(tmp_path / "state.db")
-    events: list[JournalEvent] = []
-
-    async def publish(event: JournalEvent) -> None:
-        events.append(event)
-
-    try:
-        thread, _ = store.create_thread("Unavailable selector")
-        prepared = prepare_turn(
-            store,
-            thread_id=thread.id,
-            branch_id=thread.default_branch_id,
-            content="must not reach provider",
-            provider_id="scripted",
-            model_id="scripted-v1",
-        )
-        monkeypatch.setattr(
-            agent_loop_module,
-            "EXECUTABLE_CONTEXT_SELECTION_VERSIONS",
-            frozenset(),
-        )
-        loop = AgentLoop(
-            store,
-            {"scripted": ChunkedTextProvider(["must not run"])},
-            publish,
-        )
-
-        await loop.run(prepared.run_id, CancellationToken())
-
-        run_events = [event for event in events if event.run_id == prepared.run_id]
-        assert not any(event.type == "model.input_prepared" for event in run_events)
-        assert run_events[-1].type == "run.settled"
-        assert run_events[-1].payload["status"] == "failed"
-        assert run_events[-1].payload["reasonCode"] == "model_input_unavailable"
     finally:
         store.close()
 
@@ -1427,7 +1375,7 @@ async def test_agent_rejects_conflicting_response_metadata_and_keeps_first_ident
         row = store._connection.execute(
             """
             SELECT outcome, response_model_id, request_id
-            FROM model_steps WHERE run_id = ? AND step_ordinal = 1
+            FROM model_calls WHERE run_id = ? AND step_ordinal = 1
             """,
             (prepared.run_id,),
         ).fetchone()
@@ -1473,9 +1421,7 @@ async def test_prepared_step_is_finished_when_live_event_publication_fails(
         run_events = [event for event in journal if event.run_id == prepared.run_id]
         assert [event.type for event in run_events].count("model.input_prepared") == 1
         assert [event.type for event in run_events].count("model.response_finished") == 1
-        finished = next(
-            event for event in run_events if event.type == "model.response_finished"
-        )
+        finished = next(event for event in run_events if event.type == "model.response_finished")
         assert finished.payload["outcome"] == "failed"
         assert finished.payload["reasonCode"] == "agent_error"
         assert run_events[-1].type == "run.settled"
@@ -1573,7 +1519,7 @@ async def test_agent_accepts_narration_and_tool_calls_in_one_provider_response(
         )
         assert rebuilt == before_rebuild
         replay_plan = ModelInputPlanner().build_plan(
-            frame=store.get_submission_frame(prepared.run_id),
+            config=store.get_run_config(prepared.run_id),
             items=rebuilt,
             budget_snapshot=bounded_budget(),
         )
@@ -1795,14 +1741,13 @@ async def test_agent_step_limit_settles_an_infinite_tool_loop_once(tmp_path: Pat
             provider_id="tool-loop",
             model_id="tool-loop-v1",
             tools=executor.definitions,
-            max_steps=2,
+            max_model_calls=2,
         )
         loop = AgentLoop(
             store,
             {"tool-loop": provider},
             publish,
             executor,
-            max_steps=2,
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -1816,7 +1761,7 @@ async def test_agent_step_limit_settles_an_infinite_tool_loop_once(tmp_path: Pat
         assert len(tool.calls) == 2
         assert len(settled) == 1
         assert settled[0].payload["status"] == "failed"
-        assert settled[0].payload["reasonCode"] == "agent_step_limit"
+        assert settled[0].payload["reasonCode"] == "model_call_budget_exceeded"
     finally:
         store.close()
 
@@ -1885,3 +1830,142 @@ async def test_scheduler_continues_after_an_unhandled_run_failure() -> None:
         assert executor.calls == ["run-first", "run-second"]
     finally:
         await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_thirty_model_calls_use_frozen_run_budget_and_survive_rebuild(tmp_path: Path) -> None:
+    class ThirtyStepProvider(ToolLoopProvider):
+        async def stream(
+            self,
+            request: ProviderRequest,
+            *,
+            cancellation: CancellationToken,
+        ) -> AsyncIterator[ProviderEvent]:
+            self.always_call = len(self.requests) < 29
+            async for event in super().stream(request, cancellation=cancellation):
+                yield event
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Long finite task")
+        provider = ThirtyStepProvider()
+        tool = RecordingTool()
+        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="finish all 29 operations",
+            provider_id="test",
+            model_id="test",
+            tools=executor.definitions,
+            max_model_calls=30,
+        )
+        await AgentLoop(store, {"test": provider}, publish, executor).run(
+            prepared.run_id,
+            CancellationToken(),
+        )
+        assert store.run_status(prepared.run_id) == "completed"
+        assert len(provider.requests) == 30
+        assert len(tool.calls) == 29
+        assert all(request.max_output_tokens == 4096 for request in provider.requests)
+        calls = store._connection.execute(
+            "SELECT step_ordinal, purpose, outcome FROM model_calls WHERE run_id = ? "
+            "ORDER BY step_ordinal",
+            (prepared.run_id,),
+        ).fetchall()
+        assert [tuple(row) for row in calls] == [
+            (i, "execution", "completed") for i in range(1, 31)
+        ]
+        before = store.list_turn_page(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            cursor=None,
+            limit=50,
+        ).to_wire()
+        assert before["turns"][0]["runs"][0]["modelCalls"] == 30
+        store.rebuild_projections()
+        assert (
+            store.list_turn_page(
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                cursor=None,
+                limit=50,
+            ).to_wire()
+            == before
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_duration_limit_cancels_blocked_provider_and_preserves_known_metadata(
+    tmp_path: Path,
+) -> None:
+    closed = asyncio.Event()
+
+    class BlockedProvider:
+        async def stream(
+            self,
+            request: ProviderRequest,
+            *,
+            cancellation: CancellationToken,
+        ) -> AsyncIterator[ProviderEvent]:
+            del request, cancellation
+            try:
+                yield ResponseMetadata(model_id="actual-model", request_id="early-request")
+                yield TextDelta("partial evidence")
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    try:
+        thread, _ = store.create_thread("Time bound")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="finish within budget",
+            provider_id="test",
+            model_id="test",
+            max_duration_seconds=1,
+        )
+        await asyncio.wait_for(
+            AgentLoop(store, {"test": BlockedProvider()}, publish).run(
+                prepared.run_id,
+                CancellationToken(),
+            ),
+            timeout=3,
+        )
+        assert closed.is_set()
+        assert store.run_status(prepared.run_id) == "failed"
+        assert events[-1].payload["reasonCode"] == "run_time_limit"
+        assert len([event for event in events if event.type == "run.settled"]) == 1
+        call = store._connection.execute(
+            "SELECT outcome, response_model_id, request_id, usage_json FROM model_calls "
+            "WHERE run_id = ?",
+            (prepared.run_id,),
+        ).fetchone()
+        assert tuple(call) == ("cancelled", "actual-model", "early-request", None)
+        partial = next(
+            event.payload["item"]
+            for event in events
+            if event.type == "item.completed" and event.payload["item"]["role"] == "assistant"
+        )
+        assert partial["content"] == "partial evidence"
+        assert partial["status"] == "cancelled"
+        store.rebuild_projections()
+        assert store.run_status(prepared.run_id) == "failed"
+    finally:
+        store.close()

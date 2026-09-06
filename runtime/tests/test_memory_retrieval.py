@@ -239,6 +239,35 @@ def test_character_budget_skips_whole_item_then_accepts_shorter_item(
         store.close()
 
 
+def test_capacity_budget_skips_large_candidates_before_filling_top_k(
+    tmp_path: Path,
+) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    lengths = (2048,) * 5 + (10,) * 9
+    ids = [
+        _create(store, f"capacity-{index}", _content_of_length(length))
+        for index, length in enumerate(lengths)
+    ]
+    for index, memory_id in enumerate(ids):
+        _set_updated(store, memory_id, f"2026-08-17T12:00:{50 - index:02d}.000Z")
+    try:
+        result = MemoryRetrieverV1(store).retrieve(
+            query="key",
+            workspace_id=None,
+            accept_selection=lambda records: sum(record.characters for record in records)
+            <= 100,
+        )
+        assert [memory.memory_id for memory in result.selected] == ids[5:13]
+        assert [(item.memory_id, item.reason) for item in result.omissions] == [
+            *((memory_id, "omitted_by_budget") for memory_id in ids[:5]),
+            (ids[13], "omitted_by_limit"),
+        ]
+        assert result.memory_characters == 80
+        assert result.relevant_count == len(ids)
+    finally:
+        store.close()
+
+
 def test_snapshot_reference_omits_content_fingerprints(tmp_path: Path) -> None:
     store = SqliteMemoryStore(tmp_path / "memory.db")
     memory_id = _create(store, "digest", "alpha\n\"quoted\"")

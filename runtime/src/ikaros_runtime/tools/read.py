@@ -12,6 +12,7 @@ from ..domain import JsonObject
 from .core import (
     ToolCall,
     ToolDefinition,
+    ToolExecutionContext,
     ToolResult,
     is_json_integer,
     require_exact_arguments,
@@ -104,9 +105,9 @@ class ReadTool:
         call: ToolCall,
         *,
         cancellation: CancellationToken,
-        default_cwd: str | None = None,
+        context: ToolExecutionContext,
     ) -> ToolResult:
-        validated = _validate_arguments(call, default_cwd=default_cwd)
+        validated = _validate_arguments(call, default_cwd=context.default_cwd)
         if isinstance(validated, ToolResult):
             return validated
         path, offset, limit = validated
