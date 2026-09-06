@@ -5,6 +5,12 @@ Status: first vertical-slice decisions locked on 2026-08-11 and implemented on
 current vertical slice reflect the implementation, while explicitly marked
 future capabilities remain design direction rather than shipped behavior.
 
+Development policy (2026-09-07): the project has no external users. The next
+milestone follows [LONG_TASK_PLAN.md](LONG_TASK_PLAN.md) and permits breaking
+refactors, replacing old protocols and rebuilding development databases.
+Compatibility and migration paths described below record the existing
+implementation; they are not requirements for future development.
+
 The completed model-input and Memory foundation stage is specified in
 [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–9
 are complete, including the Runtime-owned `IKAROS.md` Identity Core, the
