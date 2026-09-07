@@ -58,13 +58,19 @@ class ProviderService:
         except ConfigError as error:
             raise InvalidParamsError(str(error)) from None
         models = await self._model_discovery(provider)
+        existing_provider = self._config.get_provider("deepseek")
+        existing_models = (
+            {model.id: model for model in existing_provider.models}
+            if existing_provider is not None
+            else {}
+        )
         return {
             "models": [
                 {
                     "id": model.id,
                     "displayName": model.display_name,
-                    "contextWindow": model.context_window,
-                    "maxOutputTokens": model.max_output_tokens,
+                    "contextWindow": existing_models.get(model.id, model).context_window,
+                    "maxOutputTokens": existing_models.get(model.id, model).max_output_tokens,
                 }
                 for model in models
             ]

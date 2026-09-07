@@ -18,6 +18,7 @@ from .base import (
     ProviderAdapter,
     ProviderConfig,
 )
+from .model_defaults import default_model_capacity
 from .scripted import ScriptedProvider
 
 DEEPSEEK_PROVIDER_ID = "deepseek"
@@ -502,8 +503,10 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
         supports_tools = raw_model["supports_tools"]
         if not isinstance(enabled, bool) or not isinstance(supports_tools, bool):
             raise ConfigError("model flags must be booleans")
+        defaults = default_model_capacity(model_id)
         context_window, max_output_tokens = _model_limits(
-            raw_model.get("context_window", 32768), raw_model.get("max_output_tokens", 4096)
+            raw_model.get("context_window", defaults.context_window),
+            raw_model.get("max_output_tokens", defaults.max_output_tokens),
         )
         models.append(
             ModelConfig(

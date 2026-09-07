@@ -52,10 +52,15 @@ flowchart LR
 
 模型容量初始值：
 
-| 配置 | 默认值 | 用途 |
+| 模型 | `contextWindow` | `maxOutputTokens` |
 | --- | --- | --- |
-| `contextWindow` | 32,768 tokens | 模型能够接收的总上下文容量 |
-| `maxOutputTokens` | 4,096 tokens | 输出预留；作为 `max_tokens` 发送给 OpenAI Compatible Provider |
+| 已知 DeepSeek V4 模型 | 1,000,000 tokens | 64,000 tokens |
+| 未知模型 | 32,768 tokens | 4,096 tokens |
+
+`contextWindow` 是模型总上下文容量；`maxOutputTokens` 是 Ikaros 的输出预留，
+作为 `max_tokens` 发送给 OpenAI Compatible Provider。DeepSeek V4 的 64,000 是
+Ikaros 初始请求设置，并非官方最大输出（384K）。未知模型的回退值需要按实际规格
+调整，依据见 [模型容量参考](MODEL_CAPACITY_REFERENCES.md)。
 
 模型窗口和输出预留可以在模型设置中修改；Run 提交后使用冻结值。
 输出预留必须大于零且小于模型窗口。RunConfig 不含总调用次数或总运行时长上限，

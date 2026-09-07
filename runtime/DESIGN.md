@@ -609,8 +609,13 @@ These are the only supported execution records. A Run currently uses its
 initial ContextRevision throughout; semantic compression and subsequent
 revisions will be implemented in the next stage.
 
-The configured context window defaults to 32,768 tokens with a 4,096-token
-output reserve. Conservative token accounting covers instructions, tool
+Known DeepSeek V4 models initially use a 1,000,000-token context window and a
+64,000-token output reserve. The latter is Ikaros's initial request setting,
+not the provider's official maximum output of 384K. Unknown models fall back to
+32,768 context tokens and a 4,096-token output reserve; users can edit model
+capacity to match their provider's specifications. See
+[MODEL_CAPACITY_REFERENCES.md](MODEL_CAPACITY_REFERENCES.md).
+Conservative token accounting covers instructions, tool
 schemas, current and previous conversation, Memory, and history-status blocks.
 It is an input-safety estimate, not billed usage. The provider receives the
 configured output-token limit. Oversized input currently fails explicitly;

@@ -11,6 +11,7 @@ from ...errors import ProviderFailure
 from ...json_codec import loads as json_loads
 from ...security import contains_protected_value
 from ..base import ModelInput, ProviderConfig
+from ..model_defaults import default_model_capacity
 from .adapter import (
     ProviderTimeouts,
     parse_retry_after,
@@ -159,7 +160,16 @@ def _parse_models_response(source: bytes, secrets: Sequence[str]) -> tuple[Model
             raise _models_protocol_failure()
         if contains_protected_value(model_id, secrets):
             raise protected_response_failure()
-        by_id.setdefault(model_id, ModelInput(model_id, _friendly_model_name(model_id)))
+        defaults = default_model_capacity(model_id)
+        by_id.setdefault(
+            model_id,
+            ModelInput(
+                model_id,
+                _friendly_model_name(model_id),
+                defaults.context_window,
+                defaults.max_output_tokens,
+            ),
+        )
     return tuple(sorted(by_id.values(), key=lambda model: (model.id.casefold(), model.id)))
 
 

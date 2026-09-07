@@ -7,6 +7,7 @@ from typing import Protocol
 from ..cancellation import CancellationToken
 from ..domain import ModelUsage
 from ..tools.core import ToolCall, ToolDefinition
+from .model_defaults import UNKNOWN_MODEL_CAPACITY
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,8 +31,8 @@ class ProviderRequest:
 class ModelInput:
     id: str
     display_name: str
-    context_window: int = 32768
-    max_output_tokens: int = 4096
+    context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
+    max_output_tokens: int = UNKNOWN_MODEL_CAPACITY.max_output_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +41,8 @@ class ModelConfig:
     display_name: str
     enabled: bool
     supports_tools: bool
-    context_window: int = 32768
-    max_output_tokens: int = 4096
+    context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
+    max_output_tokens: int = UNKNOWN_MODEL_CAPACITY.max_output_tokens
 
 
 @dataclass(frozen=True, slots=True, repr=False)

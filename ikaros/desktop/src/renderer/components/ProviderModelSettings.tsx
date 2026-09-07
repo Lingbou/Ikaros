@@ -7,8 +7,10 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings2,
   Sparkles,
-  Trash2
+  Trash2,
+  X
 } from "lucide-react";
 import {
   useEffect,
@@ -440,7 +442,12 @@ function ModelDraftEditor({
               <Trash2 size={14} aria-hidden="true" />
             </button>
           </div>
-          <div className="mt-2 grid grid-cols-2 gap-2">
+          <details className="group mt-2 border-t border-[var(--separator)] pt-2">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded text-[11px] leading-4 text-[var(--muted)] outline-none hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] [&::-webkit-details-marker]:hidden">
+              <ChevronRight size={12} aria-hidden="true" className="transition-transform group-open:rotate-90" />
+              {t("settings.models.advancedLimits")}
+            </summary>
+          <div className="mt-3 grid grid-cols-2 gap-3">
             <Field label={t("settings.models.contextWindow")}>
               <input type="number" min={2} step={1} value={model.contextWindow}
                 onChange={(event) => update(model.key, { contextWindow: event.currentTarget.value })}
@@ -452,6 +459,7 @@ function ModelDraftEditor({
                 className={inputClassName} />
             </Field>
           </div>
+          </details>
           </div>
         ))}
       </div>
@@ -1039,38 +1047,113 @@ function ModelLimitsEditor({ model, onSave }: {
   onSave(modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
 }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
   const [context, setContext] = useState(String(model.contextWindow));
   const [output, setOutput] = useState(String(model.maxOutputTokens));
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
-  useEffect(() => { setContext(String(model.contextWindow)); setOutput(String(model.maxOutputTokens)); }, [model.contextWindow, model.maxOutputTokens]);
-  const contextWindow = Number(context), maxOutputTokens = Number(output);
+  const contextWindow = Number(context);
+  const maxOutputTokens = Number(output);
   const valid = Number.isSafeInteger(contextWindow) && Number.isSafeInteger(maxOutputTokens) &&
     maxOutputTokens > 0 && maxOutputTokens < contextWindow;
   const changed = contextWindow !== model.contextWindow || maxOutputTokens !== model.maxOutputTokens;
+  const updateOpen = (nextOpen: boolean) => {
+    if (saving) return;
+    if (nextOpen) {
+      setContext(String(model.contextWindow));
+      setOutput(String(model.maxOutputTokens));
+      setFailed(false);
+    }
+    setOpen(nextOpen);
+  };
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!valid || saving || !changed) return;
+    setSaving(true);
+    setFailed(false);
+    try {
+      await onSave(model.id, contextWindow, maxOutputTokens);
+      setOpen(false);
+    } catch {
+      setFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <form className="min-w-0 flex-1" onSubmit={(event) => {
-      event.preventDefault();
-      if (!valid || saving || !changed) return;
-      setSaving(true); setFailed(false);
-      void onSave(model.id, contextWindow, maxOutputTokens).catch(() => setFailed(true)).finally(() => setSaving(false));
-    }}>
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="min-w-24 flex-1 text-[10px] text-[var(--muted)]">
-          {t("settings.models.contextWindow")}
-          <input type="number" min={2} step={1} value={context} onChange={(event) => setContext(event.currentTarget.value)}
-            className={cx(inputClassName, "mt-1")} />
-        </label>
-        <label className="min-w-24 flex-1 text-[10px] text-[var(--muted)]">
-          {t("settings.models.maxOutputTokens")}
-          <input type="number" min={1} step={1} value={output} onChange={(event) => setOutput(event.currentTarget.value)}
-            className={cx(inputClassName, "mt-1")} />
-        </label>
-        <SubmitButton disabled={!valid || !changed || saving}>{t("settings.models.saveLimits")}</SubmitButton>
-      </div>
-      {!valid ? <p role="alert" className="mt-1 text-[11px] text-[#e08b8b]">{t("settings.models.invalidLimits")}</p> : null}
-      {failed ? <p role="alert" className="mt-1 text-[11px] text-[#e08b8b]">{t("settings.providers.saveFailed")}</p> : null}
-    </form>
+    <Dialog.Root open={open} onOpenChange={updateOpen}>
+      <Dialog.Trigger asChild>
+        <button
+          type="button"
+          aria-label={t("settings.models.configureModel", { model: model.displayName })}
+          title={t("settings.models.configureModel", { model: model.displayName })}
+          className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+        >
+          <Settings2 size={15} strokeWidth={1.7} aria-hidden="true" />
+        </button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[110] bg-black/55 backdrop-blur-[2px]" />
+        <Dialog.Content className="glass-menu fixed left-1/2 top-1/2 z-[120] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl">
+          <div className="flex items-start gap-4 border-b border-[var(--separator)] px-5 py-4">
+            <div className="min-w-0 flex-1">
+              <Dialog.Title className="text-[15px] font-semibold leading-6 text-[var(--text)]">
+                {t("settings.models.capacityTitle")}
+              </Dialog.Title>
+              <Dialog.Description title={model.displayName} className="mt-1 truncate text-[12px] leading-4 text-[var(--muted)]">
+                {model.displayName}
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <button
+                type="button"
+                disabled={saving}
+                aria-label={t("settings.models.close")}
+                className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:opacity-35"
+              >
+                <X size={15} aria-hidden="true" />
+              </button>
+            </Dialog.Close>
+          </div>
+          <form onSubmit={(event) => void save(event)}>
+            <div className="px-5 pt-5">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label={t("settings.models.contextWindow")}>
+                  <input type="number" min={2} step={1} value={context} disabled={saving}
+                    onChange={(event) => setContext(event.currentTarget.value)}
+                    className={cx(inputClassName, "tabular-nums disabled:opacity-60")} />
+                </Field>
+                <Field label={t("settings.models.maxOutputTokens")}>
+                  <input type="number" min={1} step={1} value={output} disabled={saving}
+                    onChange={(event) => setOutput(event.currentTarget.value)}
+                    className={cx(inputClassName, "tabular-nums disabled:opacity-60")} />
+                </Field>
+              </div>
+              <p className="mt-3 text-[11px] leading-[18px] text-[var(--muted)]">
+                {t("settings.models.capacityHint")}
+              </p>
+              <div className="min-h-12 pt-2 text-[11px] leading-4 text-[#e08b8b]">
+                {!valid ? <p role="alert">{t("settings.models.invalidLimits")}</p>
+                  : failed ? <p role="alert">{t("settings.models.saveFailed")}</p> : null}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--separator)] px-5 py-3">
+              <Dialog.Close asChild>
+                <button type="button" disabled={saving} className="h-8 rounded-lg px-3 text-[12px] font-medium text-[var(--muted-strong)] outline-none hover:bg-[var(--surface-hover)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)] disabled:opacity-35">
+                  {t("settings.models.cancel")}
+                </button>
+              </Dialog.Close>
+              <SubmitButton disabled={!valid || !changed || saving}>
+                <span className="inline-flex min-w-14 justify-center">
+                  {saving ? t("settings.models.savingLimits") : t("settings.models.saveLimits")}
+                </span>
+              </SubmitButton>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -1116,17 +1199,25 @@ function ModelsGroup({
           {group.models.map((model) => (
             <div
               key={model.id}
-              className="flex min-h-[52px] flex-wrap items-center justify-between gap-5 border-t border-[var(--separator)] px-4 py-2 first:border-t-0"
+              className="flex min-h-[72px] items-center gap-3 border-t border-[var(--separator)] px-4 py-3 first:border-t-0"
             >
-              <div className="min-w-0">
-                <div className="truncate text-[13px] font-semibold leading-5 text-[var(--text)]">
-                  {model.displayName}
-                </div>
-                {model.id !== model.displayName ? (
-                  <div className="mt-0.5 truncate font-mono text-[10px] leading-4 text-[var(--muted)]">
-                    {model.id}
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <div title={model.displayName} className="truncate text-[13px] font-medium leading-5 text-[var(--text)]">
+                    {model.displayName}
                   </div>
-                ) : null}
+                  {model.id !== model.displayName ? (
+                    <span title={model.id} className="min-w-0 truncate font-mono text-[10px] leading-4 text-[var(--muted)]">
+                      {model.id}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 truncate text-[11px] leading-4 text-[var(--muted)] tabular-nums">
+                  {t("settings.models.capacitySummary", {
+                    context: model.contextWindow.toLocaleString(),
+                    output: model.maxOutputTokens.toLocaleString()
+                  })}
+                </p>
               </div>
               <ModelLimitsEditor model={model} onSave={group.onSetLimits} />
               <ModelSwitch

@@ -119,7 +119,10 @@ The Runtime currently owns:
   response metadata/usage through `model.response_finished`. Only the current
   protocol and persistence formats are parsed;
 - the Runtime-owned `IKAROS.md` identity frozen in each RunConfig;
-- model capacity settings (initially 32,768 context tokens / 4,096 output tokens);
+- compact model rows showing model name and capacity, with numeric settings in a
+  separate dialog. Known DeepSeek V4 models initially use 1,000,000 context tokens
+  and a 64,000-token output reserve; unknown models use 32,768 / 4,096. The V4
+  reserve is Ikaros's initial request setting, not the official 384K maximum;
 - call counts, elapsed time, and manual stop, with no task-limit settings or total
   call/time caps. RunConfig freezes model capacity for each submitted task;
 - `process_start`, `process_read`, `process_wait`, `process_stop`, `read`, `write`,

@@ -17,8 +17,11 @@ input and Memory boundaries.
 - Streaming conversations through DeepSeek, Custom OpenAI-compatible providers,
   and a deterministic ScriptedProvider used for tests.
 - Provider/Model settings, DeepSeek model discovery, model enablement, and editable
-  model capacity. The initial defaults are a 32,768-token context window and a
-  4,096-token output reserve; users should set the actual limits of their model.
+  model capacity. Known DeepSeek V4 models start with a 1,000,000-token context
+  window and a 64,000-token output reserve. That reserve is Ikaros's initial
+  request setting, not the official maximum output of 384K. Unknown models fall
+  back to 32,768 / 4,096; users can edit these to match their model. See
+  [model capacity references](MODEL_CAPACITY_REFERENCES.md).
 - Continuous Runs with no total model-call or duration cap. RunConfig freezes
   model capacity at submission, while call counts and elapsed time remain visible.
   Manual cancellation, individual Provider request timeouts, and bounded process

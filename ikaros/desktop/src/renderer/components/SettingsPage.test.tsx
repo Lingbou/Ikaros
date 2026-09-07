@@ -1097,8 +1097,7 @@ describe("SettingsPage", () => {
 });
 
 describe("model capacity settings", () => {
-  it("validates token limits and saves them without requesting credentials", async () => {
-    const setModelLimits = vi.fn(async () => undefined);
+  function openModels(setModelLimits = vi.fn(async () => undefined)) {
     useAppStore.setState({
       providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: true, credentialConfigured: true, health: "unknown" }],
       models: [{ providerId: "deepseek", id: "model", displayName: "Model", enabled: true, contextWindow: 32768, maxOutputTokens: 4096 }],
@@ -1106,13 +1105,79 @@ describe("model capacity settings", () => {
     });
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    return setModelLimits;
+  }
+
+  it("keeps token forms out of the model list and opens the selected model settings", () => {
+    openModels();
+    expect(screen.getByText("32,768 context · 4,096 output tokens")).toBeTruthy();
+    expect(screen.queryByRole("spinbutton")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Toggle Model" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
+    expect(within(dialog).getByRole("spinbutton", { name: "Context window (tokens)" })).toHaveProperty("value", "32768");
+    expect(within(dialog).getByRole("spinbutton", { name: "Maximum output (tokens)" })).toHaveProperty("value", "4096");
+    expect(within(dialog).getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+  });
+
+  it("validates token limits and saves them without requesting credentials", async () => {
+    const setModelLimits = openModels();
+    fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
     fireEvent.change(screen.getByRole("spinbutton", { name: "Context window (tokens)" }), { target: { value: "65536" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum output (tokens)" }), { target: { value: "65536" } });
-    expect(screen.getByRole("button", { name: "Save token limits" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
     expect(screen.getByRole("alert").textContent).toContain("output below");
     fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum output (tokens)" }), { target: { value: "8192" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save token limits" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(setModelLimits).toHaveBeenCalledWith({ providerId: "deepseek", modelId: "model", contextWindow: 65536, maxOutputTokens: 8192 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByLabelText("DeepSeek API key")).toBeNull();
+  });
+
+  it("discards cancelled edits and reopens with the latest persisted values", async () => {
+    const setModelLimits = openModels();
+    const trigger = screen.getByRole("button", { name: "Configure Model" });
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Context window (tokens)" }), { target: { value: "65536" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(setModelLimits).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    expect(screen.getByRole("spinbutton", { name: "Context window (tokens)" })).toHaveProperty("value", "32768");
+  });
+
+  it("keeps failed values for retry and prevents duplicate saves while pending", async () => {
+    let completeSave: (() => void) | undefined;
+    const setModelLimits = vi.fn()
+      .mockRejectedValueOnce(new Error("disk unavailable"))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { completeSave = resolve; }));
+    openModels(setModelLimits);
+    fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Context window (tokens)" }), { target: { value: "65536" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not save model settings. Please try again.");
+    expect(screen.getByRole("spinbutton", { name: "Context window (tokens)" })).toHaveProperty("value", "65536");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const savingButton = screen.getByRole("button", { name: "Saving…" });
+    expect(savingButton).toHaveProperty("disabled", true);
+    fireEvent.click(savingButton);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(setModelLimits).toHaveBeenCalledTimes(2);
+    completeSave?.();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("places provider model capacity fields behind an advanced disclosure", () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Custom provider" }));
+    const advanced = screen.getByText("Advanced · Token limits").closest("details");
+    expect(advanced).toHaveProperty("open", false);
+    expect(advanced?.querySelector('input[type="number"]')).toHaveProperty("value", "32768");
   });
 });
