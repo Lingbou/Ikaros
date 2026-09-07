@@ -508,7 +508,7 @@ def apply_event(
             {"clientRequestId"},
         )
         turn = _record(payload, "turn", _TURN_KEYS)
-        run = _record(payload, "run", _RUN_KEYS | {"executionLimits"}, {"clientRequestId"})
+        run = _record(payload, "run", _RUN_KEYS, {"clientRequestId"})
         item = _record(payload, "item", _ITEM_KEYS)
         _validate_turn(turn)
         _validate_run(run)
@@ -560,14 +560,6 @@ def apply_event(
             "Frame execution policy",
             run_config.execution_policy,
             run["executionPolicy"],
-        )
-        _require_equal(
-            "Run execution limits",
-            run["executionLimits"],
-            {
-                "maxModelCalls": run_config.max_model_calls,
-                "maxDurationSeconds": run_config.max_duration_seconds,
-            },
         )
         _require_equal(
             "Frame Skills",
@@ -757,8 +749,6 @@ def apply_event(
             ).fetchone()[0]
         )
         _require_equal("model Step ordinal", payload["stepOrdinal"], expected_ordinal)
-        if expected_ordinal > get_run_config(connection, str(event.run_id)).max_model_calls:
-            raise RuntimeError("model_call_budget_exceeded")
         try:
             step_input = StepInput.from_wire(payload["stepInput"])
         except (TypeError, ValueError):

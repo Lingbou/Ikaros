@@ -104,10 +104,6 @@ class ContextBudgetExceededError(RuntimeError):
     """The current Run cannot fit the frozen provider-neutral input budget."""
 
 
-class ModelCallBudgetExceededError(RuntimeError):
-    """The Run exhausted its total model-call budget before completing the task."""
-
-
 class ModelInputUnavailableError(RuntimeError):
     """A provider-neutral input source is missing, corrupt, or no longer canonical."""
 

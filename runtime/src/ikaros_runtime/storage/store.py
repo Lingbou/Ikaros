@@ -519,10 +519,6 @@ class SqliteRuntimeStore:
             "createdAt": timestamp,
             "settledAt": None,
             "skills": [skill.to_wire() for skill in run_config.skills],
-            "executionLimits": {
-                "maxModelCalls": run_config.max_model_calls,
-                "maxDurationSeconds": run_config.max_duration_seconds,
-            },
         }
         if client_request_id is not None:
             run_payload["clientRequestId"] = client_request_id
@@ -766,8 +762,6 @@ class SqliteRuntimeStore:
             current_run_id=run_id,
             config=frame,
         )
-        if step_ordinal > frame.max_model_calls:
-            raise RuntimeError("model_call_budget_exceeded")
         timestamp = utc_now()
         status = self._connection.execute(
             "SELECT status FROM runs WHERE id = ?",

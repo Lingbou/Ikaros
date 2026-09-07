@@ -119,12 +119,14 @@ The Runtime currently owns:
   response metadata/usage through `model.response_finished`. Only the current
   protocol and persistence formats are parsed;
 - the Runtime-owned `IKAROS.md` identity frozen in each RunConfig;
-- model capacity settings (initially 32,768 context tokens / 4,096 output tokens)
-  and per-Run budgets (default 100 model calls / 60 minutes);
+- model capacity settings (initially 32,768 context tokens / 4,096 output tokens);
+- call counts, elapsed time, and manual stop, with no task-limit settings or total
+  call/time caps. RunConfig freezes model capacity for each submitted task;
 - `process_start`, `process_read`, `process_wait`, `process_stop`, `read`, `write`,
   and `edit` under `full_access`. Command start returns a process ID; read/wait
   establish current state and observed exit. Wait timeouts leave commands alive.
-  Run completion, cancellation, or deadline cleans owned process trees.
+  Run completion, failure, or cancellation cleans owned process trees. Individual
+  Provider request timeouts and bounded cleanup remain.
 
 The renderer projects canonical Runtime messages, streamed deltas,
 managed-command and `read`/`write`/`edit` Tool Calls and Tool Results, and Run state
@@ -219,8 +221,8 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses **SQLite schema 10, Journal schema 7, and protocol
-4**. Old selectors, execution DTOs, and migration paths have been removed.
+Conversation persistence uses **SQLite schema 11, Journal schema 8, and protocol
+5**. Old selectors, execution DTOs, and migration paths have been removed.
 Incompatible development state fails with an explicit reset-required error;
 Runtime never automatically deletes it. Use a fresh development Runtime home or
 rebuild disposable Session state deliberately with Runtime stopped. Provider/model
@@ -232,9 +234,9 @@ active commands unknown and never reattaches their PID. Preview and historical
 diff bodies remain outside model input. Commands can create files available for
 preview, but their changes are not automatically diff-tracked.
 
-The first long-task stage provides budgets and managed command execution.
-Automatic context compression, runtime user steering, completion checking, and
-a full process-log panel remain planned. Larger Run budgets alone do not solve
-context overflow. Python Runtime bundling, attachments, web tools, and multi-Agent
+The first long-task stage provides model capacity settings and managed command
+execution without a total Run call or duration cap. Automatic context compression,
+runtime user steering, completion checking, and a full process-log panel remain
+planned. Removing total Run caps does not solve context overflow. Python Runtime bundling, attachments, web tools, and multi-Agent
 execution remain outside this stage. See
 [the development plan](../../runtime/LONG_TASK_PLAN.md) for subsequent milestones.

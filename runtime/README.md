@@ -5,8 +5,7 @@ loopback WebSocket carries JSON-RPC requests and sequenced events. Standard outp
 contains only the readiness record; diagnostics use standard error.
 
 The current implementation includes the daily-use Alpha and the first stage of
-[the long-task plan](LONG_TASK_PLAN.md): model capacity, frozen Run budgets, and
-managed commands. Automatic context compression, in-flight steering, and
+[the long-task plan](LONG_TASK_PLAN.md): model capacity and managed commands. Automatic context compression, in-flight steering, and
 completion checking are still planned. See [DESIGN.md](DESIGN.md) for architecture
 and [MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md) for model
 input and Memory boundaries.
@@ -20,9 +19,10 @@ input and Memory boundaries.
 - Provider/Model settings, DeepSeek model discovery, model enablement, and editable
   model capacity. The initial defaults are a 32,768-token context window and a
   4,096-token output reserve; users should set the actual limits of their model.
-- Per-Run limits, defaulting to **100 model calls and 60 minutes**. The Run freezes
-  these values at submission. Its deadline includes tools and provider waits;
-  reaching either limit settles the Run with an explicit reason.
+- Continuous Runs with no total model-call or duration cap. RunConfig freezes
+  model capacity at submission, while call counts and elapsed time remain visible.
+  Manual cancellation, individual Provider request timeouts, and bounded process
+  and network cleanup remain. Adapter calls do not retry implicitly.
 - A provider-neutral model input plan and one current persistence format:
   `RunConfig`, `ContextRevision`, and per-call `StepInput`. Context accounting uses
   a conservative token estimate and reserves output capacity; billing totals
@@ -60,8 +60,9 @@ execution context to every tool. Repeating the same start Item and arguments
 returns the existing command; reusing that Item with different arguments fails.
 The model cannot supply ownership IDs to start or adopt another Run's command.
 
-Each Run can register 32 commands, with at most 4 active simultaneously. Each
-stream retains at most 64 KiB; output is continuously drained after that limit.
+Each Run can start commands without a cumulative count limit, with at most 4 active
+simultaneously. Each stream retains at most 64 KiB; output is continuously drained
+after that limit.
 Reads return at most 16 KiB and use Unicode-character cursors. `process_wait`
 defaults to 1 second and permits at most 60 seconds per call. Windows uses
 kill-on-close Job Objects; POSIX uses process groups. Root exit also cleans up
@@ -73,7 +74,7 @@ the latest record. Output snapshots are limited to four per second, and unchange
 full buffers are not repeatedly recorded. Credential guards span stream chunks
 before content reaches tool results or storage.
 
-A Run's completion, cancellation, deadline, or Runtime shutdown stops its command
+A Run's completion, failure, cancellation, or Runtime shutdown stops its command
 trees and releases live buffers. Historical facts stay in SQLite. Restart changes
 persisted active/start-pending commands to **unknown**, never reattaches an old
 PID, and never reruns the command. Active Runs become `runtime_interrupted`;
@@ -109,13 +110,13 @@ There is no automatic Memory writer or Skill learning loop.
 
 ## Protocol and storage
 
-`src/ikaros_runtime/protocol/spec.py` defines protocol **4**, Journal schema **7**,
+`src/ikaros_runtime/protocol/spec.py` defines protocol **5**, Journal schema **8**,
 29 post-initialize RPC methods, 13 persisted event types, and 7 provider tool IDs.
 It generates `protocol/runtime-protocol.json` and Desktop's literal unions.
 `protocol/golden-trace.json` exercises production Run execution, process facts,
 file changes, history, and projection rebuilding in both Python and Desktop tests.
 
-Session storage is **schema 10 only**. Old state formats, selectors, queued-Run
+Session storage is **schema 11 only**. Old state formats, selectors, queued-Run
 formats, and migration paths have been removed. An incompatible development
 `state.db` fails startup with `state database schema is incompatible; reset required`.
 There is no automatic migration or automatic deletion. Use a fresh development
@@ -160,5 +161,5 @@ currently stops the Run explicitly. `full_access` uses the OS user's authority a
 is not a sandbox. The Runtime remains tied to Desktop's lifetime.
 
 Earlier real-model evidence is recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
-The new kernel has deterministic process/recovery/deadline tests; Windows/Linux
+The new kernel has deterministic process/recovery/cancellation and request-timeout tests; Windows/Linux
 real-model long-task acceptance remains a later milestone check.

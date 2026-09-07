@@ -1,4 +1,4 @@
-"""Durable process facts, restart boundaries, and the Run's wall-clock deadline."""
+"""Durable process facts, restart boundaries, and manual Run cancellation."""
 
 from __future__ import annotations
 
@@ -187,7 +187,7 @@ async def test_process_journal_rebuilds_lost_projection_and_survives_reopen(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "posix", reason="POSIX descendant PID and process-group assertions")
-async def test_run_deadline_stops_wait_and_process_tree_but_preserves_partial_output(
+async def test_manual_cancellation_stops_wait_and_process_tree_but_preserves_partial_output(
     tmp_path: Path,
 ) -> None:
     root_pid_file, child_pid_file = tmp_path / "root.pid", tmp_path / "child.pid"
@@ -196,18 +196,34 @@ async def test_run_deadline_stops_wait_and_process_tree_but_preserves_partial_ou
         'sh -c \'printf "%s" "$$" > "$1"; sleep 60\' sh '
         f"{shlex.quote(str(child_pid_file))} & "
         f"while [ ! -s {shlex.quote(str(child_pid_file))} ]; do sleep 0.01; done; "
-        "printf 'deadline-partial\\n'; wait"
+        "printf 'cancel-partial\\n'; wait"
     )
     store = SqliteRuntimeStore(tmp_path / "state.db")
-    manager = _manager(store)
+    output_ready = asyncio.Event()
+    wait_started = asyncio.Event()
+
+    def record(fact: JsonObject) -> None:
+        store.record_process(fact)
+        if "cancel-partial" in fact["stdout"]:
+            output_ready.set()
+
+    manager = ProcessManager(record=record)
     executor = _executor(manager)
     events: list[JournalEvent] = []
+    cancellation = CancellationToken()
+    task: asyncio.Task[None] | None = None
 
     async def publish(event: JournalEvent) -> None:
         events.append(event)
+        if (
+            event.type == "item.started"
+            and event.payload["item"]["kind"] == "tool_call"
+            and event.payload["item"]["data"]["toolName"] == "process_wait"
+        ):
+            wait_started.set()
 
     try:
-        thread, _ = store.create_thread("One second budget")
+        thread, _ = store.create_thread("Cancel running process")
         turn = prepare_turn(
             store,
             thread_id=thread.id,
@@ -216,20 +232,25 @@ async def test_run_deadline_stops_wait_and_process_tree_but_preserves_partial_ou
             provider_id="scripted",
             model_id="scripted-v1",
             tools=executor.definitions,
-            max_duration_seconds=1,
         )
         loop = AgentLoop(
             store, {"scripted": ScriptedProvider()}, publish, executor, process_manager=manager
         )
+        task = asyncio.create_task(loop.run(turn.run_id, cancellation))
+        await asyncio.wait_for(
+            asyncio.gather(output_ready.wait(), wait_started.wait()), timeout=5
+        )
+        assert store.run_status(turn.run_id) == "running"
         started = time.monotonic()
-        await asyncio.wait_for(loop.run(turn.run_id, CancellationToken()), timeout=10)
-        assert 0.9 <= time.monotonic() - started < 5
-        assert store.run_status(turn.run_id) == "failed"
+        cancellation.cancel()
+        await asyncio.wait_for(task, timeout=10)
+        assert time.monotonic() - started < 5
+        assert store.run_status(turn.run_id) == "cancelled"
         settled = [event for event in events if event.type == "run.settled"]
-        assert len(settled) == 1 and settled[0].payload["reasonCode"] == "run_time_limit"
+        assert len(settled) == 1 and settled[0].payload["reasonCode"] == "cancelled"
         facts = store.process_records()
         assert len(facts) == 1 and facts[0]["state"] == "terminated"
-        assert "deadline-partial" in facts[0]["stdout"]
+        assert "cancel-partial" in facts[0]["stdout"]
         wait_results = [
             event.payload["item"]["data"]["result"]
             for event in events
@@ -237,7 +258,7 @@ async def test_run_deadline_stops_wait_and_process_tree_but_preserves_partial_ou
             and event.payload.get("item", {}).get("kind") == "tool_result"
             and event.payload["item"]["data"]["toolName"] == "process_wait"
         ]
-        assert wait_results and "deadline-partial" in wait_results[-1]["output"]
+        assert wait_results and "cancel-partial" in wait_results[-1]["output"]
         assert wait_results[-1]["cancelled"]
         root_pid, child_pid = int(root_pid_file.read_text()), int(child_pid_file.read_text())
         await _wait_for_process_exit(root_pid)
@@ -247,6 +268,9 @@ async def test_run_deadline_stops_wait_and_process_tree_but_preserves_partial_ou
         store.rebuild_projections()
         assert store.process_records() == before
     finally:
+        cancellation.cancel()
+        if task is not None:
+            await asyncio.wait_for(task, timeout=10)
         await manager.close()
         store.close()
 

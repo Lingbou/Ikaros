@@ -208,8 +208,6 @@ export interface RuntimeRunProgress {
   startedAt: string | null;
   settledAt: string | null;
   modelCalls: number;
-  maxModelCalls: number;
-  maxDurationSeconds: number;
 }
 
 export interface Turn {

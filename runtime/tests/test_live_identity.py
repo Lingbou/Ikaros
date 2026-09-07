@@ -188,7 +188,6 @@ def _prepare_turn(
             skills=(),
             tools=tools.definitions,
             identity_core=identity_core,
-            max_model_calls=16,
         ),
         client_request_id=None,
     )

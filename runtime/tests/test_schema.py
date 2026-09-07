@@ -137,7 +137,7 @@ def test_current_database_reopens_without_rewriting_state(tmp_path: Path) -> Non
         reopened.close()
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8, 9, 999])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 999])
 def test_non_current_schema_version_requires_explicit_reset(
     tmp_path: Path,
     version: int,

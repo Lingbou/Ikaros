@@ -703,3 +703,84 @@ async def test_cancelled_wait_tool_retains_partial_output_for_turn_history(tmp_p
     await manager.close_run(context.run_id)
     assert facts[-1]["state"] == "terminated"
     assert "partial" in facts[-1]["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_more_than_thirty_two_sequential_commands_keep_old_results_and_start_identity(
+    tmp_path: Path,
+) -> None:
+    manager = ProcessManager()
+    cancellation = CancellationToken()
+    command = _command(
+        windows="Add-Content -LiteralPath commands.txt -Value 'done'; Write-Output 'done'",
+        posix="printf 'done\\n' >> commands.txt; printf 'done\\n'",
+    )
+    first_context = _context(item="command-0")
+    first_result: JsonObject = {}
+    try:
+        for index in range(35):
+            context = _context(item=f"command-{index}")
+            started = await manager.start(
+                command, str(tmp_path), context=context, cancellation=cancellation
+            )
+            result = await manager.wait(
+                started["processId"], context=context, cancellation=cancellation, timeout_ms=5000
+            )
+            assert result["state"] == "exited" and result["exitCode"] == 0
+            if index == 0:
+                first_result = result
+
+        process_id = first_result["processId"]
+        assert manager.read(process_id, context=first_context) == first_result
+        assert await manager.wait(
+            process_id, context=first_context, cancellation=cancellation
+        ) == first_result
+        assert await manager.stop(process_id, context=first_context) == first_result
+        assert await manager.start(
+            command, str(tmp_path), context=first_context, cancellation=cancellation
+        ) == first_result
+        assert (tmp_path / "commands.txt").read_text(encoding="utf-8").splitlines() == [
+            "done"
+        ] * 35
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_four_active_commands_block_the_fifth_until_one_finishes(tmp_path: Path) -> None:
+    manager = ProcessManager()
+    cancellation = CancellationToken()
+    command = _command(windows="Start-Sleep -Seconds 60", posix="sleep 60")
+    running: list[JsonObject] = []
+    try:
+        for index in range(4):
+            running.append(
+                await manager.start(
+                    command,
+                    str(tmp_path),
+                    context=_context(item=f"active-{index}"),
+                    cancellation=cancellation,
+                )
+            )
+        fifth_context = _context(item="active-4")
+        with pytest.raises(ProcessError) as rejected:
+            await manager.start(
+                "echo released", str(tmp_path), context=fifth_context, cancellation=cancellation
+            )
+        assert rejected.value.code == "process_limit"
+        assert all(
+            manager.read(result["processId"], context=_context())["state"] == "running"
+            for result in running
+        )
+        stopped = await manager.stop(running[0]["processId"], context=_context())
+        assert stopped["state"] == "terminated"
+        fifth = await manager.start(
+            "echo released", str(tmp_path), context=fifth_context, cancellation=cancellation
+        )
+        result = await manager.wait(
+            fifth["processId"], context=fifth_context, cancellation=cancellation, timeout_ms=5000
+        )
+        assert result["state"] == "exited" and result["exitCode"] == 0
+        assert "released" in result["output"]
+    finally:
+        await manager.close()

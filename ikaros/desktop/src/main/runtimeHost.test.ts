@@ -129,7 +129,7 @@ function historyTurn(ordinal: number): RuntimeTurnHistory {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
-    startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
+    startedAt: null, modelCalls: 0,
         status: "completed",
         reasonCode: null,
         createdAt: "2026-08-14T00:00:00.000Z",

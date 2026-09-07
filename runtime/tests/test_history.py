@@ -510,7 +510,6 @@ def test_later_tool_steps_load_frozen_ids_and_current_run_without_branch_scan(
             content="repeat",
             provider_id="scripted",
             model_id="scripted-v1",
-            max_model_calls=16,
         )
         store.mark_run_running(current.run_id)
         first = store.prepare_model_step(current.run_id, step_ordinal=1)

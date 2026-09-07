@@ -36,7 +36,7 @@ from ikaros_runtime.tools.core import (
 )
 from ikaros_runtime.tools.policy import FullAccessPolicy
 
-from .helpers import bounded_budget, prepare_turn
+from .helpers import bounded_budget, prepare_turn, run_config_template
 
 
 class FailingProvider:
@@ -1721,52 +1721,6 @@ async def test_agent_returns_stale_content_to_the_provider_and_rebuilds_it(
 
 
 @pytest.mark.asyncio
-async def test_agent_step_limit_settles_an_infinite_tool_loop_once(tmp_path: Path) -> None:
-    store = SqliteRuntimeStore(tmp_path / "state.db")
-    events: list[JournalEvent] = []
-
-    async def publish(event: JournalEvent) -> None:
-        events.append(event)
-
-    try:
-        thread, _ = store.create_thread("Step bound")
-        provider = ToolLoopProvider(always_call=True)
-        tool = RecordingTool()
-        executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
-        prepared = prepare_turn(
-            store,
-            thread_id=thread.id,
-            branch_id=thread.default_branch_id,
-            content="loop forever",
-            provider_id="tool-loop",
-            model_id="tool-loop-v1",
-            tools=executor.definitions,
-            max_model_calls=2,
-        )
-        loop = AgentLoop(
-            store,
-            {"tool-loop": provider},
-            publish,
-            executor,
-        )
-
-        await loop.run(prepared.run_id, CancellationToken())
-
-        settled = [
-            event
-            for event in events
-            if event.run_id == prepared.run_id and event.type == "run.settled"
-        ]
-        assert len(provider.requests) == 2
-        assert len(tool.calls) == 2
-        assert len(settled) == 1
-        assert settled[0].payload["status"] == "failed"
-        assert settled[0].payload["reasonCode"] == "model_call_budget_exceeded"
-    finally:
-        store.close()
-
-
-@pytest.mark.asyncio
 async def test_queued_run_is_cancelled_without_calling_executor() -> None:
     executor = BlockingExecutor()
     scheduler = AgentScheduler(executor)
@@ -1833,15 +1787,17 @@ async def test_scheduler_continues_after_an_unhandled_run_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_thirty_model_calls_use_frozen_run_budget_and_survive_rebuild(tmp_path: Path) -> None:
-    class ThirtyStepProvider(ToolLoopProvider):
+async def test_more_than_one_hundred_model_calls_complete_and_survive_rebuild(
+    tmp_path: Path,
+) -> None:
+    class LongTaskProvider(ToolLoopProvider):
         async def stream(
             self,
             request: ProviderRequest,
             *,
             cancellation: CancellationToken,
         ) -> AsyncIterator[ProviderEvent]:
-            self.always_call = len(self.requests) < 29
+            self.always_call = len(self.requests) < 100
             async for event in super().stream(request, cancellation=cancellation):
                 yield event
 
@@ -1853,26 +1809,26 @@ async def test_thirty_model_calls_use_frozen_run_budget_and_survive_rebuild(tmp_
 
     try:
         thread, _ = store.create_thread("Long finite task")
-        provider = ThirtyStepProvider()
+        provider = LongTaskProvider()
         tool = RecordingTool()
         executor = ToolExecutor(ToolRegistry([tool]), FullAccessPolicy())
-        prepared = prepare_turn(
-            store,
+        template = run_config_template("test", "test", tools=executor.definitions)
+        template = replace(
+            template, provider=replace(template.provider, context_window=1_000_000)
+        )
+        prepared = store.prepare_turn(
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
-            content="finish all 29 operations",
-            provider_id="test",
-            model_id="test",
-            tools=executor.definitions,
-            max_model_calls=30,
+            content="finish all 100 operations",
+            run_config_template=template,
         )
         await AgentLoop(store, {"test": provider}, publish, executor).run(
             prepared.run_id,
             CancellationToken(),
         )
         assert store.run_status(prepared.run_id) == "completed"
-        assert len(provider.requests) == 30
-        assert len(tool.calls) == 29
+        assert len(provider.requests) == 101
+        assert len(tool.calls) == 100
         assert all(request.max_output_tokens == 4096 for request in provider.requests)
         calls = store._connection.execute(
             "SELECT step_ordinal, purpose, outcome FROM model_calls WHERE run_id = ? "
@@ -1880,7 +1836,7 @@ async def test_thirty_model_calls_use_frozen_run_budget_and_survive_rebuild(tmp_
             (prepared.run_id,),
         ).fetchall()
         assert [tuple(row) for row in calls] == [
-            (i, "execution", "completed") for i in range(1, 31)
+            (i, "execution", "completed") for i in range(1, 102)
         ]
         before = store.list_turn_page(
             thread_id=thread.id,
@@ -1888,7 +1844,7 @@ async def test_thirty_model_calls_use_frozen_run_budget_and_survive_rebuild(tmp_
             cursor=None,
             limit=50,
         ).to_wire()
-        assert before["turns"][0]["runs"][0]["modelCalls"] == 30
+        assert before["turns"][0]["runs"][0]["modelCalls"] == 101
         store.rebuild_projections()
         assert (
             store.list_turn_page(
@@ -1904,10 +1860,13 @@ async def test_thirty_model_calls_use_frozen_run_budget_and_survive_rebuild(tmp_
 
 
 @pytest.mark.asyncio
-async def test_duration_limit_cancels_blocked_provider_and_preserves_known_metadata(
+async def test_manual_cancellation_closes_blocked_provider_and_preserves_known_metadata(
     tmp_path: Path,
 ) -> None:
     closed = asyncio.Event()
+    blocked = asyncio.Event()
+    cancellation = CancellationToken()
+    task: asyncio.Task[None] | None = None
 
     class BlockedProvider:
         async def stream(
@@ -1920,6 +1879,7 @@ async def test_duration_limit_cancels_blocked_provider_and_preserves_known_metad
             try:
                 yield ResponseMetadata(model_id="actual-model", request_id="early-request")
                 yield TextDelta("partial evidence")
+                blocked.set()
                 await asyncio.Event().wait()
             finally:
                 closed.set()
@@ -1931,26 +1891,28 @@ async def test_duration_limit_cancels_blocked_provider_and_preserves_known_metad
         events.append(event)
 
     try:
-        thread, _ = store.create_thread("Time bound")
+        thread, _ = store.create_thread("Cancel blocked provider")
         prepared = prepare_turn(
             store,
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
-            content="finish within budget",
+            content="wait until I cancel",
             provider_id="test",
             model_id="test",
-            max_duration_seconds=1,
         )
-        await asyncio.wait_for(
+        task = asyncio.create_task(
             AgentLoop(store, {"test": BlockedProvider()}, publish).run(
                 prepared.run_id,
-                CancellationToken(),
-            ),
-            timeout=3,
+                cancellation,
+            )
         )
+        await asyncio.wait_for(blocked.wait(), timeout=3)
+        assert store.run_status(prepared.run_id) == "running"
+        cancellation.cancel()
+        await asyncio.wait_for(task, timeout=3)
         assert closed.is_set()
-        assert store.run_status(prepared.run_id) == "failed"
-        assert events[-1].payload["reasonCode"] == "run_time_limit"
+        assert store.run_status(prepared.run_id) == "cancelled"
+        assert events[-1].payload["reasonCode"] == "cancelled"
         assert len([event for event in events if event.type == "run.settled"]) == 1
         call = store._connection.execute(
             "SELECT outcome, response_model_id, request_id, usage_json FROM model_calls "
@@ -1966,6 +1928,9 @@ async def test_duration_limit_cancels_blocked_provider_and_preserves_known_metad
         assert partial["content"] == "partial evidence"
         assert partial["status"] == "cancelled"
         store.rebuild_projections()
-        assert store.run_status(prepared.run_id) == "failed"
+        assert store.run_status(prepared.run_id) == "cancelled"
     finally:
+        cancellation.cancel()
+        if task is not None:
+            await asyncio.wait_for(task, timeout=3)
         store.close()

@@ -318,7 +318,6 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 skills=(),
                 tools=executor.definitions,
                 identity_core=identity_core,
-                max_model_calls=4,
             )
             prepared = store.prepare_turn(
                 thread_id=thread.id,
@@ -477,7 +476,6 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 skills=(),
                 tools=(WriteTool.definition,),
                 identity_core=identity_core,
-                max_model_calls=2,
             )
             file_turn = store.prepare_turn(
                 thread_id=thread.id,

@@ -294,15 +294,11 @@ class RunConfigTemplate:
     output_style: InstructionBlockV1
     identity_core: InstructionBlockV1 | None
     skill_catalog: InstructionBlockV1 | None
-    max_model_calls: int = 100
-    max_duration_seconds: int = 3600
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "skills", _skill_snapshot(self.skills))
         object.__setattr__(self, "tools", tuple(self.tools))
         _nonempty("execution policy", self.execution_policy)
-        _positive("maximum model calls", self.max_model_calls)
-        _positive("maximum Run duration", self.max_duration_seconds)
         _unique_names("Tool", (tool.name for tool in self.tools))
         _unique_names("Skill", (skill.name for skill in self.skills))
         _validate_instruction_slots(
@@ -325,8 +321,6 @@ class RunConfigTemplate:
         skills: Sequence[SkillDescriptor],
         tools: Sequence[ToolDefinition],
         identity_core: InstructionBlockV1 | None,
-        max_model_calls: int = 100,
-        max_duration_seconds: int = 3600,
     ) -> RunConfigTemplate:
         from .skills import build_skill_prompt
 
@@ -360,8 +354,6 @@ class RunConfigTemplate:
                 if skill_prompt is not None
                 else None
             ),
-            max_model_calls=max_model_calls,
-            max_duration_seconds=max_duration_seconds,
         )
 
 
@@ -382,8 +374,6 @@ class RunConfig:
     output_style: InstructionBlockV1
     identity_core: InstructionBlockV1 | None
     skill_catalog: InstructionBlockV1 | None
-    max_model_calls: int = 100
-    max_duration_seconds: int = 3600
 
     context_window: int = 32768
     max_output_tokens: int = 4096
@@ -415,8 +405,6 @@ class RunConfig:
         )
         object.__setattr__(self, "skills", _skill_snapshot(self.skills))
         object.__setattr__(self, "tools", tuple(self.tools))
-        _positive("maximum model calls", self.max_model_calls)
-        _positive("maximum Run duration", self.max_duration_seconds)
         _unique_names("Tool", (tool.name for tool in self.tools))
         _unique_names("Skill", (skill.name for skill in self.skills))
         if self.skills != tuple(sorted(self.skills, key=lambda skill: skill.name)):
@@ -458,8 +446,6 @@ class RunConfig:
             output_style=template.output_style,
             identity_core=template.identity_core,
             skill_catalog=template.skill_catalog,
-            max_model_calls=template.max_model_calls,
-            max_duration_seconds=template.max_duration_seconds,
             context_window=template.provider.context_window,
             max_output_tokens=template.provider.max_output_tokens,
         )
@@ -499,8 +485,6 @@ class RunConfig:
                     self.skill_catalog.to_wire() if self.skill_catalog is not None else None
                 ),
             },
-            "maxModelCalls": self.max_model_calls,
-            "maxDurationSeconds": self.max_duration_seconds,
             "contextWindow": self.context_window,
             "maxOutputTokens": self.max_output_tokens,
         }
@@ -539,8 +523,6 @@ class RunConfig:
                 if instructions["skillCatalog"] is not None
                 else None
             ),
-            max_model_calls=_as_int(row["maxModelCalls"]),
-            max_duration_seconds=_as_int(row["maxDurationSeconds"]),
             context_window=_as_int(row["contextWindow"]),
             max_output_tokens=_as_int(row["maxOutputTokens"]),
         )
@@ -1556,8 +1538,6 @@ _RUN_CONFIG_KEYS = {
     "skills",
     "tools",
     "instructions",
-    "maxModelCalls",
-    "maxDurationSeconds",
     "contextWindow",
     "maxOutputTokens",
 }

@@ -122,7 +122,7 @@ export function projectRuntimeThreadHistory(
         timestamp: run.settledAt ?? turn.updatedAt,
         payload: {
           status: run.status, reasonCode: run.reasonCode,
-          executionLimits: run.executionLimits, modelCalls: run.modelCalls,
+          modelCalls: run.modelCalls,
           startedAt: run.startedAt, settledAt: run.settledAt, createdAt: run.createdAt,
         },
       });
@@ -404,15 +404,12 @@ export function applyRuntimeCatalogEvent(
 
 function progressFromEvent(previous: RuntimeRunProgress | undefined, event: RuntimeJournalEvent): RuntimeRunProgress | undefined {
   const snapshot = isRecord(event.payload.run) ? event.payload.run : event.payload;
-  const limits = isRecord(snapshot.executionLimits) ? snapshot.executionLimits : null;
-  const maxModelCalls = limits && Number.isSafeInteger(limits.maxModelCalls) && Number(limits.maxModelCalls) > 0
-    ? Number(limits.maxModelCalls) : previous?.maxModelCalls;
-  const maxDurationSeconds = limits && Number.isSafeInteger(limits.maxDurationSeconds) && Number(limits.maxDurationSeconds) > 0
-    ? Number(limits.maxDurationSeconds) : previous?.maxDurationSeconds;
-  if (maxModelCalls === undefined || maxDurationSeconds === undefined) return previous;
+  if (
+    !previous && typeof snapshot.createdAt !== "string" &&
+    event.type !== "run.state_changed" && event.type !== "run.settled"
+  ) return undefined;
   const calls = event.type === "model.input_prepared" ? event.payload.stepOrdinal : snapshot.modelCalls;
   return {
-    maxModelCalls, maxDurationSeconds,
     modelCalls: Number.isSafeInteger(calls) && Number(calls) >= 0
       ? Math.max(previous?.modelCalls ?? 0, Number(calls)) : previous?.modelCalls ?? 0,
     queuedAt: typeof snapshot.createdAt === "string" ? snapshot.createdAt : previous?.queuedAt ?? event.timestamp,

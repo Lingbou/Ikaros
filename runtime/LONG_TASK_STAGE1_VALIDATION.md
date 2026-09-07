@@ -2,6 +2,8 @@
 
 日期：2026-09-07。分支：`main`。
 
+> 历史验收记录：以下内容保留阶段一交付时的事实。最新修订已取消任务总调用次数、总时长及对应界面入口；当前使用 Session schema 11 / Journal schema 8 / 协议 5。本文中的旧总上限、版本号和相关验收项目不再描述当前行为，以 [最新计划](LONG_TASK_PLAN.md) 和 [当前模型输入设计](MODEL_INPUT_AND_MEMORY_DESIGN.md) 为准。
+
 ## 交付范围
 
 - 统一 `RunConfig`、`ContextRevision`、`StepInput` 和 `model_calls`；删除旧快照、Manifest、选择器及旧数据库迁移。当前 Session schema 10、Journal schema 7、协议 4。

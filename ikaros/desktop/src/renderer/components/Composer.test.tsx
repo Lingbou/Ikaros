@@ -401,18 +401,3 @@ describe("Composer input and clearance", () => {
     expect(onClearanceChange).toHaveBeenLastCalledWith(275);
   });
 });
-
-describe("task execution limits", () => {
-  it("keeps the current draft while configuring limits for the next task", () => {
-    useAppStore.setState({ runtimeMode: true, draft: "Keep this request", executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 } });
-    render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
-    fireEvent.click(screen.getByRole("button", { name: "Task limits" }));
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum model calls" }), { target: { value: "37" } });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum duration (minutes)" }), { target: { value: "25" } });
-    expect(useAppStore.getState().executionLimits).toEqual({ maxModelCalls: 37, maxDurationSeconds: 1500 });
-    expect(useAppStore.getState().draft).toBe("Keep this request");
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum model calls" }), { target: { value: "0" } });
-    expect(useAppStore.getState().executionLimits.maxModelCalls).toBe(37);
-    localStorage.removeItem("ikaros.executionLimits");
-  });
-});

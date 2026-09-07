@@ -256,7 +256,7 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
             )
             == records_before
         )
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 11
     finally:
         memory.close()
         store.close()

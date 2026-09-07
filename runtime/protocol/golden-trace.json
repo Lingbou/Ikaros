@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 4,
+        "protocolVersion": 5,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 4,
+          "protocolVersion": 5,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
@@ -107,10 +107,6 @@
                   "status": "completed",
                   "createdAt": "2026-08-15T12:00:00.004Z",
                   "startedAt": "2026-08-15T12:00:00.006Z",
-                  "executionLimits": {
-                    "maxModelCalls": 4,
-                    "maxDurationSeconds": 3600
-                  },
                   "modelCalls": 3,
                   "settledAt": "2026-08-15T12:00:00.026Z",
                   "reasonCode": null,
@@ -633,7 +629,7 @@
         "method": "event",
         "params": {
           "seq": 1,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "thread.created",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -669,7 +665,7 @@
         "method": "event",
         "params": {
           "seq": 2,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "thread.renamed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -699,7 +695,7 @@
         "method": "event",
         "params": {
           "seq": 3,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "thread.archived",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -729,7 +725,7 @@
         "method": "event",
         "params": {
           "seq": 4,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "thread.unarchived",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -759,7 +755,7 @@
         "method": "event",
         "params": {
           "seq": 5,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -786,11 +782,7 @@
               "status": "queued",
               "createdAt": "2026-08-15T12:00:00.004Z",
               "settledAt": null,
-              "skills": [],
-              "executionLimits": {
-                "maxModelCalls": 4,
-                "maxDurationSeconds": 3600
-              }
+              "skills": []
             },
             "item": {
               "id": "item_00000000000000000000000000000005",
@@ -935,8 +927,6 @@
                 },
                 "skillCatalog": null
               },
-              "maxModelCalls": 4,
-              "maxDurationSeconds": 3600,
               "contextWindow": 32768,
               "maxOutputTokens": 4096
             },
@@ -955,7 +945,7 @@
         "method": "event",
         "params": {
           "seq": 6,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -979,7 +969,7 @@
         "method": "event",
         "params": {
           "seq": 7,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1003,7 +993,7 @@
         "method": "event",
         "params": {
           "seq": 8,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1119,7 +1109,7 @@
         "method": "event",
         "params": {
           "seq": 9,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1163,7 +1153,7 @@
         "method": "event",
         "params": {
           "seq": 10,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1202,7 +1192,7 @@
         "method": "event",
         "params": {
           "seq": 11,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "process.recorded",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1245,7 +1235,7 @@
         "method": "event",
         "params": {
           "seq": 12,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "process.recorded",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1288,7 +1278,7 @@
         "method": "event",
         "params": {
           "seq": 13,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1333,7 +1323,7 @@
         "method": "event",
         "params": {
           "seq": 14,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1394,7 +1384,7 @@
         "method": "event",
         "params": {
           "seq": 15,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1478,7 +1468,7 @@
         "method": "event",
         "params": {
           "seq": 16,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1523,7 +1513,7 @@
         "method": "event",
         "params": {
           "seq": 17,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1562,7 +1552,7 @@
         "method": "event",
         "params": {
           "seq": 18,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "process.recorded",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1605,7 +1595,7 @@
         "method": "event",
         "params": {
           "seq": 19,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1651,7 +1641,7 @@
         "method": "event",
         "params": {
           "seq": 20,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1712,7 +1702,7 @@
         "method": "event",
         "params": {
           "seq": 21,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1812,7 +1802,7 @@
         "method": "event",
         "params": {
           "seq": 22,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1849,7 +1839,7 @@
         "method": "event",
         "params": {
           "seq": 23,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.delta",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1874,7 +1864,7 @@
         "method": "event",
         "params": {
           "seq": 24,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.delta",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1899,7 +1889,7 @@
         "method": "event",
         "params": {
           "seq": 25,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1936,7 +1926,7 @@
         "method": "event",
         "params": {
           "seq": 26,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -1975,7 +1965,7 @@
         "method": "event",
         "params": {
           "seq": 27,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "run.settled",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2000,7 +1990,7 @@
         "method": "event",
         "params": {
           "seq": 28,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2027,11 +2017,7 @@
               "status": "queued",
               "createdAt": "2026-08-15T12:00:00.029Z",
               "settledAt": null,
-              "skills": [],
-              "executionLimits": {
-                "maxModelCalls": 2,
-                "maxDurationSeconds": 3600
-              }
+              "skills": []
             },
             "item": {
               "id": "item_00000000000000000000000000000012",
@@ -2103,8 +2089,6 @@
                 },
                 "skillCatalog": null
               },
-              "maxModelCalls": 2,
-              "maxDurationSeconds": 3600,
               "contextWindow": 32768,
               "maxOutputTokens": 4096
             },
@@ -2123,7 +2107,7 @@
         "method": "event",
         "params": {
           "seq": 29,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2147,7 +2131,7 @@
         "method": "event",
         "params": {
           "seq": 30,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "run.state_changed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2171,7 +2155,7 @@
         "method": "event",
         "params": {
           "seq": 31,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2380,7 +2364,7 @@
         "method": "event",
         "params": {
           "seq": 32,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2425,7 +2409,7 @@
         "method": "event",
         "params": {
           "seq": 33,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2458,7 +2442,7 @@
         "method": "event",
         "params": {
           "seq": 34,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2504,7 +2488,7 @@
         "method": "event",
         "params": {
           "seq": 35,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2560,7 +2544,7 @@
         "method": "event",
         "params": {
           "seq": 36,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "file.change_recorded",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
@@ -2611,7 +2595,7 @@
         "method": "event",
         "params": {
           "seq": 37,
-          "schemaVersion": 7,
+          "schemaVersion": 8,
           "type": "run.settled",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",

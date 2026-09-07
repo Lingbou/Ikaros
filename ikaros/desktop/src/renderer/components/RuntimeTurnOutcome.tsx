@@ -22,8 +22,6 @@ const REASON_KEYS: Readonly<Record<string, TranslationKey>> = {
   provider_unknown: "runtime.outcome.reason.providerUnavailable",
   provider_cancelled: "runtime.outcome.reason.cancelled",
   agent_error: "runtime.outcome.reason.agentError",
-  model_call_budget_exceeded: "runtime.outcome.reason.modelCallLimit",
-  run_time_limit: "runtime.outcome.reason.timeLimit",
 };
 
 function hasUncertainChanges(turn: Turn): boolean {

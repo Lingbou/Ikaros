@@ -3275,12 +3275,8 @@ def test_idempotent_turn_retry_survives_provider_removal(tmp_path: Path) -> None
         assert repeated.run_after_ack is None
         with pytest.raises(InvalidParamsError, match="clientRequestId"):
             kernel.turns.start_turn({**params, "content": "different content"})
-        for changed_limits in (
-            {"maxModelCalls": 101, "maxDurationSeconds": 3600},
-            {"maxModelCalls": 100, "maxDurationSeconds": 3601},
-        ):
-            with pytest.raises(InvalidParamsError, match="different executionLimits"):
-                kernel.turns.start_turn({**params, "executionLimits": changed_limits})
+        with pytest.raises(InvalidParamsError, match="fields"):
+            kernel.turns.start_turn({**params, "executionLimits": {"maxModelCalls": 100}})
         assert store._connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     finally:
         memory_store.close()

@@ -193,7 +193,6 @@ async def test_memory_correction_does_not_change_a_frozen_tool_loop(
             provider_id="memory-provider",
             model_id="memory-model",
             tools=executor.definitions,
-            max_model_calls=2,
         )
         reader = _TransactionCheckingMemoryReader(state_store, memory_store)
         loop = AgentLoop(
@@ -276,7 +275,6 @@ async def test_memory_forget_between_tool_steps_stops_without_switching_revision
             provider_id="memory-provider",
             model_id="memory-model",
             tools=executor.definitions,
-            max_model_calls=2,
         )
         reader = _TransactionCheckingMemoryReader(state_store, memory_store)
         loop = AgentLoop(

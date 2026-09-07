@@ -29,7 +29,6 @@ from .process_platform import (
 _OUTPUT_LIMIT = 64 * 1024
 _PAGE_LIMIT = 16 * 1024
 _MAX_RUNNING_PER_RUN = 4
-_MAX_PROCESSES_PER_RUN = 32
 
 type ProcessState = Literal["running", "exited", "terminated", "unknown"]
 
@@ -180,13 +179,10 @@ class ProcessManager:
                     "run_closed", "The owning Run has ended; cannot start a command."
                 )
             owned = [e for e in self._entries.values() if e.context.run_id == context.run_id]
-            if (
-                len(owned) >= _MAX_PROCESSES_PER_RUN
-                or sum(not e.done.is_set() for e in owned) >= _MAX_RUNNING_PER_RUN
-            ):
+            if sum(not e.done.is_set() for e in owned) >= _MAX_RUNNING_PER_RUN:
                 raise ProcessError(
                     "process_limit",
-                    "A Run may own at most 4 active commands and start at most 32 commands.",
+                    "A Run may own at most 4 active commands.",
                 )
             cancellation.raise_if_cancelled()
             entry = _Entry(

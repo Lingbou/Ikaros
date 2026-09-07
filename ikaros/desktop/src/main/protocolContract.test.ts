@@ -312,9 +312,6 @@ describe("Runtime protocol Golden Trace", () => {
             location: "C:/skills/sample-skill"
           }
         ];
-      },
-      ({ payload }) => {
-        asWireObject(payload.runConfig, "Run configuration").maxModelCalls = 17;
       }
     ];
 
@@ -1183,8 +1180,8 @@ describe("Runtime protocol Golden Trace", () => {
       usage.reasoningOutputTokens = (usage.outputTokens as number) + 1;
     });
   });
-  it("requires schema 7 and rejects removed compatibility fields", () => {
-    for (const version of [1, 5, 6, 8]) {
+  it("requires schema 8 and rejects removed fields", () => {
+    for (const version of [1, 5, 6, 7, 9]) {
       const event = cloneGoldenNotification("model-input-prepared");
       event.params.schemaVersion = version;
       expect(() => parseRuntimeEventNotification(event.envelope)).toThrow();
@@ -1195,11 +1192,19 @@ describe("Runtime protocol Golden Trace", () => {
     expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
       asWireObject(payload.runConfig, "Run configuration").schemaVersion = 1;
     });
+    for (const key of ["maxModelCalls", "maxDurationSeconds"]) {
+      expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
+        asWireObject(payload.runConfig, "Run configuration")[key] = 100;
+      });
+    }
+    expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
+      asWireObject(payload.run, "initial Run").executionLimits = {};
+    });
     expect(() => parseRuntimeEventNotification(cloneGoldenNotification("file-change-recorded").envelope)).not.toThrow();
   });
 
-  it("freezes positive model and Run budgets without duplicated manifests", () => {
-    for (const key of ["contextWindow", "maxOutputTokens", "maxModelCalls", "maxDurationSeconds"]) {
+  it("freezes valid model capacities without execution ceilings", () => {
+    for (const key of ["contextWindow", "maxOutputTokens"]) {
       for (const invalid of [0, -1, true, 1.5]) {
         expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
           asWireObject(payload.runConfig, "Run configuration")[key] = invalid;
@@ -1246,10 +1251,10 @@ describe("Runtime protocol Golden Trace", () => {
     }
   });
 
-  it("requires explicit historical Run progress and positive limits", () => {
+  it("requires explicit historical Run progress and nonnegative usage", () => {
     const source = cloneGoldenResponse("turn-list-page");
     const firstRun = (response: typeof source) => asWireObject(asWireArray(asWireObject(asWireArray(response.result.turns, "Turns")[0], "Turn").runs, "Runs")[0], "Run");
-    for (const key of ["startedAt", "executionLimits", "modelCalls", "reasonCode"]) {
+    for (const key of ["startedAt", "modelCalls", "reasonCode"]) {
       const changed = structuredClone(source);
       delete firstRun(changed)[key];
       expect(() => parseRuntimeMethodResult(changed.method, changed.result, changed.requestParams)).toThrow();

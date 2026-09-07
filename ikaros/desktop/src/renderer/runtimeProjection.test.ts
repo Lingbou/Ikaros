@@ -134,7 +134,7 @@ describe("Runtime workspace projection", () => {
             providerId: "scripted",
             modelId: "scripted-v1",
             executionPolicy: "full_access",
-            startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
+            startedAt: null, modelCalls: 0,
             status: "completed",
             reasonCode: null,
             createdAt: summary.createdAt,
@@ -356,7 +356,7 @@ describe("Runtime event projection", () => {
     const settled = event(2, "run.settled", "turn-outcome", "run-outcome", null, {
       status,
       ...(reasonCode === null ? {} : { reasonCode }),
-      executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 },
+
       createdAt: summary.createdAt, startedAt: null, modelCalls: 0,
     });
     const live = replayRuntimeEvents(projectRuntimeThreads([summary]), [settled]);
@@ -374,7 +374,7 @@ describe("Runtime event projection", () => {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
-        startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
+        startedAt: null, modelCalls: 0,
         status,
         reasonCode,
         createdAt: summary.createdAt,
@@ -411,7 +411,7 @@ describe("Runtime event projection", () => {
           },
         },
       }),
-      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted", executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, createdAt: summary.createdAt, modelCalls: 0 }),
+      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted", createdAt: summary.createdAt, modelCalls: 0 }),
     ];
     const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
     const turn = thread.branches[0]?.turns[0];
@@ -436,7 +436,7 @@ describe("Runtime event projection", () => {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
-        startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
+        startedAt: null, modelCalls: 0,
         status: "failed",
         reasonCode: "runtime_interrupted",
         createdAt: summary.createdAt,
@@ -450,7 +450,7 @@ describe("Runtime event projection", () => {
     expect(history.branches[0]?.turns).toEqual(thread.branches[0]?.turns);
   });
 
-  it("keeps model audit events as explicit conversation and catalog no-ops", () => {
+  it("does not create conversation content from standalone model audit events", () => {
     const initial = projectRuntimeThreads([summary]);
     const auditEvents = [
       event(2, "model.input_prepared", "turn-audit", "run-audit", null, {
@@ -931,8 +931,7 @@ describe("Runtime event projection", () => {
 });
 
 describe("Runtime execution progress projection", () => {
-  it("retains budgets through streamed items and reconstructs the same usage from history", () => {
-    const executionLimits = { maxModelCalls: 40, maxDurationSeconds: 1800 };
+  it("retains progress through streamed items and reconstructs the same usage from history", () => {
     const queuedAt = "2026-09-07T00:00:00Z";
     const startedAt = "2026-09-07T00:01:00Z";
     const settledAt = "2026-09-07T00:01:20Z";
@@ -946,7 +945,7 @@ describe("Runtime execution progress projection", () => {
       createdAt: startedAt, updatedAt: settledAt,
     };
     const events = [
-      { ...event(1, "item.completed", user.turnId, user.runId, user.id, { item: user, run: { executionLimits, createdAt: queuedAt } }), timestamp: queuedAt },
+      { ...event(1, "item.completed", user.turnId, user.runId, user.id, { item: user, run: { createdAt: queuedAt } }), timestamp: queuedAt },
       { ...event(2, "run.state_changed", user.turnId, user.runId, null, { status: "running" }), timestamp: startedAt },
       event(3, "model.input_prepared", user.turnId, user.runId, null, { stepOrdinal: 1 }),
       event(4, "item.started", user.turnId, user.runId, assistant.id, { item: { ...assistant, content: "", status: "streaming" } }),
@@ -956,7 +955,7 @@ describe("Runtime execution progress projection", () => {
       { ...event(8, "run.settled", user.turnId, user.runId, null, { status: "completed" }), timestamp: settledAt },
     ];
     const live = replayRuntimeEvents(projectRuntimeThreads([summary]), events)[0]!;
-    const expected = { queuedAt, startedAt, settledAt, modelCalls: 2, ...executionLimits };
+    const expected = { queuedAt, startedAt, settledAt, modelCalls: 2 };
     expect(live.branches[0]?.turns[0]?.runProgress).toEqual(expected);
     const history = projectRuntimeThreadHistory(summary, [{
       id: user.turnId, threadId: summary.id, branchId: summary.defaultBranchId, ordinal: 1,
@@ -964,7 +963,7 @@ describe("Runtime execution progress projection", () => {
       runs: [{
         id: user.runId, turnId: user.turnId, providerId: "test", modelId: "test",
         executionPolicy: "full_access", status: "completed", reasonCode: null,
-        createdAt: queuedAt, startedAt, settledAt, executionLimits, modelCalls: 2,
+        createdAt: queuedAt, startedAt, settledAt, modelCalls: 2,
         items: [user, assistant],
       }],
     }]);

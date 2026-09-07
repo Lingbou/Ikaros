@@ -770,8 +770,7 @@ function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
         "status",
         "createdAt",
         "settledAt",
-        "skills",
-        "executionLimits"
+        "skills"
       ],
       ["clientRequestId"]
     ) ||
@@ -826,7 +825,7 @@ function isRunConfig(
       "skills",
       "tools",
       "instructions",
-      "maxModelCalls", "maxDurationSeconds", "contextWindow", "maxOutputTokens"
+      "contextWindow", "maxOutputTokens"
     ]) ||
     value.userItemId !== event.itemId ||
     value.threadId !== event.threadId ||
@@ -840,14 +839,9 @@ function isRunConfig(
     !isSha256(value.publicProviderConfigFingerprint) ||
     value.executionPolicy !== "full_access" ||
     value.executionPolicy !== runValue.executionPolicy ||
-    !isSafePositiveInteger(value.maxModelCalls) ||
-    !isSafePositiveInteger(value.maxDurationSeconds) ||
     !isSafePositiveInteger(value.contextWindow) ||
     !isSafePositiveInteger(value.maxOutputTokens) ||
     value.maxOutputTokens >= value.contextWindow ||
-    !sameWireValue(runValue.executionLimits, {
-      maxModelCalls: value.maxModelCalls, maxDurationSeconds: value.maxDurationSeconds,
-    }) ||
     !isRuntimeSkillSnapshot(value.skills) ||
     !sameWireValue(value.skills, runValue.skills) ||
     !Array.isArray(value.tools) ||
@@ -1902,17 +1896,6 @@ function parseRuntimeItemHistory(
   };
 }
 
-function isExecutionLimits(
-  value: unknown
-): value is { maxModelCalls: number; maxDurationSeconds: number } {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, ["maxModelCalls", "maxDurationSeconds"]) &&
-    isSafePositiveInteger(value.maxModelCalls) &&
-    isSafePositiveInteger(value.maxDurationSeconds)
-  );
-}
-
 function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHistory {
   if (!isWireObject(value)) {
     throw invalidTurnHistory();
@@ -1924,7 +1907,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
   if (
     !hasExactKeys(value, [
       "id", "turnId", "providerId", "modelId", "executionPolicy", "status", "reasonCode",
-      "createdAt", "startedAt", "settledAt", "executionLimits", "modelCalls", "items"
+      "createdAt", "startedAt", "settledAt", "modelCalls", "items"
     ]) ||
     !isWireIdentifier(run.id) ||
     run.turnId !== turnId ||
@@ -1939,9 +1922,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     (run.startedAt !== null && !isCanonicalTimestamp(run.startedAt)) ||
     (run.status === "queued" && run.startedAt !== null) ||
     (run.status === "running" && run.startedAt === null) ||
-    !isExecutionLimits(run.executionLimits) ||
     !isSafeNonNegativeInteger(run.modelCalls) ||
-    run.modelCalls > run.executionLimits.maxModelCalls ||
     (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
     !Array.isArray(run.items)
   ) {
@@ -1970,7 +1951,6 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     createdAt: run.createdAt,
     startedAt: run.startedAt as string | null,
     settledAt: run.settledAt as string | null,
-    executionLimits: run.executionLimits,
     modelCalls: run.modelCalls,
     items
   };

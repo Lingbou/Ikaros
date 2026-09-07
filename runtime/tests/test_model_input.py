@@ -849,20 +849,16 @@ def test_step_input_preserves_frozen_memory_and_omissions() -> None:
 
 
 @pytest.mark.parametrize("window,output", [(32768, 4096), (131072, 8192)])
-def test_run_config_freezes_model_capacity_and_run_budget(window: int, output: int) -> None:
+def test_run_config_freezes_model_capacity(window: int, output: int) -> None:
     config = replace(
         run_config("provider", "model"),
         context_window=window,
         max_output_tokens=output,
-        max_model_calls=73,
-        max_duration_seconds=900,
     )
     restored = run_input_module.RunConfig.from_wire(config.to_wire())
     assert restored == config
     assert restored.maximum_input_tokens == window - output
     assert restored.reserved_current_run_tokens == (window - output) // 4
-    assert restored.max_model_calls == 73
-    assert restored.max_duration_seconds == 900
     plan = ModelInputPlanner().build_plan(
         config=restored, items=(), budget_snapshot=bounded_budget()
     )
@@ -875,12 +871,9 @@ def test_run_config_freezes_model_capacity_and_run_budget(window: int, output: i
         {"context_window": 0},
         {"max_output_tokens": 0},
         {"context_window": 4096, "max_output_tokens": 4096},
-        {"max_model_calls": 0},
-        {"max_model_calls": True},
-        {"max_duration_seconds": 0},
     ],
 )
-def test_run_config_rejects_invalid_execution_limits(changes: dict[str, object]) -> None:
+def test_run_config_rejects_invalid_model_capacity(changes: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         replace(run_config("provider", "model"), **cast(Any, changes))
 

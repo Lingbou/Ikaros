@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import replace
+from itertools import count
 from time import monotonic
 
 from ..cancellation import CancellationToken, RunCancelled
@@ -12,7 +13,6 @@ from ..domain import JournalEvent, ModelUsage
 from ..errors import (
     ContextBudgetExceededError,
     MemoryRetrievalError,
-    ModelCallBudgetExceededError,
     ModelInputUnavailableError,
     ProtectedValueError,
     ProviderFailure,
@@ -157,15 +157,13 @@ class AgentLoop:
             cancel_wait = asyncio.create_task(cancellation.wait())
             done, _ = await asyncio.wait(
                 {work, cancel_wait},
-                timeout=config.max_duration_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if work in done:
                 await work
                 cancellation.raise_if_cancelled()
             else:
-                status = "cancelled" if cancellation.is_cancelled else "failed"
-                reason = "cancelled" if cancellation.is_cancelled else "run_time_limit"
+                status, reason = "cancelled", "cancelled"
                 cancellation.cancel()
                 work.cancel()
                 with suppress(asyncio.CancelledError, RunCancelled):
@@ -210,7 +208,7 @@ class AgentLoop:
             query=self._store.get_submission_user_content(run_id),
             workspace_id=workspace_id,
         )
-        for step_ordinal in range(1, config.max_model_calls + 1):
+        for step_ordinal in count(1):
             cancellation.raise_if_cancelled()
             prepared = self._store.prepare_model_step(
                 run_id,
@@ -265,7 +263,6 @@ class AgentLoop:
                 step_ordinal=step_ordinal,
                 default_cwd=config.workspace.root_uri if config.workspace is not None else None,
             )
-        raise ModelCallBudgetExceededError("model call budget exhausted")
 
     async def cancel(self, run_id: str) -> None:
         if self._process_manager is not None:
@@ -836,8 +833,6 @@ class AgentLoop:
 
 
 def _failure_reason_code(error: Exception) -> str:
-    if isinstance(error, ModelCallBudgetExceededError):
-        return "model_call_budget_exceeded"
     if isinstance(error, RunCancelled):
         return "cancelled"
     if isinstance(error, RunInputDriftError):

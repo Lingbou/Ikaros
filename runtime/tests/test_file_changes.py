@@ -231,7 +231,7 @@ async def test_agent_persists_captured_change_atomically_and_rebuilds_without_re
         changes = [event for event in events if event.type == "file.change_recorded"]
         assert len(changes) == 1
         event = changes[0]
-        assert event.item_id is not None and event.schema_version == 7
+        assert event.item_id is not None and event.schema_version == 8
         record = store.get_file_change(thread.id, event.item_id)
         assert record["status"] == "recorded"
         assert "-before\n+after\n" in record["diff"]

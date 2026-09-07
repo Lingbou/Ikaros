@@ -267,7 +267,6 @@ export interface RuntimeRunHistory {
   createdAt: string;
   startedAt: string | null;
   settledAt: string | null;
-  executionLimits: { maxModelCalls: number; maxDurationSeconds: number };
   modelCalls: number;
   items: RuntimeItemHistory[];
 }
@@ -307,11 +306,6 @@ export interface RuntimeThreadMutationResult {
   event: RuntimeJournalEvent | null;
 }
 
-export interface RuntimeExecutionLimits {
-  maxModelCalls: number;
-  maxDurationSeconds: number;
-}
-
 export interface RuntimeTurnStartParams {
   threadId: string;
   branchId: string;
@@ -319,7 +313,6 @@ export interface RuntimeTurnStartParams {
   providerId: string;
   modelId: string;
   clientRequestId?: string;
-  executionLimits?: RuntimeExecutionLimits;
 }
 
 export interface RuntimeTurnStartResult {

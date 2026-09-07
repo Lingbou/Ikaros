@@ -2,12 +2,13 @@
 
 Status (2026-09-07): daily-use Alpha plus stage one of
 [LONG_TASK_PLAN.md](LONG_TASK_PLAN.md) are implemented. Stage one adds model
-capacity, frozen Run budgets, and managed commands. Automatic compression,
+capacity and managed commands. Runs have no total model-call or duration cap;
+Desktop retains call counts, elapsed time, and manual cancellation. Automatic compression,
 in-flight steering, and completion checking remain subsequent work.
 
 The project has no external users. This implementation replaces old execution,
-protocol, and Session-state formats directly. Only schema 10 / Journal 7 /
-protocol 4 are supported; no old selector, migration, or queued-Run adaptation
+protocol, and Session-state formats directly. Only schema 11 / Journal 8 /
+protocol 5 are supported; no old selector, migration, or queued-Run adaptation
 is maintained. Incompatible development state requires an explicit reset or a
 fresh Runtime home; startup never deletes personal files automatically.
 
@@ -124,7 +125,7 @@ at the wire boundary and cannot silently advance the ordered event cursor.
 
 The command Tool IDs are `process_start`, `process_read`, `process_wait`, and
 `process_stop`. `/process.run` remains a deterministic ScriptedProvider input
-convention. The protocol is version 4 with 29 post-initialize methods and 13
+convention. The protocol is version 5 with 29 post-initialize methods and 13
 Journal event types.
 
 ## Runtime home and configuration
@@ -149,7 +150,7 @@ no SQLite `ATTACH`, cross-database foreign key, or two-phase commit. Startup
 requires both schema version 1 and the exact canonical table/index DDL; a
 same-version structural drift is rejected rather than silently accepted.
 
-An empty `state.db` is created atomically at canonical schema 10. Startup
+An empty `state.db` is created atomically at canonical schema 11. Startup
 requires that exact schema and canonical structure. There is no old-state
 migration or event upcasting. Incompatible/unversioned Session databases fail
 with an explicit reset-required error; rebuilding disposable development state
@@ -357,7 +358,7 @@ An Event is not another conversation node. It describes a state transition of
 a Run or Item. Every wire event carries a monotonically increasing `seq` so a
 client can resume from a cursor without guessing what it missed. Every
 persisted and wire Event also carries `schemaVersion`. The current Event schema
-is version 7. Readers require that exact version and reject unknown versions;
+is version 8. Readers require that exact version and reject unknown versions;
 there is no payload upcaster while the database itself follows the explicit
 development reset policy above.
 
@@ -593,14 +594,16 @@ turn.start
   -> stream assistant output and complete the model-call record
   -> execute each requested Tool with trusted Run/Step/Item/Thread context
   -> persist Tool results; managed commands may remain active
-  -> prepare another model call while both Run budgets permit it
+  -> prepare another model call until completion, explicit failure, or cancellation
   -> on completion/failure/cancel, clean owned commands and settle exactly once
 ```
 
 `RunConfig` freezes the provider/model, identity, Skill catalog, Tool definitions,
-model capacity, and Run limits. The defaults are 100 model calls and 3,600
-seconds; a deadline spans provider waits and Tool execution. `ContextRevision`
-identifies selected history and exact Memory revisions; each `StepInput`
+model context window, and output reserve. There is no total model-call or
+Run-duration limit. Every actual Provider attempt is recorded for observability;
+counts and elapsed time do not terminate execution. Manual cancellation,
+individual Provider request timeouts, and bounded resource cleanup remain.
+`ContextRevision` identifies selected history and exact Memory revisions; each `StepInput`
 identifies the actual selected Items and token budget for that model call.
 These are the only supported execution records. A Run currently uses its
 initial ContextRevision throughout; semantic compression and subsequent
@@ -611,7 +614,7 @@ output reserve. Conservative token accounting covers instructions, tool
 schemas, current and previous conversation, Memory, and history-status blocks.
 It is an input-safety estimate, not billed usage. The provider receives the
 configured output-token limit. Oversized input currently fails explicitly;
-raising the Run's model-call limit does not enlarge its context window.
+unbounded Run duration and call count do not enlarge its context window.
 
 Failed/cancelled Runs contribute persisted Tool pairs and a separately
 budgeted Runtime status block. Partial assistant messages are excluded. If a
@@ -804,9 +807,10 @@ constrain what the child process itself can do.
 
 The runtime caches HTTP clients per effective provider configuration and closes
 them on replacement or shutdown. Connect, response-header, and stream-idle
-timeouts are distinct. A request may be retried only before any content or Tool
-Call delta has been emitted; transparent retry after streaming begins would
-duplicate output. Provider failures normalize to stable categories such as
+timeouts are distinct. Each adapter call sends one request and never retries
+implicitly. Transparent retry after streaming begins would duplicate output.
+Future compression and completion checks must stop or report a useful failure
+instead of retrying indefinitely. Provider failures normalize to stable categories such as
 authentication, rate limit, context overflow, invalid request, timeout,
 network, server, cancelled, protocol, and unknown, with safe optional status,
 request ID, and retryability metadata.
@@ -838,7 +842,8 @@ Run, model-call ordinal, Tool Call Item, Thread, and default working directory.
 
 States are `running`, `exited`, `terminated`, and `unknown`. Only an observed
 successful exit proves command success. The manager permits four concurrent
-commands and 32 registered commands per Run. It drains stdout/stderr continuously,
+commands per Run, without a cumulative command-count limit. It drains stdout/stderr
+continuously,
 retains 64 KiB per stream, and returns 16 KiB pages with Unicode-character cursors.
 Secret guards cover stream chunk boundaries and the combined output before
 publication or persistence. Children inherit an OS environment allowlist.
@@ -847,7 +852,7 @@ Windows creates the shell suspended, attaches it to a kill-on-close Job Object,
 and resumes it. POSIX creates a new session/process group. Root exit also
 terminates lingering descendants before draining final output, preventing
 inherited pipes from blocking completion. Cancellation preserves partial output
-in the wait Tool Result. Completion, failure, deadline, and Runtime shutdown
+in the wait Tool Result. Completion, failure, cancellation, and Runtime shutdown
 clean all commands owned by that Run.
 
 The manager's callback writes `process.recorded` and its `process_sessions`
@@ -972,12 +977,12 @@ current operating-system user's authority. Skill scripts invoked through
 `process_start` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-Session storage uses canonical schema 10. `run_configs`, `context_revisions`,
+Session storage uses canonical schema 11. `run_configs`, `context_revisions`,
 and `model_calls` hold the current input and response audit records;
 `process_sessions` and `file_changes` hold independently rebuildable operation
 facts. All projections reconstruct from the current append-only Journal.
 Each Run snapshots `full_access`, enabled Skill descriptors, provider/model
-capacity, and execution budgets. Each Item holds normalized tool arguments and
+capacity. Each Item holds normalized tool arguments and
 results. All calls from one model response are persisted before serial Tool
 execution, and every result retains its original provider call ID.
 

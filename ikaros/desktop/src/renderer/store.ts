@@ -38,7 +38,6 @@ import {
 } from "./runtimeHistory";
 import type {
   RuntimeDiscoveredModel,
-  RuntimeExecutionLimits,
   RuntimeModelSetLimitsParams,
   RuntimeHostStatus,
   RuntimeHostStatusState,
@@ -71,7 +70,6 @@ type PendingRuntimeSubmission = {
   prompt: string;
   providerId: string;
   modelId: string;
-  executionLimits: RuntimeExecutionLimits;
   afterSeq: number;
   foregroundGeneration: number;
   workspace: RuntimeWorkspaceSummary | null;
@@ -142,7 +140,6 @@ interface AppState {
   skills: RuntimeSkillSummary[];
   skillDiagnostics: RuntimeSkillDiagnostic[];
   selectedModel: RuntimeModelSelection | null;
-  executionLimits: RuntimeExecutionLimits;
   projects: Project[];
   threads: Thread[];
   threadCatalogNextCursor: string | null;
@@ -204,7 +201,6 @@ interface AppState {
   setSkillEnabled: (params: RuntimeSkillSetEnabledParams) => Promise<void>;
   selectModel: (selection: RuntimeModelSelection | null) => void;
   setDraft: (draft: string) => void;
-  setExecutionLimits: (limits: RuntimeExecutionLimits) => void;
   setModelLimits: (params: RuntimeModelSetLimitsParams) => Promise<void>;
   openFile: (selection: RuntimeFileSelection) => void;
   closeFile: () => void;
@@ -2721,7 +2717,6 @@ async function startRuntimeTurnForSubmission(
           content: submission.prompt,
           providerId: submission.providerId,
           modelId: submission.modelId,
-          executionLimits: submission.executionLimits,
           clientRequestId: submission.turnRequestId,
         }),
       () => recoveredTurnStartResult(get(), threadId, submission),
@@ -2841,7 +2836,6 @@ async function sendRuntimeDraft(
   if (!runtimeClient) {
     return;
   }
-  const executionLimitsAtSend = { ...get().executionLimits };
   await get().initializeRuntime();
   const initial = get();
   if (!initial.runtimeReady) {
@@ -2875,7 +2869,6 @@ async function sendRuntimeDraft(
     prompt,
     providerId: selectedModelAtSend.providerId,
     modelId: selectedModelAtSend.modelId,
-    executionLimits: executionLimitsAtSend,
     afterSeq: initial.runtimeSeq,
     foregroundGeneration: initial.runtimeForegroundGeneration,
     workspace: thread ? null : initial.newThreadWorkspace,
@@ -2926,21 +2919,6 @@ async function sendRuntimeDraft(
   }
 }
 
-function validExecutionLimits(value: unknown): value is RuntimeExecutionLimits {
-  if (!value || typeof value !== "object") return false;
-  const limits = value as RuntimeExecutionLimits;
-  return Number.isSafeInteger(limits.maxModelCalls) && limits.maxModelCalls > 0 &&
-    Number.isSafeInteger(limits.maxDurationSeconds) && limits.maxDurationSeconds > 0;
-}
-
-function loadExecutionLimits(): RuntimeExecutionLimits {
-  try {
-    const stored: unknown = JSON.parse(localStorage.getItem("ikaros.executionLimits") ?? "null");
-    if (validExecutionLimits(stored)) return stored;
-  } catch { /* Use current defaults if preferences are unavailable. */ }
-  return { maxModelCalls: 100, maxDurationSeconds: 3600 };
-}
-
 export const useAppStore = create<AppState>()((set, get) => ({
   runtimeMode: runtimeClient !== null,
   runtimeReady: runtimeClient === null,
@@ -2956,7 +2934,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   skills: [],
   skillDiagnostics: [],
   selectedModel: null,
-  executionLimits: loadExecutionLimits(),
   projects: runtimeClient ? [] : createInitialProjects(),
   threads: runtimeClient ? [] : createInitialThreads(),
   threadCatalogNextCursor: null,
@@ -3106,11 +3083,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
     })),
 
   setDraft: (draft) => set({ draft }),
-  setExecutionLimits: (executionLimits) => {
-    if (!validExecutionLimits(executionLimits)) return;
-    try { localStorage.setItem("ikaros.executionLimits", JSON.stringify(executionLimits)); } catch { /* Preferences may be unavailable. */ }
-    set({ executionLimits: { ...executionLimits } });
-  },
   setModelLimits: async (params) => {
     if (!runtimeClient) return;
     const result = await runtimeClient.setModelLimits(params);

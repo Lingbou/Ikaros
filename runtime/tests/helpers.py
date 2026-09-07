@@ -22,8 +22,6 @@ def run_config_template(
     tools: Sequence[ToolDefinition] = (),
     skills: Sequence[SkillDescriptor] = (),
     identity_core: InstructionBlockV1 | None = None,
-    max_model_calls: int = 100,
-    max_duration_seconds: int = 3600,
 ) -> RunConfigTemplate:
     return RunConfigTemplate.create(
         provider=ProviderExecutionSnapshot(
@@ -37,8 +35,6 @@ def run_config_template(
         skills=skills,
         tools=tools,
         identity_core=identity_core,
-        max_model_calls=max_model_calls,
-        max_duration_seconds=max_duration_seconds,
     )
 
 
@@ -54,8 +50,6 @@ def prepare_turn(
     skills: Sequence[SkillDescriptor] = (),
     identity_core: InstructionBlockV1 | None = None,
     tools: Sequence[ToolDefinition] = (),
-    max_model_calls: int = 100,
-    max_duration_seconds: int = 3600,
 ) -> PreparedTurn:
     return store.prepare_turn(
         thread_id=thread_id,
@@ -67,8 +61,6 @@ def prepare_turn(
             tools=tools,
             skills=skills,
             identity_core=identity_core,
-            max_model_calls=max_model_calls,
-            max_duration_seconds=max_duration_seconds,
         ),
         client_request_id=client_request_id,
     )
@@ -82,8 +74,6 @@ def run_config(
     skills: Sequence[SkillDescriptor] = (),
     identity_core: InstructionBlockV1 | None = None,
     workspace: WorkspaceSummary | None = None,
-    max_model_calls: int = 100,
-    max_duration_seconds: int = 3600,
 ) -> RunConfig:
     return RunConfig.from_template(
         run_config_template(
@@ -92,8 +82,6 @@ def run_config(
             tools=tools,
             skills=skills,
             identity_core=identity_core,
-            max_model_calls=max_model_calls,
-            max_duration_seconds=max_duration_seconds,
         ),
         user_item_id="item_test",
         thread_id="thread_test",

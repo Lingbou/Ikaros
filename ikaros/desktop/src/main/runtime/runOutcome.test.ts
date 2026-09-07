@@ -26,7 +26,7 @@ function page(status: RuntimeRunHistory["status"], reasonCode: string | null): R
         modelId: "model-1",
         executionPolicy: "full_access",
         startedAt: status === "queued" ? null : timestamp,
-        executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 },
+
         modelCalls: 0,
         status,
         reasonCode,

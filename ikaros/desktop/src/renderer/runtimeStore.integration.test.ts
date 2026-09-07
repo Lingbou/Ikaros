@@ -280,7 +280,7 @@ function singleTurnHistoryPage(
             providerId: "scripted",
             modelId: "scripted-v1",
             executionPolicy: "full_access",
-            startedAt: null, executionLimits: { maxModelCalls: 100, maxDurationSeconds: 3600 }, modelCalls: 0,
+            startedAt: null, modelCalls: 0,
             status,
             reasonCode: null,
             createdAt,
@@ -697,7 +697,6 @@ describe("Runtime-backed renderer store", () => {
         runId: "run-runtime"
       };
     });
-    useAppStore.setState({ executionLimits: { maxModelCalls: 37, maxDurationSeconds: 1800 } });
     useAppStore.getState().setDraft("hello runtime");
     await useAppStore.getState().sendDraft();
 
@@ -708,7 +707,6 @@ describe("Runtime-backed renderer store", () => {
         threadId: thread.id,
         branchId: thread.defaultBranchId,
         content: "hello runtime",
-        executionLimits: { maxModelCalls: 37, maxDurationSeconds: 1800 },
         providerId: "test-provider",
         modelId: "test-model",
         clientRequestId: expect.any(String)
@@ -1882,10 +1880,8 @@ describe("Runtime-backed renderer store", () => {
     await useAppStore.getState().initializeRuntime();
 
     useAppStore.getState().setDraft("long outage");
-    useAppStore.setState({ executionLimits: { maxModelCalls: 23, maxDurationSeconds: 900 } });
     const sending = useAppStore.getState().sendDraft();
     await vi.advanceTimersByTimeAsync(100);
-    useAppStore.setState({ executionLimits: { maxModelCalls: 45, maxDurationSeconds: 2700 } });
     await vi.advanceTimersByTimeAsync(5_000);
     await sending;
 
@@ -1908,7 +1904,7 @@ describe("Runtime-backed renderer store", () => {
       updatedAt: createdAt
     };
     let startAttempts = 0;
-    const startTurn = vi.fn(async (params: { clientRequestId?: string; executionLimits: { maxModelCalls: number; maxDurationSeconds: number } }) => {
+    const startTurn = vi.fn(async (params: { clientRequestId?: string }) => {
       startAttempts += 1;
       if (startAttempts <= 5) throw new Error("Runtime connection unavailable");
       return {
@@ -1945,17 +1941,12 @@ describe("Runtime-backed renderer store", () => {
     await useAppStore.getState().selectThread(thread.id);
 
     useAppStore.getState().setDraft("long turn outage");
-    useAppStore.setState({ executionLimits: { maxModelCalls: 23, maxDurationSeconds: 900 } });
     const sending = useAppStore.getState().sendDraft();
     await vi.advanceTimersByTimeAsync(100);
-    useAppStore.setState({ executionLimits: { maxModelCalls: 45, maxDurationSeconds: 2700 } });
     await vi.advanceTimersByTimeAsync(5_000);
     await sending;
 
     expect(startTurn).toHaveBeenCalledTimes(6);
-    for (const [params] of startTurn.mock.calls) {
-      expect(params.executionLimits).toEqual({ maxModelCalls: 23, maxDurationSeconds: 900 });
-    }
     expect(
       new Set(startTurn.mock.calls.map((call) => call[0].clientRequestId)).size
     ).toBe(1);

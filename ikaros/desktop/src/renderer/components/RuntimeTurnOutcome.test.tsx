@@ -155,11 +155,6 @@ describe("RuntimeTurnOutcome", () => {
     expect(screen.getByRole("status")).toHaveTextContent("provider_authentication");
   });
 
-  it("explains a recorded model call limit without presenting it as a provider response error", () => {
-    render(<RuntimeTurnOutcome turn={failedTurn({ reasonCode: "model_call_budget_exceeded" })} />);
-    expect(screen.getByRole("status")).toHaveTextContent("The run reached its model call limit.");
-    expect(screen.getByRole("status")).toHaveTextContent("Reason: model_call_budget_exceeded");
-  });
 });
 
 it("treats a started command as uncertain until a later successful exit is recorded", () => {

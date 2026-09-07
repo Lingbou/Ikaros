@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from ..domain import JsonObject, ThreadSummary
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
-from ..run_input import RunConfig
 from .journal import latest_sequence
 from .projections import workspace_from_json
 
@@ -53,8 +52,6 @@ class RunHistoryRecord:
     status: str
     created_at: str
     started_at: str | None
-    max_model_calls: int
-    max_duration_seconds: int
     model_calls: int
     settled_at: str | None
     reason_code: str | None
@@ -70,10 +67,6 @@ class RunHistoryRecord:
             "status": self.status,
             "createdAt": self.created_at,
             "startedAt": self.started_at,
-            "executionLimits": {
-                "maxModelCalls": self.max_model_calls,
-                "maxDurationSeconds": self.max_duration_seconds,
-            },
             "modelCalls": self.model_calls,
             "settledAt": self.settled_at,
             "reasonCode": self.reason_code,
@@ -352,7 +345,7 @@ def _run_rows_for_turns(
     return connection.execute(
         f"""
         SELECT r.id, r.turn_id, r.provider_id, r.model_id, r.execution_policy, r.status,
-               r.created_at, r.started_at, r.settled_at, r.reason_code, rc.config_json,
+               r.created_at, r.started_at, r.settled_at, r.reason_code,
                (SELECT count(*) FROM model_calls mc WHERE mc.run_id = r.id) AS model_calls
         FROM runs r JOIN run_configs rc ON rc.run_id = r.id
         WHERE turn_id IN ({placeholders})
@@ -372,7 +365,6 @@ def _runs_by_turn(
         turn_id = str(row["turn_id"])
         records = grouped.setdefault(turn_id, [])
         run_id = str(row["id"])
-        config = RunConfig.from_wire(json_loads(row["config_json"]))
         records.append(
             RunHistoryRecord(
                 id=run_id,
@@ -383,8 +375,6 @@ def _runs_by_turn(
                 status=str(row["status"]),
                 created_at=str(row["created_at"]),
                 started_at=(str(row["started_at"]) if row["started_at"] is not None else None),
-                max_model_calls=config.max_model_calls,
-                max_duration_seconds=config.max_duration_seconds,
                 model_calls=int(row["model_calls"]),
                 settled_at=(str(row["settled_at"]) if row["settled_at"] is not None else None),
                 reason_code=(str(row["reason_code"]) if row["reason_code"] is not None else None),
