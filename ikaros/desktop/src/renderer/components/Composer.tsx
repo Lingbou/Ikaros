@@ -4,10 +4,7 @@ import {
   Check,
   ChevronDown,
   FolderPlus,
-  Hand,
   Plus,
-  ShieldAlert,
-  ShieldCheck,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isRunActive } from "../domain";
@@ -23,42 +20,9 @@ import { IconButton, MenuItem } from "./ui";
 const MIN_COMPOSER_CLEARANCE = 150;
 const MESSAGE_TO_COMPOSER_GAP = 24;
 
-const ACCESS_OPTIONS = [
-  {
-    id: "ask",
-    labelKey: "composer.access.ask.label",
-    shortLabelKey: "composer.access.ask.shortLabel",
-    descriptionKey: "composer.access.ask.description",
-  },
-  {
-    id: "safe",
-    labelKey: "composer.access.safe.label",
-    shortLabelKey: "composer.access.safe.shortLabel",
-    descriptionKey: "composer.access.safe.description",
-  },
-  {
-    id: "full",
-    labelKey: "composer.access.full.label",
-    shortLabelKey: "composer.access.full.shortLabel",
-    descriptionKey: "composer.access.full.description",
-  },
-] as const satisfies ReadonlyArray<{
-  id: string;
-  labelKey: TranslationKey;
-  shortLabelKey: TranslationKey;
-  descriptionKey: TranslationKey;
-}>;
-
 const MODEL_OPTIONS = ["Ikaros", "DeepSeek", "local"] as const;
 
-type AccessMode = (typeof ACCESS_OPTIONS)[number]["id"];
 type ModelId = (typeof MODEL_OPTIONS)[number];
-
-function AccessIcon({ mode, size = 11 }: { mode: AccessMode; size?: number }) {
-  if (mode === "ask") return <Hand size={size} />;
-  if (mode === "full") return <ShieldAlert size={size} />;
-  return <ShieldCheck size={size} />;
-}
 
 export function Composer({
   onClearanceChange,
@@ -82,7 +46,6 @@ export function Composer({
   const sendDraft = useAppStore((state) => state.sendDraft);
   const stopRun = useAppStore((state) => state.stopRun);
   const bindWorkspaceFromFolder = useAppStore((state) => state.bindWorkspaceFromFolder);
-  const [accessMode, setAccessMode] = useState<AccessMode>("full");
   const [model, setModel] = useState<ModelId>("Ikaros");
   const [projectFolderError, setProjectFolderError] = useState(false);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
@@ -171,7 +134,6 @@ export function Composer({
     [slashQuery, t],
   );
   const slashMenuOpen = Boolean(slashMatch) && !slashDismissed && !isComposing;
-  const access = ACCESS_OPTIONS.find((option) => option.id === accessMode) ?? ACCESS_OPTIONS[0];
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -335,72 +297,6 @@ export function Composer({
                   <DropdownMenu.Item onSelect={addProjectFolder} className="outline-none">
                     <MenuItem icon={<FolderPlus size={14} />} label={t("composer.addProjectFolder")} />
                   </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button
-                  type="button"
-                  aria-label={t(access.shortLabelKey)}
-                  disabled={runtimeMode}
-                  onPointerDown={() => setSlashDismissed(true)}
-                  className={
-                    accessMode === "full"
-                      ? "flex h-7 items-center gap-1 rounded-full bg-[#4a2b1f] px-2 text-[10px] leading-4 text-[#ff9a67] hover:bg-[#553225]"
-                      : "flex h-7 items-center gap-1 rounded-full px-2 text-[10px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                  }
-                >
-                  <AccessIcon mode={accessMode} />
-                  <span className="hidden sm:inline">{t(access.shortLabelKey)}</span>
-                  <ChevronDown size={9} className="text-[var(--muted)]" />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  side="top"
-                  align="start"
-                  sideOffset={8}
-                  className="glass-menu z-[90] w-[360px] rounded-2xl p-1.5"
-                >
-                  <div className="px-2.5 pb-1.5 pt-1 text-[11px] text-[var(--muted)]">
-                    {t("composer.accessPrompt")}
-                  </div>
-                  {ACCESS_OPTIONS.map((option) => (
-                    <DropdownMenu.Item
-                      key={option.id}
-                      onSelect={() => setAccessMode(option.id)}
-                      className="flex cursor-default items-start gap-2.5 rounded-xl px-2.5 py-2 outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                    >
-                      <span
-                        className={
-                          option.id === "full"
-                            ? "mt-0.5 flex size-5 items-center justify-center text-[#ff8d52]"
-                            : "mt-0.5 flex size-5 items-center justify-center text-[var(--muted-strong)]"
-                        }
-                      >
-                        <AccessIcon mode={option.id} size={14} />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span
-                          className={
-                            option.id === "full"
-                              ? "block text-[12px] font-medium text-[#ff9a67]"
-                              : "block text-[12px] font-medium text-[var(--text)]"
-                          }
-                        >
-                          {t(option.labelKey)}
-                        </span>
-                        <span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted)]">
-                          {t(option.descriptionKey)}
-                        </span>
-                      </span>
-                      <span className="mt-1 flex size-4 items-center justify-center text-[var(--accent)]">
-                        {accessMode === option.id ? <Check size={12} /> : null}
-                      </span>
-                    </DropdownMenu.Item>
-                  ))}
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>

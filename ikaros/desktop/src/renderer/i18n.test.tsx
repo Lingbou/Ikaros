@@ -54,11 +54,6 @@ describe("renderer i18n", () => {
     expect(translate("titlebar.showSidebar", undefined, "zh-CN")).toBe("显示边栏");
     expect(translate("titlebar.hideSidebar", undefined, "zh-CN")).toBe("隐藏边栏");
     expect(translate("composer.stopRun", undefined, "zh-CN")).toBe("停止");
-    expect(translate("composer.access.ask.label", undefined, "zh-CN")).toBe("请求批准");
-    expect(translate("composer.access.safe.label", undefined, "zh-CN")).toBe("替我审批");
-    expect(translate("composer.access.full.label", undefined, "zh-CN")).toBe(
-      "完全访问权限",
-    );
     expect(translate("sidebar.newChat", undefined, "zh-CN")).toBe("新对话");
     expect(translate("sidebar.noChats", undefined, "zh-CN")).toBe("没有聊天");
     expect(translate("sidebar.recents", undefined, "zh-CN")).toBe("最近");

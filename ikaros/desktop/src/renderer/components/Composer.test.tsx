@@ -41,10 +41,7 @@ describe("Composer input and clearance", () => {
     expect(screen.queryByRole("button", { name: "Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Research" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Full access" })).toHaveClass(
-      "h-7",
-      "text-[10px]",
-    );
+    expect(screen.queryByRole("button", { name: "Full access" })).toBeNull();
     expect(screen.getByRole("button", { name: "Add context" })).toHaveClass("size-7");
     expect(screen.getByRole("button", { name: "Ikaros" })).toBeVisible();
   });
@@ -210,7 +207,6 @@ describe("Composer input and clearance", () => {
       </Tooltip.Provider>,
     );
 
-    expect(screen.getByRole("button", { name: "Full access" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Configure a model" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message Ikaros" }), {
@@ -381,7 +377,6 @@ describe("Composer input and clearance", () => {
     });
     expect(screen.getByRole("button", { name: "Model B" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Full access" })).toBeDisabled();
   });
 
   it("reports clearance from the measured composer surface instead of a fixed height", () => {

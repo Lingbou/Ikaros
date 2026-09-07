@@ -201,8 +201,9 @@ The following UI surfaces are not production Runtime capabilities yet:
   Skills V0 is connected, but task-specific selection, automatic full-body
   loading, dedicated Skill execution Items/attribution, and Skill statistics
   are not implemented;
-- permission cards and Ask/Safe/Full choices belong to the mock prototype;
-  Runtime V1 always uses `full_access` and emits no permission requests;
+- permission event cards belong to the mock prototype; the composer has no
+  permission-mode selector. Runtime always uses `full_access` and emits no
+  permission requests;
 - editing a message to fork history, multiple Branches, retry/resume of an old Run,
   Artifacts, and generic status rows are
   mock-only UI projections without corresponding Runtime RPCs or events. This

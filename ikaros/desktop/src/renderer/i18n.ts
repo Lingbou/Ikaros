@@ -158,19 +158,7 @@ const english = {
   "composer.enableModel": "Enable a model",
   "composer.modelsDisabled": "The configured models are disabled. Enable one in Models settings.",
   "composer.connectProvider": "Connect a provider and configure a model to send messages.",
-  "composer.accessPrompt": "How should Ikaros actions be approved?",
-  "composer.access.ask.label": "Ask for approval",
-  "composer.access.ask.shortLabel": "Ask for approval",
-  "composer.access.ask.description":
-    "Always ask to edit external files and use the internet.",
-  "composer.access.safe.label": "Approve for me",
-  "composer.access.safe.shortLabel": "Approve for me",
-  "composer.access.safe.description":
-    "Only ask for actions detected as potentially unsafe.",
-  "composer.access.full.label": "Full access",
-  "composer.access.full.shortLabel": "Full access",
-  "composer.access.full.description":
-    "Unrestricted access to the internet and any file on your computer.",
+
 
   "slash.label": "Slash commands",
   "slash.heading": "Commands",
@@ -694,16 +682,7 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "composer.enableModel": "启用模型",
   "composer.modelsDisabled": "已配置的模型均未启用，请在模型设置中启用一个模型。",
   "composer.connectProvider": "连接提供商并配置模型后即可发送消息。",
-  "composer.accessPrompt": "应如何批准 Ikaros 操作？",
-  "composer.access.ask.label": "请求批准",
-  "composer.access.ask.shortLabel": "请求批准",
-  "composer.access.ask.description": "编辑外部文件和使用互联网时始终询问。",
-  "composer.access.safe.label": "替我审批",
-  "composer.access.safe.shortLabel": "替我审批",
-  "composer.access.safe.description": "仅对检测到的风险操作请求批准。",
-  "composer.access.full.label": "完全访问权限",
-  "composer.access.full.shortLabel": "完全访问",
-  "composer.access.full.description": "可不受限制地访问互联网和您电脑上的任何文件。",
+
 
   "slash.label": "斜杠命令",
   "slash.heading": "命令",
