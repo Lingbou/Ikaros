@@ -358,6 +358,7 @@ describe("Runtime event projection", () => {
       ...(reasonCode === null ? {} : { reasonCode }),
 
       createdAt: summary.createdAt, startedAt: null, modelCalls: 0,
+      providerId: "scripted", modelId: "scripted-v1",
     });
     const live = replayRuntimeEvents(projectRuntimeThreads([summary]), [settled]);
     const history = projectRuntimeThreadHistory(summary, [{
@@ -411,7 +412,7 @@ describe("Runtime event projection", () => {
           },
         },
       }),
-      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted", createdAt: summary.createdAt, modelCalls: 0 }),
+      event(6, "run.settled", "turn-outcome", "run-outcome", null, { status: "failed", reasonCode: "runtime_interrupted", createdAt: summary.createdAt, modelCalls: 0, providerId: "scripted", modelId: "scripted-v1" }),
     ];
     const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
     const turn = thread.branches[0]?.turns[0];
@@ -968,5 +969,72 @@ describe("Runtime execution progress projection", () => {
       }],
     }]);
     expect(history.branches[0]?.turns[0]?.runProgress).toEqual(expected);
+  });
+});
+
+
+describe("Runtime Turn model selection", () => {
+  it("restores each Turn's final Run model while ordering reversed history pages", () => {
+    function historyTurn(ordinal: number, modelId: string): RuntimeTurnHistory {
+      const turnId = `turn-${ordinal}`;
+      return {
+        id: turnId, threadId: summary.id, branchId: summary.defaultBranchId, ordinal,
+        status: "completed", createdAt: summary.createdAt, updatedAt: summary.updatedAt,
+        runs: [{
+          id: `run-${ordinal}`, turnId, providerId: "provider", modelId,
+          executionPolicy: "full_access", status: "completed", reasonCode: null,
+          createdAt: summary.createdAt, startedAt: summary.createdAt,
+          settledAt: summary.updatedAt, modelCalls: 1, items: [],
+        }],
+      };
+    }
+    const earlier = historyTurn(1, "older-model");
+    const later = historyTurn(2, "superseded-model");
+    later.runs.push({ ...later.runs[0]!, id: "latest-run", modelId: "latest-model" });
+    const projected = projectRuntimeThreadHistory(summary, [later, earlier]);
+    expect(projected.branches[0]?.turns.map(({ id, runId, modelSelection }) => ({
+      id, runId, modelSelection,
+    }))).toEqual([
+      { id: "turn-1", runId: "run-1", modelSelection: { providerId: "provider", modelId: "older-model" } },
+      { id: "turn-2", runId: "latest-run", modelSelection: { providerId: "provider", modelId: "latest-model" } },
+    ]);
+  });
+
+  it("keeps the live initial Run model through later events and older Turn updates", () => {
+    const olderSelection = { providerId: "provider-a", modelId: "older-model" };
+    const latestSelection = { providerId: "provider-b", modelId: "latest-model" };
+    const initial = replayRuntimeEvents(projectRuntimeThreads([summary]), [
+      event(1, "item.completed", "older-turn", "older-run", "older-user", {
+        item: messageItem("older-user", "older-turn", "older-run", "user", "Earlier", "completed"),
+        run: { ...olderSelection, createdAt: summary.createdAt },
+      }),
+      event(2, "item.completed", "latest-turn", "latest-run", "latest-user", {
+        item: messageItem("latest-user", "latest-turn", "latest-run", "user", "Latest", "completed"),
+        run: { ...latestSelection, createdAt: summary.createdAt },
+      }),
+    ]);
+    const laterEvents = [
+      event(3, "run.state_changed", "latest-turn", "latest-run", null, { status: "running" }),
+      event(4, "item.started", "latest-turn", "latest-run", "assistant", {
+        item: messageItem("assistant", "latest-turn", "latest-run", "assistant", "", "streaming"),
+      }),
+      event(5, "item.delta", "latest-turn", "latest-run", "assistant", { delta: "Working" }),
+      event(6, "model.input_prepared", "latest-turn", "latest-run", null, { stepOrdinal: 2 }),
+      event(7, "item.completed", "latest-turn", "latest-run", "assistant", {
+        item: messageItem("assistant", "latest-turn", "latest-run", "assistant", "Done", "completed"),
+      }),
+      event(8, "run.settled", "latest-turn", "latest-run", null, { status: "completed" }),
+      event(9, "run.settled", "older-turn", "older-run", null, { status: "completed" }),
+    ];
+    let projected = initial;
+    for (const update of laterEvents) {
+      projected = replayRuntimeEvents(projected, [update]);
+      expect(projected[0]?.branches[0]?.turns.map((turn) => turn.modelSelection)).toEqual([
+        olderSelection, latestSelection,
+      ]);
+    }
+    expect(projected[0]?.branches[0]?.turns[1]?.events).toContainEqual(
+      expect.objectContaining({ id: "assistant", content: "Done" }),
+    );
   });
 });

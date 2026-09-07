@@ -299,6 +299,44 @@ function singleTurnHistoryPage(
   };
 }
 
+function modelSelectionFixture() {
+  const threads: RuntimeThreadSummary[] = ["a", "b"].map((id) => ({
+    id: `thread-model-${id}`, title: id, defaultBranchId: `branch-model-${id}`,
+    workspace: null, archivedAt: null, createdAt, updatedAt: createdAt,
+  }));
+  const models: RuntimeModelSummary[] = [
+    { providerId: "test-provider", id: "disabled", enabled: false },
+    { providerId: "unconfigured-provider", id: "unconfigured", enabled: true },
+    { providerId: "test-provider", id: "model-a", enabled: true },
+    { providerId: "test-provider", id: "model-b", enabled: true },
+  ].map((model) => ({ ...model, displayName: model.id, contextWindow: 32768, maxOutputTokens: 4096 }));
+  const history = threads.map((thread, index) => {
+    const page = singleTurnHistoryPage(thread, [], "completed", 0);
+    page.turns[0]!.runs[0]!.providerId = "test-provider";
+    page.turns[0]!.runs[0]!.modelId = index === 0 ? "model-b" : "model-a";
+    return page;
+  });
+  const listTurns = vi.fn(async ({ threadId }: { threadId: string }) => {
+    const page = history.find((page) => page.turns[0]?.threadId === threadId);
+    if (!page) throw new Error("Unknown test thread");
+    return page;
+  });
+  const startTurn = vi.fn(async ({ threadId, branchId }: { threadId: string; branchId: string }) => ({
+    threadId, branchId, turnId: "turn-next", runId: "run-next",
+  }));
+  const api = {
+    runtime: {
+      listThreads: vi.fn(async () => ({ threads, snapshotSeq: 0 })), listTurns, startTurn,
+      listModels: vi.fn(async () => ({ models })),
+      replayEvents: vi.fn(async (afterSeq: number) => ({ events: [], latestSeq: afterSeq, nextAfterSeq: afterSeq, hasMore: false })),
+      onEvent: vi.fn(() => () => undefined),
+    },
+    preferences: {}, windowControls: {},
+  };
+  installRuntimeBridge(api);
+  return { api, threads, models, history, listTurns, startTurn };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.resetModules();
@@ -306,6 +344,103 @@ afterEach(() => {
 });
 
 describe("Runtime-backed renderer store", () => {
+  it("selects the first runnable model for new chats and preserves manual choices on catalog refresh", async () => {
+    modelSelectionFixture();
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    const first = { providerId: "test-provider", modelId: "model-a" };
+    const second = { providerId: "test-provider", modelId: "model-b" };
+    expect(useAppStore.getState().selectedModel).toEqual(first);
+    useAppStore.getState().selectModel(second);
+    await useAppStore.getState().loadProviderCatalog();
+    expect(useAppStore.getState().selectedModel).toEqual(second);
+    useAppStore.getState().newChat();
+    expect(useAppStore.getState().selectedModel).toEqual(first);
+    useAppStore.getState().selectModel(second);
+    useAppStore.getState().stageProjectWorkspace({ id: "project", name: "Project", rootUri: "/project" });
+    expect(useAppStore.getState().selectedModel).toEqual(first);
+    useAppStore.getState().selectModel(second);
+    useAppStore.getState().newProjectChat("project");
+    expect(useAppStore.getState().selectedModel).toEqual(first);
+  });
+
+  it.each([true, false])("restores each thread's last model, with availability=%s, and sends with it", async (available) => {
+    const { threads, models, startTurn } = modelSelectionFixture();
+    models[3]!.enabled = available;
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(threads[0]!.id);
+    const expected = { providerId: "test-provider", modelId: available ? "model-b" : "model-a" };
+    expect(useAppStore.getState().selectedModel).toEqual(expected);
+    await useAppStore.getState().selectThread(threads[1]!.id);
+    expect(useAppStore.getState().selectedModel?.modelId).toBe("model-a");
+    await useAppStore.getState().selectThread(threads[0]!.id);
+    expect(useAppStore.getState().selectedModel).toEqual(expected);
+    useAppStore.getState().setDraft("continue this conversation");
+    await useAppStore.getState().sendDraft();
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: threads[0]!.id, ...expected, content: "continue this conversation",
+    }));
+  });
+
+  it("does not send before history loads or let a late history response change another thread's model", async () => {
+    const { threads, history, listTurns, startTurn } = modelSelectionFixture();
+    let finishHistory!: (page: RuntimeTurnListPage) => void;
+    listTurns.mockImplementationOnce(() => new Promise((resolve) => { finishHistory = resolve; }));
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    const opening = useAppStore.getState().selectThread(threads[0]!.id);
+    await vi.waitFor(() => expect(listTurns).toHaveBeenCalledOnce());
+    useAppStore.getState().setDraft("keep this draft");
+    await useAppStore.getState().sendDraft();
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(useAppStore.getState().draft).toBe("keep this draft");
+    await useAppStore.getState().selectThread(threads[1]!.id);
+    finishHistory(history[0]!);
+    await opening;
+    expect(useAppStore.getState().selectedModel?.modelId).toBe("model-a");
+    await useAppStore.getState().selectThread(threads[0]!.id);
+    expect(useAppStore.getState().selectedModel?.modelId).toBe("model-b");
+  });
+
+  it("preserves a manual model choice made while the thread's history is loading", async () => {
+    const { threads, history, listTurns } = modelSelectionFixture();
+    let finishHistory!: (page: RuntimeTurnListPage) => void;
+    listTurns.mockImplementationOnce(() => new Promise((resolve) => { finishHistory = resolve; }));
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    const opening = useAppStore.getState().selectThread(threads[0]!.id);
+    await vi.waitFor(() => expect(listTurns).toHaveBeenCalledOnce());
+    useAppStore.getState().selectModel({ providerId: "test-provider", modelId: "model-a" });
+    const reopening = useAppStore.getState().selectThread(threads[0]!.id);
+    expect(useAppStore.getState().selectedModel?.modelId).toBe("model-a");
+    finishHistory(history[0]!);
+    await Promise.all([opening, reopening]);
+    expect(useAppStore.getState().selectedModel?.modelId).toBe("model-a");
+    await useAppStore.getState().selectThread(threads[0]!.id);
+    expect(useAppStore.getState().selectedModel?.modelId).toBe("model-a");
+  });
+
+  it("restores the historical model when a thread is opened before initialization finishes", async () => {
+    const { api, threads, history } = modelSelectionFixture();
+    api.runtime.listThreads.mockResolvedValue({ threads, snapshotSeq: 1 });
+    history.forEach((page) => { page.snapshotSeq = 1; });
+    let finishReplay!: (page: { events: []; latestSeq: number; nextAfterSeq: number; hasMore: boolean }) => void;
+    api.runtime.replayEvents.mockImplementationOnce(() => new Promise((resolve) => { finishReplay = resolve; }));
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    const initializing = useAppStore.getState().initializeRuntime();
+    await vi.waitFor(() => expect(useAppStore.getState().threads).toHaveLength(2));
+    await useAppStore.getState().selectThread(threads[0]!.id);
+    finishReplay({ events: [], latestSeq: 1, nextAfterSeq: 1, hasMore: false });
+    await initializing;
+    expect(useAppStore.getState().selectedModel).toEqual({ providerId: "test-provider", modelId: "model-b" });
+  });
+
   it("renames, archives, and restores a Thread through Runtime mutation events", async () => {
     const thread: RuntimeThreadSummary = {
       id: "thread-lifecycle",

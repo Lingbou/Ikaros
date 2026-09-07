@@ -7,6 +7,7 @@ import {
   type PermissionEvent,
   type Project,
   type RunStatus,
+  type RuntimeModelSelection,
   type ScenarioId,
   type Thread,
   type Turn,
@@ -81,7 +82,6 @@ type PendingRuntimeSubmission = {
   runId?: string;
   turnId?: string;
 };
-type RuntimeModelSelection = { providerId: string; modelId: string };
 type ProviderCatalogStatus = "idle" | "loading" | "ready" | "error";
 type SkillCatalogStatus = "idle" | "loading" | "ready" | "error";
 type RuntimeThreadDetailStatus = "idle" | "loading" | "ready" | "error";
@@ -237,6 +237,7 @@ const client = new MockAgentClient();
 const runtimeClient = createRuntimeClient();
 let runtimeInitialization: Promise<void> | undefined;
 let providerCatalogRevision = 0;
+let modelSelectionRevision = 0;
 let skillCatalogRevision = 0;
 let removeRuntimeSubscription: (() => void) | undefined;
 let removeRuntimeStatusSubscription: (() => void) | undefined;
@@ -321,9 +322,35 @@ function reconcileModelSelection(
     return selection;
   }
   const runnable = runnableModels(providers, models);
-  return runnable.length === 1 && runnable[0]
+  return runnable[0]
     ? { providerId: runnable[0].providerId, modelId: runnable[0].id }
     : null;
+}
+
+function lastThreadModel(thread: Thread | undefined): RuntimeModelSelection | null {
+  return [...(activeBranch(thread)?.turns ?? [])]
+    .reverse().find((turn) => turn.modelSelection)?.modelSelection ?? null;
+}
+
+async function loadRuntimeThreadAndRestoreModel(
+  set: StoreSet,
+  get: StoreGet,
+  threadId: string,
+): Promise<void> {
+  const selectionRevision = modelSelectionRevision;
+  await loadRuntimeThreadIntoStore(set, get, threadId);
+  set((state) => {
+    if (
+      state.selectedThreadId !== threadId ||
+      selectionRevision !== modelSelectionRevision ||
+      state.runtimeThreadDetails[threadId]?.status !== "ready"
+    ) return {};
+    return {
+      selectedModel: reconcileModelSelection(
+        lastThreadModel(findThread(state.threads, threadId)), state.providers, state.models,
+      ),
+    };
+  });
 }
 
 function newRuntimeRequestId(kind: "thread" | "turn"): string {
@@ -2329,7 +2356,7 @@ async function retryRuntimeIssueInStore(set: StoreSet, get: StoreGet): Promise<v
     }
     case "history":
       clearIssue();
-      await loadRuntimeThreadIntoStore(set, get, issue.threadId);
+      await loadRuntimeThreadAndRestoreModel(set, get, issue.threadId);
       return;
     case "archived_catalog":
       clearIssue();
@@ -2358,6 +2385,7 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
   }
 
   const initialization = (async () => {
+    const initialModelSelectionRevision = modelSelectionRevision;
     set({ runtimeConnectionStatus: "starting", runtimeError: null, runtimeIssue: null });
     const catalogRevision = ++providerCatalogRevision;
     bufferedRuntimeEvents = [];
@@ -2435,7 +2463,10 @@ async function initializeRuntimeInStore(set: StoreSet, get: StoreGet): Promise<v
               providers: providerResult.providers,
               models: modelResult.models,
               selectedModel: reconcileModelSelection(
-                state.selectedModel,
+                modelSelectionRevision === initialModelSelectionRevision && selectedThreadId &&
+                  state.runtimeThreadDetails[selectedThreadId]?.status === "ready"
+                  ? lastThreadModel(findThread(state.threads, selectedThreadId))
+                  : state.selectedModel,
                 providerResult.providers,
                 modelResult.models,
               ),
@@ -3075,12 +3106,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     ),
   loadSkillCatalog: () => refreshRuntimeSkillCatalog(set),
   setSkillEnabled: (params) => mutateRuntimeSkillEnabled(set, params),
-  selectModel: (selection) =>
+  selectModel: (selection) => {
+    modelSelectionRevision += 1;
     set((state) => ({
-      selectedModel: selectionIsRunnable(selection, state.providers, state.models)
-        ? selection
-        : null,
-    })),
+      selectedModel: reconcileModelSelection(selection, state.providers, state.models),
+    }));
+  },
 
   setDraft: (draft) => set({ draft }),
   setModelLimits: async (params) => {
@@ -3162,6 +3193,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (runtimeClient) {
       set((state) => ({
         selectedThreadId: null,
+        selectedModel: reconcileModelSelection(null, state.providers, state.models),
         runStatus: state.pendingRuntimeNewThread ? "queued" : "idle",
         draft: "",
         editingMessage: null,
@@ -3191,6 +3223,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (runtimeClient) {
       set((current) => ({
         selectedThreadId: null,
+        selectedModel: reconcileModelSelection(null, current.providers, current.models),
         runStatus: current.pendingRuntimeNewThread ? "queued" : "idle",
         draft: "",
         editingMessage: null,
@@ -3213,6 +3246,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           ? state.projects
           : mergeWorkspaceProjects(state.projects, [canonicalWorkspace]),
         selectedThreadId: null,
+        selectedModel: reconcileModelSelection(null, state.providers, state.models),
         runStatus: state.pendingRuntimeNewThread ? "queued" : "idle",
         draft: "",
         editingMessage: null,
@@ -3247,15 +3281,23 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (!thread) return;
 
     if (runtimeClient) {
+      const detailStatus = state.runtimeThreadDetails[threadId]?.status;
+      const alreadySelected = state.selectedThreadId === threadId &&
+        (detailStatus === "ready" || detailStatus === "loading");
       set((current) => ({
         selectedThreadId: threadId,
+        selectedModel: alreadySelected ? current.selectedModel
+          : current.runtimeThreadDetails[threadId]?.status === "ready"
+            ? reconcileModelSelection(lastThreadModel(thread), current.providers, current.models)
+            : null,
         runStatus: runtimeRunStatusForSelection(current, threadId),
         editingMessage: null,
         searchOpen: false,
         settingsOpen: false,
         runtimeForegroundGeneration: current.runtimeForegroundGeneration + 1,
       }));
-      await loadRuntimeThreadIntoStore(set, get, threadId);
+      if (alreadySelected) await loadRuntimeThreadIntoStore(set, get, threadId);
+      else await loadRuntimeThreadAndRestoreModel(set, get, threadId);
       return;
     }
 
@@ -3288,7 +3330,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  retryRuntimeThread: (threadId) => loadRuntimeThreadIntoStore(set, get, threadId),
+  retryRuntimeThread: (threadId) => loadRuntimeThreadAndRestoreModel(set, get, threadId),
   loadOlderRuntimeTurns: (threadId) =>
     loadOlderRuntimeTurnsIntoStore(set, get, threadId),
 
@@ -3297,6 +3339,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const prompt = state.draft.trim();
     if (!prompt || isRunActive(state.runStatus)) return;
     if (runtimeClient) {
+      if (state.selectedThreadId &&
+        state.runtimeThreadDetails[state.selectedThreadId]?.status !== "ready") return;
       if (hasPendingRuntimeSubmission(state, state.selectedThreadId)) {
         return;
       }

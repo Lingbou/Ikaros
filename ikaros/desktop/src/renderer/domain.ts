@@ -203,6 +203,8 @@ export type AgentEvent =
   | StatusEvent
   | BranchEvent;
 
+export type RuntimeModelSelection = { providerId: string; modelId: string };
+
 export interface RuntimeRunProgress {
   queuedAt: string;
   startedAt: string | null;
@@ -217,6 +219,7 @@ export interface Turn {
   status: TurnStatus;
   reasonCode?: string | null;
   runProgress?: RuntimeRunProgress;
+  modelSelection?: RuntimeModelSelection;
   events: AgentEvent[];
 }
 

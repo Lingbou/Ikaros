@@ -10,6 +10,7 @@ import type {
   AppEventTextKind,
   Project,
   RuntimeRunProgress,
+  RuntimeModelSelection,
   Thread,
   ToolResultEvent,
   Turn,
@@ -122,6 +123,7 @@ export function projectRuntimeThreadHistory(
         timestamp: run.settledAt ?? turn.updatedAt,
         payload: {
           status: run.status, reasonCode: run.reasonCode,
+          providerId: run.providerId, modelId: run.modelId,
           modelCalls: run.modelCalls,
           startedAt: run.startedAt, settledAt: run.settledAt, createdAt: run.createdAt,
         },
@@ -420,6 +422,17 @@ function progressFromEvent(previous: RuntimeRunProgress | undefined, event: Runt
   };
 }
 
+function modelSelectionFromEvent(
+  previous: RuntimeModelSelection | undefined,
+  event: RuntimeJournalEvent,
+): RuntimeModelSelection | undefined {
+  const snapshot = isRecord(event.payload.run) ? event.payload.run : event.payload;
+  return typeof snapshot.providerId === "string" && snapshot.providerId.trim() &&
+    typeof snapshot.modelId === "string" && snapshot.modelId.trim()
+    ? { providerId: snapshot.providerId, modelId: snapshot.modelId }
+    : previous;
+}
+
 export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent): Thread[] {
   if (event.type === "model.response_finished") {
     return threads;
@@ -569,12 +582,16 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
   }
 
   const priorTurn = thread.branches.find((branch) => branch.id === event.branchId)?.turns.find((turn) => turn.id === event.turnId);
-  const runProgress = progressFromEvent(priorTurn?.runId === event.runId ? priorTurn.runProgress : undefined, event);
-  if (runProgress) {
+  const sameRun = priorTurn?.runId === event.runId;
+  const runProgress = progressFromEvent(sameRun ? priorTurn?.runProgress : undefined, event);
+  const modelSelection = modelSelectionFromEvent(sameRun ? priorTurn?.modelSelection : undefined, event);
+  if (runProgress || modelSelection) {
     next = updateTurn(next, event.branchId, event.turnId, (turn) => ({
       ...turn, id: event.turnId as string, branchId: event.branchId as string,
       runId: event.runId ?? turn?.runId, status: turn?.status ?? "queued",
-      events: turn?.events ?? [], runProgress,
+      events: turn?.events ?? [],
+      ...(runProgress ? { runProgress } : {}),
+      ...(modelSelection ? { modelSelection } : {}),
     }));
   }
   if (next === thread) return threads;

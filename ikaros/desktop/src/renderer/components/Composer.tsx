@@ -499,10 +499,6 @@ export function Composer({
             <p role="status" className="px-1 pt-1.5 text-[11px] leading-4 text-[var(--muted)]">
               {t(modelAccess.message)}
             </p>
-          ) : runtimeModelMissing ? (
-            <p role="status" className="px-1 pt-1.5 text-[11px] leading-4 text-[var(--muted)]">
-              {t("composer.chooseModel")}
-            </p>
           ) : null}
           {projectFolderError ? (
             <div role="alert" className="px-1 pt-1.5 text-[11px] leading-4 text-[#e07070]">

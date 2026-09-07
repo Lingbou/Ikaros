@@ -325,7 +325,7 @@ describe("Composer input and clearance", () => {
     expect(sendDraft).toHaveBeenCalledOnce();
   });
 
-  it("lets Runtime users explicitly choose between multiple runnable models", () => {
+  it("lets Runtime users change the selected model without showing a selection instruction", () => {
     useAppStore.setState({
       runtimeMode: true,
       providers: [
@@ -356,7 +356,7 @@ describe("Composer input and clearance", () => {
           enabled: true,
         },
       ],
-      selectedModel: null,
+      selectedModel: { providerId: "test-provider", modelId: "model-a" },
       draft: "hello",
       runStatus: "idle",
     });
@@ -366,9 +366,10 @@ describe("Composer input and clearance", () => {
       </Tooltip.Provider>,
     );
 
-    const modelTrigger = screen.getByRole("button", { name: "Select a model" });
+    const modelTrigger = screen.getByRole("button", { name: "Model A" });
     expect(modelTrigger).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.queryByRole("status")).toBeNull();
     fireEvent.pointerDown(modelTrigger);
     expect(screen.queryByText(/Test Provider/)).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Model A" })).toBeInTheDocument();

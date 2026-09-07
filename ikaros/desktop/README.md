@@ -94,6 +94,9 @@ The Runtime currently owns:
 - DeepSeek and Custom OpenAI-compatible Provider configuration, real DeepSeek
   model discovery, Model enablement, Provider disconnect/removal, and
   `~/.ikaros/config.yaml` persistence;
+- new conversations select the first enabled Model from a configured Provider.
+  Opening a conversation restores its latest Run's Model from persisted history,
+  falling back to the first available Model if that Model is no longer usable;
 - the ScriptedProvider used by deterministic integration tests and real
   OpenAI-compatible streaming Providers used by normal conversations; and
 - `usage.read`, backed only by Provider-reported usage from
