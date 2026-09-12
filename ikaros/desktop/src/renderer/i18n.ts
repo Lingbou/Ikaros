@@ -260,6 +260,8 @@ const english = {
   "events.result.bytesWritten": "{count} bytes written",
   "events.result.replacements": "{count} replacements",
   "events.result.outputTruncated": "Output truncated",
+  "events.result.readMore": "Read more logs",
+  "events.result.stopProcess": "Stop command",
   "events.permission.moveReceiptsTitle": "Allow moving {count} receipt files?",
   "events.permission.moveReceiptsDescription":
     "The agent will create monthly folders and move matching PDFs. Originals remain recoverable from the Recycle Bin.",
@@ -782,6 +784,8 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.result.bytesWritten": "已写入 {count} 字节",
   "events.result.replacements": "已替换 {count} 处",
   "events.result.outputTruncated": "输出已截断",
+  "events.result.readMore": "读取更多日志",
+  "events.result.stopProcess": "停止命令",
   "events.permission.moveReceiptsTitle": "允许移动 {count} 个收据文件吗？",
   "events.permission.moveReceiptsDescription":
     "Ikaros 将创建按月分类的文件夹并移动匹配的 PDF。原文件仍可从回收站恢复。",

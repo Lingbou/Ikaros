@@ -10,6 +10,8 @@ import type {
   IkarosRuntimeApi,
   IkarosRuntimeBridgeApi,
   RuntimeCancelRunResult,
+  RuntimeSteerRunParams,
+  RuntimeSteerRunResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeHostStatus,
@@ -33,6 +35,10 @@ import type {
   RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
+  RuntimeProcessReadParams,
+  RuntimeProcessReadResult,
+  RuntimeProcessStopParams,
+  RuntimeProcessStopResult,
   RuntimeReplayResult,
   RuntimeSkillListResult,
   RuntimeSkillSetEnabledParams,
@@ -209,6 +215,20 @@ export class RuntimeClient implements IkarosRuntimeApi {
 
   cancelRun(runId: string): Promise<RuntimeCancelRunResult> {
     return unwrapRuntimeInvocation(this.api.cancelRun(runId));
+  }
+
+  readProcess(params: RuntimeProcessReadParams): Promise<RuntimeProcessReadResult> {
+    if (!this.api.readProcess) return Promise.reject(new Error("Process control is unavailable"));
+    return unwrapRuntimeInvocation(this.api.readProcess(params));
+  }
+
+  stopProcess(params: RuntimeProcessStopParams): Promise<RuntimeProcessStopResult> {
+    if (!this.api.stopProcess) return Promise.reject(new Error("Process control is unavailable"));
+    return unwrapRuntimeInvocation(this.api.stopProcess(params));
+  }
+
+  steerRun(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult> {
+    return unwrapRuntimeInvocation(this.api.steerRun(params));
   }
 
   replayEvents(afterSeq: number, limit = 500): Promise<RuntimeReplayResult> {

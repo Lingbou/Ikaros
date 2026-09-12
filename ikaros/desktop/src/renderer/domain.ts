@@ -124,6 +124,9 @@ export interface ToolResultEvent extends EventBase {
     processId?: string;
     processState?: "running" | "exited" | "terminated" | "unknown";
     exitCode?: number | null;
+    cursor?: number;
+    nextCursor?: number;
+    hasMore?: boolean;
   };
 }
 

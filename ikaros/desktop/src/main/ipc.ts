@@ -10,6 +10,8 @@ import type {
   RuntimeFilePreviewParams,
   RuntimeFilePreviewResult,
   RuntimeCancelRunResult,
+  RuntimeSteerRunParams,
+  RuntimeSteerRunResult,
   RuntimeHostStatus,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
@@ -31,6 +33,10 @@ import type {
   RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
+  RuntimeProcessReadParams,
+  RuntimeProcessReadResult,
+  RuntimeProcessStopParams,
+  RuntimeProcessStopResult,
   RuntimeReplayResult,
   RuntimeSkillListResult,
   RuntimeSkillSetEnabledParams,
@@ -160,6 +166,9 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.turnList,
     DESKTOP_IPC_CHANNELS.runtime.turnStart,
     DESKTOP_IPC_CHANNELS.runtime.runCancel,
+    DESKTOP_IPC_CHANNELS.runtime.processRead,
+    DESKTOP_IPC_CHANNELS.runtime.processStop,
+    DESKTOP_IPC_CHANNELS.runtime.runSteer,
     DESKTOP_IPC_CHANNELS.runtime.eventReplay,
     DESKTOP_IPC_CHANNELS.runtime.providerList,
     DESKTOP_IPC_CHANNELS.runtime.providerConfigure,
@@ -462,6 +471,16 @@ export function registerDesktopIpc(
   );
 
   ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.runSteer,
+    async (event, params: RuntimeSteerRunParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeSteerRunResult>("run.steer", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.runCancel,
     async (event, runId: unknown) => {
       trustPolicy.assertTrustedIpc(event);
@@ -470,6 +489,15 @@ export function registerDesktopIpc(
       );
     }
   );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.processRead, async (event, params: RuntimeProcessReadParams) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() => runtimeHost.request<RuntimeProcessReadResult>("process.read", { ...params }));
+  });
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.processStop, async (event, params: RuntimeProcessStopParams) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() => runtimeHost.request<RuntimeProcessStopResult>("process.stop", { ...params }));
+  });
 
   ipcMain.handle(
     DESKTOP_IPC_CHANNELS.runtime.eventReplay,

@@ -10,6 +10,8 @@ import {
   RUNTIME_RPC_METHODS,
   RUNTIME_SERVER_NAME,
   type RuntimeCancelRunResult,
+  type RuntimeProcessReadResult,
+  type RuntimeProcessStopResult,
   type RuntimeFilePreviewResult,
   type RuntimeFileChangeResult,
   type RuntimeHostStatus,
@@ -2086,6 +2088,16 @@ function parseRuntimeShutdownResult(value: unknown): { accepted: true } {
   return { accepted: true };
 }
 
+function parseRuntimeProcessResult(value: unknown): RuntimeProcessReadResult {
+  if (!isWireObject(value) || !isWireIdentifier(value.processId) || !isProcessState(value.state) ||
+      (value.exitCode !== null && !Number.isSafeInteger(value.exitCode)) ||
+      typeof value.output !== "string" || !isSafeNonNegativeInteger(value.cursor) ||
+      !isSafeNonNegativeInteger(value.nextCursor) || typeof value.hasMore !== "boolean") {
+    throw invalidRuntimeMethodResult("process.read");
+  }
+  return value as unknown as RuntimeProcessReadResult;
+}
+
 function parseRuntimeThreadCreateResult(value: unknown): RuntimeThreadCreateResult {
   if (!isWireObject(value) || !hasExactKeys(value, ["thread", "event"])) {
     throw invalidRuntimeMethodResult("thread.create");
@@ -2761,6 +2773,8 @@ const RUNTIME_RESULT_PARSERS = {
     return parseRuntimeTurnListPage(value, expectedScope);
   },
   "run.cancel": (value) => parseRuntimeCancelRunResult(value),
+  "process.read": (value) => parseRuntimeProcessResult(value),
+  "process.stop": (value) => parseRuntimeProcessResult(value) as RuntimeProcessStopResult,
   "event.replay": (value) => parseRuntimeReplayResult(value),
   "usage.read": (value) => parseRuntimeUsageReadResult(value)
 } satisfies Record<RuntimeRpcMethod, RuntimeResultParser>;

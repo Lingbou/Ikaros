@@ -42,6 +42,9 @@ RPC_METHODS: Final = (
     "turn.start",
     "turn.list",
     "run.cancel",
+    "process.read",
+    "process.stop",
+    "run.steer",
     "event.replay",
     "usage.read",
 )
@@ -61,6 +64,7 @@ JOURNAL_EVENT_TYPES: Final = (
     "model.input_prepared",
     "model.response_finished",
     "run.settled",
+    "run.steered",
 )
 JOURNAL_EVENT_TYPE_SET: Final = frozenset(JOURNAL_EVENT_TYPES)
 
@@ -71,7 +75,9 @@ PROVIDER_TOOL_IDS: Final = (
     "process_read",
     "process_wait",
     "process_stop",
+    "history_read",
     "read",
+    "history_read",
     "write",
     "edit",
 )

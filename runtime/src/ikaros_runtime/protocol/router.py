@@ -13,6 +13,7 @@ from ..services.skills import SkillService
 from ..services.threads import ThreadService
 from ..services.turns import TurnService
 from ..services.usage import UsageService
+from ..services.processes import ProcessService
 from .jsonrpc import jsonrpc_error
 from .spec import (
     JSONRPC_VERSION,
@@ -49,6 +50,7 @@ class RuntimeRouter:
         skills: SkillService,
         memories: MemoryService,
         files: FileService,
+        processes: ProcessService | None = None,
     ) -> None:
         self._threads = threads
         self._turns = turns
@@ -57,6 +59,7 @@ class RuntimeRouter:
         self._skills = skills
         self._memories = memories
         self._files = files
+        self._processes = processes
 
     async def dispatch(
         self,
@@ -128,6 +131,17 @@ class RuntimeRouter:
                 result = self._turns.list(params)
             elif method == "run.cancel":
                 outcome = self._turns.cancel_run(params)
+                result = outcome.result
+            elif method == "process.read":
+                if self._processes is None:
+                    raise InvalidParamsError("process control is unavailable")
+                result = self._processes.read(params)
+            elif method == "process.stop":
+                if self._processes is None:
+                    raise InvalidParamsError("process control is unavailable")
+                result = await self._processes.stop(params)
+            elif method == "run.steer":
+                outcome = await self._turns.steer_run(params)
                 result = outcome.result
             elif method == "event.replay":
                 result = self._turns.replay_events(params)

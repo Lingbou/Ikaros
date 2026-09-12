@@ -32,7 +32,13 @@ import type {
   RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeProviderSummary,
+  RuntimeProcessReadParams,
+  RuntimeProcessReadResult,
+  RuntimeProcessStopParams,
+  RuntimeProcessStopResult,
   RuntimeCancelRunResult,
+  RuntimeSteerRunParams,
+  RuntimeSteerRunResult,
   RuntimeReplayResult,
   RuntimeSkillListResult,
   RuntimeSkillSetEnabledParams,
@@ -104,6 +110,15 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.runCancel,
         runId
       ) as Promise<RuntimeInvocationResult<RuntimeCancelRunResult>>,
+    readProcess: (params: RuntimeProcessReadParams) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.processRead, params) as Promise<RuntimeInvocationResult<RuntimeProcessReadResult>>,
+    stopProcess: (params: RuntimeProcessStopParams) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.processStop, params) as Promise<RuntimeInvocationResult<RuntimeProcessStopResult>>,
+    steerRun: (params: RuntimeSteerRunParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.runSteer,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeSteerRunResult>>,
     replayEvents: (afterSeq: number, limit?: number) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.eventReplay,

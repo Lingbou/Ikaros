@@ -274,6 +274,9 @@ function processDetails(result: Record<string, unknown>): ToolResultEvent["detai
     ...(result.exitCode === null || Number.isSafeInteger(result.exitCode) ? { exitCode: result.exitCode as number | null } : {}),
     ...(["running", "exited", "terminated", "unknown"].includes(String(result.state)) ? { processState: result.state as "running" | "exited" | "terminated" | "unknown" } : {}),
     ...(typeof result.truncated === "boolean" ? { truncated: result.truncated } : {}),
+    ...(Number.isSafeInteger(result.cursor) ? { cursor: result.cursor as number } : {}),
+    ...(Number.isSafeInteger(result.nextCursor) ? { nextCursor: result.nextCursor as number } : {}),
+    ...(typeof result.hasMore === "boolean" ? { hasMore: result.hasMore } : {}),
   };
 }
 

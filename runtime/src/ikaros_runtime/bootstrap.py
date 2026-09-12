@@ -29,6 +29,7 @@ from .server.host import RuntimeHomeLock, ServerSettings, run_host
 from .services.files import FileService
 from .services.memories import MemoryService
 from .services.providers import ModelDiscovery, ProviderService
+from .services.processes import ProcessService
 from .services.skills import SkillService
 from .services.threads import ThreadService
 from .services.turns import TurnService
@@ -190,6 +191,7 @@ class RuntimeApplication:
             self.skills,
             self.memories,
             self.files,
+            ProcessService(self._process_manager),
         )
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
