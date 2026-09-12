@@ -91,3 +91,86 @@ def test_failed_summary_can_leave_original_context_unchanged():
         pass
 
     assert records == before
+
+
+def test_prepare_model_step_compacts_and_emits_journal_event(tmp_path):
+    from ikaros_runtime.run_input import ProviderExecutionSnapshot, RunConfigTemplate
+    from ikaros_runtime.storage import SqliteRuntimeStore
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Compaction Test")
+        provider = ProviderExecutionSnapshot(
+            provider_id="scripted",
+            origin="test",
+            base_url=None,
+            model_id="scripted-v1",
+            supports_tools=True,
+            context_window=2500,
+            max_output_tokens=500,
+        )
+        template = RunConfigTemplate.create(
+            provider=provider,
+            execution_policy="full_access",
+            skills=(),
+            tools=(),
+            identity_core=None,
+        )
+
+        t1 = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Turn 1 user request is here",
+            run_config_template=template,
+        )
+        store.mark_run_running(t1.run_id)
+        store.prepare_model_step(t1.run_id, step_ordinal=1)
+        a1, _ = store.create_assistant_item(t1.run_id)
+        store.append_text_delta(a1, "Turn 1 assistant answer is here")
+        store.complete_provider_step(
+            t1.run_id,
+            step_ordinal=1,
+            assistant_item_id=a1,
+            tool_calls=(),
+            reasoning_content=None,
+            usage=None,
+            response_model_id=None,
+            request_id=None,
+        )
+        store.terminalize_run(t1.run_id, "completed")
+
+        t2 = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Turn 2 request",
+            run_config_template=template,
+        )
+        store.mark_run_running(t2.run_id)
+        step1 = store.prepare_model_step(t2.run_id, step_ordinal=1)
+        assert step1.context_revision.revision == 1
+        assert step1.context_revision.budget.history_tokens == 186
+
+        a2, _ = store.create_assistant_item(t2.run_id)
+        store.append_text_delta(a2, "A" * 832)
+        store.complete_provider_step(
+            t2.run_id,
+            step_ordinal=1,
+            assistant_item_id=a2,
+            tool_calls=(),
+            reasoning_content=None,
+            usage=None,
+            response_model_id=None,
+            request_id=None,
+        )
+
+        step2 = store.prepare_model_step(t2.run_id, step_ordinal=2)
+        assert step2.context_revision.revision == 2
+        assert step2.context_revision.budget.history_tokens == 0
+        assert len(step2.context_revision.omissions) == 1
+        assert step2.context_revision.omissions[0].source_id == t1.turn_id
+        events, _ = store.replay_events(0, 100)
+        compact_events = [e for e in events if e.type == "context.compacted"]
+        assert len(compact_events) == 1
+        assert compact_events[0].payload["droppedTurns"] == [t1.turn_id]
+    finally:
+        store.close()

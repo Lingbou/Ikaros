@@ -1100,7 +1100,11 @@ def apply_event(
     elif event_type == "file.change_recorded":
         _apply_file_change_event(connection, event)
     elif event_type == "context.compacted":
-        _require_keys(payload, {"revision", "droppedTurns", "contextRevision"})
+        _require_keys(
+            payload,
+            {"revision", "droppedTurns", "contextRevision"},
+            {"turnId", "runId"},
+        )
         if event.run_id is None or event.thread_id is None or event.branch_id is None:
             raise RuntimeError("context compaction event has incomplete scope")
         _require_event_scope(
@@ -1138,7 +1142,10 @@ def apply_event(
             "SELECT record_json FROM context_revisions WHERE run_id = ? AND revision = ?",
             (event.run_id, revision_value),
         ).fetchone()
-        if existing is not None and str(existing["record_json"]) != canonical_json(revision.to_wire()):
+        if (
+            existing is not None
+            and str(existing["record_json"]) != canonical_json(revision.to_wire())
+        ):
             raise RuntimeError("context compaction revision conflicts with stored record")
         if existing is None:
             connection.execute(

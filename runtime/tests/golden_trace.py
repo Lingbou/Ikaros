@@ -209,6 +209,8 @@ def _notification_name(event: JournalEvent, occurrence: int) -> str:
         return "run-settled"
     if event.type == "run.steered":
         return "run-steered"
+    if event.type == "context.compacted":
+        return "context-compacted"
     if event.type == "item.delta":
         return "assistant-item-delta" if occurrence == 1 else f"assistant-item-delta-{occurrence}"
     if event.type in {"item.started", "item.completed"}:
@@ -559,6 +561,56 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 file_change=capture,
             )
             store.terminalize_run(file_turn.run_id, "completed")
+
+            compact_provider = ProviderExecutionSnapshot(
+                provider_id=ScriptedProvider.id,
+                origin="scripted",
+                base_url=None,
+                model_id=ScriptedProvider.model_id,
+                supports_tools=True,
+                context_window=6000,
+                max_output_tokens=1500,
+            )
+            compact_frame = RunConfigTemplate.create(
+                provider=compact_provider,
+                execution_policy="full_access",
+                skills=(),
+                tools=(),
+                identity_core=identity_core,
+            )
+            compact_turn = store.prepare_turn(
+                thread_id=thread.id,
+                branch_id=thread.default_branch_id,
+                content="Compact history",
+                run_config_template=compact_frame,
+            )
+            store.mark_run_running(compact_turn.run_id)
+            store.prepare_model_step(compact_turn.run_id, step_ordinal=1)
+            compact_assistant_id, _ = store.create_assistant_item(compact_turn.run_id)
+            store.append_text_delta(compact_assistant_id, "A" * 2500)
+            store.complete_provider_step(
+                compact_turn.run_id,
+                step_ordinal=1,
+                assistant_item_id=compact_assistant_id,
+                tool_calls=(),
+                reasoning_content=None,
+                usage=None,
+                response_model_id=None,
+                request_id=None,
+            )
+            store.prepare_model_step(compact_turn.run_id, step_ordinal=2)
+            store.complete_provider_step(
+                compact_turn.run_id,
+                step_ordinal=2,
+                assistant_item_id=None,
+                tool_calls=(),
+                reasoning_content=None,
+                usage=None,
+                response_model_id=None,
+                request_id=None,
+            )
+            store.terminalize_run(compact_turn.run_id, "completed")
+
             file_events, _ = store.replay_events(latest_seq, 1000)
             file_messages = []
             for index, event in enumerate(file_events):
@@ -566,6 +618,8 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                     {
                         "name": "file-change-recorded"
                         if event.type == "file.change_recorded"
+                        else "context-compacted"
+                        if event.type == "context.compacted"
                         else f"file-flow-event-{index}",
                         "kind": "notification",
                         "envelope": {

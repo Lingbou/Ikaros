@@ -891,7 +891,19 @@ class SqliteRuntimeStore:
         snapshot: ContextRevision,
         records: Sequence[ContextItemRecordV1],
     ) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...]] | None:
-        current = tuple(record for record in records if record.run_id == run_id)
+        current_baseline = tuple(
+            record
+            for record in records
+            if record.run_id == run_id
+            and any(item.item_id == record.item_id for item in snapshot.history_items)
+        )
+        if not current_baseline:
+            current_baseline = tuple(
+                record
+                for record in records
+                if record.run_id == run_id and record.item_id == frame.user_item_id
+            )
+        current_all = tuple(record for record in records if record.run_id == run_id)
         historical = [record for record in records if record.run_id != run_id]
         groups: list[list[ContextItemRecordV1]] = []
         for record in historical:
@@ -900,60 +912,79 @@ class SqliteRuntimeStore:
             else:
                 groups.append([record])
         dropped: list[str] = []
-        while groups:
-            candidate = tuple(item for group in groups for item in group) + current
+        while True:
+            candidate_baseline = (
+                tuple(item for group in groups for item in group) + current_baseline
+            )
             try:
-                revision = build_context_revision(
-                    candidate,
-                    current_run_id=run_id,
-                    config=frame,
-                    maximum_tokens=frame.maximum_input_tokens,
-                    reserved_current_run_tokens=frame.reserved_current_run_tokens,
-                    omissions=tuple(
-                        omission
-                        for omission in snapshot.omissions
-                        if omission.source_type == "history"
-                    )
-                    + tuple(
-                        OmissionRecordV1(
-                            source_type="history", source_id=turn_id, reason="omitted_by_budget"
+                omissions = (
+                    *(
+                        (
+                            OmissionRecordV1(
+                                source_type="history",
+                                source_id=dropped[-1],
+                                reason="omitted_by_budget",
+                            ),
                         )
-                        for turn_id in dropped
-                    )
-                    + tuple(
+                        if dropped
+                        else tuple(
+                            omission
+                            for omission in snapshot.omissions
+                            if omission.source_type == "history"
+                        )
+                    ),
+                    *(
                         omission
                         for omission in snapshot.omissions
                         if omission.source_type == "memory"
                     ),
+                )
+                revision = build_context_revision(
+                    candidate_baseline,
+                    current_run_id=run_id,
+                    config=frame,
+                    maximum_tokens=frame.maximum_input_tokens,
+                    reserved_current_run_tokens=frame.reserved_current_run_tokens,
+                    omissions=omissions,
                     memory_context=FrozenMemoryContextV1.from_revision(snapshot),
                     history_status=snapshot.history_status,
                 )
-                if revision.budget.total_tokens > frame.maximum_input_tokens:
+                candidate_full = tuple(item for group in groups for item in group) + current_all
+                step_tokens = (
+                    revision.budget.instruction_tokens
+                    + revision.budget.context_data_tokens
+                    + revision.budget.tool_tokens
+                    + sum(r.estimated_tokens for r in candidate_full if r.run_id != run_id)
+                    + sum(r.estimated_tokens for r in candidate_full if r.run_id == run_id)
+                    + revision.budget.memory_tokens
+                )
+                if step_tokens > frame.maximum_input_tokens:
                     raise ValueError("over_budget")
+                revision = replace(revision, revision=snapshot.revision + 1)
+                self._connection.execute(
+                    "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
+                    (run_id, revision.revision, canonical_json(revision.to_wire())),
+                )
+                run = self.get_run(run_id)
+                self._append_event(
+                    event_type="context.compacted",
+                    thread_id=run.thread_id,
+                    branch_id=run.branch_id,
+                    turn_id=run.turn_id,
+                    run_id=run.id,
+                    timestamp=utc_now(),
+                    payload={
+                        "revision": revision.revision,
+                        "droppedTurns": dropped,
+                        "contextRevision": revision.to_wire(),
+                    },
+                )
+                return revision, candidate_full
             except ValueError:
+                if not groups:
+                    break
                 removed = groups.pop(0)
                 dropped.append(removed[0].turn_id)
-                continue
-            revision = replace(revision, revision=snapshot.revision + 1)
-            self._connection.execute(
-                "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
-                (run_id, revision.revision, canonical_json(revision.to_wire())),
-            )
-            run = self.get_run(run_id)
-            self._append_event(
-                event_type="context.compacted",
-                thread_id=run.thread_id,
-                branch_id=run.branch_id,
-                turn_id=run.turn_id,
-                run_id=run.id,
-                timestamp=utc_now(),
-                payload={
-                    "revision": revision.revision,
-                    "droppedTurns": dropped,
-                    "contextRevision": revision.to_wire(),
-                },
-            )
-            return revision, candidate
         return None
 
     def complete_provider_step(

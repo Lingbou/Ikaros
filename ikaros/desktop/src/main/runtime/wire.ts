@@ -124,7 +124,8 @@ const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
     "bom",
     "newline",
     "replacements"
-  ]
+  ],
+  history_read: ["durationMs", "truncated", "errorCode", "itemId"]
 } as const satisfies Record<string, readonly string[]>;
 const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYPES);
 const RUNTIME_PROVIDER_TOOL_ID_SET = new Set<string>(RUNTIME_PROVIDER_TOOL_IDS);
@@ -547,6 +548,22 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
       !isNonEmptyString(payload.content) ||
       !isWireIdentifier(payload.clientRequestId) ||
       !["received", "processed", "unprocessed"].includes(payload.status as string)) {
+      invalidJournalEventPayload(event.type);
+    }
+    return;
+  }
+
+  if (event.type === "context.compacted") {
+    if (
+      !hasRunEventScope(event, false) ||
+      !hasScopedPayloadKeys(event, ["revision", "droppedTurns", "contextRevision"]) ||
+      typeof payload.revision !== "number" ||
+      !Number.isInteger(payload.revision) ||
+      payload.revision < 1 ||
+      !Array.isArray(payload.droppedTurns) ||
+      !payload.droppedTurns.every((id) => typeof id === "string" && id.length > 0) ||
+      !isWireObject(payload.contextRevision)
+    ) {
       invalidJournalEventPayload(event.type);
     }
     return;
