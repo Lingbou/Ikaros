@@ -191,7 +191,7 @@ class RuntimeApplication:
             self.skills,
             self.memories,
             self.files,
-            ProcessService(self._process_manager),
+            ProcessService(self._process_manager, store),
         )
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
