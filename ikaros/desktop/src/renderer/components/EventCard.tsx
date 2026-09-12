@@ -20,7 +20,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo } from "react";
 import type {
   AgentEvent,
   ArtifactEvent,
@@ -36,7 +36,7 @@ import { isRunActive } from "../domain";
 import { resolveEventText, resolveInterruptCopy } from "../eventCopy";
 import { type Translate, useTranslation } from "../i18n";
 import { useAppStore } from "../store";
-import { createRuntimeClient } from "../runtimeClient";
+import { ProcessSessionCard } from "./ProcessSessionCard";
 import { cx, IconButton, Markdown } from "./ui";
 
 function copyText(content: string) {
@@ -290,20 +290,6 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
   const { t } = useTranslation();
   const isFileResult = isFileTool(event.toolName);
   const metadata = isFileResult ? fileToolResultDetails(event, t) : [];
-  const processResult = event.toolName?.startsWith("process_") && event.details?.processId
-    ? event.details
-    : undefined;
-  const threadId = useAppStore((state) => state.selectedThreadId);
-  const [output, setOutput] = useState(event.output);
-  const [nextCursor, setNextCursor] = useState(processResult?.nextCursor ?? 0);
-  const [hasMore, setHasMore] = useState(processResult?.hasMore ?? false);
-  const [busy, setBusy] = useState(false);
-  const [stateOverride, setStateOverride] = useState<"running" | "exited" | "terminated" | "unknown">();
-  useEffect(() => {
-    setOutput(event.output);
-    setNextCursor(event.details?.nextCursor ?? 0);
-    setHasMore(event.details?.hasMore ?? false);
-  }, [event.output, event.details?.nextCursor, event.details?.hasMore]);
   if (event.toolName?.startsWith("process_") && event.details) {
     if (typeof event.details.exitCode === "number") metadata.push(t("events.result.exitCode", { code: event.details.exitCode }));
     if (event.details.processId) metadata.push(event.details.processId);
@@ -323,7 +309,7 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
       className: "border-[#8b6a44]/45 bg-[#4b3b26]/18",
     },
   }[event.status];
-  if ((stateOverride ?? event.details?.processState) === "running") {
+  if (event.details?.processState === "running") {
     presentation.icon = <LoaderCircle size={13} className="mt-0.5 shrink-0 animate-spin text-[var(--muted)]" />;
     presentation.className = "border-[var(--border)] bg-[var(--panel)]";
   }
@@ -354,40 +340,10 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
             {t("events.result.errorCode", { code: event.errorCode })}
           </div>
         ) : null}
-        {output && (!isFileResult || event.status !== "success") ? (
+        {event.output && (!isFileResult || event.status !== "success") ? (
           <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-[var(--muted)]">
-            {output}
+            {event.output}
           </pre>
-        ) : null}
-        {processResult && threadId ? (
-          <div className="mt-2 flex items-center gap-2">
-            {hasMore ? (
-              <button type="button" disabled={busy} className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] disabled:opacity-50" onClick={() => {
-                const runtime = createRuntimeClient();
-                if (!runtime?.readProcess) return;
-                setBusy(true);
-                void runtime.readProcess({ threadId, processId: processResult.processId!, cursor: nextCursor }).then((page) => {
-                  setOutput((current) => current + page.output);
-                  setNextCursor(page.nextCursor);
-                  setHasMore(page.hasMore);
-                  setStateOverride(page.state);
-                }).finally(() => setBusy(false));
-              }}>{t("events.result.readMore")}</button>
-            ) : null}
-            {(stateOverride ?? processResult.processState) === "running" ? (
-              <button type="button" disabled={busy} className="rounded-md border border-[#8b4444]/50 px-2 py-1 text-[11px] text-[#ff9b9b] hover:bg-[#4b2626]/30 disabled:opacity-50" onClick={() => {
-                const runtime = createRuntimeClient();
-                if (!runtime?.stopProcess) return;
-                setBusy(true);
-                void runtime.stopProcess({ threadId, processId: processResult.processId! }).then((result) => {
-                  setOutput((current) => current + result.output);
-                  setStateOverride(result.state);
-                  setHasMore(result.hasMore);
-                  setNextCursor(result.nextCursor);
-                }).finally(() => setBusy(false));
-              }}>{t("events.result.stopProcess")}</button>
-            ) : null}
-          </div>
         ) : null}
         {isFileResult && event.path ? (
           <FileActions path={event.path} toolName={event.toolName} toolCallItemId={event.toolCallId} />
@@ -688,7 +644,11 @@ function EventCardView({ event, toolDisclosure }: EventCardProps) {
   if (event.type === "tool_call") {
     return <ToolCallCard event={event} disclosure={toolDisclosure} />;
   }
-  if (event.type === "tool_result") return <ToolResultCard event={event} />;
+  if (event.type === "tool_result") {
+    return event.toolName?.startsWith("process_") && event.details?.processId
+      ? <ProcessSessionCard event={event} />
+      : <ToolResultCard event={event} />;
+  }
   if (event.type === "permission_request") return <PermissionCard event={event} />;
   if (event.type === "interrupt") return <InterruptCard event={event} />;
   if (event.type === "artifact") return <ArtifactCard event={event} />;

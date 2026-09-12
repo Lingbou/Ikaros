@@ -115,6 +115,8 @@ const english = {
   "branch.number": "Branch {number}",
 
   "composer.placeholder": "Ask Ikaros to work on something",
+  "composer.steerPlaceholder": "Add a requirement while Ikaros is working",
+  "composer.sendSteer": "Send requirement",
   "composer.messageLabel": "Message Ikaros",
   "composer.addContext": "Add context",
   "composer.addProjectFolder": "Add project folder",
@@ -262,6 +264,9 @@ const english = {
   "events.result.outputTruncated": "Output truncated",
   "events.result.readMore": "Read more logs",
   "events.result.stopProcess": "Stop command",
+  "events.result.refreshProcess": "Refresh status and logs",
+  "events.result.waitFinished": "This wait ended. The command is still running and can be checked again.",
+  "events.result.processControlFailed": "Could not update the command.",
   "events.permission.moveReceiptsTitle": "Allow moving {count} receipt files?",
   "events.permission.moveReceiptsDescription":
     "The agent will create monthly folders and move matching PDFs. Originals remain recoverable from the Recycle Bin.",
@@ -641,6 +646,8 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "branch.number": "分支 {number}",
 
   "composer.placeholder": "告诉 Ikaros 你想做什么",
+  "composer.steerPlaceholder": "任务运行中，补充一个要求",
+  "composer.sendSteer": "发送补充",
   "composer.messageLabel": "给 Ikaros 发送消息",
   "composer.addContext": "添加上下文",
   "composer.addProjectFolder": "添加项目文件夹",
@@ -786,6 +793,9 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.result.outputTruncated": "输出已截断",
   "events.result.readMore": "读取更多日志",
   "events.result.stopProcess": "停止命令",
+  "events.result.refreshProcess": "刷新状态和日志",
+  "events.result.waitFinished": "本次等待已结束，命令仍在运行，可以继续查看结果。",
+  "events.result.processControlFailed": "无法更新命令状态。",
   "events.permission.moveReceiptsTitle": "允许移动 {count} 个收据文件吗？",
   "events.permission.moveReceiptsDescription":
     "Ikaros 将创建按月分类的文件夹并移动匹配的 PDF。原文件仍可从回收站恢复。",
