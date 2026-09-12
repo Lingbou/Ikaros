@@ -909,12 +909,21 @@ class SqliteRuntimeStore:
                     config=frame,
                     maximum_tokens=frame.maximum_input_tokens,
                     reserved_current_run_tokens=frame.reserved_current_run_tokens,
-                    omissions=tuple(snapshot.omissions)
+                    omissions=tuple(
+                        omission
+                        for omission in snapshot.omissions
+                        if omission.source_type == "history"
+                    )
                     + tuple(
                         OmissionRecordV1(
                             source_type="history", source_id=turn_id, reason="omitted_by_budget"
                         )
                         for turn_id in dropped
+                    )
+                    + tuple(
+                        omission
+                        for omission in snapshot.omissions
+                        if omission.source_type == "memory"
                     ),
                     memory_context=FrozenMemoryContextV1.from_revision(snapshot),
                     history_status=snapshot.history_status,
