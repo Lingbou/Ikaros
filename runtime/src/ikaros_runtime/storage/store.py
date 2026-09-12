@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -19,16 +20,21 @@ from ..domain import (
     WorkspaceSummary,
     utc_now,
 )
+from ..errors import ContextBudgetExceededError
 from ..file_changes import MAX_CHANGE_EVENT_BYTES, FileChangeCapture
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     CompletedProviderStepV1,
+    ContextItemRecordV1,
+    ContextRevision,
     FrozenMemoryContextV1,
+    OmissionRecordV1,
     PreparedModelStep,
     RunConfig,
     RunConfigTemplate,
+    build_context_revision,
     build_step_input,
     canonical_json,
 )
@@ -782,13 +788,32 @@ class SqliteRuntimeStore:
                 run_id=run_id,
                 snapshot=snapshot,
             )
-        step_input = build_step_input(
-            step_ordinal,
-            records,
-            snapshot,
-            current_run_id=run_id,
-            config=frame,
-        )
+        try:
+            step_input = build_step_input(
+                step_ordinal,
+                records,
+                snapshot,
+                current_run_id=run_id,
+                config=frame,
+            )
+        except ContextBudgetExceededError:
+            # Deterministically evict the oldest complete historical Turns and
+            # append a new revision. The original revision and Journal remain
+            # intact so a later semantic summarizer can recover the omitted
+            # source without replaying tools.
+            compacted = self._compact_revision_in_transaction(
+                run_id, frame=frame, snapshot=snapshot, records=records
+            )
+            if compacted is None:
+                raise
+            snapshot, records = compacted
+            step_input = build_step_input(
+                step_ordinal,
+                records,
+                snapshot,
+                current_run_id=run_id,
+                config=frame,
+            )
         timestamp = utc_now()
         status = self._connection.execute(
             "SELECT status FROM runs WHERE id = ?",
@@ -857,6 +882,70 @@ class SqliteRuntimeStore:
             event=event,
             pre_events=tuple(pre_events),
         )
+
+    def _compact_revision_in_transaction(
+        self,
+        run_id: str,
+        *,
+        frame: RunConfig,
+        snapshot: ContextRevision,
+        records: Sequence[ContextItemRecordV1],
+    ) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...]] | None:
+        current = tuple(record for record in records if record.run_id == run_id)
+        historical = [record for record in records if record.run_id != run_id]
+        groups: list[list[ContextItemRecordV1]] = []
+        for record in historical:
+            if groups and groups[-1][0].turn_id == record.turn_id:
+                groups[-1].append(record)
+            else:
+                groups.append([record])
+        dropped: list[str] = []
+        while groups:
+            candidate = tuple(item for group in groups for item in group) + current
+            try:
+                revision = build_context_revision(
+                    candidate,
+                    current_run_id=run_id,
+                    config=frame,
+                    maximum_tokens=frame.maximum_input_tokens,
+                    reserved_current_run_tokens=frame.reserved_current_run_tokens,
+                    omissions=tuple(snapshot.omissions)
+                    + tuple(
+                        OmissionRecordV1(
+                            source_type="history", source_id=turn_id, reason="omitted_by_budget"
+                        )
+                        for turn_id in dropped
+                    ),
+                    memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                    history_status=snapshot.history_status,
+                )
+                if revision.budget.total_tokens > frame.maximum_input_tokens:
+                    raise ValueError("over_budget")
+            except ValueError:
+                removed = groups.pop(0)
+                dropped.append(removed[0].turn_id)
+                continue
+            revision = replace(revision, revision=snapshot.revision + 1)
+            self._connection.execute(
+                "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
+                (run_id, revision.revision, canonical_json(revision.to_wire())),
+            )
+            run = self.get_run(run_id)
+            self._append_event(
+                event_type="context.compacted",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run.id,
+                timestamp=utc_now(),
+                payload={
+                    "revision": revision.revision,
+                    "droppedTurns": dropped,
+                    "contextRevision": revision.to_wire(),
+                },
+            )
+            return revision, candidate
+        return None
 
     def complete_provider_step(
         self,

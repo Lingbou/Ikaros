@@ -58,6 +58,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
       "file.change_recorded",
       "process.recorded",
       "model.input_prepared",
+      "context.compacted",
       "model.response_finished",
       "run.settled",
       "run.steered"

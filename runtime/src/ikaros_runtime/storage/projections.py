@@ -1099,6 +1099,18 @@ def apply_event(
         _require_one_update(updated_turn, event_type)
     elif event_type == "file.change_recorded":
         _apply_file_change_event(connection, event)
+    elif event_type == "context.compacted":
+        revision = payload.get("contextRevision")
+        if not isinstance(revision, dict):
+            raise RuntimeError("context compaction event has no revision")
+        run_id = event.run_id
+        if run_id is None:
+            raise RuntimeError("context compaction event has no Run")
+        connection.execute(
+            "INSERT OR IGNORE INTO context_revisions("
+            "run_id, revision, record_json) VALUES (?, ?, ?)",
+            (run_id, int(payload["revision"]), canonical_json(revision)),
+        )
     else:
         raise RuntimeError(f"journal event type is unsupported: {event_type}")
 

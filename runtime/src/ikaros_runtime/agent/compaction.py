@@ -8,8 +8,8 @@ semantic summary in a subsequent ContextRevision.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from ..run_input import ContextItemRecordV1
 
@@ -77,10 +77,11 @@ def trim_context_records(
     for index in range(len(units) - 1, -1, -1):
         if index in selected:
             continue
-        if index >= len(units) - preserve_suffix_units or used + costs[index] <= maximum_tokens:
-            if used + costs[index] <= maximum_tokens or not selected:
-                selected.add(index)
-                used += costs[index]
+        in_suffix = index >= len(units) - preserve_suffix_units
+        fits = used + costs[index] <= maximum_tokens
+        if (in_suffix or fits) and (fits or not selected):
+            selected.add(index)
+            used += costs[index]
 
     # If the protected prefix itself exceeds the budget, keep only that prefix;
     # semantic compaction can then summarize it in a separate model call.
