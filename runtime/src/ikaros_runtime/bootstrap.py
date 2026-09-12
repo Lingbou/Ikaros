@@ -28,8 +28,8 @@ from .server.event_hub import EventHub
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
 from .services.files import FileService
 from .services.memories import MemoryService
-from .services.providers import ModelDiscovery, ProviderService
 from .services.processes import ProcessService
+from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
 from .services.threads import ThreadService
 from .services.turns import TurnService

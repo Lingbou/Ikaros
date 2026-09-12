@@ -222,6 +222,7 @@ interface AppState {
   retryRuntimeThread: (threadId: string) => Promise<void>;
   loadOlderRuntimeTurns: (threadId: string) => Promise<void>;
   sendDraft: () => Promise<void>;
+  steerRun: () => Promise<void>;
   stopRun: () => void;
   resolvePermission: (decision: "allow" | "deny") => Promise<void>;
   recoverRun: (strategy: "retry" | "resume") => Promise<void>;
@@ -2950,6 +2951,26 @@ async function sendRuntimeDraft(
   }
 }
 
+async function steerRuntimeDraft(set: StoreSet, get: StoreGet, prompt: string): Promise<void> {
+  if (!runtimeClient) return;
+  const state = get();
+  const context = currentRunContext(state);
+  if (!context?.runId || !state.selectedThreadId) return;
+  const clientRequestId = newRuntimeRequestId("turn");
+  try {
+    await runtimeClient.steerRun({
+      runId: context.runId,
+      expectedRunId: context.runId,
+      content: prompt,
+      clientRequestId,
+    });
+    set({ draft: "", runtimeError: null, runtimeIssue: null });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Supplement was not received";
+    set({ runtimeError: message, runtimeIssue: { kind: "send", message, threadId: state.selectedThreadId, prompt } });
+  }
+}
+
 export const useAppStore = create<AppState>()((set, get) => ({
   runtimeMode: runtimeClient !== null,
   runtimeReady: runtimeClient === null,
@@ -3337,7 +3358,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   sendDraft: async () => {
     const state = get();
     const prompt = state.draft.trim();
-    if (!prompt || isRunActive(state.runStatus)) return;
+    if (!prompt) return;
+    if (isRunActive(state.runStatus)) {
+      if (runtimeClient) await steerRuntimeDraft(set, get, prompt);
+      return;
+    }
     if (runtimeClient) {
       if (state.selectedThreadId &&
         state.runtimeThreadDetails[state.selectedThreadId]?.status !== "ready") return;
@@ -3437,6 +3462,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       get().appendAgentEvent(threadId, branchId, event, status);
     });
     finishRun(set, get, context, terminal);
+  },
+
+  steerRun: async () => {
+    const prompt = get().draft.trim();
+    if (prompt) await steerRuntimeDraft(set, get, prompt);
   },
 
   stopRun: () => {

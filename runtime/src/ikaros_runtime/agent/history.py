@@ -175,7 +175,11 @@ def _validate_turn_group(
         raise ValueError("current Turn group crosses Run boundaries")
 
     user_items = tuple(
-        record for record in records if record.kind == "message" and record.role == "user"
+        record
+        for record in records
+        if record.kind == "message"
+        and record.role == "user"
+        and record.data.get("steer") is not True
     )
     if len(user_items) != 1:
         raise ValueError("history Turn group must contain exactly one User Item")

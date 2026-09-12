@@ -152,7 +152,8 @@ class AgentLoop:
             cancellation.raise_if_cancelled()
             config = self._store.get_run_config(run_id)
             self._validate_submission_environment(config)
-            await self._publish(self._store.mark_run_running(run_id))
+            if self._store.run_status(run_id) == "queued":
+                await self._publish(self._store.mark_run_running(run_id))
             work = asyncio.create_task(self._run_steps(run_id, cancellation))
             cancel_wait = asyncio.create_task(cancellation.wait())
             done, _ = await asyncio.wait(
@@ -197,6 +198,15 @@ class AgentLoop:
                 )
             )
 
+    async def steer(self, run_id: str, content: str, request_id: str) -> bool:
+        """Queue an in-flight supplement for the next model input."""
+        if self._store.run_status(run_id) not in {"queued", "running"}:
+            return False
+        event, created = self._store.append_steer_item_idempotent(run_id, content, request_id)
+        if created:
+            await self._publish(event)
+        return True
+
     async def _run_steps(self, run_id: str, cancellation: CancellationToken) -> None:
         config = self._store.get_run_config(run_id)
         provider = self._resolve_provider(config.provider_id)
@@ -215,6 +225,8 @@ class AgentLoop:
                 step_ordinal=step_ordinal,
                 memory_context=memory_context,
             )
+            for event in prepared.pre_events:
+                await self._publish(event)
             await self._publish(prepared.event)
             try:
                 context_data = self._materialize_memory_context(
@@ -304,10 +316,14 @@ class AgentLoop:
         memory_allowance = max(0, min(remaining // 2, remaining - 4096))
 
         def fits_memory_capacity(records: Sequence[MaterializedMemoryV1]) -> bool:
-            return 4 * (
-                sum(record.characters for record in records)
-                + memory_context_data_characters(records)
-            ) <= memory_allowance
+            return (
+                4
+                * (
+                    sum(record.characters for record in records)
+                    + memory_context_data_characters(records)
+                )
+                <= memory_allowance
+            )
 
         retrieval = retriever.retrieve(
             query=query,

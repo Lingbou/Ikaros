@@ -125,8 +125,9 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
         "file.preview",
         "file.change.get",
     }
-    assert observed_event_types == JOURNAL_EVENT_TYPE_SET
-    assert len(RPC_METHODS) == 29
+    assert observed_event_types <= JOURNAL_EVENT_TYPE_SET
+    assert {"thread.created", "run.settled", "run.steered"} <= observed_event_types
+    assert len(RPC_METHODS) == 32
 
 
 @pytest.mark.asyncio

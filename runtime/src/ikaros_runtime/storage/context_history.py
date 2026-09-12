@@ -285,7 +285,14 @@ def _row_is_context_eligible(
     role = str(row["role"]) if row["role"] is not None else None
     status = str(row["status"])
     if kind == "message":
-        return status == "completed" and role in {"user", "assistant"}
+        if status != "completed" or role not in {"user", "assistant"}:
+            return False
+        data = json_loads(str(row["data_json"]))
+        return not (
+            isinstance(data, dict)
+            and data.get("steer") is True
+            and data.get("status") == "unprocessed"
+        )
     return (
         kind in {"tool_call", "tool_result"}
         and status in {"completed", "failed", "cancelled"}

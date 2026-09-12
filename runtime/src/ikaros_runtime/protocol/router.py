@@ -8,12 +8,12 @@ from ..domain import CommandOutcome
 from ..errors import InvalidParamsError, MemoryOperationError, ProviderFailure
 from ..services.files import FileService
 from ..services.memories import MemoryService
+from ..services.processes import ProcessService
 from ..services.providers import ProviderService
 from ..services.skills import SkillService
 from ..services.threads import ThreadService
 from ..services.turns import TurnService
 from ..services.usage import UsageService
-from ..services.processes import ProcessService
 from .jsonrpc import jsonrpc_error
 from .spec import (
     JSONRPC_VERSION,

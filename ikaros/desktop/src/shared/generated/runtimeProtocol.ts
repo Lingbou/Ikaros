@@ -35,6 +35,9 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "turn.start",
     "turn.list",
     "run.cancel",
+    "process.read",
+    "process.stop",
+    "run.steer",
     "event.replay",
     "usage.read"
   ],
@@ -56,7 +59,8 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
       "process.recorded",
       "model.input_prepared",
       "model.response_finished",
-      "run.settled"
+      "run.settled",
+      "run.steered"
     ]
   },
   "errors": {
@@ -89,6 +93,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
       "process_read",
       "process_wait",
       "process_stop",
+      "history_read",
       "read",
       "write",
       "edit"
@@ -100,6 +105,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "process_read",
     "process_wait",
     "process_stop",
+    "history_read",
     "read",
     "write",
     "edit"

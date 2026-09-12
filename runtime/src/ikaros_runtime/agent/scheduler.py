@@ -16,6 +16,8 @@ class RunExecutor(Protocol):
 
     async def cancel(self, run_id: str) -> None: ...
 
+    # Implementations may opt into in-flight steering.
+
 
 @dataclass(slots=True)
 class _ScheduledRun:
@@ -79,6 +81,15 @@ class AgentScheduler:
             entry.activation.set()
             await self._loop.cancel(run_id)
         return True
+
+    async def steer(self, run_id: str, content: str, request_id: str) -> bool:
+        entry = self._entries.get(run_id)
+        if entry is None or entry.state != "running":
+            return False
+        steer = getattr(self._loop, "steer", None)
+        if steer is None:
+            return False
+        return await steer(run_id, content, request_id)
 
     async def close(self) -> None:
         worker = self._worker

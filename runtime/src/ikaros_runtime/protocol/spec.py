@@ -77,7 +77,6 @@ PROVIDER_TOOL_IDS: Final = (
     "process_stop",
     "history_read",
     "read",
-    "history_read",
     "write",
     "edit",
 )

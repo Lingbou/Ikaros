@@ -1031,6 +1031,7 @@ class PreparedModelStep:
     step_input: StepInput
     items: tuple[ContextItem, ...]
     event: JournalEvent
+    pre_events: tuple[JournalEvent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

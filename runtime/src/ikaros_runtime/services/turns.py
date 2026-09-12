@@ -143,6 +143,58 @@ class TurnService:
             cancel_after_ack=run_id,
         )
 
+    async def steer_run(self, params: dict[str, Any]) -> CommandOutcome:
+        required = {"runId", "content", "expectedRunId", "clientRequestId"}
+        if set(params) != required:
+            raise InvalidParamsError(
+                "run.steer requires runId, content, expectedRunId and clientRequestId"
+            )
+        run_id, content, expected, request_id = (
+            params[key] for key in ("runId", "content", "expectedRunId", "clientRequestId")
+        )
+        if any(not isinstance(value, str) or not value for value in (run_id, expected, request_id)):
+            raise InvalidParamsError("run.steer identifiers must be non-empty strings")
+        if not isinstance(content, str) or not content.strip():
+            raise InvalidParamsError("run.steer content must not be empty")
+        if run_id != expected:
+            raise InvalidParamsError("expectedRunId does not match runId")
+        self._assert_request_safe((run_id, content, expected, request_id))
+        try:
+            status = self._store.run_status(run_id)
+        except LookupError as error:
+            raise InvalidParamsError(str(error)) from error
+        if status != "running":
+            existing = self._store.find_steer_item(run_id, request_id)
+            if existing is not None:
+                if existing["content"] != content:
+                    raise InvalidParamsError(
+                        "clientRequestId was already used with different steer content"
+                    )
+                existing_data = existing.get("data", {})
+                return CommandOutcome(
+                    result={
+                        "accepted": True,
+                        "runId": run_id,
+                        "clientRequestId": request_id,
+                        "status": existing_data.get("status", status),
+                    }
+                )
+            raise InvalidParamsError(f"run is not steerable (status: {status})")
+        try:
+            accepted = await self._scheduler.steer(run_id, content, request_id)
+        except LookupError as error:
+            raise InvalidParamsError(str(error)) from error
+        if not accepted:
+            raise InvalidParamsError("run is no longer active")
+        return CommandOutcome(
+            result={
+                "accepted": True,
+                "runId": run_id,
+                "clientRequestId": request_id,
+                "status": "received",
+            }
+        )
+
     def replay_events(self, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - {"afterSeq", "limit"}
         if unknown:

@@ -616,7 +616,7 @@ export interface IkarosRuntimeApi {
   unarchiveThread(threadId: string): Promise<RuntimeThreadMutationResult>;
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
   cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
-  steerRun(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult>;
+  steerRun?(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult>;
   readProcess?(params: RuntimeProcessReadParams): Promise<RuntimeProcessReadResult>;
   stopProcess?(params: RuntimeProcessStopParams): Promise<RuntimeProcessStopResult>;
   replayEvents(afterSeq: number, limit?: number): Promise<RuntimeReplayResult>;
@@ -674,7 +674,7 @@ export interface IkarosRuntimeBridgeApi {
     params: RuntimeTurnStartParams
   ): Promise<RuntimeInvocationResult<RuntimeTurnStartResult>>;
   cancelRun(runId: string): Promise<RuntimeInvocationResult<RuntimeCancelRunResult>>;
-  steerRun(params: RuntimeSteerRunParams): Promise<RuntimeInvocationResult<RuntimeSteerRunResult>>;
+  steerRun?(params: RuntimeSteerRunParams): Promise<RuntimeInvocationResult<RuntimeSteerRunResult>>;
   readProcess?(params: RuntimeProcessReadParams): Promise<RuntimeInvocationResult<RuntimeProcessReadResult>>;
   stopProcess?(params: RuntimeProcessStopParams): Promise<RuntimeInvocationResult<RuntimeProcessStopResult>>;
   replayEvents(

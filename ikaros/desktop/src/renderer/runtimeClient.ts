@@ -228,6 +228,7 @@ export class RuntimeClient implements IkarosRuntimeApi {
   }
 
   steerRun(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult> {
+    if (!this.api.steerRun) return Promise.reject(new Error("Runtime steering is unavailable."));
     return unwrapRuntimeInvocation(this.api.steerRun(params));
   }
 

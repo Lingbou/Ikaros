@@ -412,6 +412,34 @@ def apply_event(
     payload = event.payload
     if event.schema_version != JOURNAL_EVENT_SCHEMA_VERSION:
         raise RuntimeError("journal event schema version is unsupported")
+    if event_type == "run.steered":
+        _require_keys(
+            payload, {"content", "clientRequestId", "status", "item", "turnId", "runId", "itemId"}
+        )
+        if not isinstance(payload["content"], str) or not payload["content"].strip():
+            raise RuntimeError("run.steered content is invalid")
+        if not isinstance(payload["clientRequestId"], str) or not payload["clientRequestId"]:
+            raise RuntimeError("run.steered clientRequestId is invalid")
+        if payload["status"] != "received":
+            raise RuntimeError("run.steered status is invalid")
+        item = _record(payload, "item", _ITEM_KEYS)
+        _validate_item(item)
+        if item["kind"] != "message" or item["role"] != "user" or item["status"] != "streaming":
+            raise RuntimeError("run.steered item state is invalid")
+        if item["createdAt"] != event.timestamp or item["updatedAt"] != event.timestamp:
+            raise RuntimeError("run.steered item timestamp is invalid")
+        if item["content"] != payload["content"] or item["data"].get("steer") is not True:
+            raise RuntimeError("run.steered item payload is invalid")
+        if (
+            item["data"].get("clientRequestId") != payload["clientRequestId"]
+            or item["data"].get("status") != "received"
+        ):
+            raise RuntimeError("run.steered item metadata is invalid")
+        _require_payload_scope(payload, event)
+        _require_existing_run_scope(connection, event)
+        _require_item_scope(item, event)
+        insert_item(connection, item)
+        return
     if event_type == "thread.created":
         _require_keys(payload, {"thread", "branch"}, {"clientRequestId"})
         thread = _record(payload, "thread", _THREAD_KEYS)
@@ -754,9 +782,7 @@ def apply_event(
         except (TypeError, ValueError):
             raise RuntimeError("model Step input is invalid") from None
         _require_equal("Step input ordinal", step_input.step_ordinal, expected_ordinal)
-        snapshot = get_context_revision(
-            connection, str(event.run_id), step_input.context_revision
-        )
+        snapshot = get_context_revision(connection, str(event.run_id), step_input.context_revision)
         if snapshot is None:
             try:
                 snapshot = ContextRevision.from_wire(payload["contextRevision"])

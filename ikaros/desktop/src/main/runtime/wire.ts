@@ -416,7 +416,9 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
     if (!hasRunEventScope(event, true)) {
       invalidJournalEventPayload(event.type);
     }
-    if (hasOwn(payload, "turn") || hasOwn(payload, "run")) {
+    const payloadItem = isWireObject(payload.item) ? payload.item : undefined;
+    const payloadItemData = payloadItem && isWireObject(payloadItem.data) ? payloadItem.data : undefined;
+    if ((hasOwn(payload, "turn") || hasOwn(payload, "run")) && payloadItemData?.steer !== true) {
       parseInitialTurnCompletedEvent(event);
       return;
     }
@@ -539,6 +541,17 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
     return;
   }
 
+  if (event.type === "run.steered") {
+    if (!hasRunEventScope(event, true) ||
+      !hasScopedPayloadKeys(event, ["content", "clientRequestId", "status"], ["item"]) ||
+      !isNonEmptyString(payload.content) ||
+      !isWireIdentifier(payload.clientRequestId) ||
+      !["received", "processed", "unprocessed"].includes(payload.status as string)) {
+      invalidJournalEventPayload(event.type);
+    }
+    return;
+  }
+
   const exhaustive: never = event.type;
   throw new Error(`Runtime returned unsupported journal event ${String(exhaustive)}.`);
 }
@@ -614,7 +627,14 @@ function parseRuntimeEventItem(
 function validRuntimeItemData(item: RuntimeItemHistory, completed: boolean): boolean {
   const data = item.data;
   if (item.kind === "message") {
-    if (item.role === "user") return completed && hasExactKeys(data, []);
+    if (item.role === "user") {
+      if (!completed) return false;
+      if (hasExactKeys(data, [])) return true;
+      return hasRequiredAndOptionalKeys(data, ["steer", "clientRequestId", "status"], ["stepOrdinal"]) &&
+        data.steer === true && isWireIdentifier(data.clientRequestId) &&
+        ["received", "processed", "unprocessed"].includes(data.status as string) &&
+        (data.stepOrdinal === undefined || isSafePositiveInteger(data.stepOrdinal));
+    }
     return hasRequiredAndOptionalKeys(data, [], ["stepId"]) &&
       isOptionalWireIdentifier(data.stepId);
   }
@@ -2621,6 +2641,17 @@ function parseRuntimeCancelRunResult(value: unknown): RuntimeCancelRunResult {
   return value as unknown as RuntimeCancelRunResult;
 }
 
+function parseRuntimeSteerRunResult(value: unknown): unknown {
+  if (!isWireObject(value) ||
+    !hasExactKeys(value, ["accepted", "runId", "clientRequestId", "status"]) ||
+    typeof value.accepted !== "boolean" || !isWireIdentifier(value.runId) ||
+    !isWireIdentifier(value.clientRequestId) ||
+    !["received", "processed", "unprocessed"].includes(value.status as string)) {
+    throw invalidRuntimeMethodResult("run.steer");
+  }
+  return value;
+}
+
 const FILE_PREVIEW_REASONS = new Set([
   "file_not_found", "not_a_file", "binary_file", "unsupported_encoding", "too_large",
   "scan_limit", "revision_changed", "read_failed", "protected_content"
@@ -2773,6 +2804,7 @@ const RUNTIME_RESULT_PARSERS = {
     return parseRuntimeTurnListPage(value, expectedScope);
   },
   "run.cancel": (value) => parseRuntimeCancelRunResult(value),
+  "run.steer": (value) => parseRuntimeSteerRunResult(value),
   "process.read": (value) => parseRuntimeProcessResult(value),
   "process.stop": (value) => parseRuntimeProcessResult(value) as RuntimeProcessStopResult,
   "event.replay": (value) => parseRuntimeReplayResult(value),

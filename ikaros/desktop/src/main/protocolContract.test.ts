@@ -259,7 +259,7 @@ describe("Runtime protocol Golden Trace", () => {
 
     expect(trace.fixtureVersion).toBe(1);
     expect([...observedEvents].sort()).toEqual([...RUNTIME_JOURNAL_EVENT_TYPES].sort());
-    expect(RUNTIME_RPC_METHODS).toHaveLength(29);
+    expect(RUNTIME_RPC_METHODS).toHaveLength(32);
     expect(RUNTIME_PROVIDER_TOOL_IDS).toContain("process_start");
     expect(RUNTIME_PROVIDER_TOOL_IDS).not.toContain("process_run");
   });

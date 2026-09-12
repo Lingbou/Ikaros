@@ -741,12 +741,17 @@ class SqliteRuntimeStore:
     ) -> PreparedModelStep:
         if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
             raise ValueError("model Step ordinal must be a positive integer")
+        pre_events: list[JournalEvent] = []
         with self._connection:
             self._connection.execute("BEGIN IMMEDIATE")
+            pre_events.extend(
+                self._mark_received_steers_processed_in_transaction(run_id, step_ordinal)
+            )
             return self._prepare_model_step_in_transaction(
                 run_id,
                 step_ordinal=step_ordinal,
                 memory_context=memory_context,
+                pre_events=tuple(pre_events),
             )
 
     def _prepare_model_step_in_transaction(
@@ -755,6 +760,7 @@ class SqliteRuntimeStore:
         *,
         step_ordinal: int,
         memory_context: FrozenMemoryContextV1,
+        pre_events: tuple[JournalEvent, ...] = (),
     ) -> PreparedModelStep:
         run = self.get_run(run_id)
         frame = get_run_config(self._connection, run_id)
@@ -849,6 +855,7 @@ class SqliteRuntimeStore:
             step_input=step_input,
             items=tuple(record.to_context_item() for record in records),
             event=event,
+            pre_events=tuple(pre_events),
         )
 
     def complete_provider_step(
@@ -1215,18 +1222,160 @@ class SqliteRuntimeStore:
             )
         return item_id, event
 
+    def find_steer_item(self, run_id: str, request_id: str) -> JsonObject | None:
+        """Find a previously persisted supplement by its client idempotency key."""
+
+        rows = self._connection.execute(
+            """
+            SELECT id, turn_id, run_id, ordinal, kind, role, status, content,
+                   created_at, updated_at, data_json
+            FROM items
+            WHERE run_id = ? AND kind = 'message' AND role = 'user'
+            ORDER BY ordinal ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            data = json_loads(str(row["data_json"]))
+            if (
+                isinstance(data, dict)
+                and data.get("steer") is True
+                and data.get("clientRequestId") == request_id
+            ):
+                return self._item_payload_from_row(row, data=data)
+        return None
+
     def append_steer_item(self, run_id: str, content: str, request_id: str) -> JournalEvent:
+        event, _created = self.append_steer_item_idempotent(run_id, content, request_id)
+        return event
+
+    def append_steer_item_idempotent(
+        self, run_id: str, content: str, request_id: str
+    ) -> tuple[JournalEvent, bool]:
         """Persist an in-flight user supplement; consumed by the next model step."""
-        run = self.get_run(run_id)
-        if self.run_status(run_id) not in {"running", "queued"}:
-            raise LookupError("run is no longer active")
+
         timestamp = utc_now()
         with self._connection:
-            return self._append_event(
-                event_type="run.steered", thread_id=run.thread_id, branch_id=run.branch_id,
-                turn_id=run.turn_id, run_id=run_id, timestamp=timestamp,
-                payload={"content": content, "clientRequestId": request_id, "status": "received"},
+            run = self.get_run(run_id)
+            status = self._connection.execute(
+                "SELECT status FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if status is None or status["status"] != "running":
+                raise LookupError("run is no longer active")
+            existing = self.find_steer_item(run_id, request_id)
+            if existing is not None:
+                if existing["content"] != content:
+                    raise LookupError(
+                        "clientRequestId was already used with different steer content"
+                    )
+                prior = self._connection.execute(
+                    """SELECT * FROM events
+                       WHERE run_id = ? AND item_id = ? AND event_type = 'run.steered'
+                       ORDER BY seq DESC LIMIT 1""",
+                    (run_id, existing["id"]),
+                ).fetchone()
+                if prior is None:
+                    raise RuntimeError("persisted steer item is missing its journal event")
+                return event_from_row(prior), False
+            item_id = f"item_{uuid.uuid4().hex}"
+            ordinal = next_item_ordinal(self._connection, run_id)
+            data = {"steer": True, "clientRequestId": request_id, "status": "received"}
+            item = self._item_payload(
+                item_id=item_id,
+                turn_id=run.turn_id,
+                run_id=run_id,
+                ordinal=ordinal,
+                kind="message",
+                role="user",
+                status="streaming",
+                content=content,
+                data=data,
+                created_at=timestamp,
+                updated_at=timestamp,
             )
+            self._connection.execute(
+                """
+                INSERT INTO items(
+                    id, turn_id, run_id, ordinal, kind, role, status, content,
+                    created_at, updated_at, data_json
+                ) VALUES (?, ?, ?, ?, 'message', 'user', 'streaming', ?, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    run.turn_id,
+                    run_id,
+                    ordinal,
+                    content,
+                    timestamp,
+                    timestamp,
+                    json_dumps(data, separators=(",", ":"), ensure_ascii=False),
+                ),
+            )
+            return self._append_event(
+                event_type="run.steered",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run_id,
+                item_id=item_id,
+                timestamp=timestamp,
+                payload={
+                    "content": content,
+                    "clientRequestId": request_id,
+                    "status": "received",
+                    "item": item,
+                },
+            ), True
+
+    def mark_pending_steers_processed(
+        self, run_id: str, step_ordinal: int
+    ) -> tuple[JournalEvent, ...]:
+        """Mark received supplements as processed by the next model Step."""
+        with self._connection:
+            return self._mark_received_steers_processed_in_transaction(run_id, step_ordinal)
+
+    def _mark_received_steers_processed_in_transaction(
+        self, run_id: str, step_ordinal: int
+    ) -> tuple[JournalEvent, ...]:
+        run = self.get_run(run_id)
+        events: list[JournalEvent] = []
+        rows = self._connection.execute(
+            """SELECT id, turn_id, run_id, ordinal, kind, role, status, content,
+                      created_at, updated_at, data_json
+               FROM items WHERE run_id = ? AND kind = 'message' AND role = 'user'
+                 AND status = 'streaming' ORDER BY ordinal ASC""",
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            data = json_loads(str(row["data_json"]))
+            if (
+                not isinstance(data, dict)
+                or data.get("steer") is not True
+                or data.get("status") != "received"
+            ):
+                continue
+            timestamp = utc_now()
+            data.update(status="processed", stepOrdinal=step_ordinal)
+            self._connection.execute(
+                "UPDATE items SET status = 'completed', updated_at = ?, data_json = ? WHERE id = ?",
+                (timestamp, json_dumps(data, separators=(",", ":"), ensure_ascii=False), row["id"]),
+            )
+            item = self._item_payload_from_row(
+                row, status="completed", data=data, updated_at=timestamp
+            )
+            events.append(
+                self._append_event(
+                    event_type="item.completed",
+                    thread_id=run.thread_id,
+                    branch_id=run.branch_id,
+                    turn_id=run.turn_id,
+                    run_id=run_id,
+                    item_id=str(row["id"]),
+                    timestamp=timestamp,
+                    payload={"item": item},
+                )
+            )
+        return tuple(events)
 
     def append_text_delta(self, item_id: str, delta: str) -> JournalEvent:
         location = item_location(self._connection, item_id)
@@ -1600,6 +1749,8 @@ class SqliteRuntimeStore:
                 item_data = json_loads(item_row["data_json"])
                 if item_row["kind"] == "tool_call":
                     item_data["outcome"] = status
+                elif item_data.get("steer") is True and item_data.get("status") == "received":
+                    item_data["status"] = "unprocessed"
                 self._connection.execute(
                     "UPDATE items SET status = ?, updated_at = ?, data_json = ? WHERE id = ?",
                     (

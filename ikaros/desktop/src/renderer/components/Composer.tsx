@@ -55,6 +55,8 @@ export function Composer({
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const canStop = runStatus === "queued" || runStatus === "running";
+  const canSteer = runtimeMode && runStatus === "running";
+  const primaryStops = canStop && !canSteer;
   const runtimeModelOptions = useMemo(() => {
     const configuredProviderIds = new Set(
       providers.filter((provider) => provider.configured).map((provider) => provider.id),
@@ -78,7 +80,6 @@ export function Composer({
   const runtimeModelMissing = runtimeMode && !selectedRuntimeModel;
   const runtimeModelUnavailable = runtimeMode &&
     (runtimeModelMissing || connectionStatus !== "connected" || providerCatalogStatus !== "ready");
-  const submitBlocked = (isRunActive(runStatus) && !canStop) || runtimeModelUnavailable;
   let modelAccess: {
     label: TranslationKey;
     message: TranslationKey;
@@ -171,12 +172,13 @@ export function Composer({
   }, [onClearanceChange]);
 
   const send = () => {
-    if (isRunActive(runStatus) || runtimeModelUnavailable) return;
+    if (isRunActive(runStatus) && !canSteer) return;
+    if (canSteer ? connectionStatus !== "connected" : runtimeModelUnavailable) return;
     void sendDraft();
   };
 
   const runPrimaryAction = () => {
-    if (canStop) {
+    if (primaryStops) {
       stopRun();
       return;
     }
@@ -263,7 +265,7 @@ export function Composer({
                 send();
               }
             }}
-            placeholder={t("composer.placeholder")}
+            placeholder={t(canSteer ? "composer.steerPlaceholder" : "composer.placeholder")}
             aria-label={t("composer.messageLabel")}
             aria-autocomplete="list"
             aria-controls={slashMenuOpen ? "slash-command-menu" : undefined}
@@ -377,14 +379,24 @@ export function Composer({
               </DropdownMenu.Root>
             )}
 
+            {canSteer ? (
+              <button
+                type="button"
+                aria-label={t("composer.stopRun")}
+                onClick={stopRun}
+                className="flex size-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-[var(--text)] hover:bg-[var(--surface-hover)]"
+              >
+                <span className="size-2.5 rounded-[2px] bg-current" />
+              </button>
+            ) : null}
             <button
               type="button"
-              aria-label={canStop ? t("composer.stopRun") : t("composer.sendMessage")}
+              aria-label={primaryStops ? t("composer.stopRun") : t(canSteer ? "composer.sendSteer" : "composer.sendMessage")}
               onClick={runPrimaryAction}
-              disabled={!canStop && (submitBlocked || !draft.trim())}
+              disabled={!primaryStops && ((canSteer ? connectionStatus !== "connected" : runtimeModelUnavailable) || !draft.trim())}
               className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--text)] text-[var(--canvas)] transition-transform hover:scale-[1.03] disabled:bg-[var(--border)] disabled:text-[var(--muted)]"
             >
-              {canStop ? (
+              {primaryStops ? (
                 <span className="size-2.5 rounded-[2px] bg-[var(--canvas)]" />
               ) : (
                 <ArrowUp size={16} strokeWidth={2.2} />

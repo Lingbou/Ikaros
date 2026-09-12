@@ -271,7 +271,9 @@ class ProcessManager:
         """Read a process from the desktop control plane using thread ownership."""
         entry = self._entries.get(process_id)
         if entry is None or entry.context.thread_id != thread_id:
-            raise ProcessError("process_not_found", "No command with that processId belongs to this thread.")
+            raise ProcessError(
+                "process_not_found", "No command with that processId belongs to this thread."
+            )
         return self.read(process_id, context=entry.context, cursor=cursor)
 
     async def wait(
@@ -309,10 +311,14 @@ class ProcessManager:
         await self._stop(entry)
         return self.read(process_id, context=context, cursor=cursor)
 
-    async def stop_for_thread(self, process_id: str, *, thread_id: str, cursor: int = 0) -> JsonObject:
+    async def stop_for_thread(
+        self, process_id: str, *, thread_id: str, cursor: int = 0
+    ) -> JsonObject:
         entry = self._entries.get(process_id)
         if entry is None or entry.context.thread_id != thread_id:
-            raise ProcessError("process_not_found", "No command with that processId belongs to this thread.")
+            raise ProcessError(
+                "process_not_found", "No command with that processId belongs to this thread."
+            )
         return await self.stop(process_id, context=entry.context, cursor=cursor)
 
     async def _stop(self, entry: _Entry) -> None:

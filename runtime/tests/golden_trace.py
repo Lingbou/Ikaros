@@ -207,6 +207,8 @@ def _notification_name(event: JournalEvent, occurrence: int) -> str:
         return f"process-recorded-{occurrence}"
     if event.type == "run.settled":
         return "run-settled"
+    if event.type == "run.steered":
+        return "run-steered"
     if event.type == "item.delta":
         return "assistant-item-delta" if occurrence == 1 else f"assistant-item-delta-{occurrence}"
     if event.type in {"item.started", "item.completed"}:
@@ -351,6 +353,19 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
             await loop.run(prepared.run_id, CancellationToken())
             if store.run_status(prepared.run_id) != "completed":
                 raise AssertionError("Golden production Run did not complete")
+            # Add a deterministic received steer record after completion solely
+            # to exercise the Journal contract; production runs reject it once
+            # settled.
+            with store._connection:
+                store._connection.execute(
+                    "UPDATE runs SET status = 'running' WHERE id = ?", (prepared.run_id,)
+                )
+                store.append_steer_item(
+                    prepared.run_id, "Keep the final explanation concise.", "golden-steer-1"
+                )
+                store._connection.execute(
+                    "UPDATE runs SET status = 'completed' WHERE id = ?", (prepared.run_id,)
+                )
             events, latest_seq = store.replay_events(0, 1_000)
             if latest_seq != len(events):
                 raise AssertionError("Golden Journal replay is incomplete")

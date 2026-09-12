@@ -32,6 +32,9 @@
     "turn.start",
     "turn.list",
     "run.cancel",
+    "process.read",
+    "process.stop",
+    "run.steer",
     "event.replay",
     "usage.read"
   ],
@@ -53,7 +56,8 @@
       "process.recorded",
       "model.input_prepared",
       "model.response_finished",
-      "run.settled"
+      "run.settled",
+      "run.steered"
     ]
   },
   "errors": {
@@ -86,6 +90,7 @@
       "process_read",
       "process_wait",
       "process_stop",
+      "history_read",
       "read",
       "write",
       "edit"
@@ -97,6 +102,7 @@
     "process_read",
     "process_wait",
     "process_stop",
+    "history_read",
     "read",
     "write",
     "edit"
