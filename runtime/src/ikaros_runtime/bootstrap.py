@@ -37,6 +37,7 @@ from .skills import SkillCatalog
 from .storage import SqliteRuntimeStore
 from .tools import (
     EditTool,
+    HistoryReadTool,
     ProcessManager,
     ProcessReadTool,
     ProcessStartTool,
@@ -120,6 +121,7 @@ class RuntimeApplication:
                     ReadTool(),
                     WriteTool(),
                     EditTool(),
+                    HistoryReadTool(store.read_history_slice),
                 ]
             ),
             FullAccessPolicy(),

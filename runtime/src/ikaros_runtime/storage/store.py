@@ -36,6 +36,7 @@ from ..security import response_values_contain_protected_value
 from ..tools.core import ToolCall
 from .context_history import load_context_for_revision, select_context_revision
 from .file_changes import get_file_change, resolve_file_tool_path
+from .history_read import read_history_slice
 from .journal import (
     append_event,
     event_from_row,
@@ -672,6 +673,26 @@ class SqliteRuntimeStore:
     ) -> list[ContextItem]:
         return context_items(self._connection, branch_id, through_turn_id=through_turn_id)
 
+    def read_history_slice(
+        self,
+        *,
+        thread_id: str,
+        item_id: str,
+        before: int = 10,
+        after: int = 10,
+        max_chars: int = 24_000,
+    ) -> JsonObject:
+        """Read a bounded, settled history slice without mutating the store."""
+
+        return read_history_slice(
+            self._connection,
+            thread_id=thread_id,
+            item_id=item_id,
+            before=before,
+            after=after,
+            max_chars=max_chars,
+        )
+
     def capture_session_item_provenance(
         self,
         item_id: str,
@@ -1193,6 +1214,19 @@ class SqliteRuntimeStore:
                 payload={"item": item},
             )
         return item_id, event
+
+    def append_steer_item(self, run_id: str, content: str, request_id: str) -> JournalEvent:
+        """Persist an in-flight user supplement; consumed by the next model step."""
+        run = self.get_run(run_id)
+        if self.run_status(run_id) not in {"running", "queued"}:
+            raise LookupError("run is no longer active")
+        timestamp = utc_now()
+        with self._connection:
+            return self._append_event(
+                event_type="run.steered", thread_id=run.thread_id, branch_id=run.branch_id,
+                turn_id=run.turn_id, run_id=run_id, timestamp=timestamp,
+                payload={"content": content, "clientRequestId": request_id, "status": "received"},
+            )
 
     def append_text_delta(self, item_id: str, delta: str) -> JournalEvent:
         location = item_location(self._connection, item_id)

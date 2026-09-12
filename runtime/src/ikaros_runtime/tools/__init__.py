@@ -13,6 +13,7 @@ from .core import (
     require_exact_arguments,
 )
 from .edit import EditTool
+from .history_read import HistoryReadTool
 from .policy import ExecutionPolicy, FullAccessPolicy
 from .process import ProcessReadTool, ProcessStartTool, ProcessStopTool, ProcessWaitTool
 from .process_manager import ProcessManager
@@ -23,6 +24,7 @@ __all__ = [
     "ExecutionPolicy",
     "EditTool",
     "FullAccessPolicy",
+    "HistoryReadTool",
     "ProcessManager",
     "ProcessReadTool",
     "ProcessStartTool",
