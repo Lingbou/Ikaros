@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from ikaros_runtime.agent.compaction import trim_context_records
 from ikaros_runtime.run_input import ContextItemRecordV1
 
 
-def _message(item_id: str, content: str, *, role: str = "user", data=None):
+def _message(
+    item_id: str,
+    content: str,
+    *,
+    role: str = "user",
+    data: dict[str, Any] | None = None,
+) -> ContextItemRecordV1:
     return ContextItemRecordV1(
         item_id=item_id,
         turn_id="turn_1",
@@ -16,7 +25,7 @@ def _message(item_id: str, content: str, *, role: str = "user", data=None):
     )
 
 
-def _tool_call(item_id: str, step_id: str, call_id: str):
+def _tool_call(item_id: str, step_id: str, call_id: str) -> ContextItemRecordV1:
     return ContextItemRecordV1(
         item_id=item_id,
         turn_id="turn_1",
@@ -28,7 +37,9 @@ def _tool_call(item_id: str, step_id: str, call_id: str):
     )
 
 
-def _tool_result(item_id: str, step_id: str, call_id: str, call_item_id: str):
+def _tool_result(
+    item_id: str, step_id: str, call_id: str, call_item_id: str
+) -> ContextItemRecordV1:
     return ContextItemRecordV1(
         item_id=item_id,
         turn_id="turn_1",
@@ -45,7 +56,7 @@ def _tool_result(item_id: str, step_id: str, call_id: str, call_item_id: str):
     )
 
 
-def test_budget_overflow_trims_once_and_reports_omissions():
+def test_budget_overflow_trims_once_and_reports_omissions() -> None:
     records = (
         _message("u1", "original request"),
         _message("a1", "intermediate answer", role="assistant"),
@@ -59,7 +70,7 @@ def test_budget_overflow_trims_once_and_reports_omissions():
     assert result.omitted_item_ids == ("a1",)
 
 
-def test_tool_call_and_result_are_trimmed_as_one_unit():
+def test_tool_call_and_result_are_trimmed_as_one_unit() -> None:
     call = _tool_call("call", "step", "c1")
     result = _tool_result("result", "step", "c1", "call")
     records = (
@@ -82,7 +93,7 @@ def test_tool_call_and_result_are_trimmed_as_one_unit():
     assert trimmed.omitted_item_ids == ("u1",)
 
 
-def test_failed_summary_can_leave_original_context_unchanged():
+def test_failed_summary_can_leave_original_context_unchanged() -> None:
     records = (_message("u1", "request"), _message("a1", "answer", role="assistant"))
     before = tuple(records)
     try:
@@ -93,7 +104,7 @@ def test_failed_summary_can_leave_original_context_unchanged():
     assert records == before
 
 
-def test_prepare_model_step_compacts_and_emits_journal_event(tmp_path):
+def test_prepare_model_step_compacts_and_emits_journal_event(tmp_path: Path) -> None:
     from ikaros_runtime.run_input import ProviderExecutionSnapshot, RunConfigTemplate
     from ikaros_runtime.storage import SqliteRuntimeStore
 
@@ -106,7 +117,7 @@ def test_prepare_model_step_compacts_and_emits_journal_event(tmp_path):
             base_url=None,
             model_id="scripted-v1",
             supports_tools=True,
-            context_window=2500,
+            context_window=2700,
             max_output_tokens=500,
         )
         template = RunConfigTemplate.create(
@@ -165,12 +176,12 @@ def test_prepare_model_step_compacts_and_emits_journal_event(tmp_path):
 
         step2 = store.prepare_model_step(t2.run_id, step_ordinal=2)
         assert step2.context_revision.revision == 2
-        assert step2.context_revision.budget.history_tokens == 0
-        assert len(step2.context_revision.omissions) == 1
-        assert step2.context_revision.omissions[0].source_id == t1.turn_id
+        assert step2.context_revision.budget.history_tokens == 186
+        assert step2.context_revision.omissions == ()
+        assert [event.type for event in step2.pre_events] == ["context.compacted"]
         events, _ = store.replay_events(0, 100)
         compact_events = [e for e in events if e.type == "context.compacted"]
         assert len(compact_events) == 1
-        assert compact_events[0].payload["droppedTurns"] == [t1.turn_id]
+        assert compact_events[0].payload["droppedTurns"] == []
     finally:
         store.close()

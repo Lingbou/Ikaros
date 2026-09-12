@@ -63,6 +63,7 @@ from ..tools.core import (
 from ..tools.process_manager import ProcessManager
 from .context import (
     ContextBuilder,
+    build_compaction_summary_context_data,
     build_history_status_context_data,
     build_memory_context_data,
     memory_context_data_characters,
@@ -239,6 +240,9 @@ class AgentLoop:
                     items=prepared.items,
                     context_data=(
                         *context_data,
+                        *build_compaction_summary_context_data(
+                            prepared.context_revision.compaction_summary
+                        ),
                         *build_history_status_context_data(
                             prepared.context_revision.history_status
                         ),

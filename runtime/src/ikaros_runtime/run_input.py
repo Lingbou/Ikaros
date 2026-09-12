@@ -902,11 +902,14 @@ class ContextRevision:
     omissions: tuple[OmissionRecordV1, ...]
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
     memory_context_characters: int = 0
+    compaction_summary: str = ""
 
     def __post_init__(self) -> None:
         _positive("Context revision", self.revision)
         for name in ("history_groups", "history_items", "memory", "omissions"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not isinstance(self.compaction_summary, str) or len(self.compaction_summary) > 6000:
+            raise ValueError("Context compaction summary is invalid")
         _validate_history_groups(self.history_groups, self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
         _validate_context_snapshot_slots(
@@ -916,6 +919,7 @@ class ContextRevision:
             history_status=self.history_status,
             history_items=self.history_items,
             memory_context_characters=self.memory_context_characters,
+            compaction_summary=self.compaction_summary,
             selected_turn_ids=tuple(group.turn_id for group in self.history_groups),
         )
         if (
@@ -925,7 +929,7 @@ class ContextRevision:
             raise ValueError("Context revision does not preserve current Run capacity")
 
     def to_wire(self) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "revision": self.revision,
             "historyGroups": [group.to_wire() for group in self.history_groups],
             "historyItems": [item.to_wire() for item in self.history_items],
@@ -935,9 +939,14 @@ class ContextRevision:
             "historyStatus": self.history_status.to_wire(),
             "memoryContextCharacters": self.memory_context_characters,
         }
+        if self.compaction_summary:
+            payload["compactionSummary"] = self.compaction_summary
+        return payload
 
     @classmethod
     def from_wire(cls, value: object) -> ContextRevision:
+        if isinstance(value, dict) and "compactionSummary" not in value:
+            value = {**value, "compactionSummary": ""}
         row = _object(value, "Context revision", _CONTEXT_REVISION_KEYS)
         return cls(
             revision=_as_int(row["revision"]),
@@ -958,6 +967,7 @@ class ContextRevision:
             ),
             history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
+            compaction_summary=_as_str(row.get("compactionSummary", ""), allow_empty=True),
         )
 
 
@@ -1051,6 +1061,7 @@ def build_context_revision(
     omissions: Sequence[OmissionRecordV1],
     memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
+    compaction_summary: str = "",
 ) -> ContextRevision:
     if (
         maximum_tokens != config.maximum_input_tokens
@@ -1085,6 +1096,7 @@ def build_context_revision(
     return ContextRevision(
         history_status=history_status,
         memory_context_characters=memory_context.context_data_characters,
+        compaction_summary=compaction_summary,
         history_groups=tuple(groups),
         history_items=references,
         memory=memory_context.memory,
@@ -1095,7 +1107,8 @@ def build_context_revision(
             reserved_current_run_tokens=reserved_current_run_tokens,
             instruction_tokens=_instruction_tokens(config),
             context_data_tokens=memory_context.context_data_characters * 4
-            + history_status_tokens(history_status),
+            + history_status_tokens(history_status)
+            + len(compaction_summary) * 4,
             tool_tokens=_tool_definition_tokens(config),
             history_tokens=history_tokens,
             current_run_tokens=current_run_tokens,
@@ -1104,6 +1117,7 @@ def build_context_revision(
                 _instruction_tokens(config)
                 + memory_context.context_data_characters * 4
                 + history_status_tokens(history_status)
+                + len(compaction_summary) * 4
                 + _tool_definition_tokens(config)
                 + history_tokens
                 + current_run_tokens
@@ -1322,6 +1336,7 @@ def _validate_context_snapshot_slots(
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
     history_items: Sequence[HistoryItemReferenceV1] = (),
     memory_context_characters: int = 0,
+    compaction_summary: str = "",
 ) -> None:
     if budget.mode != "bounded":
         raise ValueError("history selection budget mode is invalid")
@@ -1349,8 +1364,10 @@ def _validate_context_snapshot_slots(
     )
     if budget.memory_tokens != sum(reference.characters for reference in memory) * 4:
         raise ValueError("Memory token estimate does not match its frozen references")
-    if budget.context_data_tokens != memory_context_characters * 4 + history_status_tokens(
-        history_status
+    if budget.context_data_tokens != (
+        memory_context_characters * 4
+        + history_status_tokens(history_status)
+        + len(compaction_summary) * 4
     ):
         raise ValueError("context-data token estimate does not match its frozen metadata")
     included_runs = {(item.turn_id, item.run_id) for item in history_items}
@@ -1565,6 +1582,7 @@ _CONTEXT_REVISION_KEYS = {
     "omissions",
     "historyStatus",
     "memoryContextCharacters",
+    "compactionSummary",
 }
 _STEP_INPUT_KEYS = {
     "stepOrdinal",

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 from ..cancellation import CancellationToken
 
@@ -89,7 +89,8 @@ class AgentScheduler:
         steer = getattr(self._loop, "steer", None)
         if steer is None:
             return False
-        return await steer(run_id, content, request_id)
+        callback = cast(Callable[[str, str, str], Awaitable[bool]], steer)
+        return await callback(run_id, content, request_id)
 
     async def close(self) -> None:
         worker = self._worker

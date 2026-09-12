@@ -876,6 +876,62 @@ describe("Runtime protocol Golden Trace", () => {
     expect(() => parseRuntimeEventNotification(crossToolDetail.envelope)).toThrow();
   });
 
+  it("accepts history_read item references and synthetic terminal results", () => {
+    const historyRead = cloneGoldenNotification("tool-result-completed");
+    const item = asWireObject(historyRead.payload.item, "Tool Result Item");
+    const data = asWireObject(item.data, "Tool Result data");
+    const result = asWireObject(data.result, "Tool Result");
+    data.toolName = "history_read";
+    result.toolName = "history_read";
+    result.itemId = "item_00000000000000000000000000000001";
+    delete result.processId;
+    delete result.state;
+    delete result.exitCode;
+    delete result.cwd;
+    delete result.pid;
+    delete result.startedAt;
+    delete result.finishedAt;
+    delete result.cursor;
+    delete result.nextCursor;
+    delete result.hasMore;
+    item.content = JSON.stringify(result);
+    expect(() => parseRuntimeEventNotification(historyRead.envelope)).not.toThrow();
+
+    for (const status of ["failed", "cancelled"] as const) {
+      for (const toolName of [
+        "process_start",
+        "process_read",
+        "process_wait",
+        "process_stop",
+        "history_read",
+        "read",
+        "write",
+        "edit"
+      ]) {
+        const terminal = cloneGoldenNotification("tool-result-completed");
+        const terminalItem = asWireObject(terminal.payload.item, "Tool Result Item");
+        const terminalData = asWireObject(terminalItem.data, "Tool Result data");
+        const terminalResult = asWireObject(terminalData.result, "Tool Result");
+        terminalItem.status = status;
+        terminalData.toolName = toolName;
+        terminalResult.toolName = toolName;
+        terminalResult.ok = false;
+        terminalResult.cancelled = status === "cancelled";
+        terminalResult.output = "";
+        terminalResult.truncated = false;
+        terminalResult.errorCode = status === "cancelled" ? "cancelled" : "runtime_interrupted";
+        for (const key of [
+          "processId", "state", "exitCode", "cwd", "pid", "startedAt", "finishedAt",
+          "cursor", "nextCursor", "hasMore", "durationMs", "timedOut", "path", "lineStart",
+          "lineEnd", "bytesRead", "bom", "lineTruncations", "totalLines", "nextOffset",
+          "created", "bytesWritten", "verified", "newline", "replacements", "itemId"
+        ]) delete terminalResult[key];
+        terminalItem.content = JSON.stringify(terminalResult);
+        expect(() => parseRuntimeEventNotification(terminal.envelope)).not.toThrow();
+      }
+    }
+  });
+
   it("rejects unknown top-level fields in paginated Item history", () => {
     const response = cloneGoldenResponse("turn-list-page");
     const turns = asWireArray(response.result.turns, "Turn history");

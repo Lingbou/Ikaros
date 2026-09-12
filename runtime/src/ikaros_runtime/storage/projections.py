@@ -1103,7 +1103,7 @@ def apply_event(
         _require_keys(
             payload,
             {"revision", "droppedTurns", "contextRevision"},
-            {"turnId", "runId"},
+            {"turnId", "runId", "trigger", "targetTokens"},
         )
         if event.run_id is None or event.thread_id is None or event.branch_id is None:
             raise RuntimeError("context compaction event has incomplete scope")
@@ -1124,6 +1124,17 @@ def apply_event(
             or revision_value < 1
             or not isinstance(dropped, list)
             or any(not isinstance(turn_id, str) or not turn_id for turn_id in dropped)
+        ):
+            raise RuntimeError("context compaction event metadata is invalid")
+        trigger = payload.get("trigger", "budget_exceeded")
+        target_tokens = payload.get("targetTokens")
+        if trigger not in {"budget_exceeded", "threshold"} or (
+            target_tokens is not None
+            and (
+                not isinstance(target_tokens, int)
+                or isinstance(target_tokens, bool)
+                or target_tokens < 1
+            )
         ):
             raise RuntimeError("context compaction event metadata is invalid")
         try:

@@ -86,10 +86,10 @@ const TOOL_RESULT_REQUIRED_KEYS = [
   "cancelled"
 ] as const;
 const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
-  process_start: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
-  process_read: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
-  process_wait: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
-  process_stop: ["cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_start: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_read: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_wait: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_stop: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
   read: [
     "durationMs",
     "truncated",
@@ -759,6 +759,7 @@ function isCanonicalToolResultDetail(key: string, value: unknown): boolean {
     return typeof value === "boolean";
   }
   if (key === "errorCode") return value === null || isWireIdentifier(value);
+  if (key === "itemId") return typeof value === "string" && ITEM_ID_PATTERN.test(value);
   if (key === "path") return value === null || typeof value === "string";
   if (key === "newline") return value === null || value === "lf" || value === "crlf";
   return false;

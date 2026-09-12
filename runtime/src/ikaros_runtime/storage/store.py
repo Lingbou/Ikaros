@@ -22,6 +22,7 @@ from ..domain import (
 )
 from ..errors import ContextBudgetExceededError
 from ..file_changes import MAX_CHANGE_EVENT_BYTES, FileChangeCapture
+from ..history_status import FrozenHistoryStatusV1
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
@@ -89,6 +90,17 @@ from .thread_history import (
     list_turn_history_page,
 )
 from .usage import local_activity_date, read_usage
+
+
+def _summarize_context_records(
+    records: Sequence[ContextItemRecordV1], *, max_characters: int = 6000
+) -> str:
+    lines = ["Earlier context was compacted; verify current state."]
+    for record in records:
+        content = record.content.replace("\x00", " ").strip()
+        if content:
+            lines.append(f"[{record.role or record.kind}] {content[:500]}")
+    return "\n".join(lines)[:max_characters]
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
@@ -788,7 +800,34 @@ class SqliteRuntimeStore:
                 run_id=run_id,
                 snapshot=snapshot,
             )
+        maximum_tokens = frame.maximum_input_tokens
+        current_total = (
+            snapshot.budget.instruction_tokens
+            + snapshot.budget.context_data_tokens
+            + snapshot.budget.tool_tokens
+            + snapshot.budget.memory_tokens
+            + sum(record.estimated_tokens for record in records)
+        )
+        # Compact before the window is exhausted.  Keeping a 25% safety
+        # margin leaves room for the next tool result and mirrors the
+        # head/tail strategy used by long-running agents.
+        proactive = (
+            maximum_tokens is not None
+            and current_total * 4 >= maximum_tokens * 3
+            and any(record.run_id != run_id for record in records)
+        )
         try:
+            if proactive:
+                compacted = self._compact_revision_in_transaction(
+                    run_id,
+                    frame=frame,
+                    snapshot=snapshot,
+                    records=records,
+                    target_tokens=maximum_tokens,
+                )
+                if compacted is not None:
+                    snapshot, records, compacted_event = compacted
+                    pre_events = (*pre_events, compacted_event)
             step_input = build_step_input(
                 step_ordinal,
                 records,
@@ -802,11 +841,17 @@ class SqliteRuntimeStore:
             # intact so a later semantic summarizer can recover the omitted
             # source without replaying tools.
             compacted = self._compact_revision_in_transaction(
-                run_id, frame=frame, snapshot=snapshot, records=records
+                run_id, frame=frame, snapshot=snapshot, records=records,
+                target_tokens=frame.maximum_input_tokens,
             )
             if compacted is None:
                 raise
-            snapshot, records = compacted
+            snapshot, records, compacted_event = compacted
+            # The compaction event is appended in the same transaction as the
+            # revision. Return it as a pre-event so the AgentLoop publishes it
+            # before the subsequent model.input_prepared event. EventHub relies
+            # on contiguous sequence delivery.
+            pre_events = (*pre_events, compacted_event)
             step_input = build_step_input(
                 step_ordinal,
                 records,
@@ -890,7 +935,8 @@ class SqliteRuntimeStore:
         frame: RunConfig,
         snapshot: ContextRevision,
         records: Sequence[ContextItemRecordV1],
-    ) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...]] | None:
+        target_tokens: int | None = None,
+    ) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...], JournalEvent] | None:
         current_baseline = tuple(
             record
             for record in records
@@ -939,6 +985,19 @@ class SqliteRuntimeStore:
                         if omission.source_type == "memory"
                     ),
                 )
+                # A history status entry is only valid while its Run remains in
+                # the frozen history. Once the corresponding Turn is evicted,
+                # drop that status record as well; retaining an ``included``
+                # status would make the new revision fail validation because
+                # there is no selected Run to which it can refer.
+                retained_history_status = FrozenHistoryStatusV1(
+                    tuple(
+                        status
+                        for status in snapshot.history_status.runs
+                        if status.turn_id not in dropped
+                    )
+                )
+                candidate_full = tuple(item for group in groups for item in group) + current_all
                 revision = build_context_revision(
                     candidate_baseline,
                     current_run_id=run_id,
@@ -947,18 +1006,36 @@ class SqliteRuntimeStore:
                     reserved_current_run_tokens=frame.reserved_current_run_tokens,
                     omissions=omissions,
                     memory_context=FrozenMemoryContextV1.from_revision(snapshot),
-                    history_status=snapshot.history_status,
+                    history_status=retained_history_status,
+                    compaction_summary=(
+                        _summarize_context_records(
+                            tuple(record for record in records if record.turn_id in dropped)
+                        )
+                        if dropped
+                        else snapshot.compaction_summary
+                    ),
                 )
-                candidate_full = tuple(item for group in groups for item in group) + current_all
-                step_tokens = (
-                    revision.budget.instruction_tokens
-                    + revision.budget.context_data_tokens
-                    + revision.budget.tool_tokens
-                    + sum(r.estimated_tokens for r in candidate_full if r.run_id != run_id)
-                    + sum(r.estimated_tokens for r in candidate_full if r.run_id == run_id)
-                    + revision.budget.memory_tokens
+                current_extra_tokens = sum(
+                    item.estimated_tokens for item in current_all
+                    if item.item_id not in {ref.item_id for ref in revision.history_items}
                 )
-                if step_tokens > frame.maximum_input_tokens:
+                step_tokens = revision.budget.total_tokens + current_extra_tokens
+                limit = frame.maximum_input_tokens if target_tokens is None else target_tokens
+                if step_tokens > limit and revision.compaction_summary:
+                    # A summary is useful only when it fits. Preserve the
+                    # executable current Run boundary over an oversized note.
+                    revision = build_context_revision(
+                        candidate_baseline,
+                        current_run_id=run_id,
+                        config=frame,
+                        maximum_tokens=frame.maximum_input_tokens,
+                        reserved_current_run_tokens=frame.reserved_current_run_tokens,
+                        omissions=omissions,
+                        memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                        history_status=retained_history_status,
+                    )
+                    step_tokens = revision.budget.total_tokens + current_extra_tokens
+                if step_tokens > limit:
                     raise ValueError("over_budget")
                 revision = replace(revision, revision=snapshot.revision + 1)
                 self._connection.execute(
@@ -966,7 +1043,7 @@ class SqliteRuntimeStore:
                     (run_id, revision.revision, canonical_json(revision.to_wire())),
                 )
                 run = self.get_run(run_id)
-                self._append_event(
+                compacted_event = self._append_event(
                     event_type="context.compacted",
                     thread_id=run.thread_id,
                     branch_id=run.branch_id,
@@ -976,10 +1053,17 @@ class SqliteRuntimeStore:
                     payload={
                         "revision": revision.revision,
                         "droppedTurns": dropped,
+                        "trigger": (
+                            "threshold"
+                            if target_tokens is not None
+                            and target_tokens < frame.maximum_input_tokens
+                            else "budget_exceeded"
+                        ),
+                        "targetTokens": limit,
                         "contextRevision": revision.to_wire(),
                     },
                 )
-                return revision, candidate_full
+                return revision, candidate_full, compacted_event
             except ValueError:
                 if not groups:
                     break
@@ -1930,11 +2014,12 @@ class SqliteRuntimeStore:
                         "ok": False,
                         "output": "",
                         "cancelled": status == "cancelled",
-                        "stdout": "",
-                        "stderr": "",
-                        "exitCode": None,
-                        "durationMs": 0,
-                        "timedOut": False,
+                        # A terminalized call has no tool-specific execution
+                        # details: it may never have started, or its result
+                        # may have been lost during interruption. Keep the
+                        # synthetic result within the canonical detail schema
+                        # shared by every provider tool instead of inventing
+                        # process/file fields that do not belong to this tool.
                         "truncated": False,
                         "errorCode": error_code,
                     }

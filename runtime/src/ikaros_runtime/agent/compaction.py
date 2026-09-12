@@ -29,6 +29,28 @@ class ContextTrimResult:
     truncated: bool
 
 
+def summarize_context_records(
+    records: Sequence[ContextItemRecordV1], *, max_characters: int = 6000
+) -> str:
+    """Create a bounded, auditable summary of omitted conversation records.
+
+    This local fallback deliberately preserves facts and tool outcomes without
+    replaying calls. A provider backed summarizer can replace this function
+    later while retaining the same revision boundary.
+    """
+    lines: list[str] = [
+        "Earlier context was compacted; treat this as a factual hint and verify current state."
+    ]
+    for record in records:
+        role = record.role or record.kind
+        content = record.content.replace("\x00", " ").strip()
+        if len(content) > 500:
+            content = content[:500] + "…"
+        if content:
+            lines.append(f"[{role}] {content}")
+    return "\n".join(lines)[:max_characters]
+
+
 def trim_context_records(
     records: Sequence[ContextItemRecordV1],
     *,
@@ -138,4 +160,4 @@ def _units(records: tuple[ContextItemRecordV1, ...]) -> tuple[tuple[ContextItemR
     return tuple(units)
 
 
-__all__ = ["ContextTrimResult", "trim_context_records"]
+__all__ = ["ContextTrimResult", "summarize_context_records", "trim_context_records"]

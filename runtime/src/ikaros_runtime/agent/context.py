@@ -101,7 +101,12 @@ def _context_data_messages(
             raise RuntimeError("model input contains duplicate or unordered context data")
         seen.add(block.id)
         if block.id != "history-status":
-            messages.extend(_memory_context_messages((block,)))
+            if block.id == "compaction-summary":
+                if block.version != 1 or block.source != "ikaros-runtime:compaction-summary-v1":
+                    raise RuntimeError("compaction summary wrapper is invalid")
+                messages.append(ProviderMessage(role="system", content=block.content))
+            else:
+                messages.extend(_memory_context_messages((block,)))
             continue
         prefix = HISTORY_STATUS_PREAMBLE_V1 + "\n"
         if not block.content.startswith(prefix):
@@ -138,6 +143,22 @@ def build_history_status_context_data(
             scope="run",
             lifetime="run",
             content=status.content,
+        ),
+    )
+
+
+def build_compaction_summary_context_data(summary: str) -> tuple[ContextDataBlockV1, ...]:
+    if not summary:
+        return ()
+    return (
+        ContextDataBlockV1(
+            id="compaction-summary",
+            version=1,
+            source="ikaros-runtime:compaction-summary-v1",
+            authority="contextual_data",
+            scope="run",
+            lifetime="run",
+            content=summary,
         ),
     )
 
