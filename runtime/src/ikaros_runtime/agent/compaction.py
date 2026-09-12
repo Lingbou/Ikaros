@@ -46,7 +46,11 @@ def trim_context_records(
     the only user request.
     """
 
-    if isinstance(maximum_tokens, bool) or not isinstance(maximum_tokens, int) or maximum_tokens < 1:
+    if (
+        isinstance(maximum_tokens, bool)
+        or not isinstance(maximum_tokens, int)
+        or maximum_tokens < 1
+    ):
         raise ValueError("maximum_tokens must be a positive integer")
     if preserve_prefix_units < 0 or preserve_suffix_units < 0:
         raise ValueError("preserve unit counts must be non-negative")
@@ -105,7 +109,10 @@ def _units(records: tuple[ContextItemRecordV1, ...]) -> tuple[tuple[ContextItemR
             end = index + 1
             while end < len(records):
                 candidate = records[end]
-                if candidate.kind not in {"tool_call", "tool_result"} or candidate.data.get("stepId") != step_id:
+                if (
+                    candidate.kind not in {"tool_call", "tool_result"}
+                    or candidate.data.get("stepId") != step_id
+                ):
                     break
                 end += 1
             units.append(records[index:end])
@@ -116,7 +123,10 @@ def _units(records: tuple[ContextItemRecordV1, ...]) -> tuple[tuple[ContextItemR
             end = index + 1
             while end < len(records):
                 candidate = records[end]
-                if candidate.kind not in {"tool_call", "tool_result"} or candidate.data.get("stepId") != step_id:
+                if (
+                    candidate.kind not in {"tool_call", "tool_result"}
+                    or candidate.data.get("stepId") != step_id
+                ):
                     break
                 end += 1
             units.append(records[index:end])
