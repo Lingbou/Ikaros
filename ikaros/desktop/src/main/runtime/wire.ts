@@ -630,6 +630,8 @@ function validRuntimeItemData(item: RuntimeItemHistory, completed: boolean): boo
     if (item.role === "user") {
       if (!completed) return false;
       if (hasExactKeys(data, [])) return true;
+      if (hasRequiredAndOptionalKeys(data, [], ["clientRequestId"]) &&
+        (data.clientRequestId === undefined || isWireIdentifier(data.clientRequestId))) return true;
       return hasRequiredAndOptionalKeys(data, ["steer", "clientRequestId", "status"], ["stepOrdinal"]) &&
         data.steer === true && isWireIdentifier(data.clientRequestId) &&
         ["received", "processed", "unprocessed"].includes(data.status as string) &&

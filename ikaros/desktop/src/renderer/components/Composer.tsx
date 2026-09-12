@@ -44,6 +44,7 @@ export function Composer({
   const selectModel = useAppStore((state) => state.selectModel);
   const setDraft = useAppStore((state) => state.setDraft);
   const sendDraft = useAppStore((state) => state.sendDraft);
+  const steerRun = useAppStore((state) => state.steerRun);
   const stopRun = useAppStore((state) => state.stopRun);
   const bindWorkspaceFromFolder = useAppStore((state) => state.bindWorkspaceFromFolder);
   const [model, setModel] = useState<ModelId>("Ikaros");
@@ -174,6 +175,10 @@ export function Composer({
   const send = () => {
     if (isRunActive(runStatus) && !canSteer) return;
     if (canSteer ? connectionStatus !== "connected" : runtimeModelUnavailable) return;
+    if (canSteer) {
+      void steerRun();
+      return;
+    }
     void sendDraft();
   };
 
