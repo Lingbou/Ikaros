@@ -1100,17 +1100,51 @@ def apply_event(
     elif event_type == "file.change_recorded":
         _apply_file_change_event(connection, event)
     elif event_type == "context.compacted":
-        revision = payload.get("contextRevision")
-        if not isinstance(revision, dict):
-            raise RuntimeError("context compaction event has no revision")
-        run_id = event.run_id
-        if run_id is None:
-            raise RuntimeError("context compaction event has no Run")
-        connection.execute(
-            "INSERT OR IGNORE INTO context_revisions("
-            "run_id, revision, record_json) VALUES (?, ?, ?)",
-            (run_id, int(payload["revision"]), canonical_json(revision)),
+        _require_keys(payload, {"revision", "droppedTurns", "contextRevision"})
+        if event.run_id is None or event.thread_id is None or event.branch_id is None:
+            raise RuntimeError("context compaction event has incomplete scope")
+        _require_event_scope(
+            event,
+            thread_id=event.thread_id,
+            branch_id=event.branch_id,
+            turn_id=event.turn_id,
+            run_id=event.run_id,
+            item_id=None,
         )
+        revision_value = payload["revision"]
+        dropped = payload["droppedTurns"]
+        revision_wire = payload["contextRevision"]
+        if (
+            not isinstance(revision_value, int)
+            or isinstance(revision_value, bool)
+            or revision_value < 1
+            or not isinstance(dropped, list)
+            or any(not isinstance(turn_id, str) or not turn_id for turn_id in dropped)
+        ):
+            raise RuntimeError("context compaction event metadata is invalid")
+        try:
+            revision = ContextRevision.from_wire(revision_wire)
+        except (TypeError, ValueError):
+            raise RuntimeError("context compaction event revision is invalid") from None
+        if revision.revision != revision_value:
+            raise RuntimeError("context compaction event revision does not match payload")
+        run = connection.execute(
+            "SELECT id FROM runs WHERE id = ? AND turn_id = ?",
+            (event.run_id, event.turn_id),
+        ).fetchone()
+        if run is None:
+            raise RuntimeError("context compaction event Run scope is invalid")
+        existing = connection.execute(
+            "SELECT record_json FROM context_revisions WHERE run_id = ? AND revision = ?",
+            (event.run_id, revision_value),
+        ).fetchone()
+        if existing is not None and str(existing["record_json"]) != canonical_json(revision.to_wire()):
+            raise RuntimeError("context compaction revision conflicts with stored record")
+        if existing is None:
+            connection.execute(
+                "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
+                (event.run_id, revision_value, canonical_json(revision.to_wire())),
+            )
     else:
         raise RuntimeError(f"journal event type is unsupported: {event_type}")
 
