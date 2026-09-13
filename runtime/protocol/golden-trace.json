@@ -109,6 +109,7 @@
                   "createdAt": "2026-08-15T12:00:00.004Z",
                   "startedAt": "2026-08-15T12:00:00.006Z",
                   "modelCalls": 3,
+                  "compactions": 0,
                   "settledAt": "2026-08-15T12:00:00.026Z",
                   "reasonCode": null,
                   "items": [
@@ -3139,6 +3140,13 @@
             "droppedTurns": [
               "turn_00000000000000000000000000000011"
             ],
+            "omittedItemIds": [
+              "item_00000000000000000000000000000013",
+              "item_00000000000000000000000000000015",
+              "item_00000000000000000000000000000016"
+            ],
+            "trigger": "budget_exceeded",
+            "targetTokens": 4500,
             "contextRevision": {
               "revision": 2,
               "historyGroups": [

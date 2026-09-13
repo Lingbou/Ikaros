@@ -102,8 +102,25 @@ def _summarize_context_records(
             lines.append(f"[{record.role or record.kind}] {content[:500]}")
     return "\n".join(lines)[:max_characters]
 
+
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
+
+
+class ContextCompactionRequired(RuntimeError):
+    """Raised after a rolled-back deterministic pass needs a Provider summary."""
+
+    def __init__(
+        self,
+        *,
+        records: Sequence[ContextItemRecordV1],
+        omitted_records: Sequence[ContextItemRecordV1],
+        existing_summary: str = "",
+    ) -> None:
+        super().__init__("semantic context compaction is required")
+        self.records = tuple(records)
+        self.omitted_records = tuple(omitted_records)
+        self.existing_summary = existing_summary
 
 
 class SqliteRuntimeStore:
@@ -196,6 +213,83 @@ class SqliteRuntimeStore:
                 "SELECT record_json FROM process_sessions ORDER BY process_id"
             )
         )
+
+    def has_pending_steers(self, run_id: str) -> bool:
+        rows = self._connection.execute(
+            """SELECT data_json FROM items
+               WHERE run_id = ? AND kind = 'message' AND role = 'user'
+                 AND status = 'streaming'""",
+            (run_id,),
+        ).fetchall()
+        return any(
+            (data := json_loads(str(row["data_json"]))).get("steer") is True
+            and data.get("status") == "received"
+            for row in rows
+        )
+
+    def has_unsettled_processes(self, run_id: str) -> bool:
+        return any(
+            record.get("state") in {"running", "unknown"}
+            or record.get("errorCode") == "start_pending"
+            for record in self.process_records()
+            if record.get("runId") == run_id
+        )
+
+    def requires_completion_check(self, run_id: str) -> bool:
+        calls = self._connection.execute(
+            """SELECT data_json FROM items
+               WHERE run_id = ? AND kind = 'tool_call'""",
+            (run_id,),
+        ).fetchall()
+        results = {
+            str(data.get("callId")): data.get("result")
+            for row in self._connection.execute(
+                "SELECT data_json FROM items WHERE run_id = ? AND kind = 'tool_result'",
+                (run_id,),
+            )
+            if isinstance(data := json_loads(str(row["data_json"])), dict)
+        }
+        settled_process_ids = {
+            str(result.get("processId"))
+            for result in results.values()
+            if isinstance(result, dict) and result.get("state") in {"exited", "terminated"}
+        }
+        for row in calls:
+            data = json_loads(str(row["data_json"]))
+            tool_name = data.get("toolName")
+            result = results.get(str(data.get("callId")))
+            if not isinstance(result, dict):
+                return True
+            if tool_name in {"write", "edit"} and result.get("verified") is not True:
+                return True
+            if tool_name in {"process_start", "process_wait", "process_stop"}:
+                process_id = str(result.get("processId"))
+                if process_id not in settled_process_ids:
+                    return True
+        return False
+
+    def completion_check_source(self, run_id: str, *, max_characters: int = 24000) -> str:
+        rows = self._connection.execute(
+            """SELECT kind, role, content, data_json FROM items
+               WHERE run_id = ? AND status IN ('completed', 'failed', 'cancelled')
+               ORDER BY ordinal ASC""",
+            (run_id,),
+        ).fetchall()
+        parts: list[str] = []
+        remaining = max_characters
+        for row in rows:
+            value = {
+                "kind": row["kind"],
+                "role": row["role"],
+                "content": row["content"],
+                "data": json_loads(str(row["data_json"])),
+            }
+            encoded = canonical_json(value)
+            if len(encoded) > remaining:
+                break
+            parts.append(encoded)
+            remaining -= len(encoded) + 1
+        return "\n".join(parts)
 
     def create_thread(
         self,
@@ -756,6 +850,9 @@ class SqliteRuntimeStore:
         *,
         step_ordinal: int,
         memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
+        semantic_compaction: bool = False,
+        compaction_summary: str | None = None,
+        compaction_omitted_item_ids: Sequence[str] | None = None,
     ) -> PreparedModelStep:
         if not isinstance(step_ordinal, int) or isinstance(step_ordinal, bool) or step_ordinal < 1:
             raise ValueError("model Step ordinal must be a positive integer")
@@ -769,6 +866,9 @@ class SqliteRuntimeStore:
                 run_id,
                 step_ordinal=step_ordinal,
                 memory_context=memory_context,
+                semantic_compaction=semantic_compaction,
+                compaction_summary=compaction_summary,
+                compaction_omitted_item_ids=compaction_omitted_item_ids,
                 pre_events=tuple(pre_events),
             )
 
@@ -778,6 +878,9 @@ class SqliteRuntimeStore:
         *,
         step_ordinal: int,
         memory_context: FrozenMemoryContextV1,
+        semantic_compaction: bool,
+        compaction_summary: str | None,
+        compaction_omitted_item_ids: Sequence[str] | None,
         pre_events: tuple[JournalEvent, ...] = (),
     ) -> PreparedModelStep:
         run = self.get_run(run_id)
@@ -801,32 +904,63 @@ class SqliteRuntimeStore:
                 snapshot=snapshot,
             )
         maximum_tokens = frame.maximum_input_tokens
-        current_total = (
-            snapshot.budget.instruction_tokens
-            + snapshot.budget.context_data_tokens
-            + snapshot.budget.tool_tokens
-            + snapshot.budget.memory_tokens
-            + sum(record.estimated_tokens for record in records)
+        current_total = snapshot.budget.total_tokens + sum(
+            record.estimated_tokens
+            for record in records
+            if record.item_id not in {reference.item_id for reference in snapshot.history_items}
         )
-        # Compact before the window is exhausted.  Keeping a 25% safety
-        # margin leaves room for the next tool result and mirrors the
-        # head/tail strategy used by long-running agents.
+        # Compact before the window is exhausted. Aim for half the input
+        # budget, but never below the non-droppable current Run and metadata.
         proactive = (
             maximum_tokens is not None
+            and step_ordinal > 1
             and current_total * 4 >= maximum_tokens * 3
-            and any(record.run_id != run_id for record in records)
+        )
+        summary = snapshot.compaction_summary if compaction_summary is None else compaction_summary
+        current_user_tokens = sum(
+            record.estimated_tokens
+            for record in records
+            if record.run_id == run_id and record.item_id == frame.user_item_id
+        )
+        compaction_floor = (
+            snapshot.budget.total_tokens
+            - snapshot.budget.history_tokens
+            - snapshot.budget.current_run_tokens
+            - len(snapshot.compaction_summary) * 4
+            + len(summary) * 4
+            + current_user_tokens
         )
         try:
             if proactive:
+                source_records = tuple(records)
+                source_summary = snapshot.compaction_summary
                 compacted = self._compact_revision_in_transaction(
                     run_id,
                     frame=frame,
                     snapshot=snapshot,
                     records=records,
-                    target_tokens=maximum_tokens,
+                    target_tokens=max(
+                        frame.reserved_current_run_tokens + 1,
+                        maximum_tokens // 2,
+                        compaction_floor,
+                    ),
+                    compaction_summary=compaction_summary,
+                    allowed_omitted_item_ids=compaction_omitted_item_ids,
+                    allow_oversized_current_omission=semantic_compaction
+                    or compaction_summary is not None,
                 )
                 if compacted is not None:
                     snapshot, records, compacted_event = compacted
+                    if semantic_compaction and compaction_summary is None:
+                        raise ContextCompactionRequired(
+                            records=source_records,
+                            omitted_records=tuple(
+                                record
+                                for record in source_records
+                                if record.item_id not in {item.item_id for item in compacted[1]}
+                            ),
+                            existing_summary=source_summary,
+                        )
                     pre_events = (*pre_events, compacted_event)
             step_input = build_step_input(
                 step_ordinal,
@@ -840,13 +974,32 @@ class SqliteRuntimeStore:
             # append a new revision. The original revision and Journal remain
             # intact so a later semantic summarizer can recover the omitted
             # source without replaying tools.
+            source_records = tuple(records)
+            source_summary = snapshot.compaction_summary
             compacted = self._compact_revision_in_transaction(
-                run_id, frame=frame, snapshot=snapshot, records=records,
+                run_id,
+                frame=frame,
+                snapshot=snapshot,
+                records=records,
                 target_tokens=frame.maximum_input_tokens,
+                compaction_summary=compaction_summary,
+                allowed_omitted_item_ids=compaction_omitted_item_ids,
+                allow_oversized_current_omission=semantic_compaction
+                or compaction_summary is not None,
             )
             if compacted is None:
                 raise
             snapshot, records, compacted_event = compacted
+            if semantic_compaction and compaction_summary is None:
+                raise ContextCompactionRequired(
+                    records=source_records,
+                    omitted_records=tuple(
+                        record
+                        for record in source_records
+                        if record.item_id not in {item.item_id for item in compacted[1]}
+                    ),
+                    existing_summary=source_summary,
+                ) from None
             # The compaction event is appended in the same transaction as the
             # revision. Return it as a pre-event so the AgentLoop publishes it
             # before the subsequent model.input_prepared event. EventHub relies
@@ -878,7 +1031,7 @@ class SqliteRuntimeStore:
             self._connection.execute(
                 """
                 SELECT COALESCE(MAX(step_ordinal), 0) + 1
-                FROM model_calls WHERE run_id = ?
+                FROM model_calls WHERE run_id = ? AND purpose = 'execution'
                 """,
                 (run_id,),
             ).fetchone()[0]
@@ -896,11 +1049,12 @@ class SqliteRuntimeStore:
         self._connection.execute(
             """
             INSERT INTO model_calls(
-                run_id, step_ordinal, input_json, prepared_at
-            ) VALUES (?, ?, ?, ?)
+                run_id, call_ordinal, step_ordinal, input_json, prepared_at
+            ) VALUES (?, ?, ?, ?, ?)
             """,
             (
                 run_id,
+                self._next_model_call_ordinal(run_id),
                 step_ordinal,
                 canonical_json(step_input.to_wire()),
                 timestamp,
@@ -928,6 +1082,150 @@ class SqliteRuntimeStore:
             pre_events=tuple(pre_events),
         )
 
+    def _next_model_call_ordinal(self, run_id: str) -> int:
+        return int(
+            self._connection.execute(
+                "SELECT COALESCE(MAX(call_ordinal), 0) + 1 FROM model_calls WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+        )
+
+    def begin_auxiliary_model_call(
+        self, run_id: str, *, purpose: str, input_json: str
+    ) -> JournalEvent:
+        if purpose not in {"compression", "completion_check"}:
+            raise ValueError("auxiliary model call purpose is invalid")
+        run = self.get_run(run_id)
+        timestamp = utc_now()
+        with self._connection:
+            call_ordinal = self._next_model_call_ordinal(run_id)
+            self._connection.execute(
+                """
+                INSERT INTO model_calls(
+                    run_id, call_ordinal, step_ordinal, input_json, prepared_at, purpose
+                ) VALUES (?, ?, NULL, ?, ?, ?)
+                """,
+                (run_id, call_ordinal, input_json, timestamp, purpose),
+            )
+            return self._append_event(
+                event_type="model.input_prepared",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run.id,
+                timestamp=timestamp,
+                payload={
+                    "purpose": purpose,
+                    "callOrdinal": call_ordinal,
+                    "preparedAt": timestamp,
+                    "input": json_loads(input_json),
+                    "turnId": run.turn_id,
+                    "runId": run.id,
+                },
+            )
+
+    def finish_auxiliary_model_call(
+        self,
+        run_id: str,
+        *,
+        call_ordinal: int,
+        outcome: str,
+        reason_code: str | None,
+        usage: ModelUsage | None,
+        response_model_id: str | None,
+        request_id: str | None,
+    ) -> JournalEvent:
+        if outcome not in {"completed", "failed", "cancelled"}:
+            raise ValueError("auxiliary model call outcome is invalid")
+        if outcome == "completed" and reason_code is not None:
+            raise ValueError("completed auxiliary model call cannot have a reason")
+        if outcome != "completed" and not reason_code:
+            raise ValueError("failed auxiliary model call requires a reason")
+        _validate_model_step_metadata(
+            1, usage=usage, response_model_id=response_model_id, request_id=request_id
+        )
+        timestamp = utc_now()
+        activity_date = local_activity_date(timestamp) if usage is not None else None
+        usage_payload = _model_usage_payload(usage) if usage is not None else None
+        run = self.get_run(run_id)
+        with self._connection:
+            updated = self._connection.execute(
+                """
+                UPDATE model_calls
+                SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
+                    usage_json = ?, activity_date = ?, finished_at = ?
+                WHERE run_id = ? AND call_ordinal = ?
+                  AND purpose IN ('compression', 'completion_check') AND outcome IS NULL
+                """,
+                (
+                    outcome,
+                    reason_code,
+                    response_model_id,
+                    request_id,
+                    canonical_json(usage_payload) if usage_payload is not None else None,
+                    activity_date,
+                    timestamp,
+                    run_id,
+                    call_ordinal,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("auxiliary model call is not open")
+            if usage is not None:
+                self._connection.execute(
+                    """
+                    INSERT INTO model_usages(
+                        thread_id, turn_id, run_id, call_ordinal, step_ordinal,
+                        provider_id, model_id, input_tokens, cached_input_tokens,
+                        output_tokens, reasoning_output_tokens, total_tokens,
+                        activity_date, completed_at
+                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run.thread_id,
+                        run.turn_id,
+                        run.id,
+                        call_ordinal,
+                        run.provider_id,
+                        run.model_id,
+                        usage.input_tokens,
+                        usage.cached_input_tokens,
+                        usage.output_tokens,
+                        usage.reasoning_output_tokens,
+                        usage.total_tokens,
+                        activity_date,
+                        timestamp,
+                    ),
+                )
+            return self._append_event(
+                event_type="model.response_finished",
+                thread_id=run.thread_id,
+                branch_id=run.branch_id,
+                turn_id=run.turn_id,
+                run_id=run.id,
+                timestamp=timestamp,
+                payload={
+                    "purpose": str(
+                        self._connection.execute(
+                            "SELECT purpose FROM model_calls WHERE run_id = ? AND call_ordinal = ?",
+                            (run_id, call_ordinal),
+                        ).fetchone()[0]
+                    ),
+                    "callOrdinal": call_ordinal,
+                    "providerId": run.provider_id,
+                    "modelId": run.model_id,
+                    "outcome": outcome,
+                    "reasonCode": reason_code,
+                    "responseModelId": response_model_id,
+                    "requestId": request_id,
+                    "usage": usage_payload,
+                    "activityDate": activity_date,
+                    "finishedAt": timestamp,
+                    "turnId": run.turn_id,
+                    "runId": run.id,
+                },
+            )
+
     def _compact_revision_in_transaction(
         self,
         run_id: str,
@@ -936,6 +1234,9 @@ class SqliteRuntimeStore:
         snapshot: ContextRevision,
         records: Sequence[ContextItemRecordV1],
         target_tokens: int | None = None,
+        compaction_summary: str | None = None,
+        allowed_omitted_item_ids: Sequence[str] | None = None,
+        allow_oversized_current_omission: bool = False,
     ) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...], JournalEvent] | None:
         current_baseline = tuple(
             record
@@ -958,10 +1259,53 @@ class SqliteRuntimeStore:
             else:
                 groups.append([record])
         dropped: list[str] = []
+
+        def build_revision(
+            records_to_freeze: Sequence[ContextItemRecordV1],
+            history_status: FrozenHistoryStatusV1,
+            summary: str,
+            current_run_omitted_through_item_id: str,
+        ) -> ContextRevision:
+            try:
+                return build_context_revision(
+                    records_to_freeze,
+                    current_run_id=run_id,
+                    config=frame,
+                    maximum_tokens=frame.maximum_input_tokens,
+                    reserved_current_run_tokens=frame.reserved_current_run_tokens,
+                    omissions=omissions,
+                    memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                    history_status=history_status,
+                    compaction_summary=summary,
+                    current_run_omitted_through_item_id=current_run_omitted_through_item_id,
+                )
+            except ValueError:
+                if (
+                    not summary
+                    or compaction_summary is not None
+                    or summary == snapshot.compaction_summary
+                ):
+                    raise
+                # The deterministic fallback summary is optional metadata. It
+                # must never make an otherwise usable revision fail its
+                # current Run capacity check. A caller-supplied semantic
+                # summary is handled above and is never silently discarded.
+                return build_context_revision(
+                    records_to_freeze,
+                    current_run_id=run_id,
+                    config=frame,
+                    maximum_tokens=frame.maximum_input_tokens,
+                    reserved_current_run_tokens=frame.reserved_current_run_tokens,
+                    omissions=omissions,
+                    memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                    history_status=history_status,
+                    current_run_omitted_through_item_id=current_run_omitted_through_item_id,
+                )
+
         while True:
-            candidate_baseline = (
-                tuple(item for group in groups for item in group) + current_baseline
-            )
+            retained_history = tuple(item for group in groups for item in group)
+            candidate_baseline = retained_history + current_baseline
+            current_run_omitted_through_item_id = snapshot.current_run_omitted_through_item_id
             try:
                 omissions = (
                     *(
@@ -979,11 +1323,6 @@ class SqliteRuntimeStore:
                             if omission.source_type == "history"
                         )
                     ),
-                    *(
-                        omission
-                        for omission in snapshot.omissions
-                        if omission.source_type == "memory"
-                    ),
                 )
                 # A history status entry is only valid while its Run remains in
                 # the frozen history. Once the corresponding Turn is evicted,
@@ -997,31 +1336,76 @@ class SqliteRuntimeStore:
                         if status.turn_id not in dropped
                     )
                 )
-                candidate_full = tuple(item for group in groups for item in group) + current_all
-                revision = build_context_revision(
+                revision = build_revision(
                     candidate_baseline,
-                    current_run_id=run_id,
-                    config=frame,
-                    maximum_tokens=frame.maximum_input_tokens,
-                    reserved_current_run_tokens=frame.reserved_current_run_tokens,
-                    omissions=omissions,
-                    memory_context=FrozenMemoryContextV1.from_revision(snapshot),
-                    history_status=retained_history_status,
-                    compaction_summary=(
-                        _summarize_context_records(
+                    retained_history_status,
+                    (
+                        compaction_summary
+                        if compaction_summary is not None
+                        else _summarize_context_records(
                             tuple(record for record in records if record.turn_id in dropped)
                         )
                         if dropped
                         else snapshot.compaction_summary
                     ),
+                    snapshot.current_run_omitted_through_item_id,
                 )
+                limit = frame.maximum_input_tokens if target_tokens is None else target_tokens
                 current_extra_tokens = sum(
-                    item.estimated_tokens for item in current_all
+                    item.estimated_tokens
+                    for item in current_all
                     if item.item_id not in {ref.item_id for ref in revision.history_items}
                 )
+                candidate_full = retained_history + current_all
                 step_tokens = revision.budget.total_tokens + current_extra_tokens
-                limit = frame.maximum_input_tokens if target_tokens is None else target_tokens
-                if step_tokens > limit and revision.compaction_summary:
+                if step_tokens > limit:
+                    from ..agent.compaction import trim_context_records
+
+                    fixed_without_current = (
+                        revision.budget.total_tokens - revision.budget.current_run_tokens
+                    )
+                    current_capacity = limit - fixed_without_current
+                    if current_capacity >= 1:
+                        trimmed = trim_context_records(
+                            current_all,
+                            maximum_tokens=current_capacity,
+                            retain_latest_oversized=not allow_oversized_current_omission,
+                        )
+                        if trimmed.truncated and trimmed.retained_tokens <= current_capacity:
+                            omitted_current_ids = set(trimmed.omitted_item_ids)
+                            current_run_omitted_through_item_id = current_all[-1].item_id
+                            selected_current = tuple(
+                                item
+                                for item in current_all
+                                if item.item_id not in omitted_current_ids
+                            )
+                            candidate_baseline = retained_history + selected_current
+                            candidate_full = retained_history + selected_current
+                            current_extra_tokens = 0
+                            summary_records = tuple(
+                                record
+                                for record in records
+                                if record.turn_id in dropped
+                                or record.item_id in omitted_current_ids
+                            )
+                            revision = build_revision(
+                                candidate_baseline,
+                                retained_history_status,
+                                (
+                                    compaction_summary
+                                    if compaction_summary is not None
+                                    else _summarize_context_records(summary_records)
+                                    if summary_records
+                                    else snapshot.compaction_summary
+                                ),
+                                current_run_omitted_through_item_id,
+                            )
+                            step_tokens = revision.budget.total_tokens
+                if (
+                    step_tokens > limit
+                    and revision.compaction_summary
+                    and compaction_summary is None
+                ):
                     # A summary is useful only when it fits. Preserve the
                     # executable current Run boundary over an oversized note.
                     revision = build_context_revision(
@@ -1033,10 +1417,32 @@ class SqliteRuntimeStore:
                         omissions=omissions,
                         memory_context=FrozenMemoryContextV1.from_revision(snapshot),
                         history_status=retained_history_status,
+                        current_run_omitted_through_item_id=current_run_omitted_through_item_id,
                     )
                     step_tokens = revision.budget.total_tokens + current_extra_tokens
                 if step_tokens > limit:
                     raise ValueError("over_budget")
+                if not dropped and tuple(item.item_id for item in candidate_full) == tuple(
+                    item.item_id for item in records
+                ):
+                    # A threshold check is allowed to find that no complete
+                    # unit can be removed. Do not create a new revision that
+                    # merely repeats the current input.
+                    return None
+                if allowed_omitted_item_ids is not None:
+                    omitted_item_id_set = {item.item_id for item in records} - {
+                        item.item_id for item in candidate_full
+                    }
+                    if not omitted_item_id_set.issubset(set(allowed_omitted_item_ids)):
+                        # The summary was generated from a narrower source
+                        # than this candidate. Never persist a revision that
+                        # would omit facts the summary could not have seen.
+                        return None
+                omitted_item_ids = [
+                    item.item_id
+                    for item in records
+                    if item.item_id not in {candidate.item_id for candidate in candidate_full}
+                ]
                 revision = replace(revision, revision=snapshot.revision + 1)
                 self._connection.execute(
                     "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
@@ -1053,6 +1459,7 @@ class SqliteRuntimeStore:
                     payload={
                         "revision": revision.revision,
                         "droppedTurns": dropped,
+                        "omittedItemIds": omitted_item_ids,
                         "trigger": (
                             "threshold"
                             if target_tokens is not None
@@ -1186,7 +1593,7 @@ class SqliteRuntimeStore:
             """
             SELECT ms.outcome, r.status
             FROM model_calls ms JOIN runs r ON r.id = ms.run_id
-            WHERE ms.run_id = ? AND ms.step_ordinal = ?
+            WHERE ms.run_id = ? AND ms.step_ordinal = ? AND ms.purpose = 'execution'
             """,
             (run_id, step_ordinal),
         ).fetchone()
@@ -1317,6 +1724,14 @@ class SqliteRuntimeStore:
         request_id: str | None,
         timestamp: str,
     ) -> JournalEvent:
+        call = self._connection.execute(
+            "SELECT call_ordinal FROM model_calls "
+            "WHERE run_id = ? AND step_ordinal = ? AND purpose = 'execution'",
+            (run.id, step_ordinal),
+        ).fetchone()
+        if call is None:
+            raise RuntimeError("model response Step is not open")
+        call_ordinal = int(call["call_ordinal"])
         activity_date = local_activity_date(timestamp) if usage is not None else None
         usage_payload = _model_usage_payload(usage) if usage is not None else None
         updated = self._connection.execute(
@@ -1324,7 +1739,7 @@ class SqliteRuntimeStore:
             UPDATE model_calls
             SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
                 usage_json = ?, activity_date = ?, finished_at = ?
-            WHERE run_id = ? AND step_ordinal = ? AND outcome IS NULL
+            WHERE run_id = ? AND call_ordinal = ? AND purpose = 'execution' AND outcome IS NULL
             """,
             (
                 outcome,
@@ -1335,7 +1750,7 @@ class SqliteRuntimeStore:
                 activity_date,
                 timestamp,
                 run.id,
-                step_ordinal,
+                call_ordinal,
             ),
         )
         if updated.rowcount != 1:
@@ -1345,15 +1760,16 @@ class SqliteRuntimeStore:
             self._connection.execute(
                 """
                 INSERT INTO model_usages(
-                    thread_id, turn_id, run_id, step_ordinal, provider_id, model_id,
+                    thread_id, turn_id, run_id, call_ordinal, step_ordinal, provider_id, model_id,
                     input_tokens, cached_input_tokens, output_tokens,
                     reasoning_output_tokens, total_tokens, activity_date, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.thread_id,
                     run.turn_id,
                     run.id,
+                    call_ordinal,
                     step_ordinal,
                     run.provider_id,
                     run.model_id,
@@ -1929,7 +2345,7 @@ class SqliteRuntimeStore:
                 return ()
             open_steps = self._connection.execute(
                 """
-                SELECT step_ordinal FROM model_calls
+                SELECT call_ordinal, step_ordinal, purpose FROM model_calls
                 WHERE run_id = ? AND outcome IS NULL
                 ORDER BY step_ordinal
                 """,
@@ -2084,18 +2500,53 @@ class SqliteRuntimeStore:
                         )
                     )
             if open_steps:
-                events.append(
-                    self._finish_model_step_in_transaction(
-                        run,
-                        step_ordinal=int(open_steps[0]["step_ordinal"]),
-                        outcome=status,
-                        reason_code=reason_code,
-                        usage=None,
-                        response_model_id=None,
-                        request_id=None,
-                        timestamp=timestamp,
+                open_call = open_steps[0]
+                if open_call["purpose"] == "execution":
+                    events.append(
+                        self._finish_model_step_in_transaction(
+                            run,
+                            step_ordinal=int(open_call["step_ordinal"]),
+                            outcome=status,
+                            reason_code=reason_code,
+                            usage=None,
+                            response_model_id=None,
+                            request_id=None,
+                            timestamp=timestamp,
+                        )
                     )
-                )
+                else:
+                    updated = self._connection.execute(
+                        """UPDATE model_calls SET outcome = ?, reason_code = ?, finished_at = ?
+                           WHERE run_id = ? AND call_ordinal = ? AND outcome IS NULL""",
+                        (status, reason_code, timestamp, run_id, open_call["call_ordinal"]),
+                    )
+                    if updated.rowcount != 1:
+                        raise RuntimeError("auxiliary model call recovery failed")
+                    events.append(
+                        self._append_event(
+                            event_type="model.response_finished",
+                            thread_id=run.thread_id,
+                            branch_id=run.branch_id,
+                            turn_id=run.turn_id,
+                            run_id=run.id,
+                            timestamp=timestamp,
+                            payload={
+                                "purpose": open_call["purpose"],
+                                "callOrdinal": open_call["call_ordinal"],
+                                "providerId": run.provider_id,
+                                "modelId": run.model_id,
+                                "outcome": status,
+                                "reasonCode": reason_code,
+                                "responseModelId": None,
+                                "requestId": None,
+                                "usage": None,
+                                "activityDate": None,
+                                "finishedAt": timestamp,
+                                "turnId": run.turn_id,
+                                "runId": run.id,
+                            },
+                        )
+                    )
             self._connection.execute(
                 "UPDATE runs SET status = ?, settled_at = ?, reason_code = ? WHERE id = ?",
                 (status, timestamp, reason_code, run_id),

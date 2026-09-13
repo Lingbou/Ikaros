@@ -711,6 +711,32 @@ def test_context_revision_accepts_one_unselected_budget_boundary() -> None:
     assert parsed.omissions[0].source_id == "turn_older_boundary"
 
 
+def test_context_revision_rejects_a_current_run_boundary_outside_the_frozen_input() -> None:
+    frame, records, _snapshot = _context_revision_fixture()
+
+    with pytest.raises(ValueError, match="current Run omission boundary"):
+        build_context_revision(
+            records,
+            current_run_id=frame.run_id,
+            config=frame,
+            maximum_tokens=frame.maximum_input_tokens,
+            reserved_current_run_tokens=frame.reserved_current_run_tokens,
+            omissions=(),
+            current_run_omitted_through_item_id="item_missing",
+        )
+
+    with pytest.raises(ValueError, match="current Run omission boundary"):
+        build_context_revision(
+            records,
+            current_run_id=frame.run_id,
+            config=frame,
+            maximum_tokens=frame.maximum_input_tokens,
+            reserved_current_run_tokens=frame.reserved_current_run_tokens,
+            omissions=(),
+            current_run_omitted_through_item_id="item_old",
+        )
+
+
 @pytest.mark.parametrize(
     "omissions",
     (

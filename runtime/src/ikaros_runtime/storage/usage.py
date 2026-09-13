@@ -15,7 +15,7 @@ def read_usage(connection: sqlite3.Connection) -> UsageSnapshot:
         """
         SELECT activity_date, total_tokens
         FROM model_usages
-        ORDER BY completed_at ASC, run_id ASC, step_ordinal ASC
+        ORDER BY completed_at ASC, run_id ASC, call_ordinal ASC
         """
     ).fetchall()
 

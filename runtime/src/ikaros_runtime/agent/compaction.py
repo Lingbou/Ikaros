@@ -11,7 +11,75 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ..json_codec import dumps as json_dumps
+from ..json_codec import loads as json_loads
 from ..run_input import ContextItemRecordV1
+
+_COMPACTION_SOURCE_MAX_BYTES = 24_000
+_COMPACTION_RECORD_MAX_BYTES = 700
+_COMPACTION_ARGUMENTS_MAX_BYTES = 700
+
+
+def build_compaction_source(
+    records: Sequence[ContextItemRecordV1],
+    *,
+    max_bytes: int = _COMPACTION_SOURCE_MAX_BYTES,
+) -> str:
+    """Render bounded, explicitly untrusted source data for a summary request."""
+
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 2:
+        raise ValueError("max_bytes must be a positive integer")
+    payload: list[dict[str, object]] = []
+    for record in records:
+        content = _truncate_text(record.content.replace("\x00", " ").strip())
+        value: dict[str, object] = {
+            "itemId": record.item_id,
+            "turnId": record.turn_id,
+            "kind": record.kind,
+            "role": record.role,
+            "content": content,
+        }
+        if record.kind == "tool_call":
+            value["toolName"] = record.data.get("toolName")
+            arguments = record.data.get("arguments")
+            arguments_json = json_dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+            value["arguments"] = (
+                arguments
+                if len(arguments_json.encode("utf-8")) <= _COMPACTION_ARGUMENTS_MAX_BYTES
+                else _truncate_text(arguments_json, max_bytes=_COMPACTION_ARGUMENTS_MAX_BYTES)
+            )
+        candidate = json_dumps([*payload, value], ensure_ascii=False, separators=(",", ":"))
+        if len(candidate.encode("utf-8")) > max_bytes:
+            break
+        payload.append(value)
+    return json_dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def compaction_source_item_ids(source: str) -> tuple[str, ...]:
+    """Return the source records actually rendered in a bounded payload.
+
+    The source renderer intentionally stops at the byte budget.  Callers that
+    persist a summary must therefore verify that every omitted record was
+    represented; otherwise the resulting revision could silently discard facts
+    the summarizer never received.
+    """
+
+    decoded = json_loads(source)
+    if not isinstance(decoded, list):
+        raise ValueError("compaction source must be a JSON array")
+    item_ids: list[str] = []
+    for value in decoded:
+        if not isinstance(value, dict) or not isinstance(value.get("itemId"), str):
+            raise ValueError("compaction source record is invalid")
+        item_ids.append(value["itemId"])
+    return tuple(item_ids)
+
+
+def _truncate_text(value: str, *, max_bytes: int = _COMPACTION_RECORD_MAX_BYTES) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore") + " [truncated]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +125,7 @@ def trim_context_records(
     maximum_tokens: int,
     preserve_prefix_units: int = 1,
     preserve_suffix_units: int = 4,
+    retain_latest_oversized: bool = True,
 ) -> ContextTrimResult:
     """Keep a deterministic head/tail subset within ``maximum_tokens``.
 
@@ -95,13 +164,17 @@ def trim_context_records(
         used += costs[index]
 
     # Fill from the newest end.  This naturally retains the latest tool result
-    # and any steering message while keeping output deterministic.
+    # and any steering message while keeping output deterministic. The newest
+    # unit is mandatory: if it cannot fit, returning it makes the caller fail
+    # explicitly instead of silently hiding the latest execution fact.
     for index in range(len(units) - 1, -1, -1):
         if index in selected:
             continue
         in_suffix = index >= len(units) - preserve_suffix_units
         fits = used + costs[index] <= maximum_tokens
-        if (in_suffix or fits) and (fits or not selected):
+        if (index == len(units) - 1 and not fits and retain_latest_oversized) or (
+            (in_suffix or fits) and (fits or not selected)
+        ):
             selected.add(index)
             used += costs[index]
 
@@ -160,4 +233,10 @@ def _units(records: tuple[ContextItemRecordV1, ...]) -> tuple[tuple[ContextItemR
     return tuple(units)
 
 
-__all__ = ["ContextTrimResult", "summarize_context_records", "trim_context_records"]
+__all__ = [
+    "ContextTrimResult",
+    "build_compaction_source",
+    "compaction_source_item_ids",
+    "summarize_context_records",
+    "trim_context_records",
+]

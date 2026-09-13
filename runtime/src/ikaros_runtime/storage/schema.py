@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _FILE_CHANGES_SCHEMA = """
 CREATE TABLE file_changes (
     tool_call_item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
@@ -111,7 +111,8 @@ CREATE TABLE process_sessions (
 
 CREATE TABLE model_calls (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    step_ordinal INTEGER NOT NULL CHECK (step_ordinal >= 1),
+    call_ordinal INTEGER NOT NULL CHECK (call_ordinal >= 1),
+    step_ordinal INTEGER CHECK (step_ordinal IS NULL OR step_ordinal >= 1),
     input_json TEXT NOT NULL,
     prepared_at TEXT NOT NULL,
     purpose TEXT NOT NULL DEFAULT 'execution'
@@ -123,7 +124,9 @@ CREATE TABLE model_calls (
     usage_json TEXT,
     activity_date TEXT,
     finished_at TEXT,
-    PRIMARY KEY(run_id, step_ordinal),
+    PRIMARY KEY(run_id, call_ordinal),
+    CHECK ((purpose = 'execution' AND step_ordinal IS NOT NULL)
+           OR (purpose IN ('compression', 'completion_check') AND step_ordinal IS NULL)),
     CHECK (
         (outcome IS NULL AND reason_code IS NULL AND response_model_id IS NULL
          AND request_id IS NULL AND usage_json IS NULL AND activity_date IS NULL
@@ -145,7 +148,8 @@ CREATE TABLE model_usages (
     thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
     turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    step_ordinal INTEGER NOT NULL CHECK (step_ordinal >= 1),
+    call_ordinal INTEGER NOT NULL CHECK (call_ordinal >= 1),
+    step_ordinal INTEGER CHECK (step_ordinal IS NULL OR step_ordinal >= 1),
     provider_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
     input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
@@ -155,15 +159,18 @@ CREATE TABLE model_usages (
     total_tokens INTEGER NOT NULL CHECK (total_tokens >= 0),
     activity_date TEXT NOT NULL,
     completed_at TEXT NOT NULL,
-    PRIMARY KEY(run_id, step_ordinal),
-    FOREIGN KEY(run_id, step_ordinal)
-        REFERENCES model_calls(run_id, step_ordinal) ON DELETE CASCADE
+    PRIMARY KEY(run_id, call_ordinal),
+    FOREIGN KEY(run_id, call_ordinal)
+        REFERENCES model_calls(run_id, call_ordinal) ON DELETE CASCADE
 );
 
 CREATE INDEX model_usages_completed_at_idx
-ON model_usages(completed_at ASC, run_id ASC, step_ordinal ASC);
+ON model_usages(completed_at ASC, run_id ASC, call_ordinal ASC);
 CREATE INDEX model_usages_activity_date_idx
-ON model_usages(activity_date ASC, run_id ASC, step_ordinal ASC);
+ON model_usages(activity_date ASC, run_id ASC, call_ordinal ASC);
+
+CREATE UNIQUE INDEX model_calls_execution_step_idx
+ON model_calls(run_id, step_ordinal) WHERE purpose = 'execution';
 
 CREATE TABLE items (
     id TEXT PRIMARY KEY,

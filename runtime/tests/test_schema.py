@@ -72,6 +72,7 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             "thread_id",
             "turn_id",
             "run_id",
+            "call_ordinal",
             "step_ordinal",
             "provider_id",
             "model_id",
@@ -85,6 +86,7 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
         } == run_input_columns
         assert {
             "run_id",
+            "call_ordinal",
             "step_ordinal",
             "input_json",
             "purpose",
@@ -111,6 +113,7 @@ def test_fresh_database_creates_one_canonical_schema(tmp_path: Path) -> None:
             "items_turn_context_idx",
             "model_usages_completed_at_idx",
             "model_usages_activity_date_idx",
+            "model_calls_execution_step_idx",
         } <= indexes
     finally:
         store.close()

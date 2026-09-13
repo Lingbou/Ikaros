@@ -53,6 +53,7 @@ class RunHistoryRecord:
     created_at: str
     started_at: str | None
     model_calls: int
+    compactions: int
     settled_at: str | None
     reason_code: str | None
     items: tuple[ItemHistoryRecord, ...]
@@ -68,6 +69,7 @@ class RunHistoryRecord:
             "createdAt": self.created_at,
             "startedAt": self.started_at,
             "modelCalls": self.model_calls,
+            "compactions": self.compactions,
             "settledAt": self.settled_at,
             "reasonCode": self.reason_code,
             "items": [item.to_wire() for item in self.items],
@@ -346,7 +348,10 @@ def _run_rows_for_turns(
         f"""
         SELECT r.id, r.turn_id, r.provider_id, r.model_id, r.execution_policy, r.status,
                r.created_at, r.started_at, r.settled_at, r.reason_code,
-               (SELECT count(*) FROM model_calls mc WHERE mc.run_id = r.id) AS model_calls
+               (SELECT count(*) FROM model_calls mc
+                WHERE mc.run_id = r.id AND mc.purpose = 'execution') AS model_calls,
+               (SELECT count(*) FROM events e
+                WHERE e.run_id = r.id AND e.event_type = 'context.compacted') AS compactions
         FROM runs r JOIN run_configs rc ON rc.run_id = r.id
         WHERE turn_id IN ({placeholders})
         ORDER BY turn_id ASC, created_at ASC, id ASC
@@ -376,6 +381,7 @@ def _runs_by_turn(
                 created_at=str(row["created_at"]),
                 started_at=(str(row["started_at"]) if row["started_at"] is not None else None),
                 model_calls=int(row["model_calls"]),
+                compactions=int(row["compactions"]),
                 settled_at=(str(row["settled_at"]) if row["settled_at"] is not None else None),
                 reason_code=(str(row["reason_code"]) if row["reason_code"] is not None else None),
                 items=items_by_run.get(run_id, ()),

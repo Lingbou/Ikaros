@@ -157,7 +157,39 @@ def load_context_for_revision(
     if snapshot.history_status.runs:
         _validate_frozen_status(connection, run_id=run_id, status=snapshot.history_status)
     frozen_id_set = set(frozen_ids)
-    appended = tuple(record for record in current if record.item_id not in frozen_id_set)
+    selected_current_ids = {
+        reference.item_id
+        for reference in snapshot.history_items
+        if reference.run_id == run_id
+    }
+    selected_current_indices = tuple(
+        index for index, record in enumerate(current) if record.item_id in selected_current_ids
+    )
+    if not selected_current_indices:
+        raise ModelInputUnavailableError("model_input_unavailable")
+    # A compacted revision may intentionally omit completed items from the
+    # current Run. New items are appended after this durable omission point, so
+    # omitted items are not reintroduced after restart.
+    if snapshot.current_run_omitted_through_item_id:
+        try:
+            current_boundary = next(
+                index
+                for index, record in enumerate(current)
+                if record.item_id == snapshot.current_run_omitted_through_item_id
+            )
+        except StopIteration:
+            raise ModelInputUnavailableError("model_input_unavailable") from None
+        if any(index > current_boundary for index in selected_current_indices):
+            raise ModelInputUnavailableError("model_input_unavailable")
+    else:
+        # Revisions written before the durable current-Run boundary was added
+        # fall back to the latest selected current Item.
+        current_boundary = max(selected_current_indices)
+    appended = tuple(
+        record
+        for index, record in enumerate(current)
+        if index > current_boundary and record.item_id not in frozen_id_set
+    )
     return (*frozen, *appended)
 
 

@@ -33,7 +33,11 @@ from ..security import (
     json_contains_protected_value,
     json_values_contain_protected_value,
 )
-from .context_history import load_context_for_revision, select_context_revision
+from .context_history import (
+    load_context_for_revision,
+    load_current_run_context,
+    select_context_revision,
+)
 from .file_changes import file_tool_call, resolve_file_tool_path
 from .processes import project_process
 
@@ -123,13 +127,17 @@ def contains_protected_projection_values(
             return True
     for row in connection.execute(
         """
-        SELECT input_json, response_model_id, request_id, usage_json
+        SELECT purpose, input_json, response_model_id, request_id, usage_json
         FROM model_calls
         """
     ).fetchall():
         # Step Manifests and usage contain no user/Provider text: only frozen
         # references, controlled provenance, and numeric counters.
-        StepInput.from_wire(json_loads(str(row["input_json"])))
+        input_value = json_loads(str(row["input_json"]))
+        if row["purpose"] == "execution":
+            StepInput.from_wire(input_value)
+        elif not isinstance(input_value, dict):
+            raise RuntimeError("auxiliary model input is invalid")
         usage_json = row["usage_json"]
         if usage_json is not None:
             json_loads(str(usage_json))
@@ -734,6 +742,61 @@ def apply_event(
             raise RuntimeError("process event scope is invalid")
         project_process(connection, record)
     elif event_type == "model.input_prepared":
+        if payload.get("purpose") in {"compression", "completion_check"}:
+            _require_keys(
+                payload,
+                {"purpose", "callOrdinal", "preparedAt", "input", "turnId", "runId"},
+            )
+            if not isinstance(payload["input"], dict):
+                raise RuntimeError("auxiliary model input is invalid")
+            _require_positive_integer("auxiliary model call ordinal", payload["callOrdinal"])
+            _require_string("auxiliary model preparedAt", payload["preparedAt"])
+            _require_equal(
+                "auxiliary model preparation time", payload["preparedAt"], event.timestamp
+            )
+            _require_payload_scope(payload, event, item_required=False)
+            _require_event_scope(
+                event,
+                thread_id=event.thread_id,
+                branch_id=event.branch_id,
+                turn_id=event.turn_id,
+                run_id=event.run_id,
+                item_id=None,
+            )
+            _require_existing_run_scope(connection, event)
+            running = connection.execute(
+                "SELECT status FROM runs WHERE id = ?", (event.run_id,)
+            ).fetchone()
+            if running is None or running["status"] != "running":
+                raise RuntimeError("auxiliary model input requires a running Run")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM model_calls WHERE run_id = ? AND outcome IS NULL",
+                    (event.run_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise RuntimeError("Run already has an unfinished model call")
+            expected = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(call_ordinal), 0) + 1 FROM model_calls WHERE run_id = ?",
+                    (event.run_id,),
+                ).fetchone()[0]
+            )
+            _require_equal("auxiliary model call ordinal", payload["callOrdinal"], expected)
+            connection.execute(
+                """INSERT INTO model_calls(
+                    run_id, call_ordinal, step_ordinal, input_json, prepared_at, purpose
+                ) VALUES (?, ?, NULL, ?, ?, ?)""",
+                (
+                    event.run_id,
+                    expected,
+                    canonical_json(payload["input"]),
+                    payload["preparedAt"],
+                    payload["purpose"],
+                ),
+            )
+            return
         _require_keys(
             payload,
             {
@@ -772,7 +835,8 @@ def apply_event(
             raise RuntimeError("Run already has an unfinished model Step")
         expected_ordinal = int(
             connection.execute(
-                "SELECT COALESCE(MAX(step_ordinal), 0) + 1 FROM model_calls WHERE run_id = ?",
+                "SELECT COALESCE(MAX(step_ordinal), 0) + 1 FROM model_calls "
+                "WHERE run_id = ? AND purpose = 'execution'",
                 (event.run_id,),
             ).fetchone()[0]
         )
@@ -822,17 +886,129 @@ def apply_event(
         connection.execute(
             """
             INSERT INTO model_calls(
-                run_id, step_ordinal, input_json, prepared_at
-            ) VALUES (?, ?, ?, ?)
+                run_id, call_ordinal, step_ordinal, input_json, prepared_at
+            ) VALUES (?, ?, ?, ?, ?)
             """,
             (
                 event.run_id,
+                int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(call_ordinal), 0) + 1 FROM model_calls "
+                        "WHERE run_id = ?",
+                        (event.run_id,),
+                    ).fetchone()[0]
+                ),
                 expected_ordinal,
                 canonical_json(step_input.to_wire()),
                 payload["preparedAt"],
             ),
         )
     elif event_type == "model.response_finished":
+        if payload.get("purpose") in {"compression", "completion_check"}:
+            _require_keys(
+                payload,
+                {
+                    "purpose",
+                    "callOrdinal",
+                    "providerId",
+                    "modelId",
+                    "outcome",
+                    "reasonCode",
+                    "responseModelId",
+                    "requestId",
+                    "activityDate",
+                    "usage",
+                    "finishedAt",
+                    "turnId",
+                    "runId",
+                },
+            )
+            _require_positive_integer("auxiliary model call ordinal", payload["callOrdinal"])
+            _require_string("auxiliary model providerId", payload["providerId"])
+            _require_string("auxiliary model modelId", payload["modelId"])
+            _require_choice(
+                "auxiliary model outcome", payload["outcome"], {"completed", "failed", "cancelled"}
+            )
+            _require_string("auxiliary model finishedAt", payload["finishedAt"])
+            _require_equal("auxiliary model finish time", payload["finishedAt"], event.timestamp)
+            _require_payload_scope(payload, event, item_required=False)
+            _require_existing_run_scope(connection, event)
+            run = connection.execute(
+                "SELECT provider_id, model_id, status FROM runs WHERE id = ?", (event.run_id,)
+            ).fetchone()
+            if run is None or run["status"] != "running":
+                raise RuntimeError("auxiliary model completion requires a running Run")
+            if (run["provider_id"], run["model_id"]) != (payload["providerId"], payload["modelId"]):
+                raise RuntimeError("auxiliary model Provider or Model does not match its Run")
+            call = connection.execute(
+                "SELECT outcome FROM model_calls "
+                "WHERE run_id = ? AND call_ordinal = ? AND purpose = ?",
+                (event.run_id, payload["callOrdinal"], payload["purpose"]),
+            ).fetchone()
+            if call is None or call["outcome"] is not None:
+                raise RuntimeError("auxiliary model call is not open")
+            reason = payload["reasonCode"]
+            if payload["outcome"] == "completed" and reason is not None:
+                raise RuntimeError("completed auxiliary model call has a failure reason")
+            if payload["outcome"] != "completed":
+                _require_string("auxiliary model reasonCode", reason)
+            usage_value = payload["usage"]
+            activity_date = payload["activityDate"]
+            auxiliary_usage = None
+            if usage_value is not None:
+                if payload["outcome"] != "completed":
+                    raise RuntimeError("failed auxiliary model call cannot record usage")
+                auxiliary_usage = _record(payload, "usage", _MODEL_USAGE_KEYS)
+                _validate_model_usage(1, auxiliary_usage)
+                _require_activity_date(activity_date)
+            elif activity_date is not None:
+                raise RuntimeError("auxiliary model activity date has no usage")
+            response_model_id = payload["responseModelId"]
+            request_id = payload["requestId"]
+            _require_safe_response_identifier("response model ID", response_model_id)
+            _require_safe_response_identifier("request ID", request_id)
+            connection.execute(
+                """UPDATE model_calls SET outcome = ?, reason_code = ?, response_model_id = ?,
+                    request_id = ?, usage_json = ?, activity_date = ?, finished_at = ?
+                    WHERE run_id = ? AND call_ordinal = ? AND purpose = ? AND outcome IS NULL""",
+                (
+                    payload["outcome"],
+                    reason,
+                    response_model_id,
+                    request_id,
+                    canonical_json(auxiliary_usage) if auxiliary_usage is not None else None,
+                    activity_date,
+                    payload["finishedAt"],
+                    event.run_id,
+                    payload["callOrdinal"],
+                    payload["purpose"],
+                ),
+            )
+            if auxiliary_usage is not None:
+                connection.execute(
+                    """INSERT INTO model_usages(
+                        thread_id, turn_id, run_id, call_ordinal, step_ordinal,
+                        provider_id, model_id,
+                        input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
+                        total_tokens, activity_date, completed_at
+                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        event.thread_id,
+                        event.turn_id,
+                        event.run_id,
+                        payload["callOrdinal"],
+                        payload["providerId"],
+                        payload["modelId"],
+                        auxiliary_usage["inputTokens"],
+                        auxiliary_usage["cachedInputTokens"],
+                        auxiliary_usage["outputTokens"],
+                        auxiliary_usage["reasoningOutputTokens"],
+                        auxiliary_usage["totalTokens"],
+                        activity_date,
+                        payload["finishedAt"],
+                    ),
+                )
+            return
         _require_keys(
             payload,
             {
@@ -875,7 +1051,7 @@ def apply_event(
             raise RuntimeError("model response Provider or Model does not match its Run")
         step = connection.execute(
             """
-            SELECT outcome FROM model_calls
+            SELECT outcome, call_ordinal FROM model_calls
             WHERE run_id = ? AND step_ordinal = ?
             """,
             (event.run_id, payload["stepOrdinal"]),
@@ -911,7 +1087,7 @@ def apply_event(
             UPDATE model_calls
             SET outcome = ?, reason_code = ?, response_model_id = ?, request_id = ?,
                 usage_json = ?, activity_date = ?, finished_at = ?
-            WHERE run_id = ? AND step_ordinal = ? AND outcome IS NULL
+            WHERE run_id = ? AND call_ordinal = ? AND purpose = 'execution' AND outcome IS NULL
             """,
             (
                 outcome,
@@ -922,7 +1098,7 @@ def apply_event(
                 activity_date,
                 payload["finishedAt"],
                 event.run_id,
-                payload["stepOrdinal"],
+                step["call_ordinal"],
             ),
         )
         _require_one_update(updated, event_type)
@@ -930,15 +1106,16 @@ def apply_event(
             connection.execute(
                 """
                 INSERT INTO model_usages(
-                    thread_id, turn_id, run_id, step_ordinal, provider_id, model_id,
+                    thread_id, turn_id, run_id, call_ordinal, step_ordinal, provider_id, model_id,
                     input_tokens, cached_input_tokens, output_tokens,
                     reasoning_output_tokens, total_tokens, activity_date, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.thread_id,
                     event.turn_id,
                     event.run_id,
+                    step["call_ordinal"],
                     payload["stepOrdinal"],
                     payload["providerId"],
                     payload["modelId"],
@@ -1103,7 +1280,7 @@ def apply_event(
         _require_keys(
             payload,
             {"revision", "droppedTurns", "contextRevision"},
-            {"turnId", "runId", "trigger", "targetTokens"},
+            {"turnId", "runId", "omittedItemIds", "trigger", "targetTokens"},
         )
         if event.run_id is None or event.thread_id is None or event.branch_id is None:
             raise RuntimeError("context compaction event has incomplete scope")
@@ -1126,6 +1303,13 @@ def apply_event(
             or any(not isinstance(turn_id, str) or not turn_id for turn_id in dropped)
         ):
             raise RuntimeError("context compaction event metadata is invalid")
+        omitted_item_ids = payload.get("omittedItemIds")
+        if omitted_item_ids is not None and (
+            not isinstance(omitted_item_ids, list)
+            or any(not isinstance(item_id, str) or not item_id for item_id in omitted_item_ids)
+            or len(omitted_item_ids) != len(set(omitted_item_ids))
+        ):
+            raise RuntimeError("context compaction event metadata is invalid")
         trigger = payload.get("trigger", "budget_exceeded")
         target_tokens = payload.get("targetTokens")
         if trigger not in {"budget_exceeded", "threshold"} or (
@@ -1144,18 +1328,65 @@ def apply_event(
         if revision.revision != revision_value:
             raise RuntimeError("context compaction event revision does not match payload")
         run = connection.execute(
-            "SELECT id FROM runs WHERE id = ? AND turn_id = ?",
+            """SELECT r.id, t.branch_id FROM runs r JOIN turns t ON t.id = r.turn_id
+               WHERE r.id = ? AND r.turn_id = ?""",
             (event.run_id, event.turn_id),
         ).fetchone()
         if run is None:
             raise RuntimeError("context compaction event Run scope is invalid")
+        if len(dropped) != len(set(dropped)):
+            raise RuntimeError("context compaction dropped Turns are not unique")
+        dropped_rows = connection.execute(
+            "SELECT id FROM turns WHERE branch_id = ? AND id IN ({})".format(
+                ",".join("?" for _ in dropped) or "NULL"
+            ),
+            (run["branch_id"], *dropped),
+        ).fetchall()
+        if {str(row["id"]) for row in dropped_rows} != set(dropped):
+            raise RuntimeError("context compaction dropped Turn scope is invalid")
+        if revision_value == 1:
+            raise RuntimeError("context compaction must advance an existing revision")
+        previous_row = connection.execute(
+            "SELECT record_json FROM context_revisions WHERE run_id = ? AND revision = ?",
+            (event.run_id, revision_value - 1),
+        ).fetchone()
+        if previous_row is None:
+            raise RuntimeError("context compaction revision is not contiguous")
+        previous = ContextRevision.from_wire(json_loads(str(previous_row["record_json"])))
+        previous_ids = {reference.item_id for reference in previous.history_items}
+        visible_pool = previous_ids | {
+            record.item_id for record in load_current_run_context(connection, run_id=event.run_id)
+        }
+        revision_ids = {reference.item_id for reference in revision.history_items}
+        if not revision_ids <= visible_pool:
+            raise RuntimeError("context compaction revision introduces unknown input")
+        expected_omitted = visible_pool - revision_ids
+        if not set(omitted_item_ids or ()) <= expected_omitted:
+            raise RuntimeError("context compaction omitted items do not match the revision")
+        if any(item_id in revision_ids for item_id in (omitted_item_ids or ())):
+            raise RuntimeError("context compaction omitted item remains visible")
+        tool_rows = connection.execute(
+            "SELECT id, kind, data_json FROM items WHERE id IN ({})".format(
+                ",".join("?" for _ in visible_pool) or "NULL"
+            ),
+            tuple(visible_pool),
+        ).fetchall()
+        paired: dict[str, set[str]] = {}
+        for row in tool_rows:
+            data = json_loads(str(row["data_json"]))
+            call_id = data.get("callId")
+            if isinstance(call_id, str) and call_id:
+                paired.setdefault(call_id, set()).add(str(row["id"]))
+        omitted_set = set(omitted_item_ids or ())
+        for pair in paired.values():
+            if bool(pair & omitted_set) != (pair <= omitted_set):
+                raise RuntimeError("context compaction splits a tool call and result")
         existing = connection.execute(
             "SELECT record_json FROM context_revisions WHERE run_id = ? AND revision = ?",
             (event.run_id, revision_value),
         ).fetchone()
-        if (
-            existing is not None
-            and str(existing["record_json"]) != canonical_json(revision.to_wire())
+        if existing is not None and str(existing["record_json"]) != canonical_json(
+            revision.to_wire()
         ):
             raise RuntimeError("context compaction revision conflicts with stored record")
         if existing is None:
@@ -1163,6 +1394,14 @@ def apply_event(
                 "INSERT INTO context_revisions(run_id, revision, record_json) VALUES (?, ?, ?)",
                 (event.run_id, revision_value, canonical_json(revision.to_wire())),
             )
+        boundary = revision.current_run_omitted_through_item_id
+        if boundary:
+            owner = connection.execute(
+                "SELECT run_id FROM items WHERE id = ?",
+                (boundary,),
+            ).fetchone()
+            if owner is None or owner["run_id"] != event.run_id:
+                raise RuntimeError("context compaction omission boundary is invalid")
     else:
         raise RuntimeError(f"journal event type is unsupported: {event_type}")
 

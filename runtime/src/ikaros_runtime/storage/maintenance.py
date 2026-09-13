@@ -25,8 +25,8 @@ _PROJECTION_TABLES = (
     ("context_revisions", "run_id, revision"),
     ("process_sessions", "process_id"),
     ("items", "id"),
-    ("model_calls", "run_id, step_ordinal"),
-    ("model_usages", "run_id, step_ordinal"),
+    ("model_calls", "run_id, call_ordinal"),
+    ("model_usages", "run_id, call_ordinal"),
     ("file_changes", "tool_call_item_id"),
 )
 

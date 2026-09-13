@@ -192,12 +192,16 @@ def _notification_name(event: JournalEvent, occurrence: int) -> str:
     if event.type == "run.state_changed":
         return f"run-{payload['status']}"
     if event.type == "model.input_prepared":
+        if payload.get("purpose") is not None:
+            return f"model-input-prepared-{payload['purpose']}"
         return (
             "model-input-prepared"
             if payload["stepOrdinal"] == 1
             else f"model-input-prepared-step-{payload['stepOrdinal']}"
         )
     if event.type == "model.response_finished":
+        if payload.get("purpose") is not None:
+            return f"model-response-finished-{payload['purpose']}"
         return (
             "model-response-finished"
             if payload["stepOrdinal"] == 1

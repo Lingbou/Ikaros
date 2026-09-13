@@ -903,6 +903,7 @@ class ContextRevision:
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
     memory_context_characters: int = 0
     compaction_summary: str = ""
+    current_run_omitted_through_item_id: str = ""
 
     def __post_init__(self) -> None:
         _positive("Context revision", self.revision)
@@ -910,6 +911,14 @@ class ContextRevision:
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if not isinstance(self.compaction_summary, str) or len(self.compaction_summary) > 6000:
             raise ValueError("Context compaction summary is invalid")
+        if not isinstance(self.current_run_omitted_through_item_id, str):
+            raise ValueError("Context current Run omission boundary is invalid")
+        if self.current_run_omitted_through_item_id:
+            _runtime_id(
+                "Context current Run omission boundary Item ID",
+                self.current_run_omitted_through_item_id,
+                "item_",
+            )
         _validate_history_groups(self.history_groups, self.history_items)
         _validate_budget_history_counts(self.history_items, self.budget)
         _validate_context_snapshot_slots(
@@ -941,12 +950,23 @@ class ContextRevision:
         }
         if self.compaction_summary:
             payload["compactionSummary"] = self.compaction_summary
+        if self.current_run_omitted_through_item_id:
+            payload["currentRunOmittedThroughItemId"] = self.current_run_omitted_through_item_id
         return payload
 
     @classmethod
     def from_wire(cls, value: object) -> ContextRevision:
-        if isinstance(value, dict) and "compactionSummary" not in value:
-            value = {**value, "compactionSummary": ""}
+        boundary_present = (
+            isinstance(value, dict) and "currentRunOmittedThroughItemId" in value
+        )
+        if isinstance(value, dict):
+            value = {
+                **value,
+                "compactionSummary": value.get("compactionSummary", ""),
+                "currentRunOmittedThroughItemId": value.get(
+                    "currentRunOmittedThroughItemId", ""
+                ),
+            }
         row = _object(value, "Context revision", _CONTEXT_REVISION_KEYS)
         return cls(
             revision=_as_int(row["revision"]),
@@ -968,6 +988,9 @@ class ContextRevision:
             history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
             compaction_summary=_as_str(row.get("compactionSummary", ""), allow_empty=True),
+            current_run_omitted_through_item_id=_as_str(
+                row["currentRunOmittedThroughItemId"], allow_empty=not boundary_present
+            ),
         )
 
 
@@ -983,10 +1006,13 @@ class StepInput:
     omissions: tuple[OmissionRecordV1, ...]
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
     memory_context_characters: int = 0
+    compaction_summary: str = ""
 
     def __post_init__(self) -> None:
         _positive("Step ordinal", self.step_ordinal)
         _positive("Context revision", self.context_revision)
+        if not isinstance(self.compaction_summary, str) or len(self.compaction_summary) > 6000:
+            raise ValueError("Step input compaction summary is invalid")
         for name in ("history_items", "memory", "omissions"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         _validate_unique_history_items(self.history_items)
@@ -998,11 +1024,12 @@ class StepInput:
             history_status=self.history_status,
             history_items=self.history_items,
             memory_context_characters=self.memory_context_characters,
+            compaction_summary=self.compaction_summary,
             selected_turn_ids=tuple(item.turn_id for item in self.history_items),
         )
 
     def to_wire(self) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "stepOrdinal": self.step_ordinal,
             "contextRevision": self.context_revision,
             "historyItems": [item.to_wire() for item in self.history_items],
@@ -1012,9 +1039,14 @@ class StepInput:
             "historyStatus": self.history_status.to_wire(),
             "memoryContextCharacters": self.memory_context_characters,
         }
+        if self.compaction_summary:
+            payload["compactionSummary"] = self.compaction_summary
+        return payload
 
     @classmethod
     def from_wire(cls, value: object) -> StepInput:
+        if isinstance(value, dict) and "compactionSummary" not in value:
+            value = {**value, "compactionSummary": ""}
         row = _object(value, "Step input", _STEP_INPUT_KEYS)
         return cls(
             step_ordinal=_as_int(row["stepOrdinal"]),
@@ -1032,6 +1064,7 @@ class StepInput:
             ),
             history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
+            compaction_summary=_as_str(row.get("compactionSummary", ""), allow_empty=True),
         )
 
 
@@ -1062,6 +1095,7 @@ def build_context_revision(
     memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
     compaction_summary: str = "",
+    current_run_omitted_through_item_id: str = "",
 ) -> ContextRevision:
     if (
         maximum_tokens != config.maximum_input_tokens
@@ -1097,6 +1131,7 @@ def build_context_revision(
         history_status=history_status,
         memory_context_characters=memory_context.context_data_characters,
         compaction_summary=compaction_summary,
+        current_run_omitted_through_item_id=current_run_omitted_through_item_id,
         history_groups=tuple(groups),
         history_items=references,
         memory=memory_context.memory,
@@ -1175,6 +1210,7 @@ def build_step_input(
     return StepInput(
         history_status=snapshot.history_status,
         memory_context_characters=snapshot.memory_context_characters,
+        compaction_summary=snapshot.compaction_summary,
         step_ordinal=step_ordinal,
         context_revision=snapshot.revision,
         history_items=references,
@@ -1583,6 +1619,7 @@ _CONTEXT_REVISION_KEYS = {
     "historyStatus",
     "memoryContextCharacters",
     "compactionSummary",
+    "currentRunOmittedThroughItemId",
 }
 _STEP_INPUT_KEYS = {
     "stepOrdinal",
@@ -1593,4 +1630,5 @@ _STEP_INPUT_KEYS = {
     "omissions",
     "historyStatus",
     "memoryContextCharacters",
+    "compactionSummary",
 }
