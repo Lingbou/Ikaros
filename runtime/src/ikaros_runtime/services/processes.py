@@ -49,7 +49,10 @@ class ProcessService:
                 raise InvalidParamsError(
                     "cursor is outside the retained command output."
                 ) from error
-            page = output.encode("utf-8")[cursor : cursor + 16 * 1024].decode(
+            # Process cursors are Unicode-character offsets in both the live
+            # manager and the restart fallback. Limit the page by UTF-8 bytes
+            # without changing the cursor's unit.
+            page = output[cursor:].encode("utf-8")[: 16 * 1024].decode(
                 "utf-8", errors="ignore"
             )
             next_cursor = cursor + len(page)

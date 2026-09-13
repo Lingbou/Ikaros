@@ -15,6 +15,7 @@ import pytest
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JsonObject
 from ikaros_runtime.errors import RunCancelled
+from ikaros_runtime.services.processes import ProcessService
 from ikaros_runtime.tools import (
     FullAccessPolicy,
     ProcessManager,
@@ -50,6 +51,27 @@ def _executor(manager: ProcessManager) -> ToolExecutor:
         ),
         FullAccessPolicy(),
     )
+
+
+def test_restart_process_read_uses_unicode_character_cursors() -> None:
+    class RestartStore:
+        def process_records(self) -> list[JsonObject]:
+            return [
+                {
+                    "processId": "process_restarted",
+                    "threadId": "thread_test",
+                    "output": "中文 output",
+                }
+            ]
+
+    service = ProcessService(ProcessManager(), cast(Any, RestartStore()))
+
+    page = service.read(
+        {"threadId": "thread_test", "processId": "process_restarted", "cursor": 1}
+    )
+
+    assert page["output"] == "文 output"
+    assert page["nextCursor"] == len("中文 output")
 
 
 def _command(*, windows: str, posix: str) -> str:
