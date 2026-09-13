@@ -213,6 +213,8 @@ export interface RuntimeRunProgress {
   startedAt: string | null;
   settledAt: string | null;
   modelCalls: number;
+  compactions?: number;
+  compacting?: boolean;
 }
 
 export interface Turn {

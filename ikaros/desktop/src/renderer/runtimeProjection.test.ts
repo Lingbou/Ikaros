@@ -970,6 +970,42 @@ describe("Runtime execution progress projection", () => {
     }]);
     expect(history.branches[0]?.turns[0]?.runProgress).toEqual(expected);
   });
+
+  it("shows context compaction while the next model input is being prepared", () => {
+    const user = messageItem(
+      "user-compaction",
+      "turn-compaction",
+      "run-compaction",
+      "user",
+      "Do the task",
+      "completed",
+    );
+    let projected = replayRuntimeEvents(projectRuntimeThreads([summary]), [
+      event(1, "item.completed", user.turnId, user.runId, user.id, {
+        item: user,
+        run: { createdAt: summary.createdAt },
+      }),
+      event(2, "run.state_changed", user.turnId, user.runId, null, { status: "running" }),
+      event(3, "model.input_prepared", user.turnId, user.runId, null, { stepOrdinal: 1 }),
+      event(4, "context.compacted", user.turnId, user.runId, null, {
+        revision: 2,
+        droppedTurns: ["turn-old"],
+        contextRevision: {},
+      }),
+    ]);
+    expect(projected[0]?.branches[0]?.turns[0]?.runProgress).toMatchObject({
+      compactions: 1,
+      compacting: true,
+    });
+
+    projected = replayRuntimeEvents(projected, [
+      event(5, "model.input_prepared", user.turnId, user.runId, null, { stepOrdinal: 2 }),
+    ]);
+    expect(projected[0]?.branches[0]?.turns[0]?.runProgress).toMatchObject({
+      compactions: 1,
+      compacting: false,
+    });
+  });
 });
 
 

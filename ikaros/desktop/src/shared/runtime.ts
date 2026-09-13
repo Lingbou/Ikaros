@@ -268,6 +268,7 @@ export interface RuntimeRunHistory {
   startedAt: string | null;
   settledAt: string | null;
   modelCalls: number;
+  compactions?: number;
   items: RuntimeItemHistory[];
 }
 

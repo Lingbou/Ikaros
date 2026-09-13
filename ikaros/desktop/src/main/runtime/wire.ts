@@ -433,6 +433,22 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
   }
 
   if (event.type === "model.input_prepared") {
+    if (payload.purpose === "compression" || payload.purpose === "completion_check") {
+      if (
+        !hasRunEventScope(event, false) ||
+        !hasExactKeys(payload, [
+          "purpose", "callOrdinal", "preparedAt", "input", "turnId", "runId"
+        ]) ||
+        (payload.purpose !== "compression" && payload.purpose !== "completion_check") ||
+        !isSafePositiveInteger(payload.callOrdinal) ||
+        payload.preparedAt !== event.timestamp ||
+        !isWireObject(payload.input) ||
+        payload.turnId !== event.turnId || payload.runId !== event.runId
+      ) {
+        invalidJournalEventPayload(event.type);
+      }
+      return;
+    }
     if (
       !hasRunEventScope(event, false) ||
       !hasScopedPayloadKeys(event, [
@@ -485,6 +501,31 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
   }
 
   if (event.type === "model.response_finished") {
+    if (payload.purpose === "compression" || payload.purpose === "completion_check") {
+      const usageValid = payload.usage === null
+        ? payload.activityDate === null
+        : payload.outcome === "completed" &&
+          isCanonicalCalendarDate(payload.activityDate) && isModelUsage(payload.usage);
+      const reasonValid = payload.outcome === "completed"
+        ? payload.reasonCode === null : isWireIdentifier(payload.reasonCode);
+      if (
+        !hasRunEventScope(event, false) ||
+        !hasExactKeys(payload, [
+          "purpose", "callOrdinal", "providerId", "modelId", "outcome", "reasonCode",
+          "responseModelId", "requestId", "usage", "activityDate", "finishedAt", "turnId", "runId"
+        ]) ||
+        !isSafePositiveInteger(payload.callOrdinal) ||
+        !isNonEmptyString(payload.providerId) || !isNonEmptyString(payload.modelId) ||
+        (payload.outcome !== "completed" && payload.outcome !== "failed" && payload.outcome !== "cancelled") ||
+        !reasonValid || !isNullableWireIdentifier(payload.responseModelId) ||
+        !isNullableWireIdentifier(payload.requestId) || !usageValid ||
+        payload.finishedAt !== event.timestamp || payload.turnId !== event.turnId ||
+        payload.runId !== event.runId
+      ) {
+        invalidJournalEventPayload(event.type);
+      }
+      return;
+    }
     const usageValid =
       payload.usage === null
         ? payload.activityDate === null
@@ -556,13 +597,26 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
   if (event.type === "context.compacted") {
     if (
       !hasRunEventScope(event, false) ||
-      !hasScopedPayloadKeys(event, ["revision", "droppedTurns", "contextRevision"]) ||
+      !hasScopedPayloadKeys(
+        event,
+        ["revision", "droppedTurns", "contextRevision"],
+        ["omittedItemIds", "trigger", "targetTokens"]
+      ) ||
       typeof payload.revision !== "number" ||
       !Number.isInteger(payload.revision) ||
       payload.revision < 1 ||
       !Array.isArray(payload.droppedTurns) ||
       !payload.droppedTurns.every((id) => typeof id === "string" && id.length > 0) ||
-      !isWireObject(payload.contextRevision)
+      (payload.omittedItemIds !== undefined &&
+        (!Array.isArray(payload.omittedItemIds) ||
+          new Set(payload.omittedItemIds).size !== payload.omittedItemIds.length ||
+          !payload.omittedItemIds.every((id) => isWireIdentifier(id)))) ||
+      !isWireObject(payload.contextRevision) ||
+      !isContextRevision(payload.contextRevision, event.runId) ||
+      (payload.trigger !== undefined &&
+        payload.trigger !== "budget_exceeded" &&
+        payload.trigger !== "threshold") ||
+      (payload.targetTokens !== undefined && !isSafePositiveInteger(payload.targetTokens))
     ) {
       invalidJournalEventPayload(event.type);
     }
@@ -1109,9 +1163,10 @@ function isContextRevision(value: unknown, currentRunId: unknown): boolean {
   if (!isWireObject(value)) return false;
   const memory = value.memory;
   const budget = value.budget;
+  const compactionSummary = value.compactionSummary;
   if (
     !isWireIdentifier(currentRunId) ||
-    !hasExactKeys(value, [
+    !hasRequiredAndOptionalKeys(value, [
       "revision",
       "historyGroups",
       "historyItems",
@@ -1119,7 +1174,7 @@ function isContextRevision(value: unknown, currentRunId: unknown): boolean {
       "budget",
       "omissions",
       "historyStatus", "memoryContextCharacters"
-    ]) ||
+    ], ["compactionSummary", "currentRunOmittedThroughItemId"]) ||
     !isSafePositiveInteger(value.revision) ||
     !Array.isArray(value.historyGroups) ||
     value.historyGroups.length === 0 ||
@@ -1130,7 +1185,14 @@ function isContextRevision(value: unknown, currentRunId: unknown): boolean {
     !isMemoryReferenceList(memory) ||
     !isInputBudget(budget) ||
     !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(budget, memory, value.historyStatus, value.memoryContextCharacters) ||
+    !isMemoryBudgetForReferences(
+      budget, memory, value.historyStatus, value.memoryContextCharacters, compactionSummary
+    ) ||
+    (compactionSummary !== undefined &&
+      (typeof compactionSummary !== "string" || [...compactionSummary].length > 6000)) ||
+    (value.currentRunOmittedThroughItemId !== undefined &&
+      (typeof value.currentRunOmittedThroughItemId !== "string" ||
+        !/^item_[0-9a-f]{32}$/.test(value.currentRunOmittedThroughItemId))) ||
     !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
     !isContextOmissionList(value.omissions, memory) ||
     budget.totalTokens + budget.reservedCurrentRunTokens > budget.maximumTokens
@@ -1191,13 +1253,14 @@ function isStepInput(
   contextRevision: unknown,
   currentRunId: unknown
 ): boolean {
+  const compactionSummary = isWireObject(value) ? value.compactionSummary : undefined;
   if (
     !isWireObject(value) ||
     !isWireIdentifier(currentRunId) ||
-    !hasExactKeys(value, [
+    !hasRequiredAndOptionalKeys(value, [
       "stepOrdinal", "contextRevision", "historyItems", "memory", "budget",
       "omissions", "historyStatus", "memoryContextCharacters"
-    ]) ||
+    ], ["compactionSummary"]) ||
     value.stepOrdinal !== stepOrdinal ||
     !isSafePositiveInteger(value.contextRevision) ||
     !Array.isArray(value.historyItems) ||
@@ -1208,8 +1271,14 @@ function isStepInput(
     !isInputBudget(value.budget) ||
     !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
     !isMemoryBudgetForReferences(
-      value.budget, value.memory, value.historyStatus, value.memoryContextCharacters
+      value.budget,
+      value.memory,
+      value.historyStatus,
+      value.memoryContextCharacters,
+      compactionSummary
     ) ||
+    (compactionSummary !== undefined &&
+      (typeof compactionSummary !== "string" || [...compactionSummary].length > 6000)) ||
     !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
     !isContextOmissionList(value.omissions, value.memory)
   ) {
@@ -1236,6 +1305,7 @@ function isStepInput(
     !sameWireValue(value.omissions, contextRevision.omissions) ||
     !sameWireValue(value.historyStatus, contextRevision.historyStatus) ||
     value.memoryContextCharacters !== contextRevision.memoryContextCharacters ||
+    (value.compactionSummary ?? "") !== (contextRevision.compactionSummary ?? "") ||
     !isInputBudget(contextRevision.budget)
   ) {
     return false;
@@ -1306,7 +1376,8 @@ function isMemoryBudgetForReferences(
   budget: { memoryTokens: number; contextDataTokens: number },
   references: MemoryReferenceWire[],
   historyStatus: unknown,
-  wrapperCharacters: unknown
+  wrapperCharacters: unknown,
+  compactionSummary: unknown = ""
 ): boolean {
   if (
     !isSafeNonNegativeInteger(wrapperCharacters) ||
@@ -1319,10 +1390,11 @@ function isMemoryBudgetForReferences(
     `${HISTORY_STATUS_PREAMBLE}\n${canonicalJson({ version: 1, runs: historyStatus.runs })}`, "utf8"
   ) + 64;
   const characters = references.reduce((total, reference) => total + reference.characters, 0);
+  const summaryCharacters = typeof compactionSummary === "string" ? [...compactionSummary].length : 0;
   return (
     characters <= MEMORY_CONTEXT_MAX_CHARACTERS &&
     budget.memoryTokens === characters * 4 &&
-    budget.contextDataTokens === wrapperCharacters * 4 + statusTokens &&
+    budget.contextDataTokens === wrapperCharacters * 4 + statusTokens + summaryCharacters * 4 &&
     (references.length === 0 ? wrapperCharacters === 0 : wrapperCharacters > 0)
   );
 }
@@ -1947,10 +2019,10 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     run.status === "completed" || run.status === "failed" || run.status === "cancelled";
   const reasonCode = run.reasonCode;
   if (
-    !hasExactKeys(value, [
+    !hasRequiredAndOptionalKeys(value, [
       "id", "turnId", "providerId", "modelId", "executionPolicy", "status", "reasonCode",
       "createdAt", "startedAt", "settledAt", "modelCalls", "items"
-    ]) ||
+    ], ["compactions"]) ||
     !isWireIdentifier(run.id) ||
     run.turnId !== turnId ||
     !isNonEmptyString(run.providerId) ||
@@ -1965,6 +2037,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     (run.status === "queued" && run.startedAt !== null) ||
     (run.status === "running" && run.startedAt === null) ||
     !isSafeNonNegativeInteger(run.modelCalls) ||
+    (run.compactions !== undefined && !isSafeNonNegativeInteger(run.compactions)) ||
     (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
     !Array.isArray(run.items)
   ) {
@@ -1994,6 +2067,9 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     startedAt: run.startedAt as string | null,
     settledAt: run.settledAt as string | null,
     modelCalls: run.modelCalls,
+    ...(isSafeNonNegativeInteger((run as { compactions?: unknown }).compactions)
+      ? { compactions: (run as { compactions: number }).compactions }
+      : {}),
     items
   };
 }

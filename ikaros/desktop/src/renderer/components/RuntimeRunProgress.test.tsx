@@ -29,4 +29,27 @@ describe("RuntimeRunProgress", () => {
     act(() => { vi.advanceTimersByTime(60000); });
     expect(screen.getByLabelText("Task execution")).toHaveTextContent("Elapsed 0:12");
   });
+
+  it("surfaces context compaction state", () => {
+    const view = render(
+      <RuntimeRunProgress
+        turn={{
+          ...turn,
+          status: "running",
+          runProgress: { ...turn.runProgress!, compactions: 1, compacting: true },
+        }}
+      />,
+    );
+    expect(screen.getByLabelText("Task execution")).toHaveTextContent("Organizing context…");
+    view.rerender(
+      <RuntimeRunProgress
+        turn={{
+          ...turn,
+          status: "running",
+          runProgress: { ...turn.runProgress!, compactions: 1, compacting: false },
+        }}
+      />,
+    );
+    expect(screen.getByLabelText("Task execution")).toHaveTextContent("Context organized 1");
+  });
 });

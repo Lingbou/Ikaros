@@ -125,6 +125,7 @@ export function projectRuntimeThreadHistory(
           status: run.status, reasonCode: run.reasonCode,
           providerId: run.providerId, modelId: run.modelId,
           modelCalls: run.modelCalls,
+          ...(run.compactions === undefined ? {} : { compactions: run.compactions }),
           startedAt: run.startedAt, settledAt: run.settledAt, createdAt: run.createdAt,
         },
       });
@@ -411,9 +412,22 @@ function progressFromEvent(previous: RuntimeRunProgress | undefined, event: Runt
   const snapshot = isRecord(event.payload.run) ? event.payload.run : event.payload;
   if (
     !previous && typeof snapshot.createdAt !== "string" &&
-    event.type !== "run.state_changed" && event.type !== "run.settled"
+    event.type !== "run.state_changed" && event.type !== "run.settled" &&
+    event.type !== "context.compacted"
   ) return undefined;
   const calls = event.type === "model.input_prepared" ? event.payload.stepOrdinal : snapshot.modelCalls;
+  const compactions = event.type === "context.compacted"
+    ? (previous?.compactions ?? 0) + 1
+    : previous?.compactions;
+  const compacting = event.type === "context.compacted"
+    ? true
+    : event.type === "run.settled"
+      ? previous?.compacting
+        ? false
+        : undefined
+    : event.type === "model.input_prepared" && previous?.compacting
+      ? false
+      : previous?.compacting;
   return {
     modelCalls: Number.isSafeInteger(calls) && Number(calls) >= 0
       ? Math.max(previous?.modelCalls ?? 0, Number(calls)) : previous?.modelCalls ?? 0,
@@ -422,6 +436,8 @@ function progressFromEvent(previous: RuntimeRunProgress | undefined, event: Runt
       (event.payload.status === "running" ? event.timestamp : null),
     settledAt: typeof snapshot.settledAt === "string" ? snapshot.settledAt : previous?.settledAt ??
       (event.type === "run.settled" ? event.timestamp : null),
+    ...(compactions === undefined ? {} : { compactions }),
+    ...(compacting === undefined ? {} : { compacting }),
   };
 }
 

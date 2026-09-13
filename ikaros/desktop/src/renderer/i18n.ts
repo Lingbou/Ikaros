@@ -130,6 +130,8 @@ const english = {
   "runtime.progress.interrupted": "Cancelled",
   "runtime.progress.waiting": "Queued for {time}",
   "runtime.progress.calls": "Model calls {used}",
+  "runtime.progress.compacting": "Organizing context…",
+  "runtime.progress.compactions": "Context organized {used}",
   "runtime.progress.time": "Elapsed {elapsed}",
 
   "settings.models.contextWindow": "Context window (tokens)",
@@ -661,6 +663,8 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "runtime.progress.interrupted": "已取消",
   "runtime.progress.waiting": "已排队 {time}",
   "runtime.progress.calls": "模型调用 {used}",
+  "runtime.progress.compacting": "正在整理上下文…",
+  "runtime.progress.compactions": "已整理上下文 {used} 次",
   "runtime.progress.time": "已运行 {elapsed}",
 
   "settings.models.contextWindow": "上下文窗口（Token）",

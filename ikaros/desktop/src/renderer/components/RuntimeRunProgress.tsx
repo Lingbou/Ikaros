@@ -34,6 +34,10 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
     <div aria-label={t("runtime.progress.label")} className="my-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] leading-4 text-[var(--muted)]">
       <span className="font-medium text-[var(--muted-strong)]">{t(STATUS_KEYS[turn.status] ?? "runtime.progress.running")}</span>
       <span>{t("runtime.progress.calls", { used: progress.modelCalls })}</span>
+      {progress.compacting ? <span>{t("runtime.progress.compacting")}</span> : null}
+      {!progress.compacting && progress.compactions ? (
+        <span>{t("runtime.progress.compactions", { used: progress.compactions })}</span>
+      ) : null}
       <span>{start === null
         ? t("runtime.progress.waiting", { time: duration(queuedFor) })
         : t("runtime.progress.time", { elapsed: duration(elapsed) })}</span>

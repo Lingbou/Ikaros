@@ -747,6 +747,18 @@ describe("Runtime protocol Golden Trace", () => {
     expect(() => parseRuntimeEventNotification(alternateLimits.envelope)).not.toThrow();
   });
 
+  it("counts Unicode compaction summaries as code points", () => {
+    const event = cloneGoldenNotification("model-input-prepared");
+    for (const key of ["contextRevision", "stepInput"]) {
+      const value = asWireObject(event.payload[key], key);
+      value.compactionSummary = "😀";
+      const budget = asWireObject(value.budget, `${key} budget`);
+      budget.contextDataTokens = (budget.contextDataTokens as number) + 4;
+      budget.totalTokens = (budget.totalTokens as number) + 4;
+    }
+    expect(() => parseRuntimeEventNotification(event.envelope)).not.toThrow();
+  });
+
   it("accepts a latest failed Turn omission with a separately budgeted warning", () => {
     const event = cloneGoldenNotification("model-input-prepared");
     const omission = {
