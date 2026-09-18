@@ -57,7 +57,7 @@ export function Composer({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const canStop = runStatus === "queued" || runStatus === "running";
   const canSteer = runtimeMode && runStatus === "running";
-  const primaryStops = canStop && !canSteer;
+  const primaryStops = canStop && (!canSteer || !draft.trim());
   const runtimeModelOptions = useMemo(() => {
     const configuredProviderIds = new Set(
       providers.filter((provider) => provider.configured).map((provider) => provider.id),
@@ -384,16 +384,6 @@ export function Composer({
               </DropdownMenu.Root>
             )}
 
-            {canSteer ? (
-              <button
-                type="button"
-                aria-label={t("composer.stopRun")}
-                onClick={stopRun}
-                className="flex size-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-[var(--text)] hover:bg-[var(--surface-hover)]"
-              >
-                <span className="size-2.5 rounded-[2px] bg-current" />
-              </button>
-            ) : null}
             <button
               type="button"
               aria-label={primaryStops ? t("composer.stopRun") : t(canSteer ? "composer.sendSteer" : "composer.sendMessage")}

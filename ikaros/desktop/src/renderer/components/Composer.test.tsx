@@ -162,14 +162,16 @@ describe("Composer input and clearance", () => {
     expect(screen.getByRole("textbox", { name: "Message Ikaros" })).toBeVisible();
   });
 
-  it("does not turn Enter into Stop while a run is active", () => {
+  it("uses one primary button for steer and Stop while a run is active", () => {
     const sendDraft = vi.fn(async () => undefined);
+    const steerRun = vi.fn(async () => undefined);
     const stopRun = vi.fn();
     useAppStore.setState({
       draft: "Write the next message",
       runStatus: "running",
       runtimeMode: true,
       sendDraft,
+      steerRun,
       stopRun,
     });
     render(
@@ -181,8 +183,11 @@ describe("Composer input and clearance", () => {
     const textarea = screen.getByRole("textbox", { name: "Message Ikaros" });
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(sendDraft).not.toHaveBeenCalled();
+    expect(steerRun).toHaveBeenCalledTimes(1);
     expect(stopRun).not.toHaveBeenCalled();
 
+    act(() => useAppStore.setState({ draft: "" }));
+    expect(screen.queryByRole("button", { name: "Send requirement" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(stopRun).toHaveBeenCalledTimes(1);
   });
