@@ -59,32 +59,36 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
         aria-label={t("runtime.progress.label")}
         className="py-0.5 text-[11px] leading-4 text-[var(--muted)]"
       >
-        <span className="font-medium text-[var(--muted-strong)]">
-          {start === null ? waitingLabel : runningLabel}
-        </span>
+        <div className="border-b border-[var(--border)] pb-2">
+          <span className="font-medium text-[var(--muted-strong)]">
+            {start === null ? waitingLabel : runningLabel}
+          </span>
+        </div>
       </div>
     );
   }
 
   return (
     <div aria-label={t("runtime.progress.label")} className="py-0.5 text-[11px] leading-4 text-[var(--muted)]">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-        className="group inline-flex h-6 items-center gap-1.5 rounded-md text-left outline-none transition-colors hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
-      >
-        <ChevronRight
-          size={11}
-          aria-hidden="true"
-          className={`shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
-        />
-        <span className="font-medium text-[var(--muted-strong)] group-hover:text-[var(--text)]">
-          {settledLabel}
-        </span>
-      </button>
+      <div className="border-b border-[var(--border)] pb-2">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          className="group inline-flex h-6 items-center gap-1.5 rounded-md text-left outline-none transition-colors hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+        >
+          <ChevronRight
+            size={11}
+            aria-hidden="true"
+            className={`shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+          />
+          <span className="font-medium text-[var(--muted-strong)] group-hover:text-[var(--text)]">
+            {settledLabel}
+          </span>
+        </button>
+      </div>
       {expanded ? (
-        <div className="ml-[17px] mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="ml-[17px] mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>{t("runtime.progress.calls", { used: progress.modelCalls })}</span>
           {progress.compacting ? <span>{t("runtime.progress.compacting")}</span> : null}
           {!progress.compacting && progress.compactions ? (
