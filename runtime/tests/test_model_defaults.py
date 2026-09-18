@@ -21,28 +21,24 @@ from ikaros_runtime.storage import SqliteRuntimeStore
 @pytest.mark.parametrize(
     "model_id,explicit_limits,expected",
     [
-        ("deepseek-v4-flash", {}, (1_000_000, 64_000)),
-        ("deepseek-v4-pro", {}, (1_000_000, 64_000)),
-        ("deepseek-v4-flash-vision-exp", {}, (1_000_000, 64_000)),
-        ("unknown-local-model", {}, (32_768, 4_096)),
-        (
-            "deepseek-v4-pro",
-            {"context_window": 131_072, "max_output_tokens": 16_384},
-            (131_072, 16_384),
-        ),
+        ("deepseek-v4-flash", {}, 1_000_000),
+        ("deepseek-v4-pro", {}, 1_000_000),
+        ("deepseek-v4-flash-vision-exp", {}, 1_000_000),
+        ("unknown-local-model", {}, 32_768),
+        ("deepseek-v4-pro", {"context_window": 131_072}, 131_072),
     ],
 )
 def test_loading_model_capacity_defaults_keeps_explicit_values_and_file(
     tmp_path: Path,
     model_id: str,
     explicit_limits: dict[str, int],
-    expected: tuple[int, int],
+    expected: int,
 ) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
         yaml.safe_dump(
             {
-                "version": 1,
+                "version": 2,
                 "providers": {
                     "local": {
                         "type": "openai_compatible",
@@ -66,7 +62,7 @@ def test_loading_model_capacity_defaults_keeps_explicit_values_and_file(
 
     model = ConfigStore(tmp_path).model_summaries()[0]
 
-    assert (model.context_window, model.max_output_tokens) == expected
+    assert model.context_window == expected
     assert path.read_bytes() == original
 
 
@@ -90,11 +86,11 @@ async def test_discovery_assigns_known_capacity_and_unknown_fallback() -> None:
             deepseek_discovery_provider("sk-discovery-fixture"), client=client
         )
 
-    assert {item.id: (item.context_window, item.max_output_tokens) for item in discovered} == {
-        "deepseek-v4-flash": (1_000_000, 64_000),
-        "deepseek-v4-pro": (1_000_000, 64_000),
-        "deepseek-v4-flash-vision-exp": (1_000_000, 64_000),
-        "unknown-local-model": (32_768, 4_096),
+    assert {item.id: item.context_window for item in discovered} == {
+        "deepseek-v4-flash": 1_000_000,
+        "deepseek-v4-pro": 1_000_000,
+        "deepseek-v4-flash-vision-exp": 1_000_000,
+        "unknown-local-model": 32_768,
     }
 
 
@@ -105,14 +101,14 @@ async def test_rediscovery_preserves_saved_capacity_but_provider_edit_can_change
     config = ConfigStore(tmp_path)
     config.configure_deepseek(
         api_key="sk-existing-fixture",
-        models=[ModelInput("deepseek-v4-flash", "Flash", 131_072, 16_384)],
+        models=[ModelInput("deepseek-v4-flash", "Flash", 131_072)],
     )
     original = config.path.read_bytes()
 
     async def discover(_provider: ProviderConfig) -> tuple[ModelInput, ...]:
         return (
-            ModelInput("deepseek-v4-flash", "Flash", 1_000_000, 64_000),
-            ModelInput("deepseek-v4-pro", "Pro", 1_000_000, 64_000),
+            ModelInput("deepseek-v4-flash", "Flash", 1_000_000),
+            ModelInput("deepseek-v4-pro", "Pro", 1_000_000),
         )
 
     def forbid_adapter(_provider: ProviderConfig) -> ManagedProviderAdapter:
@@ -131,13 +127,11 @@ async def test_rediscovery_preserves_saved_capacity_but_provider_edit_can_change
                     "id": "deepseek-v4-flash",
                     "displayName": "Flash",
                     "contextWindow": 131_072,
-                    "maxOutputTokens": 16_384,
                 },
                 {
                     "id": "deepseek-v4-pro",
                     "displayName": "Pro",
                     "contextWindow": 1_000_000,
-                    "maxOutputTokens": 64_000,
                 },
             ]
         }
@@ -152,13 +146,12 @@ async def test_rediscovery_preserves_saved_capacity_but_provider_edit_can_change
                         "id": "deepseek-v4-flash",
                         "displayName": "Flash",
                         "contextWindow": 262_144,
-                        "maxOutputTokens": 32_768,
                     }
                 ],
             }
         )
         updated = ConfigStore(tmp_path).model_summaries()[0]
-        assert (updated.context_window, updated.max_output_tokens) == (262_144, 32_768)
+        assert updated.context_window == 262_144
     finally:
         await registry.close()
         store.close()

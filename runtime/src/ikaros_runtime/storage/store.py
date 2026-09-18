@@ -93,7 +93,7 @@ from .usage import local_activity_date, read_usage
 
 
 def _summarize_context_records(
-    records: Sequence[ContextItemRecordV1], *, max_characters: int = 6000
+    records: Sequence[ContextItemRecordV1], *, max_characters: int = 20_000
 ) -> str:
     lines = ["Earlier context was compacted; verify current state."]
     for record in records:
@@ -105,6 +105,7 @@ def _summarize_context_records(
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
+_RETAINED_CONTEXT_TOKEN_BUDGET = 64_000
 
 
 class ContextCompactionRequired(RuntimeError):
@@ -268,28 +269,17 @@ class SqliteRuntimeStore:
                     return True
         return False
 
-    def completion_check_source(self, run_id: str, *, max_characters: int = 24000) -> str:
-        rows = self._connection.execute(
-            """SELECT kind, role, content, data_json FROM items
-               WHERE run_id = ? AND status IN ('completed', 'failed', 'cancelled')
-               ORDER BY ordinal ASC""",
+    def latest_assistant_content(self, run_id: str) -> str:
+        row = self._connection.execute(
+            """SELECT content FROM items
+               WHERE run_id = ? AND kind = 'message' AND role = 'assistant'
+                 AND status = 'completed'
+               ORDER BY ordinal DESC LIMIT 1""",
             (run_id,),
-        ).fetchall()
-        parts: list[str] = []
-        remaining = max_characters
-        for row in rows:
-            value = {
-                "kind": row["kind"],
-                "role": row["role"],
-                "content": row["content"],
-                "data": json_loads(str(row["data_json"])),
-            }
-            encoded = canonical_json(value)
-            if len(encoded) > remaining:
-                break
-            parts.append(encoded)
-            remaining -= len(encoded) + 1
-        return "\n".join(parts)
+        ).fetchone()
+        if row is None or not isinstance(row["content"], str):
+            raise RuntimeError("completion check candidate is unavailable")
+        return str(row["content"])
 
     def create_thread(
         self,
@@ -909,12 +899,12 @@ class SqliteRuntimeStore:
             for record in records
             if record.item_id not in {reference.item_id for reference in snapshot.history_items}
         )
-        # Compact before the window is exhausted. Aim for half the input
-        # budget, but never below the non-droppable current Run and metadata.
+        # Compact at the model's 90% threshold, then retain no more than the
+        # Codex-style 64K token tail when the window is large enough.
         proactive = (
             maximum_tokens is not None
             and step_ordinal > 1
-            and current_total * 4 >= maximum_tokens * 3
+            and current_total >= min(frame.auto_compact_token_limit, maximum_tokens)
         )
         summary = snapshot.compaction_summary if compaction_summary is None else compaction_summary
         current_user_tokens = sum(
@@ -941,7 +931,7 @@ class SqliteRuntimeStore:
                     records=records,
                     target_tokens=max(
                         frame.reserved_current_run_tokens + 1,
-                        maximum_tokens // 2,
+                        min(maximum_tokens // 2, _RETAINED_CONTEXT_TOKEN_BUDGET),
                         compaction_floor,
                     ),
                     compaction_summary=compaction_summary,
@@ -1369,6 +1359,7 @@ class SqliteRuntimeStore:
                         trimmed = trim_context_records(
                             current_all,
                             maximum_tokens=current_capacity,
+                            preserve_recent_user_tokens=20_000,
                             retain_latest_oversized=not allow_oversized_current_omission,
                         )
                         if trimmed.truncated and trimmed.retained_tokens <= current_capacity:

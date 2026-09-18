@@ -95,7 +95,7 @@ def test_removing_last_provider_keeps_non_empty_skills_until_skills_are_removed(
     assert document.read_section("providers") is None
     assert document.read_section("skills") == {"disabled": ["disabled-skill"]}
     assert yaml.safe_load(document.path.read_text(encoding="utf-8")) == {
-        "version": 1,
+        "version": 2,
         "skills": {"disabled": ["disabled-skill"]},
     }
 
@@ -106,8 +106,8 @@ def test_removing_last_provider_keeps_non_empty_skills_until_skills_are_removed(
 @pytest.mark.parametrize(
     "source",
     [
-        "version: 1\ndefault: {}\n",
-        "version: 1\nskills: []\n",
+        "version: 2\ndefault: {}\n",
+        "version: 2\nskills: []\n",
         "version: true\nproviders: {}\n",
     ],
 )
@@ -127,7 +127,7 @@ def test_document_rejects_duplicate_keys_and_invalid_utf8_without_leaking_source
     secret = "document-secret-sentinel"
     path = tmp_path / "config.yaml"
     path.write_text(
-        f"version: 1\nskills:\n  disabled: [{secret}]\n  disabled: []\n",
+        f"version: 2\nskills:\n  disabled: [{secret}]\n  disabled: []\n",
         encoding="utf-8",
     )
 
@@ -138,7 +138,7 @@ def test_document_rejects_duplicate_keys_and_invalid_utf8_without_leaking_source
     assert duplicate.value.__cause__ is None
     assert duplicate.value.__context__ is None
 
-    path.write_bytes(b"version: 1\nskills:\n  invalid: \xff\n")
+    path.write_bytes(b"version: 2\nskills:\n  invalid: \xff\n")
     with pytest.raises(ConfigError) as invalid_utf8:
         ConfigDocumentStore(tmp_path)
 

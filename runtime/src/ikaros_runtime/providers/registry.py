@@ -76,7 +76,6 @@ class ModelSummary:
     display_name: str
     enabled: bool
     context_window: int
-    max_output_tokens: int
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -85,7 +84,6 @@ class ModelSummary:
             "displayName": self.display_name,
             "enabled": self.enabled,
             "contextWindow": self.context_window,
-            "maxOutputTokens": self.max_output_tokens,
         }
 
 
@@ -141,7 +139,6 @@ class ConfigStore:
                 model.display_name,
                 model.enabled,
                 model.context_window,
-                model.max_output_tokens,
             )
             for provider in sorted(self._providers.values(), key=lambda item: item.id)
             for model in provider.models
@@ -177,7 +174,6 @@ class ConfigStore:
             model_id=model.id,
             supports_tools=model.supports_tools,
             context_window=model.context_window,
-            max_output_tokens=model.max_output_tokens,
         )
 
     def configure_deepseek(
@@ -262,7 +258,6 @@ class ConfigStore:
                         enabled=enabled,
                         supports_tools=model.supports_tools,
                         context_window=model.context_window,
-                        max_output_tokens=model.max_output_tokens,
                     )
                 )
             else:
@@ -286,22 +281,19 @@ class ConfigStore:
             model.display_name,
             model.enabled,
             model.context_window,
-            model.max_output_tokens,
         )
 
-    def set_model_limits(
-        self, provider_id: str, model_id: str, context_window: int, max_output_tokens: int
+    def set_model_context_window(
+        self, provider_id: str, model_id: str, context_window: int
     ) -> ModelSummary:
-        context_window, max_output_tokens = _model_limits(context_window, max_output_tokens)
+        context_window = _context_window(context_window)
         provider = self._providers.get(provider_id)
         if provider is None:
             raise ConfigError("provider does not exist")
         model = next((model for model in provider.models if model.id == model_id), None)
         if model is None:
             raise ConfigError("model does not exist")
-        updated_model = replace(
-            model, context_window=context_window, max_output_tokens=max_output_tokens
-        )
+        updated_model = replace(model, context_window=context_window)
         self._replace(
             replace(
                 provider,
@@ -317,7 +309,6 @@ class ConfigStore:
             model.display_name,
             model.enabled,
             context_window,
-            max_output_tokens,
         )
 
     def _replace(self, provider: ProviderConfig) -> None:
@@ -367,7 +358,6 @@ def _provider_section(providers: Mapping[str, ProviderConfig]) -> dict[str, obje
                 "enabled": model.enabled,
                 "supports_tools": model.supports_tools,
                 "context_window": model.context_window,
-                "max_output_tokens": model.max_output_tokens,
             }
             for model in provider.models
         }
@@ -491,9 +481,7 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
         if not isinstance(raw_id, str) or not isinstance(raw_model, dict):
             raise ConfigError("provider contains an invalid model record")
         required = {"display_name", "enabled", "supports_tools"}
-        if not required <= set(raw_model) or set(raw_model) - (
-            required | {"context_window", "max_output_tokens"}
-        ):
+        if not required <= set(raw_model) or set(raw_model) - (required | {"context_window"}):
             raise ConfigError("model configuration contains unsupported fields")
         model_id = _model_id(raw_id)
         if model_id in seen:
@@ -504,10 +492,7 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
         if not isinstance(enabled, bool) or not isinstance(supports_tools, bool):
             raise ConfigError("model flags must be booleans")
         defaults = default_model_capacity(model_id)
-        context_window, max_output_tokens = _model_limits(
-            raw_model.get("context_window", defaults.context_window),
-            raw_model.get("max_output_tokens", defaults.max_output_tokens),
-        )
+        context_window = _context_window(raw_model.get("context_window", defaults.context_window))
         models.append(
             ModelConfig(
                 id=model_id,
@@ -515,7 +500,6 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
                 enabled=enabled,
                 supports_tools=supports_tools,
                 context_window=context_window,
-                max_output_tokens=max_output_tokens,
             )
         )
     return tuple(models)
@@ -536,9 +520,7 @@ def _models(
             raise ConfigError("model IDs must be unique")
         seen.add(model_id)
         previous = existing_by_id.get(model_id)
-        context_window, max_output_tokens = _model_limits(
-            item.context_window, item.max_output_tokens
-        )
+        context_window = _context_window(item.context_window)
         models.append(
             ModelConfig(
                 id=model_id,
@@ -546,24 +528,19 @@ def _models(
                 enabled=previous.enabled if previous is not None else True,
                 supports_tools=previous.supports_tools if previous is not None else True,
                 context_window=context_window,
-                max_output_tokens=max_output_tokens,
             )
         )
     return tuple(models)
 
 
-def _model_limits(context_window: object, max_output_tokens: object) -> tuple[int, int]:
+def _context_window(context_window: object) -> int:
     if (
         not isinstance(context_window, int)
         or isinstance(context_window, bool)
-        or not isinstance(max_output_tokens, int)
-        or isinstance(max_output_tokens, bool)
-        or not 0 < max_output_tokens < context_window <= 9007199254740991
+        or not 0 < context_window <= 9007199254740991
     ):
-        raise ConfigError(
-            "model token limits must be positive integers with output below context window"
-        )
-    return context_window, max_output_tokens
+        raise ConfigError("model context window must be a positive safe integer")
+    return context_window
 
 
 def _custom_provider_id(value: Any) -> str:

@@ -18,6 +18,7 @@ from ..run_input import ContextItemRecordV1
 _COMPACTION_SOURCE_MAX_BYTES = 24_000
 _COMPACTION_RECORD_MAX_BYTES = 700
 _COMPACTION_ARGUMENTS_MAX_BYTES = 700
+_RETAINED_USER_MESSAGE_TOKEN_BUDGET = 20_000
 
 
 def build_compaction_source(
@@ -98,7 +99,7 @@ class ContextTrimResult:
 
 
 def summarize_context_records(
-    records: Sequence[ContextItemRecordV1], *, max_characters: int = 6000
+    records: Sequence[ContextItemRecordV1], *, max_characters: int = 20_000
 ) -> str:
     """Create a bounded, auditable summary of omitted conversation records.
 
@@ -125,6 +126,7 @@ def trim_context_records(
     maximum_tokens: int,
     preserve_prefix_units: int = 1,
     preserve_suffix_units: int = 4,
+    preserve_recent_user_tokens: int = 0,
     retain_latest_oversized: bool = True,
 ) -> ContextTrimResult:
     """Keep a deterministic head/tail subset within ``maximum_tokens``.
@@ -145,6 +147,8 @@ def trim_context_records(
         raise ValueError("maximum_tokens must be a positive integer")
     if preserve_prefix_units < 0 or preserve_suffix_units < 0:
         raise ValueError("preserve unit counts must be non-negative")
+    if preserve_recent_user_tokens < 0:
+        raise ValueError("preserve recent user token budget must be non-negative")
     frozen = tuple(records)
     units = _units(frozen)
     costs = tuple(sum(item.estimated_tokens for item in unit) for unit in units)
@@ -162,6 +166,30 @@ def trim_context_records(
     for index in range(min(preserve_prefix_units, len(units))):
         selected.add(index)
         used += costs[index]
+
+    if preserve_recent_user_tokens > 0:
+        retained_user_tokens = sum(
+            costs[index]
+            for index in selected
+            if any(item.kind == "message" and item.role == "user" for item in units[index])
+        )
+        user_budget = min(
+            preserve_recent_user_tokens,
+            _RETAINED_USER_MESSAGE_TOKEN_BUDGET,
+        )
+        for index in range(len(units) - 1, -1, -1):
+            if index in selected:
+                continue
+            unit = units[index]
+            if not any(item.kind == "message" and item.role == "user" for item in unit):
+                continue
+            if (
+                retained_user_tokens + costs[index] <= user_budget
+                and used + costs[index] <= maximum_tokens
+            ):
+                selected.add(index)
+                used += costs[index]
+                retained_user_tokens += costs[index]
 
     # Fill from the newest end.  This naturally retains the latest tool result
     # and any steering message while keeping output deterministic. The newest

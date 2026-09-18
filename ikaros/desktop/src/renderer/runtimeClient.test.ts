@@ -273,7 +273,7 @@ describe("RuntimeClient", () => {
     const params = {
       kind: "deepseek" as const,
       apiKey: "write-only-secret",
-      models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 }]
+      models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768 }]
     };
 
     await expect(client.configureProvider(params)).resolves.toEqual({ provider });
@@ -291,8 +291,8 @@ describe("RuntimeClient", () => {
       }))
     );
     const models = [
-      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", contextWindow: 32768, maxOutputTokens: 4096 },
-      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", contextWindow: 32768, maxOutputTokens: 4096 }
+      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", contextWindow: 32768 },
+      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", contextWindow: 32768 }
     ];
     bridge.discoverProviderModels = vi.fn(async () => ({
       ok: true as const,

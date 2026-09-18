@@ -117,7 +117,6 @@ def test_model_input_plan_has_versioned_ordered_identity_style_and_skill_blocks(
     assert "BODY-MUST-STAY-LAZY" not in plan.instructions[2].content
     assert plan.context_data == ()
     assert [block.authority for block in plan.instructions].count("runtime_identity") == 1
-    assert plan.generation_options.max_output_tokens == 4096
     assert plan.budget_snapshot.mode == "bounded"
 
 
@@ -188,7 +187,6 @@ def test_model_input_plan_constructor_defensively_copies_runtime_sequences() -> 
         context_data=cast(Any, context_data),
         messages=cast(Any, messages),
         tools=cast(Any, tools),
-        generation_options=baseline.generation_options,
         budget_snapshot=baseline.budget_snapshot,
     )
     instructions.clear()
@@ -874,29 +872,24 @@ def test_step_input_preserves_frozen_memory_and_omissions() -> None:
     assert restored.budget.context_data_tokens == 47 * 4
 
 
-@pytest.mark.parametrize("window,output", [(32768, 4096), (131072, 8192)])
-def test_run_config_freezes_model_capacity(window: int, output: int) -> None:
+@pytest.mark.parametrize("window", [32768, 131072])
+def test_run_config_freezes_model_capacity(window: int) -> None:
     config = replace(
         run_config("provider", "model"),
         context_window=window,
-        max_output_tokens=output,
     )
     restored = run_input_module.RunConfig.from_wire(config.to_wire())
     assert restored == config
-    assert restored.maximum_input_tokens == window - output
-    assert restored.reserved_current_run_tokens == (window - output) // 4
-    plan = ModelInputPlanner().build_plan(
-        config=restored, items=(), budget_snapshot=bounded_budget()
-    )
-    assert plan.generation_options.max_output_tokens == output
+    assert restored.maximum_input_tokens == window * 95 // 100
+    assert restored.auto_compact_token_limit == window * 90 // 100
+    assert restored.reserved_current_run_tokens == (window * 95 // 100) // 4
 
 
 @pytest.mark.parametrize(
     "changes",
     [
         {"context_window": 0},
-        {"max_output_tokens": 0},
-        {"context_window": 4096, "max_output_tokens": 4096},
+        {"context_window": -1},
     ],
 )
 def test_run_config_rejects_invalid_model_capacity(changes: dict[str, object]) -> None:
@@ -928,7 +921,7 @@ def test_current_input_formats_reject_obsolete_fields() -> None:
             parser(value)
 
 
-@pytest.mark.parametrize("field", ["context_window", "max_output_tokens"])
+@pytest.mark.parametrize("field", ["context_window"])
 def test_step_input_rejects_model_capacity_changed_after_revision(field: str) -> None:
     config, records, revision = _context_revision_fixture()
     changed = replace(config, **{field: getattr(config, field) + 1})

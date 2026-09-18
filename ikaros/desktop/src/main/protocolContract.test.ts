@@ -1274,17 +1274,11 @@ describe("Runtime protocol Golden Trace", () => {
   });
 
   it("freezes valid model capacities without execution ceilings", () => {
-    for (const key of ["contextWindow", "maxOutputTokens"]) {
-      for (const invalid of [0, -1, true, 1.5]) {
-        expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
-          asWireObject(payload.runConfig, "Run configuration")[key] = invalid;
-        });
-      }
+    for (const invalid of [0, -1, true, 1.5]) {
+      expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
+        asWireObject(payload.runConfig, "Run configuration").contextWindow = invalid;
+      });
     }
-    expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
-      const config = asWireObject(payload.runConfig, "Run configuration");
-      config.maxOutputTokens = config.contextWindow;
-    });
     expectGoldenMutationRejected("initial-user-item-completed", ({ payload }) => {
       const config = asWireObject(payload.runConfig, "Run configuration");
       const tools = asWireArray(config.tools, "Tools");

@@ -70,7 +70,6 @@ class ProviderService:
                     "id": model.id,
                     "displayName": model.display_name,
                     "contextWindow": existing_models.get(model.id, model).context_window,
-                    "maxOutputTokens": existing_models.get(model.id, model).max_output_tokens,
                 }
                 for model in models
             ]
@@ -182,17 +181,17 @@ class ProviderService:
         self._providers.configuration_changed(provider_id)
         return {"model": summary.to_wire()}
 
-    def set_model_limits(self, params: dict[str, Any]) -> dict[str, Any]:
-        if set(params) != {"providerId", "modelId", "contextWindow", "maxOutputTokens"}:
+    def set_model_context_window(self, params: dict[str, Any]) -> dict[str, Any]:
+        if set(params) != {"providerId", "modelId", "contextWindow"}:
             raise InvalidParamsError(
-                "model.set_limits requires providerId, modelId, contextWindow, maxOutputTokens"
+                "model.set_limits requires providerId, modelId, and contextWindow"
             )
         provider_id, model_id = params["providerId"], params["modelId"]
         if not isinstance(provider_id, str) or not isinstance(model_id, str):
             raise InvalidParamsError("providerId and modelId must be strings")
         try:
-            model = self._config.set_model_limits(
-                provider_id, model_id, params["contextWindow"], params["maxOutputTokens"]
+            model = self._config.set_model_context_window(
+                provider_id, model_id, params["contextWindow"]
             )
         except ConfigError as error:
             raise InvalidParamsError(str(error)) from None
@@ -214,26 +213,22 @@ def _model_inputs(value: Any) -> tuple[ModelInput, ...]:
             "id",
             "displayName",
             "contextWindow",
-            "maxOutputTokens",
         }:
             raise InvalidParamsError(
-                "each model requires id, displayName, contextWindow, and maxOutputTokens"
+                "each model requires id, displayName, and contextWindow"
             )
         model_id = item["id"]
         display_name = item["displayName"]
         if not isinstance(model_id, str) or not isinstance(display_name, str):
             raise InvalidParamsError("model id and displayName must be strings")
         context_window = item["contextWindow"]
-        max_output_tokens = item["maxOutputTokens"]
         if (
             not isinstance(context_window, int)
             or isinstance(context_window, bool)
-            or not isinstance(max_output_tokens, int)
-            or isinstance(max_output_tokens, bool)
-            or not 0 < max_output_tokens < context_window <= 9007199254740991
+            or not 0 < context_window <= 9007199254740991
         ):
             raise InvalidParamsError(
-                "model token limits must be positive integers with output below context window"
+                "model context window must be a positive safe integer"
             )
-        models.append(ModelInput(model_id, display_name, context_window, max_output_tokens))
+        models.append(ModelInput(model_id, display_name, context_window))
     return tuple(models)

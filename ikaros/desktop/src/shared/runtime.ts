@@ -395,7 +395,6 @@ export interface RuntimeProviderSummary {
 
 export interface RuntimeModelSummary {
   contextWindow: number;
-  maxOutputTokens: number;
   providerId: string;
   id: string;
   displayName: string;
@@ -404,7 +403,6 @@ export interface RuntimeModelSummary {
 
 export interface RuntimeModelInput {
   contextWindow: number;
-  maxOutputTokens: number;
   id: string;
   displayName: string;
 }
@@ -455,7 +453,6 @@ export interface RuntimeModelSetLimitsParams {
   providerId: string;
   modelId: string;
   contextWindow: number;
-  maxOutputTokens: number;
 }
 
 export interface RuntimeModelSetEnabledResult {

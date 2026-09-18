@@ -733,7 +733,7 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
         await useAppStore.getState().configureProvider({
           kind: "deepseek",
           apiKey,
-          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768, maxOutputTokens: 4096 }],
+          models: [{ id: "deepseek-chat", displayName: "DeepSeek Chat", contextWindow: 32768 }],
         });
         providerConfigured = true;
         expect(useAppStore.getState().providers).toContainEqual(

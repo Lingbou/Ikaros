@@ -345,7 +345,6 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "compactionSummary",
         "currentRunOmittedThroughItemId",
         "contextWindow",
-        "maxOutputTokens",
         "maximumTokens",
         "reservedCurrentRunTokens",
         "instructionTokens",

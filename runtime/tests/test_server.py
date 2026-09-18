@@ -918,7 +918,6 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                         "id": "deepseek-chat",
                         "displayName": "DeepSeek Chat",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -949,7 +948,6 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                         "id": "local-model",
                         "displayName": "Local Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -981,7 +979,6 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "displayName": "DeepSeek Chat",
                 "enabled": True,
                 "contextWindow": 32768,
-                "maxOutputTokens": 4096,
             },
             {
                 "providerId": "local",
@@ -989,7 +986,6 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "displayName": "Local Model",
                 "enabled": False,
                 "contextWindow": 32768,
-                "maxOutputTokens": 4096,
             },
         ]
         assert replay["result"]["events"] == []
@@ -1031,7 +1027,6 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "displayName": "Local Model",
                 "enabled": False,
                 "contextWindow": 32768,
-                "maxOutputTokens": 4096,
             }
         ]
         removed = await _rpc(
@@ -1126,7 +1121,6 @@ async def test_memory_rpc_is_durable_idempotent_and_event_free(tmp_path: Path) -
                         "id": "deepseek-chat",
                         "displayName": "DeepSeek Chat",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -1498,13 +1492,11 @@ async def test_provider_model_discovery_rpc_is_ephemeral_and_secret_guarded(
                         "id": "deepseek-v4-flash",
                         "displayName": "DeepSeek V4 Flash",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     },
                     {
                         "id": "deepseek-v4-pro",
                         "displayName": "DeepSeek V4 Pro",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     },
                 ]
             },
@@ -1592,7 +1584,6 @@ async def test_jsonrpc_envelope_and_schema_errors_never_echo_credentials(
                         "id": "safe-model",
                         "displayName": "Safe Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -1702,7 +1693,6 @@ async def test_jsonrpc_envelope_and_schema_errors_never_echo_credentials(
                             "id": "model",
                             "displayName": "Model",
                             "contextWindow": 32768,
-                            "maxOutputTokens": 4096,
                         }
                     ],
                 },
@@ -2047,7 +2037,6 @@ async def test_generated_identifiers_and_timestamps_keep_public_provenance(
                         "id": "model",
                         "displayName": "Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2094,7 +2083,6 @@ async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
                         "id": api_key,
                         "displayName": "Invalid Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2123,7 +2111,6 @@ async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
                         "id": "deepseek-chat",
                         "displayName": "DeepSeek Chat",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2148,7 +2135,6 @@ async def test_credentials_cannot_reenter_public_fields_or_conversation_events(
                         "id": "safe-model",
                         "displayName": "Safe Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2241,7 +2227,6 @@ async def test_credential_rotation_cannot_commit_an_old_secret_as_public_data(
                         "id": "model",
                         "displayName": "Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2263,7 +2248,6 @@ async def test_credential_rotation_cannot_commit_an_old_secret_as_public_data(
                         "id": "model",
                         "displayName": "Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2324,7 +2308,6 @@ async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
                         "id": "fake-model",
                         "displayName": "Fake Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2452,7 +2435,6 @@ async def test_openai_fake_endpoint_usage_reaches_journal_and_usage_read(
                         "id": "usage-model",
                         "displayName": "Usage Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2546,7 +2528,6 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
                         "id": "fake-model",
                         "displayName": "Fake Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2747,7 +2728,6 @@ async def test_invalid_provider_tool_numbers_fail_before_agent_or_sqlite(
                         "id": "non-finite-model",
                         "displayName": "Non-finite Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2824,7 +2804,6 @@ async def test_process_tool_cannot_publish_or_persist_provider_credentials(
                         "id": "fake-model",
                         "displayName": "Fake Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2933,7 +2912,6 @@ async def test_agent_boundary_blocks_split_credentials_from_another_provider(
                         "id": "deepseek-chat",
                         "displayName": "DeepSeek Chat",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -2953,7 +2931,6 @@ async def test_agent_boundary_blocks_split_credentials_from_another_provider(
                         "id": "fake-model",
                         "displayName": "Fake Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -3034,7 +3011,6 @@ async def test_active_run_blocks_cross_provider_credential_changes(
                         "id": "fake-model",
                         "displayName": "Fake Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -3073,7 +3049,6 @@ async def test_active_run_blocks_cross_provider_credential_changes(
                         "id": "deepseek-chat",
                         "displayName": "DeepSeek Chat",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },
@@ -3089,12 +3064,11 @@ async def test_active_run_blocks_cross_provider_credential_changes(
                 "providerId": "delayed-echo",
                 "modelId": "fake-model",
                 "contextWindow": 65536,
-                "maxOutputTokens": 8192,
             },
             live_events,
         )
-        assert limits["result"]["model"]["maxOutputTokens"] == 8192
-        assert endpoint.requests[0]["max_tokens"] == 4096
+        assert limits["result"]["model"]["contextWindow"] == 65536
+        assert "max_tokens" not in endpoint.requests[0]
         endpoint.release_response.set()
         live_events.extend(await _collect_run_events(connection, started["result"]["runId"]))
         assert live_events[-1]["payload"]["status"] == "completed"
@@ -3173,7 +3147,6 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
                             "id": "model",
                             "displayName": "Model",
                             "contextWindow": 32768,
-                            "maxOutputTokens": 4096,
                         }
                     ],
                 }
@@ -3188,7 +3161,6 @@ def test_active_run_blocks_provider_mutation(tmp_path: Path) -> None:
                         "id": "model",
                         "displayName": "Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             }
@@ -3315,7 +3287,6 @@ def test_online_provider_configuration_rejects_credentials_in_historical_events(
                             "id": "model",
                             "displayName": "Model",
                             "contextWindow": 32768,
-                            "maxOutputTokens": 4096,
                         }
                     ],
                 }
@@ -5789,7 +5760,6 @@ async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_r
                         "id": "model",
                         "displayName": "Model",
                         "contextWindow": 32768,
-                        "maxOutputTokens": 4096,
                     }
                 ],
             },

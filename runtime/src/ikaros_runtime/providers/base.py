@@ -32,7 +32,6 @@ class ModelInput:
     id: str
     display_name: str
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
-    max_output_tokens: int = UNKNOWN_MODEL_CAPACITY.max_output_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +41,6 @@ class ModelConfig:
     enabled: bool
     supports_tools: bool
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
-    max_output_tokens: int = UNKNOWN_MODEL_CAPACITY.max_output_tokens
 
 
 @dataclass(frozen=True, slots=True, repr=False)

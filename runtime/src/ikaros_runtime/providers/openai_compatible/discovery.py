@@ -167,7 +167,6 @@ def _parse_models_response(source: bytes, secrets: Sequence[str]) -> tuple[Model
                 model_id,
                 _friendly_model_name(model_id),
                 defaults.context_window,
-                defaults.max_output_tokens,
             ),
         )
     return tuple(sorted(by_id.values(), key=lambda model: (model.id.casefold(), model.id)))

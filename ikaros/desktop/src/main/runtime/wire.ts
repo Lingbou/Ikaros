@@ -924,7 +924,7 @@ function isRunConfig(
       "skills",
       "tools",
       "instructions",
-      "contextWindow", "maxOutputTokens"
+      "contextWindow"
     ]) ||
     value.userItemId !== event.itemId ||
     value.threadId !== event.threadId ||
@@ -939,8 +939,6 @@ function isRunConfig(
     value.executionPolicy !== "full_access" ||
     value.executionPolicy !== runValue.executionPolicy ||
     !isSafePositiveInteger(value.contextWindow) ||
-    !isSafePositiveInteger(value.maxOutputTokens) ||
-    value.maxOutputTokens >= value.contextWindow ||
     !isRuntimeSkillSnapshot(value.skills) ||
     !sameWireValue(value.skills, runValue.skills) ||
     !Array.isArray(value.tools) ||
@@ -2280,14 +2278,12 @@ function parseRuntimeProviderSummary(value: unknown): RuntimeProviderSummary {
 function parseRuntimeModelSummary(value: unknown): RuntimeModelSummary {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["providerId", "id", "displayName", "enabled", "contextWindow", "maxOutputTokens"]) ||
+    !hasExactKeys(value, ["providerId", "id", "displayName", "enabled", "contextWindow"]) ||
     !isWireIdentifier(value.providerId) ||
     !isWireIdentifier(value.id) ||
     !isNonEmptyString(value.displayName) ||
     typeof value.enabled !== "boolean" ||
-    !isSafePositiveInteger(value.contextWindow) ||
-    !isSafePositiveInteger(value.maxOutputTokens) ||
-    value.maxOutputTokens >= value.contextWindow
+    !isSafePositiveInteger(value.contextWindow)
   ) {
     throw new Error("Runtime returned an invalid Model summary.");
   }
@@ -2316,16 +2312,14 @@ function parseRuntimeProviderResult(
 function parseRuntimeModelInput(value: unknown): RuntimeModelInput {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["id", "displayName", "contextWindow", "maxOutputTokens"]) ||
+    !hasExactKeys(value, ["id", "displayName", "contextWindow"]) ||
     !isWireIdentifier(value.id) ||
     !isNonEmptyString(value.displayName) ||
-    !isSafePositiveInteger(value.contextWindow) ||
-    !isSafePositiveInteger(value.maxOutputTokens) ||
-    value.maxOutputTokens >= value.contextWindow
+    !isSafePositiveInteger(value.contextWindow)
   ) {
     throw invalidRuntimeMethodResult("provider.discover_models");
   }
-  return { id: value.id, displayName: value.displayName, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens };
+  return { id: value.id, displayName: value.displayName, contextWindow: value.contextWindow };
 }
 
 function parseRuntimeProviderDiscoveryResult(

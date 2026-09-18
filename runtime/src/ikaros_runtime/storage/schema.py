@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 _FILE_CHANGES_SCHEMA = """
 CREATE TABLE file_changes (
     tool_call_item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,

@@ -210,7 +210,6 @@ def test_prepare_model_step_does_not_create_a_noop_compaction_revision(tmp_path:
             model_id="scripted-v1",
             supports_tools=True,
             context_window=2700,
-            max_output_tokens=500,
         )
         template = RunConfigTemplate.create(
             provider=provider,
@@ -297,7 +296,6 @@ def test_current_run_compaction_omits_old_completed_units_and_keeps_new_items(
                 model_id="scripted-v1",
                 supports_tools=True,
                 context_window=3000,
-                max_output_tokens=500,
             ),
             execution_policy="full_access",
             skills=(),
@@ -312,7 +310,8 @@ def test_current_run_compaction_omits_old_completed_units_and_keeps_new_items(
         )
         store.mark_run_running(turn.run_id)
         store.prepare_model_step(turn.run_id, step_ordinal=1)
-        for index in range(1, 8):
+        prepared = None
+        for index in range(1, 30):
             assistant_id, _ = store.create_assistant_item(turn.run_id)
             store.append_text_delta(assistant_id, f"completed unit {index} " + "x" * 160)
             store.complete_provider_step(
@@ -325,14 +324,15 @@ def test_current_run_compaction_omits_old_completed_units_and_keeps_new_items(
                 response_model_id=None,
                 request_id=None,
             )
-            if index < 7:
-                store.prepare_model_step(turn.run_id, step_ordinal=index + 1)
+            prepared = store.prepare_model_step(turn.run_id, step_ordinal=index + 1)
+            if prepared.context_revision.revision > 1:
+                break
 
-        prepared = store.prepare_model_step(turn.run_id, step_ordinal=8)
+        assert prepared is not None
         assert prepared.context_revision.revision > 1
         selected_ids = {item.item_id for item in prepared.context_revision.history_items}
-        assert len(selected_ids) < 1 + 7
-        assert prepared.items[-1].content == "completed unit 7 " + "x" * 160
+        assert len(selected_ids) < 1 + index
+        assert prepared.items[-1].content == f"completed unit {index} " + "x" * 160
         revision = get_context_revision(store._connection, turn.run_id)
         assert revision is not None
         loaded = load_context_for_revision(
@@ -359,7 +359,6 @@ def test_compaction_preserves_frozen_memory_omissions(tmp_path: Path) -> None:
                 model_id="scripted-v1",
                 supports_tools=True,
                 context_window=3000,
-                max_output_tokens=500,
             ),
             execution_policy="full_access",
             skills=(),
@@ -395,7 +394,8 @@ def test_compaction_preserves_frozen_memory_omissions(tmp_path: Path) -> None:
             context_data_characters=1,
         )
         store.prepare_model_step(turn.run_id, step_ordinal=1, memory_context=memory)
-        for index in range(1, 8):
+        compaction_step = 0
+        for index in range(1, 30):
             assistant_id, _ = store.create_assistant_item(turn.run_id)
             store.append_text_delta(assistant_id, f"completed unit {index} " + "x" * 160)
             store.complete_provider_step(
@@ -408,23 +408,21 @@ def test_compaction_preserves_frozen_memory_omissions(tmp_path: Path) -> None:
                 response_model_id=None,
                 request_id=None,
             )
-            if index < 7:
+            try:
                 store.prepare_model_step(
                     turn.run_id,
                     step_ordinal=index + 1,
                     memory_context=memory,
+                    semantic_compaction=True,
                 )
+            except ContextCompactionRequired:
+                compaction_step = index + 1
+                break
+        assert compaction_step > 1
 
-        with pytest.raises(ContextCompactionRequired):
-            store.prepare_model_step(
-                turn.run_id,
-                step_ordinal=8,
-                memory_context=memory,
-                semantic_compaction=True,
-            )
         prepared = store.prepare_model_step(
             turn.run_id,
-            step_ordinal=8,
+            step_ordinal=compaction_step,
             memory_context=memory,
             compaction_summary="summary",
         )
@@ -519,7 +517,6 @@ async def test_agent_uses_a_tool_free_semantic_summary_before_continuing(
                         model_id="compacting-v1",
                         supports_tools=True,
                         context_window=2_700,
-                        max_output_tokens=500,
                     ),
                     execution_policy="full_access",
                     skills=(),
@@ -550,7 +547,6 @@ async def test_agent_uses_a_tool_free_semantic_summary_before_continuing(
                 model_id="compacting-v1",
                 supports_tools=True,
                 context_window=2_700,
-                max_output_tokens=500,
             ),
             execution_policy="full_access",
             skills=(),
@@ -643,7 +639,6 @@ async def test_compaction_summary_rejects_events_after_completion(tmp_path: Path
                 model_id="trailing-v1",
                 supports_tools=False,
                 context_window=2_700,
-                max_output_tokens=500,
             ),
             execution_policy="full_access",
             skills=(),

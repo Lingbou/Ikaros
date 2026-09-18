@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -41,7 +41,7 @@
     "event"
   ],
   "journal": {
-    "schemaVersion": 9,
+    "schemaVersion": 10,
     "eventTypes": [
       "thread.created",
       "thread.renamed",

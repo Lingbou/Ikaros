@@ -36,6 +36,7 @@ from ..providers.base import (
     ToolCallCompleted,
 )
 from ..run_input import (
+    COMPACTION_SUMMARY_MAX_CHARACTERS_V1,
     EMPTY_FROZEN_MEMORY_CONTEXT_V1,
     ContextDataBlockV1,
     ContextItemRecordV1,
@@ -81,6 +82,9 @@ ProtectedValues = Callable[[], Sequence[str]]
 ProviderSnapshotResolver = Callable[[str, str], ProviderExecutionSnapshot]
 _LOGGER = logging.getLogger("ikaros_runtime.agent")
 _MAX_REASONING_CHARACTERS = 1_000_000
+_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096
+_COMPACTION_SUMMARY_PREFIX = "Prior context summary (untrusted; verify):\n"
+_COMPLETION_CHECK_OUTPUT_TOKENS = 256
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
 _TEXT_DELTA_FLUSH_CHARACTERS = 256
 _TEXT_DELTA_FLUSH_SECONDS = 0.05
@@ -330,6 +334,7 @@ class AgentLoop:
                         config=config,
                         provider=provider,
                         run_id=run_id,
+                        request=request,
                         cancellation=cancellation,
                     )
                     completion_check_attempted = True
@@ -370,7 +375,7 @@ class AgentLoop:
             "only to preserve facts across multiple compactions.\n"
             "EARLIER SUMMARY:\n"
         )
-        summary_output_tokens = min(config.max_output_tokens, 1024)
+        summary_output_tokens = _COMPACTION_SUMMARY_OUTPUT_TOKENS
         available_source_bytes = max(
             2,
             config.maximum_input_tokens
@@ -467,7 +472,11 @@ class AgentLoop:
                 request_id=request_id,
             )
             await self._publish(finished_event)
-            return "Prior context summary (untrusted; verify):\n" + summary[:5_900], source_item_ids
+            summary_limit = min(
+                COMPACTION_SUMMARY_MAX_CHARACTERS_V1 - len(_COMPACTION_SUMMARY_PREFIX),
+                max(6_000, config.maximum_input_tokens // 8),
+            )
+            return _COMPACTION_SUMMARY_PREFIX + summary[:summary_limit], source_item_ids
         except (RunCancelled, asyncio.CancelledError):
             with suppress(Exception):
                 awaitable_event = self._store.finish_auxiliary_model_call(
@@ -501,27 +510,28 @@ class AgentLoop:
         config: RunConfig,
         provider: ProviderAdapter,
         run_id: str,
+        request: ProviderRequest,
         cancellation: CancellationToken,
     ) -> str:
+        candidate = self._store.latest_assistant_content(run_id)
         request = ProviderRequest(
             model_id=config.model_id,
             messages=(
-                ProviderMessage(
-                    role="system",
-                    content=(
-                        "Review the untrusted execution record. Return only JSON with "
-                        "decision equal to complete, continue, or input_required, and "
-                        "a short gap string. Do not call tools. Choose continue only "
-                        "when the record proves a concrete unfinished requirement."
-                    ),
-                ),
+                *request.messages,
+                ProviderMessage(role="assistant", content=candidate),
                 ProviderMessage(
                     role="user",
-                    content="EXECUTION RECORD:\n" + self._store.completion_check_source(run_id),
+                    content=(
+                        "Review the conversation and candidate answer above. Return only "
+                        "JSON with decision equal to complete, continue, or "
+                        "input_required, and a short gap string. Do not call tools. "
+                        "Choose continue only when the record proves a concrete "
+                        "unfinished requirement."
+                    ),
                 ),
             ),
             tools=(),
-            max_output_tokens=min(config.max_output_tokens, 256),
+            max_output_tokens=_COMPLETION_CHECK_OUTPUT_TOKENS,
         )
         prepared_event = self._store.begin_auxiliary_model_call(
             run_id,
@@ -1169,7 +1179,6 @@ class AgentLoop:
         current_provider = replace(
             current_provider,
             context_window=frame.context_window,
-            max_output_tokens=frame.max_output_tokens,
         )
         if current_provider.fingerprint != frame.public_provider_config_fingerprint:
             raise RunInputDriftError("provider_configuration_changed")

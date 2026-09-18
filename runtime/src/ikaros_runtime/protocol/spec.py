@@ -4,12 +4,12 @@ from typing import Final
 
 from ..errors import MEMORY_OPERATION_REASON_CODES
 
-PROTOCOL_VERSION: Final = 6
+PROTOCOL_VERSION: Final = 7
 JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
 EVENT_NOTIFICATION_METHOD: Final = "event"
-JOURNAL_EVENT_SCHEMA_VERSION: Final = 9
+JOURNAL_EVENT_SCHEMA_VERSION: Final = 10
 MEMORY_OPERATION_ERROR_CODE: Final = -32020
 MEMORY_OPERATION_ERROR_MESSAGE: Final = "memory operation failed"
 

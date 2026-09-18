@@ -46,7 +46,7 @@ export interface ModelsSettingsProps {
   providers: readonly RuntimeProviderSummary[];
   models: readonly RuntimeModelSummary[];
   onSetModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<void>;
-  onSetModelLimits(providerId: string, modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
+  onSetModelLimits(providerId: string, modelId: string, contextWindow: number): Promise<void>;
 }
 
 interface DraftModel {
@@ -54,7 +54,6 @@ interface DraftModel {
   id: string;
   displayName: string;
   contextWindow: string;
-  maxOutputTokens: string;
 }
 
 interface DraftHeader {
@@ -86,7 +85,7 @@ function nextDraftRowKey(): number {
 }
 
 function createModelDraft(): DraftModel {
-  return { key: nextDraftRowKey(), id: "", displayName: "", contextWindow: "32768", maxOutputTokens: "4096" };
+  return { key: nextDraftRowKey(), id: "", displayName: "", contextWindow: "32768" };
 }
 
 function createHeaderDraft(): DraftHeader {
@@ -99,8 +98,7 @@ function createModelDrafts(models: readonly RuntimeModelSummary[]): DraftModel[]
     key: nextDraftRowKey(),
     id: model.id,
     displayName: model.displayName,
-    contextWindow: String(model.contextWindow),
-    maxOutputTokens: String(model.maxOutputTokens)
+    contextWindow: String(model.contextWindow)
   }));
 }
 
@@ -114,10 +112,8 @@ function normalizedModels(drafts: readonly DraftModel[]): RuntimeModelInput[] | 
     if (!id || seen.has(id)) return null;
     seen.add(id);
     const contextWindow = Number(draft.contextWindow);
-    const maxOutputTokens = Number(draft.maxOutputTokens);
-    if (!Number.isSafeInteger(contextWindow) || !Number.isSafeInteger(maxOutputTokens) ||
-      maxOutputTokens <= 0 || maxOutputTokens >= contextWindow) return null;
-    models.push({ id, displayName: displayName || id, contextWindow, maxOutputTokens });
+    if (!Number.isSafeInteger(contextWindow) || contextWindow <= 1) return null;
+    models.push({ id, displayName: displayName || id, contextWindow });
   }
   return models.length > 0 ? models : null;
 }
@@ -447,15 +443,10 @@ function ModelDraftEditor({
               <ChevronRight size={12} aria-hidden="true" className="transition-transform group-open:rotate-90" />
               {t("settings.models.advancedLimits")}
             </summary>
-          <div className="mt-3 grid grid-cols-2 gap-3">
+          <div className="mt-3">
             <Field label={t("settings.models.contextWindow")}>
               <input type="number" min={2} step={1} value={model.contextWindow}
                 onChange={(event) => update(model.key, { contextWindow: event.currentTarget.value })}
-                className={inputClassName} />
-            </Field>
-            <Field label={t("settings.models.maxOutputTokens")}>
-              <input type="number" min={1} step={1} value={model.maxOutputTokens}
-                onChange={(event) => update(model.key, { maxOutputTokens: event.currentTarget.value })}
                 className={inputClassName} />
             </Field>
           </div>
@@ -1039,29 +1030,25 @@ interface ModelGroup {
   custom: boolean;
   models: readonly RuntimeModelSummary[];
   onToggle(modelId: string, enabled: boolean): void;
-  onSetLimits(modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
+  onSetLimits(modelId: string, contextWindow: number): Promise<void>;
 }
 
 function ModelLimitsEditor({ model, onSave }: {
   model: RuntimeModelSummary;
-  onSave(modelId: string, contextWindow: number, maxOutputTokens: number): Promise<void>;
+  onSave(modelId: string, contextWindow: number): Promise<void>;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [context, setContext] = useState(String(model.contextWindow));
-  const [output, setOutput] = useState(String(model.maxOutputTokens));
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const contextWindow = Number(context);
-  const maxOutputTokens = Number(output);
-  const valid = Number.isSafeInteger(contextWindow) && Number.isSafeInteger(maxOutputTokens) &&
-    maxOutputTokens > 0 && maxOutputTokens < contextWindow;
-  const changed = contextWindow !== model.contextWindow || maxOutputTokens !== model.maxOutputTokens;
+  const valid = Number.isSafeInteger(contextWindow) && contextWindow > 1;
+  const changed = contextWindow !== model.contextWindow;
   const updateOpen = (nextOpen: boolean) => {
     if (saving) return;
     if (nextOpen) {
       setContext(String(model.contextWindow));
-      setOutput(String(model.maxOutputTokens));
       setFailed(false);
     }
     setOpen(nextOpen);
@@ -1072,7 +1059,7 @@ function ModelLimitsEditor({ model, onSave }: {
     setSaving(true);
     setFailed(false);
     try {
-      await onSave(model.id, contextWindow, maxOutputTokens);
+      await onSave(model.id, contextWindow);
       setOpen(false);
     } catch {
       setFailed(true);
@@ -1118,15 +1105,10 @@ function ModelLimitsEditor({ model, onSave }: {
           </div>
           <form onSubmit={(event) => void save(event)}>
             <div className="px-5 pt-5">
-              <div className="grid grid-cols-2 gap-3">
+              <div>
                 <Field label={t("settings.models.contextWindow")}>
                   <input type="number" min={2} step={1} value={context} disabled={saving}
                     onChange={(event) => setContext(event.currentTarget.value)}
-                    className={cx(inputClassName, "tabular-nums disabled:opacity-60")} />
-                </Field>
-                <Field label={t("settings.models.maxOutputTokens")}>
-                  <input type="number" min={1} step={1} value={output} disabled={saving}
-                    onChange={(event) => setOutput(event.currentTarget.value)}
                     className={cx(inputClassName, "tabular-nums disabled:opacity-60")} />
                 </Field>
               </div>
@@ -1214,8 +1196,7 @@ function ModelsGroup({
                 </div>
                 <p className="mt-1 truncate text-[11px] leading-4 text-[var(--muted)] tabular-nums">
                   {t("settings.models.capacitySummary", {
-                    context: model.contextWindow.toLocaleString(),
-                    output: model.maxOutputTokens.toLocaleString()
+                    context: model.contextWindow.toLocaleString()
                   })}
                 </p>
               </div>
@@ -1256,8 +1237,8 @@ export function ModelsSettings({
           name: provider.displayName,
           custom: provider.origin === "custom",
           models: providerModels,
-          onSetLimits: (modelId: string, contextWindow: number, maxOutputTokens: number) =>
-            onSetModelLimits(provider.id, modelId, contextWindow, maxOutputTokens),
+          onSetLimits: (modelId: string, contextWindow: number) =>
+            onSetModelLimits(provider.id, modelId, contextWindow),
           onToggle: (modelId: string, enabled: boolean) => {
             setMutationFailed(false);
             void onSetModelEnabled(provider.id, modelId, enabled).catch(() =>

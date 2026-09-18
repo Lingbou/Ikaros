@@ -234,7 +234,7 @@ describe("Composer input and clearance", () => {
     useAppStore.setState({
       runtimeMode: true,
       providers: [{ id: "custom", displayName: "Custom", origin: "custom", configured: true, credentialConfigured: true, health: "unknown" }],
-      models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false, contextWindow: 32768, maxOutputTokens: 4096 }],
+      models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false, contextWindow: 32768 }],
       selectedModel: null,
       draft: "saved draft",
     });
@@ -314,7 +314,7 @@ describe("Composer input and clearance", () => {
           credentialConfigured: true,
           health: "unknown",
         }],
-        models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: true, contextWindow: 32768, maxOutputTokens: 4096 }],
+        models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: true, contextWindow: 32768 }],
         selectedModel: { providerId: "custom", modelId: "model" },
       });
       useAppStore.getState().setSettingsOpen(false);
@@ -345,7 +345,6 @@ describe("Composer input and clearance", () => {
           id: "model-a",
           displayName: "Model A",
           contextWindow: 32768,
-          maxOutputTokens: 4096,
           enabled: true,
         },
         {
@@ -353,7 +352,6 @@ describe("Composer input and clearance", () => {
           id: "model-b",
           displayName: "Model B",
           contextWindow: 32768,
-          maxOutputTokens: 4096,
           enabled: true,
         },
       ],

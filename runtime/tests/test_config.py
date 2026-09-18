@@ -56,7 +56,7 @@ def test_deepseek_write_is_explicit_atomic_and_redacted(tmp_path: Path) -> None:
 
     document = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     assert document == {
-        "version": 1,
+        "version": 2,
         "providers": {
             "deepseek": {
                 "type": "openai_compatible",
@@ -69,7 +69,6 @@ def test_deepseek_write_is_explicit_atomic_and_redacted(tmp_path: Path) -> None:
                         "enabled": True,
                         "supports_tools": True,
                         "context_window": 32768,
-                        "max_output_tokens": 4096,
                     }
                 },
             }
@@ -454,7 +453,7 @@ def test_invalid_loaded_secret_and_header_values_are_not_echoed(tmp_path: Path) 
     path.write_text(
         "\n".join(
             [
-                "version: 1",
+                "version: 2",
                 "providers:",
                 "  custom:",
                 "    type: openai_compatible",
@@ -480,7 +479,7 @@ def test_invalid_loaded_secret_and_header_values_are_not_echoed(tmp_path: Path) 
 
 def test_loaded_document_is_strict_and_never_creates_defaults(tmp_path: Path) -> None:
     (tmp_path / "config.yaml").write_text(
-        "version: 1\nproviders: {}\ndefault:\n  provider: deepseek\n",
+        "version: 2\nproviders: {}\ndefault:\n  provider: deepseek\n",
         encoding="utf-8",
     )
 
@@ -495,7 +494,7 @@ def test_duplicate_yaml_keys_are_rejected_instead_of_silently_overwritten(
     (tmp_path / "config.yaml").write_text(
         "\n".join(
             [
-                "version: 1",
+                "version: 2",
                 "providers:",
                 "  deepseek:",
                 "    type: openai_compatible",
@@ -540,7 +539,7 @@ def test_loaded_provider_and_model_ids_must_be_unique_after_normalization(
     path.write_text(
         yaml.safe_dump(
             {
-                "version": 1,
+                "version": 2,
                 "providers": {
                     "Foo": custom_provider("First", {"model": model_row}),
                     "foo": custom_provider("Second", {"model": model_row}),
@@ -557,7 +556,7 @@ def test_loaded_provider_and_model_ids_must_be_unique_after_normalization(
     path.write_text(
         yaml.safe_dump(
             {
-                "version": 1,
+                "version": 2,
                 "providers": {
                     "foo": custom_provider(
                         "Provider",
@@ -699,14 +698,16 @@ def test_cumulative_size_failure_preserves_existing_disk_and_memory(
     assert not list(tmp_path.glob(".config-*.tmp"))
 
 
-def test_model_limits_persist_and_frozen_snapshot_remains_unchanged(tmp_path: Path) -> None:
+def test_model_context_window_persists_and_frozen_snapshot_remains_unchanged(
+    tmp_path: Path,
+) -> None:
     store = ConfigStore(tmp_path)
     store.configure_deepseek(
         api_key="test-model-limits-secret",
-        models=[ModelInput("model", "Model", 65536, 8192)],
+        models=[ModelInput("model", "Model", 65536)],
     )
     frozen = store.execution_snapshot("deepseek", "model")
-    updated = store.set_model_limits("deepseek", "model", 131072, 16384)
+    updated = store.set_model_context_window("deepseek", "model", 131072)
     reloaded = ConfigStore(tmp_path)
     assert updated.to_wire() == {
         "providerId": "deepseek",
@@ -714,28 +715,24 @@ def test_model_limits_persist_and_frozen_snapshot_remains_unchanged(tmp_path: Pa
         "displayName": "Model",
         "enabled": True,
         "contextWindow": 131072,
-        "maxOutputTokens": 16384,
     }
     assert reloaded.model_summaries()[0] == updated
     assert frozen.context_window == 65536
-    assert frozen.max_output_tokens == 8192
     store.set_model_enabled("deepseek", "model", False)
     assert store.model_summaries()[0].context_window == 131072
-    assert store.model_summaries()[0].max_output_tokens == 16384
 
 
 @pytest.mark.parametrize(
-    "window,output",
-    [(0, 1), (100, 0), (100, 100), (100, 101), (True, 1), (100, False), (1.5, 1), (100, 1.5)],
+    "window",
+    [0, True, 1.5, -1],
 )
-def test_invalid_model_limits_do_not_change_configuration(
+def test_invalid_model_context_window_does_not_change_configuration(
     tmp_path: Path,
     window: object,
-    output: object,
 ) -> None:
     store = ConfigStore(tmp_path)
     store.configure_deepseek(api_key="test-invalid-limits-secret", models=[model()])
     before = store.path.read_bytes()
-    with pytest.raises(ConfigError, match="token limits"):
-        store.set_model_limits("deepseek", "deepseek-chat", window, output)  # type: ignore[arg-type]
+    with pytest.raises(ConfigError, match="context window"):
+        store.set_model_context_window("deepseek", "deepseek-chat", window)  # type: ignore[arg-type]
     assert store.path.read_bytes() == before

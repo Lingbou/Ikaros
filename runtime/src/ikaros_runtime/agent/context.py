@@ -39,7 +39,6 @@ class ContextBuilder:
                 *_provider_messages(plan.messages),
             ),
             tools=plan.tools,
-            max_output_tokens=plan.generation_options.max_output_tokens,
         )
 
 

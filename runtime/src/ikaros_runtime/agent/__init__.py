@@ -6,7 +6,6 @@ from .history import HistorySelection, HistorySelector
 from .loop import AgentLoop, EventPublisher, ProtectedValues
 from .model_input import (
     ContextDataBlockV1,
-    GenerationOptions,
     InputAuthority,
     InputLifetime,
     InstructionAuthority,
@@ -22,7 +21,6 @@ __all__ = [
     "ContextDataBlockV1",
     "ContextBuilder",
     "EventPublisher",
-    "GenerationOptions",
     "HistorySelection",
     "HistorySelector",
     "InputAuthority",

@@ -32,6 +32,8 @@ type OmissionSourceType = Literal["history", "memory"]
 type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]
 
 INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound"
+USABLE_CONTEXT_WINDOW_PERCENT = 95
+AUTO_COMPACT_TOKEN_LIMIT_PERCENT = 90
 MEMORY_CONTENT_MAX_CHARACTERS_V1 = 2_048
 MEMORY_RETRIEVAL_MAX_CANDIDATES_V1 = 2_000
 MEMORY_SELECTION_MAX_ITEMS_V1 = 8
@@ -40,6 +42,7 @@ IKAROS_IDENTITY_ID = "ikaros-identity"
 IKAROS_IDENTITY_VERSION = 1
 IKAROS_IDENTITY_SOURCE = "ikaros-runtime:identity"
 IDENTITY_CORE_MAX_CHARACTERS_V1 = 2_048
+COMPACTION_SUMMARY_MAX_CHARACTERS_V1 = 64_000
 
 OUTPUT_STYLE_CONTENT = (
     "Use a restrained, professional response style. Do not use emoji or decorative "
@@ -153,7 +156,6 @@ class ProviderExecutionSnapshot:
     model_id: str
     supports_tools: bool
     context_window: int = 32768
-    max_output_tokens: int = 4096
 
     def __post_init__(self) -> None:
         _nonempty("provider ID", self.provider_id)
@@ -163,7 +165,7 @@ class ProviderExecutionSnapshot:
         _nonempty("model ID", self.model_id)
         if not isinstance(self.supports_tools, bool):
             raise ValueError("model Tool capability is invalid")
-        _validate_model_window(self.context_window, self.max_output_tokens)
+        _validate_context_window(self.context_window)
 
     def public_wire(self) -> JsonObject:
         return {
@@ -173,7 +175,6 @@ class ProviderExecutionSnapshot:
             "modelId": self.model_id,
             "supportsTools": self.supports_tools,
             "contextWindow": self.context_window,
-            "maxOutputTokens": self.max_output_tokens,
         }
 
     @property
@@ -376,18 +377,21 @@ class RunConfig:
     skill_catalog: InstructionBlockV1 | None
 
     context_window: int = 32768
-    max_output_tokens: int = 4096
 
     @property
     def maximum_input_tokens(self) -> int:
-        return self.context_window - self.max_output_tokens
+        return max(1, self.context_window * USABLE_CONTEXT_WINDOW_PERCENT // 100)
+
+    @property
+    def auto_compact_token_limit(self) -> int:
+        return max(1, self.context_window * AUTO_COMPACT_TOKEN_LIMIT_PERCENT // 100)
 
     @property
     def reserved_current_run_tokens(self) -> int:
         return max(1, self.maximum_input_tokens // 4)
 
     def __post_init__(self) -> None:
-        _validate_model_window(self.context_window, self.max_output_tokens)
+        _validate_context_window(self.context_window)
         for label, value in (
             ("User Item ID", self.user_item_id),
             ("Thread ID", self.thread_id),
@@ -447,7 +451,6 @@ class RunConfig:
             identity_core=template.identity_core,
             skill_catalog=template.skill_catalog,
             context_window=template.provider.context_window,
-            max_output_tokens=template.provider.max_output_tokens,
         )
 
     @property
@@ -486,7 +489,6 @@ class RunConfig:
                 ),
             },
             "contextWindow": self.context_window,
-            "maxOutputTokens": self.max_output_tokens,
         }
 
     @classmethod
@@ -524,7 +526,6 @@ class RunConfig:
                 else None
             ),
             context_window=_as_int(row["contextWindow"]),
-            max_output_tokens=_as_int(row["maxOutputTokens"]),
         )
 
 
@@ -909,7 +910,10 @@ class ContextRevision:
         _positive("Context revision", self.revision)
         for name in ("history_groups", "history_items", "memory", "omissions"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
-        if not isinstance(self.compaction_summary, str) or len(self.compaction_summary) > 6000:
+        if (
+            not isinstance(self.compaction_summary, str)
+            or len(self.compaction_summary) > COMPACTION_SUMMARY_MAX_CHARACTERS_V1
+        ):
             raise ValueError("Context compaction summary is invalid")
         if not isinstance(self.current_run_omitted_through_item_id, str):
             raise ValueError("Context current Run omission boundary is invalid")
@@ -997,7 +1001,10 @@ class StepInput:
     def __post_init__(self) -> None:
         _positive("Step ordinal", self.step_ordinal)
         _positive("Context revision", self.context_revision)
-        if not isinstance(self.compaction_summary, str) or len(self.compaction_summary) > 6000:
+        if (
+            not isinstance(self.compaction_summary, str)
+            or len(self.compaction_summary) > COMPACTION_SUMMARY_MAX_CHARACTERS_V1
+        ):
             raise ValueError("Step input compaction summary is invalid")
         for name in ("history_items", "memory", "omissions"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
@@ -1455,11 +1462,8 @@ def config_input_token_counts(config: RunConfig) -> tuple[int, int]:
     return _instruction_tokens(config), _tool_definition_tokens(config)
 
 
-def _validate_model_window(context_window: int, max_output_tokens: int) -> None:
+def _validate_context_window(context_window: int) -> None:
     _positive("model context window", context_window)
-    _positive("model output reserve", max_output_tokens)
-    if max_output_tokens >= context_window:
-        raise ValueError("model output reserve must be smaller than its context window")
 
 
 def _skill_snapshot(skills: Sequence[SkillDescriptor]) -> tuple[SkillDescriptor, ...]:
@@ -1575,7 +1579,6 @@ _RUN_CONFIG_KEYS = {
     "tools",
     "instructions",
     "contextWindow",
-    "maxOutputTokens",
 }
 _HISTORY_ITEM_KEYS = {"itemId", "turnId", "runId", "kind", "role", "tokens"}
 _INPUT_BUDGET_KEYS = {

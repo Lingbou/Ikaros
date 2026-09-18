@@ -572,7 +572,6 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 model_id=ScriptedProvider.model_id,
                 supports_tools=True,
                 context_window=6000,
-                max_output_tokens=1500,
             )
             compact_frame = RunConfigTemplate.create(
                 provider=compact_provider,

@@ -15,7 +15,7 @@ import yaml
 from .errors import ConfigError
 from .paths import RuntimePaths
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 MAX_CONFIG_BYTES = 256 * 1024
 
 type ConfigSectionName = Literal["providers", "skills"]

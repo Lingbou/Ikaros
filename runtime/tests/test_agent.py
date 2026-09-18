@@ -1829,7 +1829,7 @@ async def test_more_than_one_hundred_model_calls_complete_and_survive_rebuild(
         assert store.run_status(prepared.run_id) == "completed"
         assert len(provider.requests) == 101
         assert len(tool.calls) == 100
-        assert all(request.max_output_tokens == 4096 for request in provider.requests)
+        assert all(request.max_output_tokens is None for request in provider.requests)
         calls = store._connection.execute(
             "SELECT step_ordinal, purpose, outcome FROM model_calls WHERE run_id = ? "
             "ORDER BY step_ordinal",

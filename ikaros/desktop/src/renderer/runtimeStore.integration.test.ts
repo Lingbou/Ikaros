@@ -77,7 +77,6 @@ function installRuntimeBridge(api: unknown): void {
         id: "test-model",
         displayName: "Test Model",
         contextWindow: 32768,
-        maxOutputTokens: 4096,
         enabled: true,
       },
     ],
@@ -319,7 +318,7 @@ function modelSelectionFixture() {
     { providerId: "unconfigured-provider", id: "unconfigured", enabled: true },
     { providerId: "test-provider", id: "model-a", enabled: true },
     { providerId: "test-provider", id: "model-b", enabled: true },
-  ].map((model) => ({ ...model, displayName: model.id, contextWindow: 32768, maxOutputTokens: 4096 }));
+  ].map((model) => ({ ...model, displayName: model.id, contextWindow: 32768 }));
   const history = threads.map((thread, index) => {
     const page = singleTurnHistoryPage(thread, [], "completed", 0);
     page.turns[0]!.runs[0]!.providerId = "test-provider";
@@ -903,7 +902,6 @@ describe("Runtime-backed renderer store", () => {
               id: "deepseek-chat",
               displayName: "DeepSeek Chat",
               contextWindow: 32768,
-              maxOutputTokens: 4096,
               enabled: true,
             },
           ],
@@ -973,7 +971,6 @@ describe("Runtime-backed renderer store", () => {
               id: "model-a",
               displayName: "Model A",
               contextWindow: 32768,
-              maxOutputTokens: 4096,
               enabled: true,
             },
             {
@@ -981,7 +978,6 @@ describe("Runtime-backed renderer store", () => {
               id: "model-b",
               displayName: "Model B",
               contextWindow: 32768,
-              maxOutputTokens: 4096,
               enabled: true,
             },
           ],
@@ -1042,7 +1038,6 @@ describe("Runtime-backed renderer store", () => {
         id: "deepseek-chat",
         displayName: "DeepSeek Chat",
         contextWindow: 32768,
-        maxOutputTokens: 4096,
         enabled: true,
       },
       {
@@ -1050,7 +1045,6 @@ describe("Runtime-backed renderer store", () => {
         id: "custom-model",
         displayName: "Custom Model",
         contextWindow: 32768,
-        maxOutputTokens: 4096,
         enabled: true,
       },
     ];
@@ -1160,13 +1154,12 @@ describe("Runtime-backed renderer store", () => {
         id: "deepseek-chat",
         displayName: "DeepSeek Chat",
         contextWindow: 32768,
-        maxOutputTokens: 4096,
         enabled: true,
       },
     ];
     const candidates = [
-      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", contextWindow: 32768, maxOutputTokens: 4096 },
-      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", contextWindow: 32768, maxOutputTokens: 4096 },
+      { id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", contextWindow: 32768 },
+      { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", contextWindow: 32768 },
     ];
     const listProviders = vi.fn(async () => ({ providers }));
     const listModels = vi.fn(async () => ({ models }));
@@ -1243,7 +1236,6 @@ describe("Runtime-backed renderer store", () => {
       id: "stale-model",
       displayName: "Stale Model",
       contextWindow: 32768,
-      maxOutputTokens: 4096,
       enabled: true,
     };
     const freshModel: RuntimeModelSummary = {
@@ -1251,7 +1243,6 @@ describe("Runtime-backed renderer store", () => {
       id: "fresh-model",
       displayName: "Fresh Model",
       contextWindow: 32768,
-      maxOutputTokens: 4096,
       enabled: true,
     };
     const listProviders = vi
@@ -4470,7 +4461,6 @@ describe("Runtime-backed renderer store", () => {
       id: "model-reconnect",
       displayName,
       contextWindow: 32768,
-      maxOutputTokens: 4096,
       enabled: true,
     });
     let resolveStaleProviders!: (value: { providers: RuntimeProviderSummary[] }) => void;

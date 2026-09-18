@@ -18,11 +18,6 @@ from ..run_input import (
 from ..tools.core import ToolDefinition
 
 
-@dataclass(frozen=True, slots=True)
-class GenerationOptions:
-    max_output_tokens: int = 4096
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ModelInputPlan:
     """Immutable ordered structure consumed by :class:`ContextBuilder`.
@@ -36,7 +31,6 @@ class ModelInputPlan:
     context_data: tuple[ContextDataBlockV1, ...]
     messages: tuple[ContextItem, ...]
     tools: tuple[ToolDefinition, ...]
-    generation_options: GenerationOptions
     budget_snapshot: InputBudgetRecord
 
     def __post_init__(self) -> None:
@@ -65,14 +59,12 @@ class ModelInputPlanner:
             context_data=tuple(context_data),
             messages=tuple(items),
             tools=config.tool_definitions,
-            generation_options=GenerationOptions(max_output_tokens=config.max_output_tokens),
             budget_snapshot=budget_snapshot,
         )
 
 
 __all__ = [
     "ContextDataBlockV1",
-    "GenerationOptions",
     "InputAuthority",
     "InputLifetime",
     "InstructionAuthority",
