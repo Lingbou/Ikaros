@@ -411,8 +411,8 @@ async def test_output_is_bounded_paged_and_secret_environment_not_inherited(
     manager = ProcessManager()
     context = _context()
     command = _command(
-        windows="[Console]::Write($env:IKAROS_TEST_SECRET); [Console]::Write(('x' * 300000))",
-        posix='printf "%s" "$IKAROS_TEST_SECRET"; head -c 300000 /dev/zero | tr "\\0" x',
+        windows="[Console]::Write($env:IKAROS_TEST_SECRET); [Console]::Write(('x' * 2000000))",
+        posix='printf "%s" "$IKAROS_TEST_SECRET"; head -c 2000000 /dev/zero | tr "\\0" x',
     )
     started = await manager.start(
         command, str(tmp_path), context=context, cancellation=CancellationToken()
@@ -427,7 +427,10 @@ async def test_output_is_bounded_paged_and_secret_environment_not_inherited(
         page = manager.read(started["processId"], context=context, cursor=page["nextCursor"])
         pages.append(page["output"])
     assert all(len(page.encode()) <= 16 * 1024 for page in pages)
-    assert "".join(pages) == "x" * (64 * 1024)
+    rendered = "".join(pages)
+    assert rendered.startswith("x" * (512 * 1024))
+    assert rendered.endswith("x" * (512 * 1024))
+    assert f"{2_000_000 - 1024 * 1024} bytes omitted" in rendered
     await manager.close()
 
 
@@ -452,7 +455,7 @@ async def test_secret_split_across_stream_chunks_never_reaches_read_or_record(
     )
     assert "credential-" not in first["output"]
     final = await manager.wait(
-        started["processId"], context=context, cancellation=CancellationToken(), timeout_ms=5000
+        started["processId"], context=context, cancellation=CancellationToken(), timeout_ms=15000
     )
     assert final["errorCode"] == "protected_output"
     assert secret not in json.dumps(facts)
@@ -491,18 +494,18 @@ async def test_restore_running_becomes_unknown_without_spawning(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_active_command_quota(tmp_path: Path) -> None:
     manager = ProcessManager()
-    for index in range(4):
+    for index in range(64):
         await manager.start(
             _command(windows="Start-Sleep 60", posix="sleep 60"),
             str(tmp_path),
             context=_context(item=f"item_{index}"),
             cancellation=CancellationToken(),
         )
-    with pytest.raises(ProcessError, match="at most 4"):
+    with pytest.raises(ProcessError, match="at most 64"):
         await manager.start(
-            "echo fifth",
+            "echo sixty-fifth",
             str(tmp_path),
-            context=_context(item="item_fifth"),
+            context=_context(item="item_sixty_fifth"),
             cancellation=CancellationToken(),
         )
     await manager.close()
@@ -627,12 +630,17 @@ async def test_terminal_facts_keep_flushed_output_and_bounded_number_of_records(
         command, str(tmp_path), context=context, cancellation=CancellationToken()
     )
     final = await manager.wait(
-        started["processId"], context=context, cancellation=CancellationToken(), timeout_ms=5000
+        started["processId"], context=context, cancellation=CancellationToken(), timeout_ms=15000
     )
     assert final["state"] == "exited"
-    assert facts[-1]["stdout"] == "z" * (64 * 1024)
-    assert len(facts) <= 8
-    assert len(facts[-1]["output"].encode()) <= 128 * 1024
+    expected = (
+        "z" * (128 * 1024)
+        + f"\n... {2_000_000 - 256 * 1024} bytes omitted ...\n"
+        + "z" * (128 * 1024)
+    )
+    assert facts[-1]["stdout"] == expected
+    assert len(facts) <= 12
+    assert len(facts[-1]["output"].encode()) <= 1024 * 1024 + 128
     await manager.close()
 
 
@@ -774,13 +782,15 @@ async def test_more_than_thirty_two_sequential_commands_keep_old_results_and_sta
 
 
 @pytest.mark.asyncio
-async def test_four_active_commands_block_the_fifth_until_one_finishes(tmp_path: Path) -> None:
+async def test_sixty_four_active_commands_block_the_sixty_fifth_until_one_finishes(
+    tmp_path: Path,
+) -> None:
     manager = ProcessManager()
     cancellation = CancellationToken()
     command = _command(windows="Start-Sleep -Seconds 60", posix="sleep 60")
     running: list[JsonObject] = []
     try:
-        for index in range(4):
+        for index in range(64):
             running.append(
                 await manager.start(
                     command,
@@ -789,10 +799,13 @@ async def test_four_active_commands_block_the_fifth_until_one_finishes(tmp_path:
                     cancellation=cancellation,
                 )
             )
-        fifth_context = _context(item="active-4")
+        sixty_fifth_context = _context(item="active-64")
         with pytest.raises(ProcessError) as rejected:
             await manager.start(
-                "echo released", str(tmp_path), context=fifth_context, cancellation=cancellation
+                "echo released",
+                str(tmp_path),
+                context=sixty_fifth_context,
+                cancellation=cancellation,
             )
         assert rejected.value.code == "process_limit"
         assert all(
@@ -801,11 +814,17 @@ async def test_four_active_commands_block_the_fifth_until_one_finishes(tmp_path:
         )
         stopped = await manager.stop(running[0]["processId"], context=_context())
         assert stopped["state"] == "terminated"
-        fifth = await manager.start(
-            "echo released", str(tmp_path), context=fifth_context, cancellation=cancellation
+        sixty_fifth = await manager.start(
+            "echo released",
+            str(tmp_path),
+            context=sixty_fifth_context,
+            cancellation=cancellation,
         )
         result = await manager.wait(
-            fifth["processId"], context=fifth_context, cancellation=cancellation, timeout_ms=5000
+            sixty_fifth["processId"],
+            context=sixty_fifth_context,
+            cancellation=cancellation,
+            timeout_ms=5000,
         )
         assert result["state"] == "exited" and result["exitCode"] == 0
         assert "released" in result["output"]

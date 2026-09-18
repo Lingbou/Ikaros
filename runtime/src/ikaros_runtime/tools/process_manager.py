@@ -25,9 +25,10 @@ from .process_platform import (
     _terminate_process_tree,
 )
 
-_OUTPUT_LIMIT = 64 * 1024
+_PROCESS_OUTPUT_LIMIT = 1024 * 1024
+_STREAM_OUTPUT_LIMIT = 256 * 1024
 _PAGE_LIMIT = 16 * 1024
-_MAX_RUNNING_PER_RUN = 4
+_MAX_RUNNING_PER_RUN = 64
 
 type ProcessState = Literal["running", "exited", "terminated", "unknown"]
 
@@ -36,6 +37,144 @@ class ProcessError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _byte_length(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
+def _prefix_bytes(value: str, maximum: int) -> tuple[str, int]:
+    if maximum <= 0 or not value:
+        return "", 0
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum:
+        return value, len(encoded)
+    prefix = encoded[:maximum].decode("utf-8", errors="ignore")
+    return prefix, len(prefix.encode("utf-8"))
+
+
+def _drop_prefix_bytes(value: str, count: int) -> str:
+    if count <= 0 or not value:
+        return value
+    encoded = value.encode("utf-8")
+    if count >= len(encoded):
+        return ""
+    boundary = count
+    while boundary < len(encoded) and encoded[boundary] & 0xC0 == 0x80:
+        boundary += 1
+    return encoded[boundary:].decode("utf-8")
+
+
+def _slice_from_byte_offset(value: str, offset: int) -> str:
+    if offset <= 0:
+        return value
+    encoded = value.encode("utf-8")
+    if offset >= len(encoded):
+        return ""
+    boundary = offset
+    while boundary < len(encoded) and encoded[boundary] & 0xC0 == 0x80:
+        boundary += 1
+    return encoded[boundary:].decode("utf-8")
+
+
+class _RetainedOutput:
+    """A stable-offset, byte-bounded head/tail output buffer."""
+
+    def __init__(self, limit: int) -> None:
+        if limit < 2:
+            raise ValueError("retained output limit must be at least two bytes")
+        self._limit = limit
+        self._head_budget = limit // 2
+        self._tail_budget = limit - self._head_budget
+        self._head = ""
+        self._tail = ""
+        self._tail_start = 0
+        self._total = 0
+
+    @property
+    def total(self) -> int:
+        return self._total
+
+    @property
+    def omitted(self) -> int:
+        return max(0, self._tail_start - _byte_length(self._head))
+
+    @property
+    def truncated(self) -> bool:
+        return self.omitted > 0
+
+    @property
+    def text(self) -> str:
+        omitted = self.omitted
+        if omitted == 0:
+            return self._head + self._tail
+        return self._head + self._marker(omitted) + self._tail
+
+    def append(self, value: str) -> bool:
+        if not value:
+            return False
+        value_bytes = _byte_length(value)
+        self._total += value_bytes
+
+        remaining_head = self._head_budget - _byte_length(self._head)
+        head_part, consumed = _prefix_bytes(value, remaining_head)
+        remainder = value[len(head_part) :]
+        if head_part:
+            self._head += head_part
+        if remainder:
+            if not self._tail:
+                self._tail_start = self._total - _byte_length(remainder)
+            self._tail += remainder
+            overflow = _byte_length(self._tail) - self._tail_budget
+            if overflow > 0:
+                dropped = _prefix_bytes(self._tail, overflow)[0]
+                self._tail = _drop_prefix_bytes(self._tail, overflow)
+                self._tail_start += _byte_length(dropped)
+        return True
+
+    def invalid_cursor(self, cursor: int) -> bool:
+        return cursor < 0 or cursor > self._total
+
+    def read(self, cursor: int) -> tuple[str, int, bool]:
+        if self.invalid_cursor(cursor):
+            raise IndexError("cursor")
+        if cursor == self._total:
+            return "", cursor, False
+
+        head_bytes = _byte_length(self._head)
+        tail_start = self._tail_start
+        omitted = self.omitted
+        if cursor < head_bytes:
+            text = _slice_from_byte_offset(self._head, cursor)
+            page, consumed = _prefix_bytes(text, _PAGE_LIMIT)
+            next_cursor = cursor + consumed
+            return page, next_cursor, next_cursor < self._total
+
+        remaining = _PAGE_LIMIT
+        parts: list[str] = []
+        next_cursor = cursor
+        if cursor < tail_start and omitted > 0:
+            marker = self._marker(omitted)
+            marker_page, marker_bytes = _prefix_bytes(marker, remaining)
+            parts.append(marker_page)
+            remaining -= marker_bytes
+            next_cursor = tail_start
+        if remaining > 0 and cursor < self._total:
+            if cursor >= tail_start:
+                text = _slice_from_byte_offset(self._tail, cursor - tail_start)
+                page, consumed = _prefix_bytes(text, remaining)
+                parts.append(page)
+                next_cursor = cursor + consumed
+            elif tail_start < self._total:
+                text = self._tail
+                page, consumed = _prefix_bytes(text, remaining)
+                parts.append(page)
+                next_cursor = tail_start + consumed
+        return "".join(parts), next_cursor, next_cursor < self._total
+
+    @staticmethod
+    def _marker(omitted: int) -> str:
+        return f"\n... {omitted} bytes omitted ...\n"
 
 
 class _StreamGuard(Protocol):
@@ -56,9 +195,15 @@ class _Entry:
     finished_at: str | None = None
     exit_code: int | None = None
     pid: int | None = None
-    stdout: str = ""
-    stderr: str = ""
-    output: str = ""
+    stdout: _RetainedOutput = field(
+        default_factory=lambda: _RetainedOutput(_STREAM_OUTPUT_LIMIT)
+    )
+    stderr: _RetainedOutput = field(
+        default_factory=lambda: _RetainedOutput(_STREAM_OUTPUT_LIMIT)
+    )
+    output: _RetainedOutput = field(
+        default_factory=lambda: _RetainedOutput(_PROCESS_OUTPUT_LIMIT)
+    )
     truncated: bool = False
     spawned: _SpawnedProcess | None = None
     monitor: asyncio.Task[None] | None = None
@@ -84,9 +229,9 @@ class _Entry:
             "pid": self.pid,
             "startedAt": self.started_at,
             "finishedAt": self.finished_at,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
-            "output": self.output,
+            "stdout": self.stdout.text,
+            "stderr": self.stderr.text,
+            "output": self.output.text,
             "truncated": self.truncated,
             "errorCode": self.error_code,
         }
@@ -181,7 +326,7 @@ class ProcessManager:
             if sum(not e.done.is_set() for e in owned) >= _MAX_RUNNING_PER_RUN:
                 raise ProcessError(
                     "process_limit",
-                    "A Run may own at most 4 active commands.",
+                    f"A Run may own at most {_MAX_RUNNING_PER_RUN} active commands.",
                 )
             cancellation.raise_if_cancelled()
             entry = _Entry(
@@ -246,10 +391,12 @@ class ProcessManager:
         self, process_id: str, *, context: ToolExecutionContext, cursor: int = 0
     ) -> JsonObject:
         entry = self._owned(process_id, context)
-        if cursor < 0 or cursor > len(entry.output):
-            raise ProcessError("invalid_cursor", "cursor is outside the retained command output.")
-        page = entry.output[cursor:].encode("utf-8")[:_PAGE_LIMIT].decode("utf-8", errors="ignore")
-        next_cursor = cursor + len(page)
+        try:
+            page, next_cursor, has_more = entry.output.read(cursor)
+        except IndexError:
+            raise ProcessError(
+                "invalid_cursor", "cursor is outside the retained command output."
+            ) from None
         return {
             "processId": process_id,
             "state": entry.state,
@@ -261,7 +408,7 @@ class ProcessManager:
             "output": page,
             "cursor": cursor,
             "nextCursor": next_cursor,
-            "hasMore": next_cursor < len(entry.output),
+            "hasMore": has_more,
             "truncated": entry.truncated,
             "errorCode": entry.error_code,
         }
@@ -390,7 +537,7 @@ class ProcessManager:
                 task.cancel()
             await asyncio.gather(*entry.pumps, return_exceptions=True)
             if entry.output_guard is not None and not entry.output_blocked:
-                entry.output += entry.output_guard.finish()
+                entry.output.append(entry.output_guard.finish())
             entry.finished_at = _now()
             try:
                 self._persist(entry, force=True)
@@ -434,22 +581,22 @@ class ProcessManager:
                 entry.dirty = True
 
     def _append(self, entry: _Entry, name: Literal["stdout", "stderr"], text: str) -> None:
-        before = getattr(entry, name)
-        remaining = _OUTPUT_LIMIT - len(before.encode("utf-8"))
-        retained = text.encode("utf-8")[:remaining].decode("utf-8", errors="ignore")
-        changed = bool(retained)
-        if len(retained) != len(text) and not entry.truncated:
-            entry.truncated = True
-            changed = True
-        if retained:
-            setattr(entry, name, before + retained)
-            if entry.output_guard is not None and not entry.output_blocked:
-                try:
-                    entry.output += entry.output_guard.feed(retained)
-                except ProtectedValueError:
-                    entry.output_blocked = True
-                    entry.error_code = "protected_output"
-                    entry.truncated = True
+        changed = getattr(entry, name).append(text)
+        if entry.output_guard is not None and not entry.output_blocked:
+            try:
+                changed = entry.output.append(entry.output_guard.feed(text)) or changed
+            except ProtectedValueError:
+                entry.output_blocked = True
+                entry.error_code = "protected_output"
+                changed = True
+        else:
+            changed = entry.output.append(text) or changed
+        entry.truncated = (
+            entry.truncated
+            or entry.output.truncated
+            or entry.stdout.truncated
+            or entry.stderr.truncated
+        )
         if changed:
             entry.dirty = True
             self._persist(entry)

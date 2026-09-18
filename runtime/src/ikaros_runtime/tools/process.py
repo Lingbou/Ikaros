@@ -220,6 +220,10 @@ def _validate_reference(call: ToolCall, *, wait: bool = False) -> tuple[str, int
 def _result(call: ToolCall, fact: JsonObject) -> ToolResult:
     details = dict(fact)
     output = str(details.pop("output"))
+    # The model-facing page is the only command-output body. Full stream copies
+    # remain Runtime facts for projection and Desktop rendering.
+    details.pop("stdout", None)
+    details.pop("stderr", None)
     state = details["state"]
     ok = state == "running" or (state == "exited" and details["exitCode"] == 0)
     if call.name == "process_stop" and state == "terminated":

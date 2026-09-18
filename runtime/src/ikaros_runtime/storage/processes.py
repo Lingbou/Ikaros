@@ -41,8 +41,13 @@ def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
         raise ValueError("process Step is invalid")
     if type(value["truncated"]) is not bool:
         raise ValueError("process truncation is invalid")
-    for key in ("stdout", "stderr", "output"):
-        if not isinstance(value[key], str) or len(value[key].encode("utf-8")) > 256 * 1024:
+    output_limits = {
+        "stdout": 256 * 1024 + 128,
+        "stderr": 256 * 1024 + 128,
+        "output": 1024 * 1024 + 128,
+    }
+    for key, limit in output_limits.items():
+        if not isinstance(value[key], str) or len(value[key].encode("utf-8")) > limit:
             raise ValueError("process output is invalid")
     for key in ("exitCode", "pid"):
         if value[key] is not None and type(value[key]) is not int:
