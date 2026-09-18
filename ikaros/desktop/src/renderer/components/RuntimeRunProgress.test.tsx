@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Turn } from "../domain";
 import { RuntimeRunProgress } from "./RuntimeRunProgress";
@@ -20,6 +20,8 @@ describe("RuntimeRunProgress", () => {
     vi.setSystemTime(new Date("2026-09-07T00:02:00Z"));
     const view = render(<RuntimeRunProgress turn={turn} />);
     expect(screen.getByLabelText("Task execution")).toHaveTextContent("Queued for 2:00");
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button"));
     expect(screen.getByLabelText("Task execution")).toHaveTextContent("Model calls 0");
     view.rerender(<RuntimeRunProgress turn={{ ...turn, status: "running", runProgress: { ...turn.runProgress!, startedAt: "2026-09-07T00:02:00Z", modelCalls: 3 } }} />);
     act(() => { vi.advanceTimersByTime(12000); });
@@ -40,6 +42,7 @@ describe("RuntimeRunProgress", () => {
         }}
       />,
     );
+    fireEvent.click(screen.getByRole("button"));
     expect(screen.getByLabelText("Task execution")).toHaveTextContent("Organizing context…");
     view.rerender(
       <RuntimeRunProgress

@@ -120,12 +120,30 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   const branch = activeBranch(thread);
   const turns = branch?.turns;
   const events = useMemo<FeedRow[]>(
-    () => turns?.flatMap((turn): FeedRow[] => [
-      ...turn.events,
-      ...(runtimeMode && turn.runId && (turn.runProgress || turn.status === "failed" || turn.status === "interrupted")
-        ? [{ type: "runtime_outcome" as const, id: `outcome:${turn.runId}`, turn }]
-        : []),
-    ]) ?? [],
+    () => turns?.flatMap((turn): FeedRow[] => {
+      const rows: FeedRow[] = [...turn.events];
+      if (
+        !runtimeMode ||
+        !turn.runId ||
+        (!turn.runProgress && turn.status !== "failed" && turn.status !== "interrupted")
+      ) {
+        return rows;
+      }
+      let insertAt = rows.length;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (row.type === "message" && row.role === "assistant") {
+          insertAt = index;
+          break;
+        }
+      }
+      rows.splice(insertAt, 0, {
+        type: "runtime_outcome",
+        id: `outcome:${turn.runId}`,
+        turn,
+      });
+      return rows;
+    }) ?? [],
     [runtimeMode, turns],
   );
   const toolCallIds = useMemo(

@@ -145,6 +145,42 @@ afterEach(() => {
 });
 
 describe("EventFeed dynamic row measurement", () => {
+  it("places collapsed turn progress before the assistant response", () => {
+    const thread = threadWith([
+      message("user-progress", "turn-feed-measurement", "user", "Question"),
+      message("assistant-progress", "turn-feed-measurement", "assistant", "Answer"),
+    ]);
+    Object.assign(thread.branches[0].turns[0], {
+      runId: "run-progress-order",
+      status: "completed",
+      runProgress: {
+        queuedAt: "2026-08-06T06:00:00.000Z",
+        startedAt: "2026-08-06T06:00:00.000Z",
+        settledAt: "2026-08-06T06:00:12.000Z",
+        modelCalls: 1,
+      },
+    });
+    useAppStore.setState({
+      runtimeMode: true,
+      threads: [thread],
+      selectedThreadId: thread.id,
+    });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+    const rowIds = [...container.querySelectorAll<HTMLElement>("[data-event-id]")].map(
+      (row) => row.dataset.eventId,
+    );
+    expect(rowIds.indexOf("outcome:run-progress-order")).toBeGreaterThanOrEqual(0);
+    expect(rowIds.indexOf("outcome:run-progress-order")).toBeLessThan(
+      rowIds.indexOf("assistant-progress"),
+    );
+    expect(screen.getByRole("button", { expanded: false })).toBeVisible();
+  });
+
   it("shows a failed Runtime outcome even when no assistant Item was created", () => {
     const thread = threadWith([]);
     Object.assign(thread.branches[0].turns[0], {
