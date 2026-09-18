@@ -3322,6 +3322,67 @@ describe("Runtime-backed renderer store", () => {
     ).toMatchObject({ runId: "run-runtime", status: "interrupted" });
   });
 
+  it("retries a transient cancel failure until the Run settles", async () => {
+    const listeners = new Set<(event: RuntimeJournalEvent) => void>();
+    const thread = {
+      id: "thread-runtime",
+      title: "Cancel retry",
+      defaultBranchId: "branch-runtime",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const history = singleTurnHistoryPage(
+      thread,
+      [historyMessageItem("user-runtime", "user", "stop me", "completed", 1)],
+      "running",
+      2,
+    );
+    const cancelRun = vi.fn()
+      .mockRejectedValueOnce(new Error("Runtime connection is reconnecting."))
+      .mockResolvedValueOnce({
+        accepted: true,
+        runId: "run-runtime",
+        status: "running" as const,
+      });
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [thread], snapshotSeq: 2 })),
+        getThread: vi.fn(async () => ({ thread, snapshotSeq: 2 })),
+        listTurns: vi.fn(async () => history),
+        createThread: vi.fn(),
+        startTurn: vi.fn(),
+        cancelRun,
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 2,
+          nextAfterSeq: 2,
+          hasMore: false
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        })
+      },
+      preferences: {},
+      windowControls: {}
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+    await useAppStore.getState().selectThread(thread.id);
+
+    useAppStore.getState().stopRun();
+    await vi.waitFor(() => expect(cancelRun).toHaveBeenCalledTimes(2));
+    expect(useAppStore.getState().runStatus).toBe("running");
+
+    const settled = runtimeEvent(3, "run.settled", null, { status: "cancelled" });
+    for (const listener of listeners) {
+      listener(settled);
+    }
+    expect(useAppStore.getState().runStatus).toBe("interrupted");
+  });
+
   it("paginates canonical replay when cancellation loses to completion", async () => {
     const thread = {
       id: "thread-runtime",

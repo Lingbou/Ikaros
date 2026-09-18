@@ -262,6 +262,7 @@ let runtimeSearchCatalogLoad: Promise<void> | undefined;
 let runtimeGapRecovery: Promise<void> | undefined;
 const RUNTIME_GAP_RETRY_DELAYS_MS = [25, 75, 200] as const;
 const RUNTIME_COMMAND_RETRY_DELAYS_MS = [50, 150, 400, 800] as const;
+const RUNTIME_CANCEL_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000] as const;
 const RUNTIME_THREAD_CATALOG_PAGE_LIMIT = 25;
 const MAX_THREAD_CATALOG_PAGES_PER_SEARCH = 10_000;
 const MOCK_AT = "2026-08-05T06:00:00.000Z";
@@ -1228,6 +1229,55 @@ function waitForRuntimeRetry(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
     globalThis.setTimeout(resolve, delayMs);
   });
+}
+
+function runtimeRunIsStillActive(get: StoreGet, runId: string): boolean {
+  const state = get();
+  return currentRunContext(state)?.runId === runId && isRunCancelable(state.runStatus);
+}
+
+async function cancelRuntimeRunWithRetry(
+  set: StoreSet,
+  get: StoreGet,
+  runId: string,
+  attempt = 0,
+): Promise<void> {
+  if (!runtimeClient) return;
+  try {
+    const result = await runtimeClient.cancelRun(runId);
+    if (result.accepted) {
+      return;
+    }
+    await replayRuntimeEventsIntoQueue(set, get, get().runtimeSeq);
+    cancellingRuntimeRuns.delete(runId);
+    recoverRuntimeEventGap(set, get);
+  } catch (error: unknown) {
+    if (!runtimeRunIsStillActive(get, runId)) {
+      cancellingRuntimeRuns.delete(runId);
+      return;
+    }
+    const delay = RUNTIME_CANCEL_RETRY_DELAYS_MS[attempt];
+    if (delay !== undefined) {
+      await waitForRuntimeRetry(delay);
+      if (!runtimeRunIsStillActive(get, runId)) {
+        cancellingRuntimeRuns.delete(runId);
+        return;
+      }
+      await cancelRuntimeRunWithRetry(set, get, runId, attempt + 1);
+      return;
+    }
+    cancellingRuntimeRuns.delete(runId);
+    const message =
+      error instanceof Error ? error.message : "Runtime cancellation failed";
+    set((state) =>
+      currentRunContext(state)?.runId === runId
+        ? {
+            runtimeError: message,
+            runtimeIssue: { kind: "cancel", message, runId },
+          }
+        : {},
+    );
+  }
 }
 
 function recordRuntimeThreadLoadEvent(event: RuntimeJournalEvent): void {
@@ -3487,29 +3537,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           ? { runtimeError: null, runtimeIssue: null }
           : {},
       );
-      void runtimeClient
-        .cancelRun(context.runId)
-        .then(async (result) => {
-          if (result.accepted) {
-            return;
-          }
-          await replayRuntimeEventsIntoQueue(set, get, get().runtimeSeq);
-          cancellingRuntimeRuns.delete(context.runId as string);
-          recoverRuntimeEventGap(set, get);
-        })
-        .catch((error: unknown) => {
-          cancellingRuntimeRuns.delete(context.runId as string);
-          const message =
-            error instanceof Error ? error.message : "Runtime cancellation failed";
-          set((state) =>
-            currentRunContext(state)?.runId === context.runId
-              ? {
-                  runtimeError: message,
-                  runtimeIssue: { kind: "cancel", message, runId: context.runId as string },
-                }
-              : {},
-          );
-        });
+      void cancelRuntimeRunWithRetry(set, get, context.runId);
       return;
     }
     const state = get();
