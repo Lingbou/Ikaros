@@ -28,7 +28,6 @@ import {
   isRuntimeRpcError,
   type RuntimeClient
 } from "../runtimeClient";
-import { cx } from "./ui";
 
 const PAGE_SIZE = 25;
 const CONTENT_LIMIT = 2_048;

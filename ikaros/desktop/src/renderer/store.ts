@@ -2710,7 +2710,6 @@ function adoptRuntimeCreatedThread(
 
 function handleRuntimeSubmissionFailure(
   set: StoreSet,
-  get: StoreGet,
   submission: PendingRuntimeSubmission,
   sendingThreadId: string | null,
   error: unknown,
@@ -2854,7 +2853,7 @@ async function startRuntimeTurnForSubmission(
       };
     });
   } catch (error: unknown) {
-    handleRuntimeSubmissionFailure(set, get, submission, threadId, error);
+    handleRuntimeSubmissionFailure(set, submission, threadId, error);
   }
 }
 
@@ -2997,7 +2996,7 @@ async function sendRuntimeDraft(
     adoptRuntimeCreatedThread(set, get, created, submission);
     await continueRuntimeSubmission(set, get, created.thread.id, epoch);
   } catch (error: unknown) {
-    handleRuntimeSubmissionFailure(set, get, submission, null, error);
+    handleRuntimeSubmissionFailure(set, submission, null, error);
   }
 }
 

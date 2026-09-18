@@ -14,7 +14,6 @@ import {
   type RuntimeProcessStopResult,
   type RuntimeFilePreviewResult,
   type RuntimeFileChangeResult,
-  type RuntimeHostStatus,
   type RuntimeInitializeResult,
   type RuntimeItemHistory,
   type RuntimeJournalEvent,

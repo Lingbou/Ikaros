@@ -50,7 +50,6 @@ import type {
   RuntimeThreadListPage,
   RuntimeThreadMutationResult,
   RuntimeThreadRenameParams,
-  RuntimeThreadSummary,
   RuntimeTurnListPage,
   RuntimeTurnListParams,
   RuntimeTurnStartParams,
