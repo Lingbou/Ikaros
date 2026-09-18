@@ -10,9 +10,11 @@ import {
   parseRuntimeMethodResult
 } from "./runtime/wire";
 import {
+  RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   RUNTIME_JOURNAL_EVENT_TYPES,
   RUNTIME_PROVIDER_TOOL_IDS,
-  RUNTIME_RPC_METHODS
+  RUNTIME_RPC_METHODS,
+  RUNTIME_SERVER_NAME
 } from "../shared/runtime";
 
 interface GoldenMessage {
@@ -242,7 +244,7 @@ describe("Runtime protocol Golden Trace", () => {
       if (!("result" in response)) throw new Error(`${message.name} unexpectedly failed`);
       if (message.method === "initialize") {
         const initialized = parseRuntimeInitializeResult(response.result);
-        expect(initialized.capabilities.tools).toEqual(RUNTIME_PROVIDER_TOOL_IDS);
+        expect(initialized.server.name).toBe(RUNTIME_SERVER_NAME);
       } else {
         if (typeof message.method !== "string") {
           throw new Error("Golden response method is missing");
@@ -1248,8 +1250,8 @@ describe("Runtime protocol Golden Trace", () => {
       usage.reasoningOutputTokens = (usage.outputTokens as number) + 1;
     });
   });
-  it("requires schema 8 and rejects removed fields", () => {
-    for (const version of [1, 5, 6, 7, 9]) {
+  it("requires the current journal schema and rejects removed fields", () => {
+    for (const version of [1, 5, 6, 7, 8, RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION + 1]) {
       const event = cloneGoldenNotification("model-input-prepared");
       event.params.schemaVersion = version;
       expect(() => parseRuntimeEventNotification(event.envelope)).toThrow();

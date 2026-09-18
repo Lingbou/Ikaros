@@ -14,30 +14,86 @@ import {
   MAX_PROFILE_USERNAME_LENGTH,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
-  mergeUiPreferences
+  mergeUiPreferences,
+  type UiPreferences,
 } from "../shared/platform";
 import { sanitizePreferencesPatch, sanitizeStoredPreferences } from "./preferences";
 
-describe("UI preference language validation", () => {
-  it("migrates older preference files to the English default", () => {
-    expect(
-      sanitizeStoredPreferences({
-        colorScheme: "dark",
-        sidebarCollapsed: true,
-        reduceMotion: true,
-      }),
-    ).toEqual({
-      ...DEFAULT_UI_PREFERENCES,
+function storedPreferences(overrides: Partial<UiPreferences> = {}): UiPreferences {
+  const base = cloneUiPreferences(DEFAULT_UI_PREFERENCES);
+  return {
+    ...base,
+    ...overrides,
+    darkTheme: { ...(overrides.darkTheme ?? base.darkTheme) },
+    lightTheme: { ...(overrides.lightTheme ?? base.lightTheme) },
+  };
+}
+
+describe("stored UI preferences", () => {
+  it("accepts the complete current preference shape", () => {
+    const stored = storedPreferences({
+      language: "zh-CN",
+      username: "  Nova Lane  ",
       sidebarCollapsed: true,
-      reduceMotion: true,
+      sidebarWidth: 412,
+      darkTheme: { ...DEFAULT_DARK_THEME, accent: "#ABCDEF" },
+    });
+
+    expect(sanitizeStoredPreferences(stored)).toEqual({
+      ...stored,
+      username: "Nova Lane",
+      darkTheme: { ...stored.darkTheme, accent: "#abcdef" },
     });
   });
 
-  it("accepts only supported stored UI languages", () => {
-    expect(sanitizeStoredPreferences({ language: "zh-CN" }).language).toBe("zh-CN");
-    expect(sanitizeStoredPreferences({ language: "fr" }).language).toBe("en");
+  it("resets incomplete, unknown, or unsupported stored preferences to defaults", () => {
+    const partialTheme = { ...DEFAULT_DARK_THEME, uiFont: "unknown" as never };
+    for (const value of [
+      {},
+      { colorScheme: "dark", sidebarCollapsed: true, reduceMotion: true },
+      { ...storedPreferences(), extra: true },
+      storedPreferences({ colorScheme: "blue" as never }),
+      storedPreferences({ language: "fr" as never }),
+      storedPreferences({ username: "" }),
+      storedPreferences({ sidebarWidth: 260.5 }),
+      storedPreferences({ darkTheme: partialTheme }),
+    ]) {
+      expect(sanitizeStoredPreferences(value)).toEqual(DEFAULT_UI_PREFERENCES);
+    }
   });
 
+  it("rejects incomplete stored themes instead of filling their fields", () => {
+    const { accent: _accent, ...partialDarkTheme } = DEFAULT_DARK_THEME;
+    expect(
+      sanitizeStoredPreferences(
+        storedPreferences({ darkTheme: partialDarkTheme as never }),
+      ),
+    ).toEqual(DEFAULT_UI_PREFERENCES);
+  });
+
+  it("accepts supported stored UI languages", () => {
+    expect(sanitizeStoredPreferences(storedPreferences({ language: "zh-CN" })).language).toBe(
+      "zh-CN",
+    );
+    expect(sanitizeStoredPreferences(storedPreferences({ language: "en" })).language).toBe("en");
+  });
+
+  it("trims valid stored usernames", () => {
+    expect(
+      sanitizeStoredPreferences(storedPreferences({ username: "  Nova Lane  " })).username,
+    ).toBe("Nova Lane");
+  });
+
+  it("accepts bounded stored sidebar widths", () => {
+    for (const sidebarWidth of [MIN_SIDEBAR_WIDTH, DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]) {
+      expect(sanitizeStoredPreferences(storedPreferences({ sidebarWidth })).sidebarWidth).toBe(
+        sidebarWidth,
+      );
+    }
+  });
+});
+
+describe("UI preference patches", () => {
   it("accepts supported patches and rejects invalid language updates", () => {
     expect(sanitizePreferencesPatch({ language: "zh-CN" })).toEqual({ language: "zh-CN" });
     expect(() => sanitizePreferencesPatch({ language: "fr" })).toThrow(
@@ -45,53 +101,22 @@ describe("UI preference language validation", () => {
     );
   });
 
-  it("migrates missing or invalid stored usernames without discarding other preferences", () => {
-    for (const username of [undefined, null, 42, "", "   ", "x".repeat(33)]) {
-      expect(
-        sanitizeStoredPreferences({ username, sidebarCollapsed: true })
-      ).toMatchObject({
-        username: DEFAULT_PROFILE_USERNAME,
-        sidebarCollapsed: true
-      });
-    }
-
-    expect(sanitizeStoredPreferences({ username: "  Nova Lane  " }).username).toBe(
-      "Nova Lane"
-    );
-  });
-
   it("normalizes valid username patches and rejects invalid updates", () => {
     expect(sanitizePreferencesPatch({ username: "  Nova Lane  " })).toEqual({
-      username: "Nova Lane"
+      username: "Nova Lane",
     });
     expect(
-      sanitizePreferencesPatch({ username: "x".repeat(MAX_PROFILE_USERNAME_LENGTH) })
+      sanitizePreferencesPatch({ username: "x".repeat(MAX_PROFILE_USERNAME_LENGTH) }),
     ).toEqual({ username: "x".repeat(MAX_PROFILE_USERNAME_LENGTH) });
 
     for (const username of [null, 42, "", "   ", "x".repeat(33)]) {
       expect(() => sanitizePreferencesPatch({ username })).toThrow(/username/);
     }
+    expect(DEFAULT_PROFILE_USERNAME).toBe("User");
   });
 
-  it("migrates missing and invalid stored sidebar widths to the default", () => {
-    expect(sanitizeStoredPreferences({}).sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH);
-    for (const sidebarWidth of [
-      MIN_SIDEBAR_WIDTH - 1,
-      MAX_SIDEBAR_WIDTH + 1,
-      260.5,
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      "260",
-    ]) {
-      expect(sanitizeStoredPreferences({ sidebarWidth }).sidebarWidth).toBe(
-        DEFAULT_SIDEBAR_WIDTH,
-      );
-    }
-  });
-
-  it("accepts bounded sidebar widths and strictly rejects invalid patches", () => {
+  it("accepts bounded sidebar width patches and rejects invalid updates", () => {
     for (const sidebarWidth of [MIN_SIDEBAR_WIDTH, DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]) {
-      expect(sanitizeStoredPreferences({ sidebarWidth }).sidebarWidth).toBe(sidebarWidth);
       expect(sanitizePreferencesPatch({ sidebarWidth })).toEqual({ sidebarWidth });
     }
 
@@ -118,33 +143,21 @@ describe("UI preference language validation", () => {
     expect(cloned).not.toBe(resized);
   });
 
-  it("migrates missing theme fields without discarding valid custom values", () => {
-    expect(
-      sanitizeStoredPreferences({
-        darkTheme: { accent: "#ABCDEF", contrast: 72, uiFont: "unknown" }
-      }).darkTheme
-    ).toEqual({
-      ...DEFAULT_DARK_THEME,
-      accent: "#abcdef",
-      contrast: 72
-    });
-  });
-
   it("validates theme patches and deeply merges them", () => {
     const patch = sanitizePreferencesPatch({
-      darkTheme: { accent: "#FF5500", contrast: 75 }
+      darkTheme: { accent: "#FF5500", contrast: 75 },
     });
     expect(patch).toEqual({ darkTheme: { accent: "#ff5500", contrast: 75 } });
     expect(mergeUiPreferences(DEFAULT_UI_PREFERENCES, patch).darkTheme).toEqual({
       ...DEFAULT_DARK_THEME,
       accent: "#ff5500",
-      contrast: 75
+      contrast: 75,
     });
     expect(() => sanitizePreferencesPatch({ darkTheme: { accent: "purple" } })).toThrow(
-      "six-digit hex color"
+      "six-digit hex color",
     );
     expect(() => sanitizePreferencesPatch({ darkTheme: { contrast: 101 } })).toThrow(
-      "integer from 0 to 100"
+      "integer from 0 to 100",
     );
   });
 });

@@ -125,7 +125,7 @@ export function projectRuntimeThreadHistory(
           status: run.status, reasonCode: run.reasonCode,
           providerId: run.providerId, modelId: run.modelId,
           modelCalls: run.modelCalls,
-          ...(run.compactions === undefined ? {} : { compactions: run.compactions }),
+          compactions: run.compactions,
           startedAt: run.startedAt, settledAt: run.settledAt, createdAt: run.createdAt,
         },
       });

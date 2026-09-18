@@ -78,6 +78,15 @@ function desktopApiWithPreferences(
         cancelRun: async () => {
           throw new Error("not used in settings tests");
         },
+        steerRun: async () => {
+          throw new Error("not used in settings tests");
+        },
+        readProcess: async () => {
+          throw new Error("not used in settings tests");
+        },
+        stopProcess: async () => {
+          throw new Error("not used in settings tests");
+        },
         replayEvents: async () => ({
           ok: true,
           value: {
@@ -155,7 +164,8 @@ function desktopApiWithPreferences(
             dailyUsageBuckets: []
           }
         }),
-        onEvent: () => () => undefined
+        onEvent: () => () => undefined,
+        onStatus: () => () => undefined
       },
       workspace: {
         chooseDirectory: async () => null

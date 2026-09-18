@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 from .errors import ConfigError, InvalidParamsError
 from .errors import ProtectedValueError as ProtectedValueError
-from .protocol.spec import JOURNAL_EVENT_TYPE_SET, PROVIDER_TOOL_ID_SET, SERVER_NAME
+from .protocol.spec import JOURNAL_EVENT_TYPE_SET, SERVER_NAME
 from .run_input import (
     INPUT_BUDGET_MEASUREMENT_VERSION,
 )
@@ -214,7 +214,6 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "bom",
         "bytesRead",
         "bytesWritten",
-        "capabilities",
         "code",
         "configured",
         "content",
@@ -470,8 +469,6 @@ def _is_fixed_response_value(
     if path[-2:] == ("server", "name") and value == SERVER_NAME:
         return True
     if path[-2:] == ("server", "version"):
-        return True
-    if path[-2:] == ("capabilities", "tools") and value in PROVIDER_TOOL_ID_SET:
         return True
     if path and path[-1] == "newline" and value in {"lf", "crlf", "mixed"}:
         return True

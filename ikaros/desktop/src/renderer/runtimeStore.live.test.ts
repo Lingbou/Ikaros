@@ -7,7 +7,11 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RuntimeHost, RuntimeRpcError } from "../main/runtimeHost";
+import {
+  RUNTIME_HOST_STATUS_NOTIFICATION,
+  RuntimeHost,
+  RuntimeRpcError
+} from "../main/runtimeHost";
 import type { IkarosDesktopApi } from "../shared/platform";
 import type {
   RuntimeFileChangeResult,
@@ -21,10 +25,13 @@ import type {
   RuntimeMemoryListPage,
   RuntimeMemoryMutationResult,
   RuntimeModelSetEnabledResult,
+  RuntimeProcessReadResult,
+  RuntimeProcessStopResult,
   RuntimeProviderConfigureResult,
   RuntimeProviderDiscoverModelsResult,
   RuntimeProviderRemoveResult,
   RuntimeReplayResult,
+  RuntimeSteerRunResult,
   RuntimeThreadCreateResult,
   RuntimeThreadGetResult,
   RuntimeThreadListPage,
@@ -32,6 +39,7 @@ import type {
   RuntimeTurnListPage,
   RuntimeTurnStartResult,
   RuntimeUsageReadResult,
+  RuntimeHostStatus,
 } from "../shared/runtime";
 import { activeBranch, type AgentEvent, type Thread, type Turn } from "./domain";
 import { RuntimeClient } from "./runtimeClient";
@@ -102,6 +110,18 @@ function runtimeBridge(
         cancellationResults.push(result);
         return result;
       }),
+    steerRun: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeSteerRunResult>("run.steer", { ...params }),
+      ),
+    readProcess: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeProcessReadResult>("process.read", { ...params }),
+      ),
+    stopProcess: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeProcessStopResult>("process.stop", { ...params }),
+      ),
     replayEvents: (afterSeq, limit) =>
       bridgeInvocation(() =>
         host.request<RuntimeReplayResult>("event.replay", {
@@ -201,6 +221,12 @@ function runtimeBridge(
       host.onNotification((notification) => {
         if (notification.method === "event") {
           listener(notification.params as RuntimeJournalEvent);
+        }
+      }),
+    onStatus: (listener) =>
+      host.onNotification((notification) => {
+        if (notification.method === RUNTIME_HOST_STATUS_NOTIFICATION) {
+          listener(notification.params as RuntimeHostStatus);
         }
       }),
   };

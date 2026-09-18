@@ -134,7 +134,7 @@ describe("Runtime workspace projection", () => {
             providerId: "scripted",
             modelId: "scripted-v1",
             executionPolicy: "full_access",
-            startedAt: null, modelCalls: 0,
+            startedAt: null, modelCalls: 0, compactions: 0,
             status: "completed",
             reasonCode: null,
             createdAt: summary.createdAt,
@@ -375,7 +375,7 @@ describe("Runtime event projection", () => {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
-        startedAt: null, modelCalls: 0,
+        startedAt: null, modelCalls: 0, compactions: 0,
         status,
         reasonCode,
         createdAt: summary.createdAt,
@@ -437,7 +437,7 @@ describe("Runtime event projection", () => {
         providerId: "scripted",
         modelId: "scripted-v1",
         executionPolicy: "full_access",
-        startedAt: null, modelCalls: 0,
+        startedAt: null, modelCalls: 0, compactions: 0,
         status: "failed",
         reasonCode: "runtime_interrupted",
         createdAt: summary.createdAt,
@@ -964,7 +964,7 @@ describe("Runtime execution progress projection", () => {
       runs: [{
         id: user.runId, turnId: user.turnId, providerId: "test", modelId: "test",
         executionPolicy: "full_access", status: "completed", reasonCode: null,
-        createdAt: queuedAt, startedAt, settledAt, modelCalls: 2,
+        createdAt: queuedAt, startedAt, settledAt, modelCalls: 2, compactions: 0,
         items: [user, assistant],
       }],
     }]);
@@ -1020,7 +1020,7 @@ describe("Runtime Turn model selection", () => {
           id: `run-${ordinal}`, turnId, providerId: "provider", modelId,
           executionPolicy: "full_access", status: "completed", reasonCode: null,
           createdAt: summary.createdAt, startedAt: summary.createdAt,
-          settledAt: summary.updatedAt, modelCalls: 1, items: [],
+          settledAt: summary.updatedAt, modelCalls: 1, compactions: 0, items: [],
         }],
       };
     }

@@ -1,6 +1,5 @@
 {
-  "schemaVersion": 2,
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -42,7 +41,7 @@
     "event"
   ],
   "journal": {
-    "schemaVersion": 8,
+    "schemaVersion": 9,
     "eventTypes": [
       "thread.created",
       "thread.renamed",
@@ -73,30 +72,6 @@
         "memory_source_unavailable"
       ]
     }
-  },
-  "capabilities": {
-    "threads": true,
-    "turns": true,
-    "eventReplay": true,
-    "streaming": true,
-    "scriptedProvider": true,
-    "runCancellation": true,
-    "providers": true,
-    "models": true,
-    "usage": true,
-    "skills": true,
-    "memory": true,
-    "tools": [
-      "process_start",
-      "process_read",
-      "process_wait",
-      "process_stop",
-      "history_read",
-      "read",
-      "write",
-      "edit"
-    ],
-    "executionPolicy": "full_access"
   },
   "providerToolIds": [
     "process_start",

@@ -17,13 +17,11 @@ from ikaros_runtime.protocol.spec import (
     MEMORY_OPERATION_ERROR_CODE,
     MEMORY_OPERATION_ERROR_MESSAGE,
     MEMORY_OPERATION_REASON_CODES,
-    PROTOCOL_SPEC_SCHEMA_VERSION,
     PROTOCOL_VERSION,
     PROVIDER_TOOL_IDS,
     RPC_METHOD_SET,
     RPC_METHODS,
     SERVER_NAME,
-    initialize_capabilities,
     protocol_manifest,
 )
 from ikaros_runtime.storage import SqliteRuntimeStore
@@ -79,8 +77,7 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
             if method == INITIALIZE_METHOD:
                 assert result["protocolVersion"] == PROTOCOL_VERSION
                 assert result["server"]["name"] == SERVER_NAME
-                assert result["capabilities"] == initialize_capabilities()
-                assert tuple(result["capabilities"]["tools"]) == PROVIDER_TOOL_IDS
+                assert set(result) == {"protocolVersion", "server"}
             elif method == "thread.list":
                 assert isinstance(result["threads"], list)
                 assert isinstance(result["snapshotSeq"], int)
@@ -203,9 +200,8 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
-    assert PROTOCOL_SPEC_SCHEMA_VERSION == 2
-    assert PROTOCOL_VERSION == 5
-    assert JOURNAL_EVENT_SCHEMA_VERSION == 8
+    assert PROTOCOL_VERSION == 6
+    assert JOURNAL_EVENT_SCHEMA_VERSION == 9
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {
             "code": MEMORY_OPERATION_ERROR_CODE,

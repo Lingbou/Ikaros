@@ -184,21 +184,6 @@ export interface RuntimeMemoryGetResult {
 export interface RuntimeInitializeResult {
   protocolVersion: number;
   server: { name: string; version: string };
-  capabilities: {
-    threads: true;
-    turns: true;
-    eventReplay: true;
-    streaming: true;
-    scriptedProvider: true;
-    runCancellation: true;
-    providers: true;
-    models: true;
-    usage: true;
-    skills: true;
-    memory: true;
-    tools: readonly string[];
-    executionPolicy: "full_access";
-  };
 }
 
 export type RuntimeHostStatusState =
@@ -268,7 +253,7 @@ export interface RuntimeRunHistory {
   startedAt: string | null;
   settledAt: string | null;
   modelCalls: number;
-  compactions?: number;
+  compactions: number;
   items: RuntimeItemHistory[];
 }
 
@@ -617,9 +602,9 @@ export interface IkarosRuntimeApi {
   unarchiveThread(threadId: string): Promise<RuntimeThreadMutationResult>;
   startTurn(params: RuntimeTurnStartParams): Promise<RuntimeTurnStartResult>;
   cancelRun(runId: string): Promise<RuntimeCancelRunResult>;
-  steerRun?(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult>;
-  readProcess?(params: RuntimeProcessReadParams): Promise<RuntimeProcessReadResult>;
-  stopProcess?(params: RuntimeProcessStopParams): Promise<RuntimeProcessStopResult>;
+  steerRun(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult>;
+  readProcess(params: RuntimeProcessReadParams): Promise<RuntimeProcessReadResult>;
+  stopProcess(params: RuntimeProcessStopParams): Promise<RuntimeProcessStopResult>;
   replayEvents(afterSeq: number, limit?: number): Promise<RuntimeReplayResult>;
   listProviders(): Promise<{ providers: RuntimeProviderSummary[] }>;
   configureProvider(
@@ -675,9 +660,9 @@ export interface IkarosRuntimeBridgeApi {
     params: RuntimeTurnStartParams
   ): Promise<RuntimeInvocationResult<RuntimeTurnStartResult>>;
   cancelRun(runId: string): Promise<RuntimeInvocationResult<RuntimeCancelRunResult>>;
-  steerRun?(params: RuntimeSteerRunParams): Promise<RuntimeInvocationResult<RuntimeSteerRunResult>>;
-  readProcess?(params: RuntimeProcessReadParams): Promise<RuntimeInvocationResult<RuntimeProcessReadResult>>;
-  stopProcess?(params: RuntimeProcessStopParams): Promise<RuntimeInvocationResult<RuntimeProcessStopResult>>;
+  steerRun(params: RuntimeSteerRunParams): Promise<RuntimeInvocationResult<RuntimeSteerRunResult>>;
+  readProcess(params: RuntimeProcessReadParams): Promise<RuntimeInvocationResult<RuntimeProcessReadResult>>;
+  stopProcess(params: RuntimeProcessStopParams): Promise<RuntimeInvocationResult<RuntimeProcessStopResult>>;
   replayEvents(
     afterSeq: number,
     limit?: number
@@ -729,7 +714,7 @@ export interface IkarosRuntimeBridgeApi {
     params: RuntimeFileChangeGetParams
   ): Promise<RuntimeInvocationResult<RuntimeFileChangeResult>>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
-  onStatus?(listener: (status: RuntimeHostStatus) => void): () => void;
+  onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
 }
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,

@@ -218,17 +218,14 @@ export class RuntimeClient implements IkarosRuntimeApi {
   }
 
   readProcess(params: RuntimeProcessReadParams): Promise<RuntimeProcessReadResult> {
-    if (!this.api.readProcess) return Promise.reject(new Error("Process control is unavailable"));
     return unwrapRuntimeInvocation(this.api.readProcess(params));
   }
 
   stopProcess(params: RuntimeProcessStopParams): Promise<RuntimeProcessStopResult> {
-    if (!this.api.stopProcess) return Promise.reject(new Error("Process control is unavailable"));
     return unwrapRuntimeInvocation(this.api.stopProcess(params));
   }
 
   steerRun(params: RuntimeSteerRunParams): Promise<RuntimeSteerRunResult> {
-    if (!this.api.steerRun) return Promise.reject(new Error("Runtime steering is unavailable."));
     return unwrapRuntimeInvocation(this.api.steerRun(params));
   }
 
@@ -321,7 +318,7 @@ export class RuntimeClient implements IkarosRuntimeApi {
   }
 
   onStatus(listener: (status: RuntimeHostStatus) => void): () => void {
-    return this.api.onStatus?.(listener) ?? (() => undefined);
+    return this.api.onStatus(listener);
   }
 }
 

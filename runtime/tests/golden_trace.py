@@ -29,7 +29,6 @@ from ikaros_runtime.protocol.spec import (
     JSONRPC_VERSION,
     PROTOCOL_VERSION,
     SERVER_NAME,
-    initialize_capabilities,
 )
 from ikaros_runtime.providers.base import (
     ProviderEvent,
@@ -705,7 +704,6 @@ async def _expected_trace(database_path: Path) -> dict[str, Any]:
             "result": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "server": {"name": SERVER_NAME, "version": __version__},
-                "capabilities": initialize_capabilities(),
             },
         }
     return {

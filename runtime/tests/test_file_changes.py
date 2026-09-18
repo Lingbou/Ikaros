@@ -13,7 +13,11 @@ import pytest
 
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
-from ikaros_runtime.domain import JournalEvent, WorkspaceSummary
+from ikaros_runtime.domain import (
+    JOURNAL_EVENT_SCHEMA_VERSION,
+    JournalEvent,
+    WorkspaceSummary,
+)
 from ikaros_runtime.file_changes import (
     MAX_CAPTURE_BYTES,
     MAX_CHANGE_EVENT_BYTES,
@@ -231,7 +235,7 @@ async def test_agent_persists_captured_change_atomically_and_rebuilds_without_re
         changes = [event for event in events if event.type == "file.change_recorded"]
         assert len(changes) == 1
         event = changes[0]
-        assert event.item_id is not None and event.schema_version == 8
+        assert event.item_id is not None and event.schema_version == JOURNAL_EVENT_SCHEMA_VERSION
         record = store.get_file_change(thread.id, event.item_id)
         assert record["status"] == "recorded"
         assert "-before\n+after\n" in record["diff"]

@@ -439,30 +439,6 @@ async def _initialize(uri: str, token: str) -> ClientConnection:
     assert initialized["result"] == {
         "protocolVersion": PROTOCOL_VERSION,
         "server": {"name": "ikaros-runtime", "version": "0.1.0"},
-        "capabilities": {
-            "threads": True,
-            "turns": True,
-            "eventReplay": True,
-            "streaming": True,
-            "scriptedProvider": True,
-            "runCancellation": True,
-            "providers": True,
-            "models": True,
-            "usage": True,
-            "skills": True,
-            "memory": True,
-            "tools": [
-                "process_start",
-                "process_read",
-                "process_wait",
-                "process_stop",
-                "history_read",
-                "read",
-                "write",
-                "edit",
-            ],
-            "executionPolicy": "full_access",
-        },
     }
     return connection
 

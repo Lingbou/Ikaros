@@ -4,10 +4,6 @@ import { dirname, join } from "node:path";
 
 import {
   cloneUiPreferences,
-  DEFAULT_DARK_THEME,
-  DEFAULT_LIGHT_THEME,
-  DEFAULT_PROFILE_USERNAME,
-  DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_UI_PREFERENCES,
   MAX_SIDEBAR_WIDTH,
   MAX_PROFILE_USERNAME_LENGTH,
@@ -66,14 +62,14 @@ function isSidebarWidth(value: unknown): value is number {
   );
 }
 
-function storedUsername(value: unknown): string {
+function storedUsername(value: unknown): string | null {
   if (typeof value !== "string") {
-    return DEFAULT_PROFILE_USERNAME;
+    return null;
   }
   const username = value.trim();
   return username.length > 0 && username.length <= MAX_PROFILE_USERNAME_LENGTH
     ? username
-    : DEFAULT_PROFILE_USERNAME;
+    : null;
 }
 
 function usernamePatch(value: unknown): string {
@@ -89,29 +85,55 @@ function usernamePatch(value: unknown): string {
   return username;
 }
 
-function sanitizeStoredTheme(
-  value: unknown,
-  fallback: Readonly<ThemePreferences>
-): ThemePreferences {
-  if (!isRecord(value)) {
-    return { ...fallback };
-  }
+const STORED_THEME_KEYS = [
+  "accent",
+  "background",
+  "foreground",
+  "uiFont",
+  "codeFont",
+  "translucentSidebar",
+  "contrast"
+] as const;
 
+const STORED_PREFERENCE_KEYS = [
+  "colorScheme",
+  "language",
+  "username",
+  "sidebarCollapsed",
+  "sidebarWidth",
+  "reduceMotion",
+  "darkTheme",
+  "lightTheme"
+] as const;
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => key in value);
+}
+
+function isStoredTheme(value: unknown): value is ThemePreferences {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, STORED_THEME_KEYS) &&
+    isHexColor(value.accent) &&
+    isHexColor(value.background) &&
+    isHexColor(value.foreground) &&
+    isUiFont(value.uiFont) &&
+    isCodeFont(value.codeFont) &&
+    typeof value.translucentSidebar === "boolean" &&
+    isContrast(value.contrast)
+  );
+}
+
+function normalizedStoredTheme(theme: ThemePreferences): ThemePreferences {
   return {
-    accent: isHexColor(value.accent) ? normalizeHexColor(value.accent) : fallback.accent,
-    background: isHexColor(value.background)
-      ? normalizeHexColor(value.background)
-      : fallback.background,
-    foreground: isHexColor(value.foreground)
-      ? normalizeHexColor(value.foreground)
-      : fallback.foreground,
-    uiFont: isUiFont(value.uiFont) ? value.uiFont : fallback.uiFont,
-    codeFont: isCodeFont(value.codeFont) ? value.codeFont : fallback.codeFont,
-    translucentSidebar:
-      typeof value.translucentSidebar === "boolean"
-        ? value.translucentSidebar
-        : fallback.translucentSidebar,
-    contrast: isContrast(value.contrast) ? value.contrast : fallback.contrast
+    ...theme,
+    accent: normalizeHexColor(theme.accent),
+    background: normalizeHexColor(theme.background),
+    foreground: normalizeHexColor(theme.foreground)
   };
 }
 
@@ -163,31 +185,33 @@ function sanitizeThemePatch(value: unknown, property: string): ThemePreferencesP
 }
 
 export function sanitizeStoredPreferences(value: unknown): UiPreferences {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasExactKeys(value, STORED_PREFERENCE_KEYS)) {
+    return cloneUiPreferences(DEFAULT_UI_PREFERENCES);
+  }
+
+  const username = storedUsername(value.username);
+  if (
+    !isColorScheme(value.colorScheme) ||
+    !isUiLanguage(value.language) ||
+    username === null ||
+    typeof value.sidebarCollapsed !== "boolean" ||
+    !isSidebarWidth(value.sidebarWidth) ||
+    typeof value.reduceMotion !== "boolean" ||
+    !isStoredTheme(value.darkTheme) ||
+    !isStoredTheme(value.lightTheme)
+  ) {
     return cloneUiPreferences(DEFAULT_UI_PREFERENCES);
   }
 
   return {
-    colorScheme: isColorScheme(value.colorScheme)
-      ? value.colorScheme
-      : DEFAULT_UI_PREFERENCES.colorScheme,
-    language: isUiLanguage(value.language)
-      ? value.language
-      : DEFAULT_UI_PREFERENCES.language,
-    username: storedUsername(value.username),
-    sidebarCollapsed:
-      typeof value.sidebarCollapsed === "boolean"
-        ? value.sidebarCollapsed
-        : DEFAULT_UI_PREFERENCES.sidebarCollapsed,
-    sidebarWidth: isSidebarWidth(value.sidebarWidth)
-      ? value.sidebarWidth
-      : DEFAULT_SIDEBAR_WIDTH,
-    reduceMotion:
-      typeof value.reduceMotion === "boolean"
-        ? value.reduceMotion
-        : DEFAULT_UI_PREFERENCES.reduceMotion,
-    darkTheme: sanitizeStoredTheme(value.darkTheme, DEFAULT_DARK_THEME),
-    lightTheme: sanitizeStoredTheme(value.lightTheme, DEFAULT_LIGHT_THEME)
+    colorScheme: value.colorScheme,
+    language: value.language,
+    username,
+    sidebarCollapsed: value.sidebarCollapsed,
+    sidebarWidth: value.sidebarWidth,
+    reduceMotion: value.reduceMotion,
+    darkTheme: normalizedStoredTheme(value.darkTheme),
+    lightTheme: normalizedStoredTheme(value.lightTheme)
   };
 }
 

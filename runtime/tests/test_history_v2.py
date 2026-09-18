@@ -35,6 +35,7 @@ from ikaros_runtime.run_input import (
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.storage.context_history import load_context_for_revision
 from ikaros_runtime.storage.projections import get_context_revision
+from ikaros_runtime.storage.schema import SCHEMA_VERSION
 from ikaros_runtime.tools.core import (
     ToolCall,
     ToolExecutionContext,
@@ -256,7 +257,7 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
             )
             == records_before
         )
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     finally:
         memory.close()
         store.close()

@@ -1279,8 +1279,16 @@ def apply_event(
     elif event_type == "context.compacted":
         _require_keys(
             payload,
-            {"revision", "droppedTurns", "contextRevision"},
-            {"turnId", "runId", "omittedItemIds", "trigger", "targetTokens"},
+            {
+                "revision",
+                "droppedTurns",
+                "contextRevision",
+                "turnId",
+                "runId",
+                "omittedItemIds",
+                "trigger",
+                "targetTokens",
+            },
         )
         if event.run_id is None or event.thread_id is None or event.branch_id is None:
             raise RuntimeError("context compaction event has incomplete scope")
@@ -1292,6 +1300,7 @@ def apply_event(
             run_id=event.run_id,
             item_id=None,
         )
+        _require_payload_scope(payload, event, item_required=False)
         revision_value = payload["revision"]
         dropped = payload["droppedTurns"]
         revision_wire = payload["contextRevision"]
@@ -1303,22 +1312,19 @@ def apply_event(
             or any(not isinstance(turn_id, str) or not turn_id for turn_id in dropped)
         ):
             raise RuntimeError("context compaction event metadata is invalid")
-        omitted_item_ids = payload.get("omittedItemIds")
-        if omitted_item_ids is not None and (
+        omitted_item_ids = payload["omittedItemIds"]
+        if (
             not isinstance(omitted_item_ids, list)
             or any(not isinstance(item_id, str) or not item_id for item_id in omitted_item_ids)
             or len(omitted_item_ids) != len(set(omitted_item_ids))
         ):
             raise RuntimeError("context compaction event metadata is invalid")
-        trigger = payload.get("trigger", "budget_exceeded")
-        target_tokens = payload.get("targetTokens")
+        trigger = payload["trigger"]
+        target_tokens = payload["targetTokens"]
         if trigger not in {"budget_exceeded", "threshold"} or (
-            target_tokens is not None
-            and (
-                not isinstance(target_tokens, int)
-                or isinstance(target_tokens, bool)
-                or target_tokens < 1
-            )
+            not isinstance(target_tokens, int)
+            or isinstance(target_tokens, bool)
+            or target_tokens < 1
         ):
             raise RuntimeError("context compaction event metadata is invalid")
         try:

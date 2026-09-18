@@ -26,8 +26,8 @@ function page(status: RuntimeRunHistory["status"], reasonCode: string | null): R
         modelId: "model-1",
         executionPolicy: "full_access",
         startedAt: status === "queued" ? null : timestamp,
-
         modelCalls: 0,
+        compactions: 0,
         status,
         reasonCode,
         createdAt: timestamp,

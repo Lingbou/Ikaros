@@ -938,7 +938,7 @@ class ContextRevision:
             raise ValueError("Context revision does not preserve current Run capacity")
 
     def to_wire(self) -> JsonObject:
-        payload: JsonObject = {
+        return {
             "revision": self.revision,
             "historyGroups": [group.to_wire() for group in self.history_groups],
             "historyItems": [item.to_wire() for item in self.history_items],
@@ -947,26 +947,12 @@ class ContextRevision:
             "omissions": [omission.to_wire() for omission in self.omissions],
             "historyStatus": self.history_status.to_wire(),
             "memoryContextCharacters": self.memory_context_characters,
+            "compactionSummary": self.compaction_summary,
+            "currentRunOmittedThroughItemId": self.current_run_omitted_through_item_id,
         }
-        if self.compaction_summary:
-            payload["compactionSummary"] = self.compaction_summary
-        if self.current_run_omitted_through_item_id:
-            payload["currentRunOmittedThroughItemId"] = self.current_run_omitted_through_item_id
-        return payload
 
     @classmethod
     def from_wire(cls, value: object) -> ContextRevision:
-        boundary_present = (
-            isinstance(value, dict) and "currentRunOmittedThroughItemId" in value
-        )
-        if isinstance(value, dict):
-            value = {
-                **value,
-                "compactionSummary": value.get("compactionSummary", ""),
-                "currentRunOmittedThroughItemId": value.get(
-                    "currentRunOmittedThroughItemId", ""
-                ),
-            }
         row = _object(value, "Context revision", _CONTEXT_REVISION_KEYS)
         return cls(
             revision=_as_int(row["revision"]),
@@ -987,9 +973,9 @@ class ContextRevision:
             ),
             history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
-            compaction_summary=_as_str(row.get("compactionSummary", ""), allow_empty=True),
+            compaction_summary=_as_str(row["compactionSummary"], allow_empty=True),
             current_run_omitted_through_item_id=_as_str(
-                row["currentRunOmittedThroughItemId"], allow_empty=not boundary_present
+                row["currentRunOmittedThroughItemId"], allow_empty=True
             ),
         )
 
@@ -1029,7 +1015,7 @@ class StepInput:
         )
 
     def to_wire(self) -> JsonObject:
-        payload: JsonObject = {
+        return {
             "stepOrdinal": self.step_ordinal,
             "contextRevision": self.context_revision,
             "historyItems": [item.to_wire() for item in self.history_items],
@@ -1038,15 +1024,11 @@ class StepInput:
             "omissions": [omission.to_wire() for omission in self.omissions],
             "historyStatus": self.history_status.to_wire(),
             "memoryContextCharacters": self.memory_context_characters,
+            "compactionSummary": self.compaction_summary,
         }
-        if self.compaction_summary:
-            payload["compactionSummary"] = self.compaction_summary
-        return payload
 
     @classmethod
     def from_wire(cls, value: object) -> StepInput:
-        if isinstance(value, dict) and "compactionSummary" not in value:
-            value = {**value, "compactionSummary": ""}
         row = _object(value, "Step input", _STEP_INPUT_KEYS)
         return cls(
             step_ordinal=_as_int(row["stepOrdinal"]),
@@ -1064,7 +1046,7 @@ class StepInput:
             ),
             history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
-            compaction_summary=_as_str(row.get("compactionSummary", ""), allow_empty=True),
+            compaction_summary=_as_str(row["compactionSummary"], allow_empty=True),
         )
 
 

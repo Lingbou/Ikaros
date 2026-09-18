@@ -133,6 +133,12 @@ function installRuntimeBridge(api: unknown): void {
       startTurn: (params: Parameters<IkarosRuntimeApi["startTurn"]>[0]) =>
         bridgeInvocation(() => runtime.startTurn(params)),
       cancelRun: (runId: string) => bridgeInvocation(() => runtime.cancelRun(runId)),
+      steerRun: (params: Parameters<IkarosRuntimeApi["steerRun"]>[0]) =>
+        bridgeInvocation(() => runtime.steerRun(params)),
+      readProcess: (params: Parameters<IkarosRuntimeApi["readProcess"]>[0]) =>
+        bridgeInvocation(() => runtime.readProcess(params)),
+      stopProcess: (params: Parameters<IkarosRuntimeApi["stopProcess"]>[0]) =>
+        bridgeInvocation(() => runtime.stopProcess(params)),
       replayEvents: (afterSeq: number, limit?: number) =>
         bridgeInvocation(() => runtime.replayEvents(afterSeq, limit)),
       listProviders: () =>
@@ -186,6 +192,10 @@ function installRuntimeBridge(api: unknown): void {
               }),
         ),
       onEvent: runtime.onEvent,
+      onStatus: (listener) =>
+        typeof runtime.onStatus === "function"
+          ? runtime.onStatus(listener)
+          : () => undefined,
     },
   } as IkarosDesktopApi;
   Object.defineProperty(window, "ikarosDesktop", {
@@ -280,7 +290,7 @@ function singleTurnHistoryPage(
             providerId: "scripted",
             modelId: "scripted-v1",
             executionPolicy: "full_access",
-            startedAt: null, modelCalls: 0,
+            startedAt: null, modelCalls: 0, compactions: 0,
             status,
             reasonCode: null,
             createdAt,

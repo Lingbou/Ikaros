@@ -599,24 +599,27 @@ function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
       !hasRunEventScope(event, false) ||
       !hasScopedPayloadKeys(
         event,
-        ["revision", "droppedTurns", "contextRevision"],
-        ["omittedItemIds", "trigger", "targetTokens"]
+        [
+          "revision",
+          "droppedTurns",
+          "contextRevision",
+          "omittedItemIds",
+          "trigger",
+          "targetTokens"
+        ]
       ) ||
       typeof payload.revision !== "number" ||
       !Number.isInteger(payload.revision) ||
       payload.revision < 1 ||
       !Array.isArray(payload.droppedTurns) ||
       !payload.droppedTurns.every((id) => typeof id === "string" && id.length > 0) ||
-      (payload.omittedItemIds !== undefined &&
-        (!Array.isArray(payload.omittedItemIds) ||
-          new Set(payload.omittedItemIds).size !== payload.omittedItemIds.length ||
-          !payload.omittedItemIds.every((id) => isWireIdentifier(id)))) ||
+      !Array.isArray(payload.omittedItemIds) ||
+      new Set(payload.omittedItemIds).size !== payload.omittedItemIds.length ||
+      !payload.omittedItemIds.every((id) => isWireIdentifier(id)) ||
       !isWireObject(payload.contextRevision) ||
       !isContextRevision(payload.contextRevision, event.runId) ||
-      (payload.trigger !== undefined &&
-        payload.trigger !== "budget_exceeded" &&
-        payload.trigger !== "threshold") ||
-      (payload.targetTokens !== undefined && !isSafePositiveInteger(payload.targetTokens))
+      (payload.trigger !== "budget_exceeded" && payload.trigger !== "threshold") ||
+      !isSafePositiveInteger(payload.targetTokens)
     ) {
       invalidJournalEventPayload(event.type);
     }
@@ -1166,15 +1169,18 @@ function isContextRevision(value: unknown, currentRunId: unknown): boolean {
   const compactionSummary = value.compactionSummary;
   if (
     !isWireIdentifier(currentRunId) ||
-    !hasRequiredAndOptionalKeys(value, [
+    !hasExactKeys(value, [
       "revision",
       "historyGroups",
       "historyItems",
       "memory",
       "budget",
       "omissions",
-      "historyStatus", "memoryContextCharacters"
-    ], ["compactionSummary", "currentRunOmittedThroughItemId"]) ||
+      "historyStatus",
+      "memoryContextCharacters",
+      "compactionSummary",
+      "currentRunOmittedThroughItemId"
+    ]) ||
     !isSafePositiveInteger(value.revision) ||
     !Array.isArray(value.historyGroups) ||
     value.historyGroups.length === 0 ||
@@ -1188,11 +1194,11 @@ function isContextRevision(value: unknown, currentRunId: unknown): boolean {
     !isMemoryBudgetForReferences(
       budget, memory, value.historyStatus, value.memoryContextCharacters, compactionSummary
     ) ||
-    (compactionSummary !== undefined &&
-      (typeof compactionSummary !== "string" || [...compactionSummary].length > 6000)) ||
-    (value.currentRunOmittedThroughItemId !== undefined &&
-      (typeof value.currentRunOmittedThroughItemId !== "string" ||
-        !/^item_[0-9a-f]{32}$/.test(value.currentRunOmittedThroughItemId))) ||
+    typeof compactionSummary !== "string" ||
+    [...compactionSummary].length > 6000 ||
+    typeof value.currentRunOmittedThroughItemId !== "string" ||
+    (value.currentRunOmittedThroughItemId !== "" &&
+      !/^item_[0-9a-f]{32}$/.test(value.currentRunOmittedThroughItemId)) ||
     !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
     !isContextOmissionList(value.omissions, memory) ||
     budget.totalTokens + budget.reservedCurrentRunTokens > budget.maximumTokens
@@ -1257,10 +1263,17 @@ function isStepInput(
   if (
     !isWireObject(value) ||
     !isWireIdentifier(currentRunId) ||
-    !hasRequiredAndOptionalKeys(value, [
-      "stepOrdinal", "contextRevision", "historyItems", "memory", "budget",
-      "omissions", "historyStatus", "memoryContextCharacters"
-    ], ["compactionSummary"]) ||
+    !hasExactKeys(value, [
+      "stepOrdinal",
+      "contextRevision",
+      "historyItems",
+      "memory",
+      "budget",
+      "omissions",
+      "historyStatus",
+      "memoryContextCharacters",
+      "compactionSummary"
+    ]) ||
     value.stepOrdinal !== stepOrdinal ||
     !isSafePositiveInteger(value.contextRevision) ||
     !Array.isArray(value.historyItems) ||
@@ -1277,8 +1290,8 @@ function isStepInput(
       value.memoryContextCharacters,
       compactionSummary
     ) ||
-    (compactionSummary !== undefined &&
-      (typeof compactionSummary !== "string" || [...compactionSummary].length > 6000)) ||
+    typeof compactionSummary !== "string" ||
+    [...compactionSummary].length > 6000 ||
     !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
     !isContextOmissionList(value.omissions, value.memory)
   ) {
@@ -1735,13 +1748,12 @@ function canonicalSha256(value: unknown): string {
 export function parseRuntimeInitializeResult(value: unknown): RuntimeInitializeResult {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["protocolVersion", "server", "capabilities"]) ||
+    !hasExactKeys(value, ["protocolVersion", "server"]) ||
     value.protocolVersion !== RUNTIME_PROTOCOL_VERSION ||
     !isWireObject(value.server) ||
     !hasExactKeys(value.server, ["name", "version"]) ||
     value.server.name !== RUNTIME_SERVER_NAME ||
-    !isNonEmptyString(value.server.version) ||
-    !sameWireValue(value.capabilities, RUNTIME_PROTOCOL_MANIFEST.capabilities)
+    !isNonEmptyString(value.server.version)
   ) {
     throw new Error("Runtime initialization result did not match the protocol contract.");
   }
@@ -2019,10 +2031,21 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     run.status === "completed" || run.status === "failed" || run.status === "cancelled";
   const reasonCode = run.reasonCode;
   if (
-    !hasRequiredAndOptionalKeys(value, [
-      "id", "turnId", "providerId", "modelId", "executionPolicy", "status", "reasonCode",
-      "createdAt", "startedAt", "settledAt", "modelCalls", "items"
-    ], ["compactions"]) ||
+    !hasExactKeys(value, [
+      "id",
+      "turnId",
+      "providerId",
+      "modelId",
+      "executionPolicy",
+      "status",
+      "reasonCode",
+      "createdAt",
+      "startedAt",
+      "settledAt",
+      "modelCalls",
+      "compactions",
+      "items"
+    ]) ||
     !isWireIdentifier(run.id) ||
     run.turnId !== turnId ||
     !isNonEmptyString(run.providerId) ||
@@ -2037,7 +2060,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     (run.status === "queued" && run.startedAt !== null) ||
     (run.status === "running" && run.startedAt === null) ||
     !isSafeNonNegativeInteger(run.modelCalls) ||
-    (run.compactions !== undefined && !isSafeNonNegativeInteger(run.compactions)) ||
+    !isSafeNonNegativeInteger(run.compactions) ||
     (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
     !Array.isArray(run.items)
   ) {
@@ -2067,9 +2090,7 @@ function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHisto
     startedAt: run.startedAt as string | null,
     settledAt: run.settledAt as string | null,
     modelCalls: run.modelCalls,
-    ...(isSafeNonNegativeInteger((run as { compactions?: unknown }).compactions)
-      ? { compactions: (run as { compactions: number }).compactions }
-      : {}),
+    compactions: run.compactions,
     items
   };
 }

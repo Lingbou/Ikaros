@@ -40,7 +40,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
   const readMore = () => {
     if (!threadId || !processId) return;
     const runtime = createRuntimeClient();
-    if (!runtime?.readProcess) return;
+    if (!runtime) return;
     setBusy(true);
     setError(null);
     void runtime.readProcess({ threadId, processId, cursor }).then((page) => {
@@ -58,7 +58,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
   const stop = () => {
     if (!threadId || !processId) return;
     const runtime = createRuntimeClient();
-    if (!runtime?.stopProcess) return;
+    if (!runtime) return;
     setBusy(true);
     setError(null);
     void runtime.stopProcess({ threadId, processId }).then((page) => {

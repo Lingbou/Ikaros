@@ -20,6 +20,9 @@ function bridgeWithListThreads(
     unarchiveThread: vi.fn(),
     startTurn: vi.fn(),
     cancelRun: vi.fn(),
+    steerRun: vi.fn(),
+    readProcess: vi.fn(),
+    stopProcess: vi.fn(),
     replayEvents: vi.fn(),
     listProviders: vi.fn(),
     configureProvider: vi.fn(),
@@ -39,7 +42,8 @@ function bridgeWithListThreads(
     readUsage: vi.fn(),
     previewFile: vi.fn(),
     getFileChange: vi.fn(),
-    onEvent: vi.fn(() => () => undefined)
+    onEvent: vi.fn(() => () => undefined),
+    onStatus: vi.fn(() => () => undefined)
   };
 }
 

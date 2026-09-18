@@ -108,7 +108,7 @@ class HistoryReadTool:
             tool_name=call.name,
             ok=True,
             output=output,
-            details={"itemId": item_id, "truncated": bool(payload.get("truncated", False))},
+            details={"itemId": item_id, "truncated": bool(payload["truncated"])},
         )
 
 

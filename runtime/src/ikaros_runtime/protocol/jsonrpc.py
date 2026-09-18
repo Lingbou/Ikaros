@@ -7,7 +7,6 @@ from .spec import (
     JSONRPC_VERSION,
     PROTOCOL_VERSION,
     SERVER_NAME,
-    initialize_capabilities,
 )
 
 
@@ -40,7 +39,6 @@ def initialize_result() -> dict[str, object]:
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "server": {"name": SERVER_NAME, "version": __version__},
-        "capabilities": initialize_capabilities(),
     }
 
 
