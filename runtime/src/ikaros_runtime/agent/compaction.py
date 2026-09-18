@@ -94,30 +94,7 @@ class ContextTrimResult:
     records: tuple[ContextItemRecordV1, ...]
     omitted_item_ids: tuple[str, ...]
     retained_tokens: int
-    omitted_tokens: int
     truncated: bool
-
-
-def summarize_context_records(
-    records: Sequence[ContextItemRecordV1], *, max_characters: int = 20_000
-) -> str:
-    """Create a bounded, auditable summary of omitted conversation records.
-
-    This local fallback deliberately preserves facts and tool outcomes without
-    replaying calls. A provider backed summarizer can replace this function
-    later while retaining the same revision boundary.
-    """
-    lines: list[str] = [
-        "Earlier context was compacted; treat this as a factual hint and verify current state."
-    ]
-    for record in records:
-        role = record.role or record.kind
-        content = record.content.replace("\x00", " ").strip()
-        if len(content) > 500:
-            content = content[:500] + "…"
-        if content:
-            lines.append(f"[{role}] {content}")
-    return "\n".join(lines)[:max_characters]
 
 
 def trim_context_records(
@@ -154,9 +131,9 @@ def trim_context_records(
     costs = tuple(sum(item.estimated_tokens for item in unit) for unit in units)
     total = sum(costs)
     if total <= maximum_tokens:
-        return ContextTrimResult(frozen, (), total, 0, False)
+        return ContextTrimResult(frozen, (), total, False)
     if not units:
-        return ContextTrimResult((), (), 0, 0, False)
+        return ContextTrimResult((), (), 0, False)
 
     selected: set[int] = set()
     used = 0
@@ -216,7 +193,6 @@ def trim_context_records(
         records=retained,
         omitted_item_ids=tuple(item.item_id for item in omitted),
         retained_tokens=sum(item.estimated_tokens for item in retained),
-        omitted_tokens=sum(item.estimated_tokens for item in omitted),
         truncated=bool(omitted),
     )
 
@@ -265,6 +241,5 @@ __all__ = [
     "ContextTrimResult",
     "build_compaction_source",
     "compaction_source_item_ids",
-    "summarize_context_records",
     "trim_context_records",
 ]

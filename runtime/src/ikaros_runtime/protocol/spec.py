@@ -80,9 +80,6 @@ PROVIDER_TOOL_IDS: Final = (
     "write",
     "edit",
 )
-PROVIDER_TOOL_ID_SET: Final = frozenset(PROVIDER_TOOL_IDS)
-
-
 def protocol_manifest() -> dict[str, object]:
     return {
         "protocolVersion": PROTOCOL_VERSION,
@@ -118,7 +115,6 @@ __all__ = [
     "MEMORY_OPERATION_REASON_CODES",
     "PROTOCOL_VERSION",
     "PROVIDER_TOOL_IDS",
-    "PROVIDER_TOOL_ID_SET",
     "RPC_METHODS",
     "RPC_METHOD_SET",
     "SERVER_NAME",

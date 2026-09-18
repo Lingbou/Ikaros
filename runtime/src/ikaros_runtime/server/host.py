@@ -153,14 +153,6 @@ class RuntimeServerHost:
         self._parent_probe = parent_probe
         self._stop_event: asyncio.Event | None = None
 
-    @property
-    def stop_event(self) -> asyncio.Event | None:
-        return self._stop_event
-
-    def request_shutdown(self) -> None:
-        if self._stop_event is not None:
-            self._stop_event.set()
-
     async def run(self) -> None:
         self._settings.validate()
         if self._stop_event is not None:

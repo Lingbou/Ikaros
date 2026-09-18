@@ -83,7 +83,6 @@ class _RetainedOutput:
     def __init__(self, limit: int) -> None:
         if limit < 2:
             raise ValueError("retained output limit must be at least two bytes")
-        self._limit = limit
         self._head_budget = limit // 2
         self._tail_budget = limit - self._head_budget
         self._head = ""

@@ -26,7 +26,6 @@ type InstructionAuthority = Literal[
 ]
 type InputAuthority = InstructionAuthority | Literal["contextual_data"]
 type InputLifetime = Literal["release", "run"]
-type ModelStepOutcome = Literal["completed", "failed", "cancelled"]
 type MemoryScope = Literal["global", "workspace"]
 type OmissionSourceType = Literal["history", "memory"]
 type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]

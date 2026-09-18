@@ -1865,10 +1865,6 @@ class SqliteRuntimeStore:
                 return self._item_payload_from_row(row, data=data)
         return None
 
-    def append_steer_item(self, run_id: str, content: str, request_id: str) -> JournalEvent:
-        event, _created = self.append_steer_item_idempotent(run_id, content, request_id)
-        return event
-
     def append_steer_item_idempotent(
         self, run_id: str, content: str, request_id: str
     ) -> tuple[JournalEvent, bool]:
@@ -1946,13 +1942,6 @@ class SqliteRuntimeStore:
                     "item": item,
                 },
             ), True
-
-    def mark_pending_steers_processed(
-        self, run_id: str, step_ordinal: int
-    ) -> tuple[JournalEvent, ...]:
-        """Mark received supplements as processed by the next model Step."""
-        with self._connection:
-            return self._mark_received_steers_processed_in_transaction(run_id, step_ordinal)
 
     def _mark_received_steers_processed_in_transaction(
         self, run_id: str, step_ordinal: int

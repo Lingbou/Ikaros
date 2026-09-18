@@ -365,7 +365,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 store._connection.execute(
                     "UPDATE runs SET status = 'running' WHERE id = ?", (prepared.run_id,)
                 )
-                store.append_steer_item(
+                store.append_steer_item_idempotent(
                     prepared.run_id, "Keep the final explanation concise.", "golden-steer-1"
                 )
                 store._connection.execute(
@@ -661,11 +661,6 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
             store.close()
 
 
-async def build_production_notification_messages(database_path: Path) -> list[GoldenMessage]:
-    messages = await build_production_messages(database_path)
-    return [message for message in messages if message["kind"] == "notification"]
-
-
 def _load_trace() -> dict[str, Any]:
     value = json.loads(_GOLDEN_TRACE_PATH.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or not isinstance(value.get("messages"), list):
@@ -750,4 +745,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["build_production_messages", "build_production_notification_messages"]
+__all__ = ["build_production_messages"]
