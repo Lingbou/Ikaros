@@ -598,6 +598,42 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
         events: turn?.events ?? []
       }));
     }
+  } else if (event.type === "process.recorded") {
+    const process = event.payload.process;
+    if (isRecord(process) && typeof process.processId === "string") {
+      const processState = process.state;
+      const exitCode = process.exitCode;
+      const output = process.output;
+      const truncated = process.truncated;
+      next = updateTurn(thread, event.branchId, event.turnId, (turn) => ({
+        id: event.turnId as string,
+        branchId: event.branchId as string,
+        runId: event.runId ?? turn?.runId,
+        status: turn?.status ?? "running",
+        reasonCode: turn?.reasonCode ?? null,
+        events: (turn?.events ?? []).map((candidate) =>
+          candidate.type === "tool_result" &&
+          event.itemId !== null &&
+          candidate.toolCallId === event.itemId &&
+          candidate.details?.processId === process.processId
+            ? {
+                ...candidate,
+                ...(typeof output === "string" ? { output } : {}),
+                details: {
+                  ...candidate.details,
+                  ...(["running", "exited", "terminated", "unknown"].includes(String(processState))
+                    ? { processState: processState as "running" | "exited" | "terminated" | "unknown" }
+                    : {}),
+                  ...(typeof exitCode === "number" || exitCode === null
+                    ? { exitCode: exitCode as number | null }
+                    : {}),
+                  ...(typeof truncated === "boolean" ? { truncated } : {}),
+                },
+              }
+            : candidate
+        ),
+      }));
+    }
   }
 
   const priorTurn = thread.branches.find((branch) => branch.id === event.branchId)?.turns.find((turn) => turn.id === event.turnId);

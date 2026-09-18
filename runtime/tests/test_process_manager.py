@@ -206,6 +206,11 @@ async def test_start_wait_proves_actual_completion_and_workspace(tmp_path: Path)
     ]
     assert facts[0]["errorCode"] == "start_pending"
     assert "中文" in facts[-1]["stdout"] and "error" in facts[-1]["stderr"]
+    canonical_timestamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+    for fact in facts:
+        assert canonical_timestamp.fullmatch(str(fact["startedAt"]))
+        if fact["finishedAt"] is not None:
+            assert canonical_timestamp.fullmatch(str(fact["finishedAt"]))
     await manager.close()
 
 

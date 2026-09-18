@@ -689,6 +689,54 @@ describe("Runtime event projection", () => {
     });
   });
 
+  it("updates a process result from later process.recorded events", () => {
+    const resultItem = toolResultItem(
+      "result-process",
+      "turn-process",
+      "run-process",
+      "completed",
+      "call-process",
+      "",
+    );
+    const events = [
+      event(2, "item.completed", "turn-process", "run-process", "call-process", {
+        item: {
+          ...resultItem,
+          data: {
+            ...resultItem.data,
+            result: {
+              output: "",
+              processId: "process-1",
+              state: "running",
+              exitCode: null,
+            },
+          },
+        },
+      }),
+      event(3, "process.recorded", "turn-process", "run-process", "call-process", {
+        process: {
+          processId: "process-1",
+          state: "exited",
+          exitCode: 0,
+          output: "done\n",
+          truncated: false,
+        },
+      }),
+    ];
+
+    const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    expect(thread.branches[0]?.turns[0]?.events[0]).toMatchObject({
+      type: "tool_result",
+      output: "done\n",
+      details: {
+        processId: "process-1",
+        processState: "exited",
+        exitCode: 0,
+        truncated: false,
+      },
+    });
+  });
+
   it("projects compact, replay-safe file tool events without retaining file or replacement content", () => {
     const secretContent = "SECRET-FILE-CONTENT";
     const oldString = "SECRET-OLD-TEXT";

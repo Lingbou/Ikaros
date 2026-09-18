@@ -9,12 +9,11 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from ..cancellation import CancellationToken
-from ..domain import JsonObject
+from ..domain import JsonObject, utc_now
 from ..errors import ProtectedValueError
 from ..json_codec import dumps as json_dumps
 from .core import ToolExecutionContext
@@ -94,7 +93,7 @@ class _Entry:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
+    return utc_now()
 
 
 class ProcessManager:
