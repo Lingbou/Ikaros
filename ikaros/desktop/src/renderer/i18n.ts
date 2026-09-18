@@ -132,7 +132,10 @@ const english = {
   "runtime.progress.calls": "Model calls {used}",
   "runtime.progress.compacting": "Organizing context…",
   "runtime.progress.compactions": "Context organized {used}",
-  "runtime.progress.time": "Elapsed {elapsed}",
+  "runtime.progress.processing": "Processed {time}",
+  "runtime.progress.time": "Took {time}",
+  "runtime.progress.seconds": "{seconds}s",
+  "runtime.progress.minutesSeconds": "{minutes}m {seconds}s",
 
   "settings.models.contextWindow": "Context window (tokens)",
   "settings.models.saveLimits": "Save",
@@ -664,7 +667,10 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "runtime.progress.calls": "模型调用 {used}",
   "runtime.progress.compacting": "正在整理上下文…",
   "runtime.progress.compactions": "已整理上下文 {used} 次",
-  "runtime.progress.time": "已运行 {elapsed}",
+  "runtime.progress.processing": "已处理 {time}",
+  "runtime.progress.time": "用时 {time}",
+  "runtime.progress.seconds": "{seconds}秒",
+  "runtime.progress.minutesSeconds": "{minutes}分{seconds}秒",
 
   "settings.models.contextWindow": "上下文窗口（Token）",
   "settings.models.saveLimits": "保存",

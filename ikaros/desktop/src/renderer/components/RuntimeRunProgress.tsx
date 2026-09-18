@@ -11,11 +11,6 @@ const STATUS_KEYS: Record<string, TranslationKey> = {
   interrupted: "runtime.progress.interrupted",
 };
 
-function duration(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
 export function RuntimeRunProgress({ turn }: { turn: Turn }) {
   const { t } = useTranslation();
   const progress = turn.runProgress;
@@ -33,9 +28,44 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
   const queuedFor = (finish - Date.parse(progress.queuedAt)) / 1000;
   const elapsed = start === null ? 0 : (finish - start) / 1000;
   const status = t(STATUS_KEYS[turn.status] ?? "runtime.progress.running");
-  const timing = start === null
-    ? t("runtime.progress.waiting", { time: duration(queuedFor) })
-    : t("runtime.progress.time", { elapsed: duration(elapsed) });
+  const formatDuration = (seconds: number): string => {
+    const total = Math.max(0, Math.floor(seconds));
+    if (total < 60) return t("runtime.progress.seconds", { seconds: total });
+    return t("runtime.progress.minutesSeconds", {
+      minutes: Math.floor(total / 60),
+      seconds: total % 60,
+    });
+  };
+  const waitingLabel = t("runtime.progress.waiting", {
+    time: formatDuration(queuedFor),
+  });
+  const elapsedLabel = t("runtime.progress.time", {
+    time: formatDuration(elapsed),
+  });
+  const processingLabel = t("runtime.progress.processing", {
+    time: formatDuration(elapsed),
+  });
+  const runningLabel = progress.compacting
+    ? `${processingLabel} · ${t("runtime.progress.compacting")}`
+    : processingLabel;
+  const settledLabel =
+    turn.status === "completed"
+      ? elapsedLabel
+      : `${status} · ${elapsedLabel}`;
+
+  if (active) {
+    return (
+      <div
+        aria-label={t("runtime.progress.label")}
+        className="py-0.5 text-[11px] leading-4 text-[var(--muted)]"
+      >
+        <span className="font-medium text-[var(--muted-strong)]">
+          {start === null ? waitingLabel : runningLabel}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div aria-label={t("runtime.progress.label")} className="py-0.5 text-[11px] leading-4 text-[var(--muted)]">
       <button
@@ -50,9 +80,8 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
           className={`shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
         />
         <span className="font-medium text-[var(--muted-strong)] group-hover:text-[var(--text)]">
-          {status}
+          {settledLabel}
         </span>
-        <span className="text-[var(--muted)]">{timing}</span>
       </button>
       {expanded ? (
         <div className="ml-[17px] mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
