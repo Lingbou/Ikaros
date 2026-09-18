@@ -25,7 +25,10 @@ from ikaros_runtime.errors import (
 from ikaros_runtime.history_status import FrozenHistoryStatusV1, HistoryRunStatusV1
 from ikaros_runtime.memory import MemoryRetrieverV1, MemoryScope, SqliteMemoryStore
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
-from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
+from ikaros_runtime.providers.openai_compatible.adapter import (
+    OpenAICompatibleAdapter,
+    ProviderRetryPolicy,
+)
 from ikaros_runtime.run_input import (
     FrozenMemoryContextV1,
     StepInput,
@@ -175,7 +178,17 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             loop = AgentLoop(
                 store,
-                {"custom": OpenAICompatibleAdapter(_provider(), client=client)},
+                {
+                    "custom": OpenAICompatibleAdapter(
+                        _provider(),
+                        client=client,
+                        retries=ProviderRetryPolicy(
+                            request_max_retries=0,
+                            stream_max_retries=0,
+                            base_delay=0.001,
+                        ),
+                    )
+                },
                 publish,
                 tool_executor=executor,
                 memory_retriever=MemoryRetrieverV1(memory),

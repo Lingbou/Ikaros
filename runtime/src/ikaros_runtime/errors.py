@@ -71,6 +71,7 @@ class ProviderFailure(RuntimeError):
         self.request_id = request_id
         self.retryable = retryable
         self.retry_after = retry_after
+        self._request_retries_exhausted = False
 
     def __repr__(self) -> str:
         return (

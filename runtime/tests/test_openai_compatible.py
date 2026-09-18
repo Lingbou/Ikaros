@@ -25,6 +25,7 @@ from ikaros_runtime.providers.base import (
 from ikaros_runtime.providers.openai_compatible.adapter import (
     OpenAICompatibleAdapter,
     ProviderFailure,
+    ProviderRetryPolicy,
     ProviderTimeouts,
 )
 from ikaros_runtime.providers.openai_compatible.discovery import discover_openai_compatible_models
@@ -547,7 +548,7 @@ async def test_invalid_usage_is_a_protocol_failure(usage: object) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [400, 422, 429, 500])
-async def test_one_stream_request_is_exactly_one_http_attempt(status: int) -> None:
+async def test_request_retries_only_retryable_http_failures(status: int) -> None:
     bodies: list[dict[str, Any]] = []
 
     async def handler(incoming: httpx.Request) -> httpx.Response:
@@ -556,9 +557,15 @@ async def test_one_stream_request_is_exactly_one_http_attempt(status: int) -> No
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderFailure):
-            await collect(OpenAICompatibleAdapter(provider(), client=client))
+            await collect(
+                OpenAICompatibleAdapter(
+                    provider(),
+                    client=client,
+                    retries=ProviderRetryPolicy(base_delay=0.001),
+                )
+            )
 
-    assert len(bodies) == 1
+    assert len(bodies) == (5 if status in {429, 500} else 1)
     assert bodies[0]["stream_options"] == {"include_usage": True}
 
 
@@ -915,7 +922,11 @@ async def test_api_key_echo_split_across_text_deltas_is_rejected_before_leaking(
 
     emitted: list[ProviderEvent] = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(api_key=secret), client=client)
+        adapter = OpenAICompatibleAdapter(
+            provider(api_key=secret),
+            client=client,
+            retries=ProviderRetryPolicy(base_delay=0.001),
+        )
         with pytest.raises(ProviderFailure) as captured:
             async for event in adapter.stream(request(), cancellation=CancellationToken()):
                 emitted.append(event)
@@ -1065,7 +1076,11 @@ async def test_http_errors_are_normalized_without_body_or_secret_values(
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        adapter = OpenAICompatibleAdapter(provider(api_key=secret), client=client)
+        adapter = OpenAICompatibleAdapter(
+            provider(api_key=secret),
+            client=client,
+            retries=ProviderRetryPolicy(base_delay=0.001),
+        )
         with pytest.raises(ProviderFailure) as captured:
             await collect(adapter)
 
@@ -1467,7 +1482,7 @@ async def test_provider_registry_caches_replaces_and_closes_clients(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_request_output_limit_is_sent_even_if_live_model_config_differs() -> None:
+async def test_internal_request_output_limit_is_sent_for_auxiliary_calls() -> None:
     bodies: list[dict[str, Any]] = []
 
     async def handler(incoming: httpx.Request) -> httpx.Response:

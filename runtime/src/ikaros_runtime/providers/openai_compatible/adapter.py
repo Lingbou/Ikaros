@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import math
+import random
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
@@ -69,11 +71,24 @@ _SAFE_PROVIDER_FAILURE_MESSAGES = frozenset(
 class ProviderTimeouts:
     connect: float = 10.0
     response_header: float = 30.0
-    stream_idle: float = 120.0
+    stream_idle: float = 300.0
 
     def validate(self) -> None:
         if self.connect <= 0 or self.response_header <= 0 or self.stream_idle <= 0:
             raise ValueError("provider timeouts must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRetryPolicy:
+    request_max_retries: int = 4
+    stream_max_retries: int = 5
+    base_delay: float = 0.2
+
+    def validate(self) -> None:
+        if self.request_max_retries < 0 or self.stream_max_retries < 0:
+            raise ValueError("provider retry counts must be non-negative")
+        if self.base_delay <= 0:
+            raise ValueError("provider retry delay must be positive")
 
 
 class OpenAICompatibleAdapter:
@@ -83,11 +98,14 @@ class OpenAICompatibleAdapter:
         *,
         client: httpx.AsyncClient | None = None,
         timeouts: ProviderTimeouts | None = None,
+        retries: ProviderRetryPolicy | None = None,
     ) -> None:
         self._provider = provider
         self._secrets = provider_secrets(provider)
         self._timeouts = timeouts or ProviderTimeouts()
         self._timeouts.validate()
+        self._retries = retries or ProviderRetryPolicy()
+        self._retries.validate()
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -173,8 +191,29 @@ class OpenAICompatibleAdapter:
         headers = self._request_headers()
         url = f"{self._provider.base_url.rstrip('/')}/chat/completions"
         body = self._request_body(request)
-        async for event in self._attempt(url, headers, body, cancellation=cancellation):
-            yield event
+        stream_attempt = 0
+        while True:
+            emitted_content = False
+            try:
+                async for event in self._attempt(
+                    url, headers, body, cancellation=cancellation
+                ):
+                    if not isinstance(event, ResponseMetadata):
+                        emitted_content = True
+                    yield event
+                return
+            except RunCancelled:
+                raise
+            except ProviderFailure as error:
+                if (
+                    emitted_content
+                    or not error.retryable
+                    or getattr(error, "_request_retries_exhausted", False)
+                    or stream_attempt >= self._retries.stream_max_retries
+                ):
+                    raise
+                stream_attempt += 1
+                await self._retry_delay(error, stream_attempt)
 
     async def _attempt(
         self,
@@ -185,39 +224,15 @@ class OpenAICompatibleAdapter:
         cancellation: CancellationToken,
     ) -> AsyncIterator[ProviderEvent]:
         cancellation.raise_if_cancelled()
-        try:
-            request = self._client.build_request("POST", url, headers=headers, json=body)
-            response = await await_cancellable(
-                self._client.send(request, stream=True),
-                cancellation=cancellation,
-                wait_seconds=self._timeouts.response_header,
-                cancelled_result_cleanup=close_response,
-            )
-        except RunCancelled:
-            raise
-        except TimeoutError:
-            raise ProviderFailure(
-                "timeout",
-                "provider response headers timed out",
-                retryable=True,
-            ) from None
-        except httpx.TimeoutException:
-            raise ProviderFailure(
-                "timeout", "provider connection timed out", retryable=True
-            ) from None
-        except httpx.RequestError:
-            raise ProviderFailure(
-                "network", "provider network request failed", retryable=True
-            ) from None
-        except (TypeError, ValueError):
-            raise ProviderFailure(
-                "invalid_request", "provider request could not be built"
-            ) from None
+        response = await self._open_response(
+            url,
+            headers,
+            body,
+            cancellation=cancellation,
+        )
 
         try:
             request_id = _safe_request_id(response, self._provider)
-            if response.status_code >= 400:
-                raise self._http_failure(response)
             content_type = response.headers.get("content-type", "")
             if not content_type.lower().startswith("text/event-stream"):
                 raise ProviderFailure(
@@ -300,6 +315,72 @@ class OpenAICompatibleAdapter:
         finally:
             with suppress(Exception):
                 await response.aclose()
+
+    async def _open_response(
+        self,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, object],
+        *,
+        cancellation: CancellationToken,
+    ) -> httpx.Response:
+        request_attempt = 0
+        while True:
+            cancellation.raise_if_cancelled()
+            failure: ProviderFailure
+            try:
+                request = self._client.build_request("POST", url, headers=headers, json=body)
+                response = await await_cancellable(
+                    self._client.send(request, stream=True),
+                    cancellation=cancellation,
+                    wait_seconds=self._timeouts.response_header,
+                    cancelled_result_cleanup=close_response,
+                )
+                if response.status_code >= 400:
+                    error = self._http_failure(response)
+                    with suppress(Exception):
+                        await response.aclose()
+                    raise error
+                return response
+            except RunCancelled:
+                raise
+            except TimeoutError:
+                failure = ProviderFailure(
+                    "timeout",
+                    "provider response headers timed out",
+                    retryable=True,
+                )
+            except httpx.TimeoutException:
+                failure = ProviderFailure(
+                    "timeout", "provider connection timed out", retryable=True
+                )
+            except httpx.RequestError:
+                failure = ProviderFailure(
+                    "network", "provider network request failed", retryable=True
+                )
+            except (TypeError, ValueError):
+                raise ProviderFailure(
+                    "invalid_request", "provider request could not be built"
+                ) from None
+            except ProviderFailure as caught:
+                failure = caught
+            if (
+                not failure.retryable
+                or request_attempt >= self._retries.request_max_retries
+            ):
+                if failure.retryable:
+                    failure._request_retries_exhausted = True
+                raise failure
+            request_attempt += 1
+            await self._retry_delay(failure, request_attempt)
+
+    async def _retry_delay(self, error: ProviderFailure, attempt: int) -> None:
+        exponential = self._retries.base_delay * (2 ** max(0, attempt - 1))
+        jittered = exponential * random.uniform(0.9, 1.1)
+        delay = min(_MAX_RETRY_DELAY_SECONDS, jittered)
+        if error.retry_after is not None:
+            delay = min(_MAX_RETRY_DELAY_SECONDS, max(delay, error.retry_after))
+        await asyncio.sleep(delay)
 
     def _request_body(self, request: ProviderRequest) -> dict[str, object]:
         model = self._model(request.model_id)
