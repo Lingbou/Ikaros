@@ -195,7 +195,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     useFlushSync: false,
     estimateSize: (index) => {
       const event = events[index];
-      if (event?.type === "runtime_outcome") return event.turn.status === "failed" || event.turn.status === "interrupted" ? 200 : 48;
+      if (event?.type === "runtime_outcome") return event.turn.status === "failed" || event.turn.status === "interrupted" ? 200 : 32;
       if (event?.type === "message") return event.role === "user" ? 72 : 128;
       if (event?.type === "permission_request" || event?.type === "interrupt") return 168;
       if (
@@ -494,6 +494,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
                 ref={virtualizer.measureElement}
                 className={cx(
                   "event-feed-row absolute left-0 top-0 w-full",
+                  event.type === "runtime_outcome" && "event-feed-row--progress",
                   isCollapsed && "event-feed-row--collapsed",
                 )}
                 style={{ transform: `translateY(${row.start + 18}px)` }}

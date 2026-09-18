@@ -37,7 +37,7 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
     ? t("runtime.progress.waiting", { time: duration(queuedFor) })
     : t("runtime.progress.time", { elapsed: duration(elapsed) });
   return (
-    <div aria-label={t("runtime.progress.label")} className="my-2 text-[11px] leading-4 text-[var(--muted)]">
+    <div aria-label={t("runtime.progress.label")} className="py-0.5 text-[11px] leading-4 text-[var(--muted)]">
       <button
         type="button"
         aria-expanded={expanded}

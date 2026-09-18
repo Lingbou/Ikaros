@@ -178,6 +178,9 @@ describe("EventFeed dynamic row measurement", () => {
     expect(rowIds.indexOf("outcome:run-progress-order")).toBeLessThan(
       rowIds.indexOf("assistant-progress"),
     );
+    expect(
+      container.querySelector('[data-event-id="outcome:run-progress-order"]'),
+    ).toHaveClass("event-feed-row--progress");
     expect(screen.getByRole("button", { expanded: false })).toBeVisible();
   });
 

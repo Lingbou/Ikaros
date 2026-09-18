@@ -322,6 +322,10 @@ html[data-translucent-sidebar="true"] .sidebar-gradient {
   pointer-events: none;
 }
 
+.event-feed-row--progress {
+  padding-block: 0;
+}
+
 .tool-result-disclosure {
   display: grid;
   grid-template-rows: 1fr;
