@@ -11,7 +11,7 @@ state.
   project conversations, Runtime-backed Skills catalog/enablement, natural
   continuation after failure, and internal read-only file preview/operation diffs.
   Long-task execution has no total call/time cap; the UI shows call counts and
-  elapsed time, provides manual stop, and edits model capacity in a separate dialog.
+  elapsed time, provides manual stop, and edits the context window in a separate dialog.
 - `cli/` is not implemented yet. A future CLI will reuse the same Runtime
   contract rather than introduce a separate execution path.
 

@@ -1,25 +1,23 @@
 # Ikaros Runtime Architecture
 
-Status (2026-09-07): daily-use Alpha plus stage one of
-[LONG_TASK_PLAN.md](LONG_TASK_PLAN.md) are implemented. Stage one adds model
-capacity and managed commands. Runs have no total model-call or duration cap;
-Desktop retains call counts, elapsed time, and manual cancellation. Automatic compression,
-in-flight steering, and completion checking remain subsequent work.
+Status (2026-10-01): daily-use Alpha plus the long-task execution kernel,
+automatic context compression, and bounded completion checking are implemented.
+Runs have no total model-call or duration cap; Desktop retains call counts,
+elapsed time, steering state, and compression state. Real-provider
+cross-platform acceptance remains pending; see [ROADMAP.md](ROADMAP.md) and [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
 The project has no external users. This implementation replaces old execution,
-protocol, and Session-state formats directly. Only schema 11 / Journal 8 /
-protocol 5 are supported; no old selector, migration, or queued-Run adaptation
+protocol, and Session-state formats directly. Only config 2 / schema 14 /
+Journal 10 / protocol 7 are supported; no old selector, migration, or queued-Run adaptation
 is maintained. Incompatible development state requires an explicit reset or a
 fresh Runtime home; startup never deletes personal files automatically.
 
-The earlier model-input and Memory foundation stage is specified in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). Gates 0–9
-are complete, including the Runtime-owned `IKAROS.md` Identity Core, the
-independent explicitly managed Memory Store/RPC/typed Desktop bridge and its
-real Settings page, deterministic bounded Memory recall, and the final offline
-plus real-DeepSeek verification/audit Gate. No standalone Memory maintenance,
-Memory backup/export/import, or Memory transfer surface is part of the current
-stage; this does not remove the existing offline `state.db` safety backup.
+The model-input and Memory design is specified in
+[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md). The
+Runtime owns the packaged `IKAROS.md` identity, the explicitly managed Memory
+Store/RPC/Desktop settings surface, and deterministic bounded recall. Standalone
+Memory backup/export/import and transfer are not implemented; this does not
+remove the existing offline `state.db` safety backup.
 
 ## Product boundary
 
@@ -115,8 +113,8 @@ process supervision stay outside React.
 ### Versioned protocol contract
 
 `protocol/spec.py` is the sole hand-maintained registry for protocol version,
-RPC method names, persisted Journal Event discriminators, initialization
-capabilities, and provider-facing Tool IDs. It deterministically generates the
+RPC method names, persisted Journal Event discriminators, and provider-facing
+Tool IDs. It deterministically generates the
 committed JSON manifest and Desktop literal unions. Python and Desktop consume
 the same `protocol/golden-trace.json`; Desktop runs it through the production
 method/Event parsers, including scope-mirror validation for `turnId`, `runId`,
@@ -125,7 +123,7 @@ at the wire boundary and cannot silently advance the ordered event cursor.
 
 The command Tool IDs are `process_start`, `process_read`, `process_wait`, and
 `process_stop`. `/process.run` remains a deterministic ScriptedProvider input
-convention. The protocol is version 5 with 29 post-initialize methods and 13
+convention. The protocol is version 6 with 32 post-initialize methods and 15
 Journal event types.
 
 ## Runtime home and configuration
@@ -150,7 +148,7 @@ no SQLite `ATTACH`, cross-database foreign key, or two-phase commit. Startup
 requires both schema version 1 and the exact canonical table/index DDL; a
 same-version structural drift is rejected rather than silently accepted.
 
-An empty `state.db` is created atomically at canonical schema 11. Startup
+An empty `state.db` is created atomically at canonical schema 14. Startup
 requires that exact schema and canonical structure. There is no old-state
 migration or event upcasting. Incompatible/unversioned Session databases fail
 with an explicit reset-required error; rebuilding disposable development state
@@ -173,9 +171,10 @@ mandatory. Repair must leave every Journal row and the Event sequence
 high-water mark unchanged, and its result must pass page, foreign-key, and
 replay checks. Backup destinations are never overwritten.
 
-This maintenance surface is only a safety foundation for future compaction.
-V1 does not add a checkpoint/base sequence, a compacted Event, Journal row
-deletion, or a second conversation source of truth.
+This maintenance surface is a safety foundation for compaction and history
+recovery. V1 still does not add a checkpoint/base sequence, Journal row
+deletion, or a second conversation source of truth; the compaction Event only
+records a new revision and its omitted source scope.
 
 On Windows, `~/.ikaros` resolves below the user's profile directory in the same
 way as `~/.codex`. V1 does not create a separate credential store or encrypted
@@ -216,7 +215,7 @@ file and the in-memory configuration unchanged.
 Conceptually:
 
 ```yaml
-version: 1
+version: 2
 
 providers:
   deepseek:
@@ -230,7 +229,6 @@ providers:
         enabled: true
         supports_tools: true
         context_window: 32768
-        max_output_tokens: 4096
 
   myprovider:
     type: openai_compatible
@@ -243,7 +241,6 @@ providers:
         enabled: true
         supports_tools: true
         context_window: 32768
-        max_output_tokens: 4096
     headers: {}          # optional, normally omitted
 
 skills:
@@ -573,8 +570,8 @@ failure. There is no background journal writer, so commit and publication stay
 ordered. Completed Items, terminal Run state, branch/fork decisions, retry links,
 and other semantic records are appended canonically. Projections are rebuildable
 from the SQLite journal; existing history is not rewritten when a Branch, retry,
-or future compaction record is added. V1 does not yet define or emit such a
-compaction record.
+or compaction record is added. A compaction event records the new revision and
+the omitted source scope; the original Items remain available for history reads.
 
 ## Scheduling and Agent loop
 
@@ -599,27 +596,27 @@ turn.start
 ```
 
 `RunConfig` freezes the provider/model, identity, Skill catalog, Tool definitions,
-model context window, and output reserve. There is no total model-call or
+and model context window. There is no total model-call or
 Run-duration limit. Every actual Provider attempt is recorded for observability;
 counts and elapsed time do not terminate execution. Manual cancellation,
 individual Provider request timeouts, and bounded resource cleanup remain.
 `ContextRevision` identifies selected history and exact Memory revisions; each `StepInput`
 identifies the actual selected Items and token budget for that model call.
-These are the only supported execution records. A Run currently uses its
-initial ContextRevision throughout; semantic compression and subsequent
-revisions will be implemented in the next stage.
+These are the only supported execution records. A Run starts with one
+ContextRevision and may append later revisions when deterministic trimming and
+semantic compression are required; the original Items remain unchanged.
 
-Known DeepSeek V4 models initially use a 1,000,000-token context window and a
-64,000-token output reserve. The latter is Ikaros's initial request setting,
-not the provider's official maximum output of 384K. Unknown models fall back to
-32,768 context tokens and a 4,096-token output reserve; users can edit model
-capacity to match their provider's specifications. See
+Known DeepSeek V4 models initially use a 1,000,000-token context window.
+Unknown models fall back to 32,768 context tokens; users can edit the context
+window to match their provider's specifications. See
 [MODEL_CAPACITY_REFERENCES.md](MODEL_CAPACITY_REFERENCES.md).
 Conservative token accounting covers instructions, tool
 schemas, current and previous conversation, Memory, and history-status blocks.
-It is an input-safety estimate, not billed usage. The provider receives the
-configured output-token limit. Oversized input currently fails explicitly;
-unbounded Run duration and call count do not enlarge its context window.
+It is an input-safety estimate, not billed usage. The main provider request does
+not send a user-configured output-token limit; input uses 95% of the context
+window and automatic compaction triggers at 90%. Input that cannot fit after
+compaction fails explicitly; unbounded Run duration and call count do not enlarge
+the context window.
 
 Failed/cancelled Runs contribute persisted Tool pairs and a separately
 budgeted Runtime status block. Partial assistant messages are excluded. If a
@@ -812,10 +809,10 @@ constrain what the child process itself can do.
 
 The runtime caches HTTP clients per effective provider configuration and closes
 them on replacement or shutdown. Connect, response-header, and stream-idle
-timeouts are distinct. Each adapter call sends one request and never retries
-implicitly. Transparent retry after streaming begins would duplicate output.
-Future compression and completion checks must stop or report a useful failure
-instead of retrying indefinitely. Provider failures normalize to stable categories such as
+timeouts are distinct; stream idle defaults to 300 seconds. Failed requests are
+retried at most 4 times and failed streams at most 5 times with bounded
+exponential backoff. Once model content has been emitted, transparent retry stops
+because it would duplicate output. Provider failures normalize to stable categories such as
 authentication, rate limit, context overflow, invalid request, timeout,
 network, server, cancelled, protocol, and unknown, with safe optional status,
 request ID, and retryability metadata.
@@ -846,10 +843,11 @@ Run, model-call ordinal, Tool Call Item, Thread, and default working directory.
   within the owning Run are harmless.
 
 States are `running`, `exited`, `terminated`, and `unknown`. Only an observed
-successful exit proves command success. The manager permits four concurrent
+successful exit proves command success. The manager permits 64 concurrent
 commands per Run, without a cumulative command-count limit. It drains stdout/stderr
-continuously,
-retains 64 KiB per stream, and returns 16 KiB pages with Unicode-character cursors.
+continuously, retains 1 MiB per process with a stable head/tail window, and
+returns 16 KiB pages with stable byte cursors. Model-facing Tool Results omit the
+full `stdout` and `stderr` copies and expose only the bounded `output` page.
 Secret guards cover stream chunk boundaries and the combined output before
 publication or persistence. Children inherit an OS environment allowlist.
 
@@ -982,7 +980,7 @@ current operating-system user's authority. Skill scripts invoked through
 `process_start` exercise that same authority. This is an explicit
 development-version trade-off, not a sandbox or security guarantee.
 
-Session storage uses canonical schema 11. `run_configs`, `context_revisions`,
+Session storage uses canonical schema 14. `run_configs`, `context_revisions`,
 and `model_calls` hold the current input and response audit records;
 `process_sessions` and `file_changes` hold independently rebuildable operation
 facts. All projections reconstruct from the current append-only Journal.
@@ -1104,65 +1102,29 @@ retry/resume of an old Run, regenerate, interactive permission decisions, and fi
 Artifact production still need dedicated Runtime commands and event
 semantics before those UI surfaces can become functional.
 
-## Implemented vertical slice
 
-The first version deliberately implements one narrow but real conversation
-path. The following are covered by deterministic integration checks and the earlier
-Alpha validation. The newly introduced command kernel still requires the planned
-Windows/Linux real-model long-task acceptance:
+## Current verified vertical slice
+
+The current implementation covers one real end-to-end path:
 
 1. Electron `RuntimeHost` starts one authenticated Python Runtime and keeps it
    alive across renderer navigation.
 2. Desktop connects through the versioned WebSocket JSON-RPC protocol, restores
    persisted Threads, and replays the sequenced event journal.
-3. The same conversation completes at least two sequential user Turns, and the
-   later Provider request receives the selected prior completed conversation
-   context within the frozen bounded-history budget.
-4. The built-in DeepSeek profile and configured Custom OpenAI-compatible
-   profiles share one streaming adapter and receive all four managed-command
-   and three file Tool definitions.
-5. The Runtime executes requested Tools serially, captures normalized
-   ToolResults, returns them to the model, and the model produces a final
-   assistant answer. The most recently recorded opt-in live DeepSeek smoke
-   completed
-   `write -> read -> edit -> read`, verified the edited bytes on disk, and
-   observed the final answer containing the edited token.
-6. Run and Item lifecycles settle coherently and are projected by the Desktop;
-   Stop propagates through Run and child-process-tree cancellation.
-7. The deterministic Provider covers the loop and event ordering without a
-   network dependency, while the opt-in live test covers the real DeepSeek path.
-8. Skills V0 discovers and configures a real catalog, freezes enabled
-   descriptors into each Run, exposes the catalog through Desktop settings, and
-   keeps full Skill bodies lazy. The most recently recorded live DeepSeek smoke
-   verified that frozen descriptor path alongside the file-Tool chain.
-9. The Runtime persists RunConfig, ContextRevision, and StepInput audit objects,
-   enforces Provider/Tool drift checks, records actual response model/request IDs safely, and closes
-   every prepared Provider Step through `model.response_finished`.
-10. Gate 3 bounds model input without changing UI history: it selects complete
-    recent Turns through paged reads, preserves Tool Call/Result atomicity,
-    reloads later Steps through frozen IDs, and settles pre-Provider failures as
-    `context_budget_exceeded` or `model_input_unavailable`.
-11. Gate 4 loads the packaged `resources/IKAROS.md` through
-    `importlib.resources`, freezes its versioned `runtime_identity` block into
-    every Run, and keeps Provider/model identity separate from Ikaros identity.
-12. Gate 8 deterministically recalls bounded Global/current-workspace Memory,
-    freezes exact revisions, rejects cross-database transaction overlap, and
-    stops unsent Steps after Forget without changing Tool definitions or Policy.
-13. Gate 9 revalidated the complete Desktop/Runtime path against real DeepSeek,
-    including a large Tool Result, bounded history, cross-Thread Global Memory,
-    Workspace isolation, Correction, Forget, hostile quoted Memory, body-free
-    audit manifests, Tool pairing, and credential containment.
+3. A Thread completes multiple Turns, and later Provider requests receive the
+   selected prior context through frozen `RunConfig`, `ContextRevision`, and
+   `StepInput` records.
+4. DeepSeek and configured OpenAI-compatible Providers share one streaming
+   adapter with bounded request/stream retries.
+5. The Runtime executes the managed command and file Tools, persists normalized
+   Tool Results, and returns them to the model.
+6. Runs support cancellation, in-flight steering, bounded process cleanup,
+   restart recovery, and natural continuation after failure.
+7. Context compaction, `history_read`, and bounded completion checking are
+   implemented without a total Run call or duration cap.
+8. Identity Core, Skills V0, deterministic Memory recall, usage, and the
+   Runtime-backed Desktop settings/history surfaces are connected.
 
-The live validation evidence, including credential containment checks, is
+Current limitations and the next implementation order are tracked in
+[ROADMAP.md](ROADMAP.md). Offline and real-Provider validation status is
 recorded in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
-
-This slice does not implement web search, browser or desktop control,
-automatic Memory extraction, commands surviving their Run, scheduled tasks,
-messaging channels, MCP/connectors,
-Subagents, a plugin marketplace, or a complex approval system. Those remain
-later general-Agent capability packs, not rejected product directions. The
-provider-neutral input plan, Gate 2 audit/freeze foundation, Gate 3 bounded
-history selection, Gate 4 Identity Core, and explicitly managed durable Memory
-with its Desktop management page and deterministic recall are current. The
-completed Gate record and explicitly deferred capabilities are documented in
-[MODEL_INPUT_AND_MEMORY_DESIGN.md](MODEL_INPUT_AND_MEMORY_DESIGN.md).

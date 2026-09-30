@@ -122,10 +122,10 @@ The Runtime currently owns:
   response metadata/usage through `model.response_finished`. Only the current
   protocol and persistence formats are parsed;
 - the Runtime-owned `IKAROS.md` identity frozen in each RunConfig;
-- compact model rows showing model name and capacity, with numeric settings in a
-  separate dialog. Known DeepSeek V4 models initially use 1,000,000 context tokens
-  and a 64,000-token output reserve; unknown models use 32,768 / 4,096. The V4
-  reserve is Ikaros's initial request setting, not the official 384K maximum;
+- compact model rows showing model name and context window, with the context
+  window in a separate dialog. Known DeepSeek V4 models initially use 1,000,000
+  context tokens; unknown models use 32,768. Ikaros does not expose or send a
+  user-configured output-token limit;
 - call counts, elapsed time, and manual stop, with no task-limit settings or total
   call/time caps. RunConfig freezes model capacity for each submitted task;
 - `process_start`, `process_read`, `process_wait`, `process_stop`, `read`, `write`,
@@ -183,7 +183,9 @@ Desktop state until the first message creates that Thread.
 Some real product state belongs to Desktop rather than the Agent Runtime:
 
 - theme, UI language, fonts, reduced-motion preference, sidebar state, and the
-  local profile username are persisted by Electron in `ui-preferences.json`;
+  local profile username are persisted by Electron in `ui-preferences.json`.
+  The file is current-format only; incomplete or unsupported files reset to
+  defaults instead of being migrated;
 - the system directory picker creates workspace snapshots, while Projects are
   derived from Runtime Threads in the renderer;
 - Search first loads the active Thread catalog and then filters its titles in
@@ -228,22 +230,25 @@ wire DTOs remain separate from renderer projection types so future capabilities
 can extend the protocol without turning mock-specific cards into canonical
 state.
 
-Conversation persistence uses **SQLite schema 11, Journal schema 8, and protocol
-5**. Old selectors, execution DTOs, and migration paths have been removed.
+Conversation persistence uses **config version 2, SQLite schema 14, Journal
+schema 10, and protocol 7**. Old selectors, execution DTOs, and migration paths
+have been removed.
 Incompatible development state fails with an explicit reset-required error;
 Runtime never automatically deletes it. Use a fresh development Runtime home or
 rebuild disposable Session state deliberately with Runtime stopped. Provider/model
 configuration, API keys, Skills, Desktop preferences, and `memory.db` are separate.
 
-The 13 Journal event types include `process.recorded`: durable command intent,
+The 15 Journal event types include `process.recorded`: durable command intent,
 state, and bounded output, independent of Tool Call completion. Restart marks
 active commands unknown and never reattaches their PID. Preview and historical
 diff bodies remain outside model input. Commands can create files available for
 preview, but their changes are not automatically diff-tracked.
 
-The first long-task stage provides model capacity settings and managed command
-execution without a total Run call or duration cap. Automatic context compression,
-runtime user steering, completion checking, and a full process-log panel remain
-planned. Removing total Run caps does not solve context overflow. Python Runtime bundling, attachments, web tools, and multi-Agent
-execution remain outside this stage. See
-[the development plan](../../runtime/LONG_TASK_PLAN.md) for subsequent milestones.
+The long-task kernel provides model capacity settings, managed command execution,
+in-flight steering, automatic context compaction, and bounded completion checking
+without a total Run call or duration cap. Command cards expose bounded logs,
+read-more, and stop controls; a dedicated full-page process-log panel and the
+two-platform real-Provider acceptance remain planned. Python Runtime bundling,
+attachments, web tools, and multi-Agent execution remain outside this stage. See
+[the roadmap](../../runtime/ROADMAP.md) for the remaining
+acceptance work.
