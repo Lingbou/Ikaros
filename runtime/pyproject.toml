@@ -2,7 +2,6 @@
 name = "ikaros-runtime"
 version = "0.1.0"
 description = "Long-lived local runtime for the Ikaros general-purpose Agent"
-readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = "GPL-3.0-only"
 dependencies = [
