@@ -89,6 +89,8 @@ export interface RuntimeHostOptions {
   runtimeRoot: string;
   runtimeHome?: string;
   pythonExecutable?: string;
+  /** Test seam: Python module launched instead of ikaros_runtime. */
+  runtimeModule?: string;
   /** Overrides how the Runtime interpreter and working directory are resolved. */
   resolveLaunch?: () => Promise<RuntimeLaunch>;
   stderrSink?: (message: string) => void;
@@ -548,7 +550,7 @@ export class RuntimeHost {
       pythonExecutable,
       [
         "-m",
-        "ikaros_runtime",
+        this.options.runtimeModule ?? "ikaros_runtime",
         "serve",
         "--host",
         "127.0.0.1",

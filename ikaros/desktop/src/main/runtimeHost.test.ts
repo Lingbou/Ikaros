@@ -37,6 +37,8 @@ import {
 } from "./runtimeHost";
 
 const runtimeRoot = fileURLToPath(new URL("../../../../runtime", import.meta.url));
+/** Module that launches the Runtime with the deterministic fake provider injected. */
+const testRuntimeModule = "tests.fakes.test_server_runner";
 
 interface ThreadSummary {
   id: string;
@@ -156,7 +158,7 @@ function historyTurn(ordinal: number): RuntimeTurnHistory {
 
 describe("RuntimeHost integration", () => {
   it("does not let a stale or stop-superseded start failure overwrite host status", async () => {
-    const host = new RuntimeHost({ runtimeRoot });
+    const host = new RuntimeHost({ runtimeRoot, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
     let rejectStale!: (error: Error) => void;
     const staleAttempt = new Promise<RuntimeConnectionInfo>((_resolve, reject) => {
@@ -180,7 +182,7 @@ describe("RuntimeHost integration", () => {
         .map((notification) => notification.params),
     ).toEqual([{ state: "connected", message: null }]);
 
-    const stoppedHost = new RuntimeHost({ runtimeRoot });
+    const stoppedHost = new RuntimeHost({ runtimeRoot, runtimeModule: testRuntimeModule });
     const stoppedInternals = stoppedHost as unknown as RuntimeHostInternals;
     let rejectStopped!: (error: Error) => void;
     const stoppedAttempt = new Promise<RuntimeConnectionInfo>((_resolve, reject) => {
@@ -357,7 +359,7 @@ describe("RuntimeHost integration", () => {
   });
 
   it("uses a catalog waterline for cold start and incremental replay for reconnect", async () => {
-    const host = new RuntimeHost({ runtimeRoot });
+    const host = new RuntimeHost({ runtimeRoot, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
     const request = vi
       .fn()
@@ -497,7 +499,7 @@ describe("RuntimeHost integration", () => {
 
   it("preserves a definitive JSON-RPC error separately from transport failures", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-rpc-error-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     try {
       await host.start();
       let rejected: unknown;
@@ -522,7 +524,7 @@ describe("RuntimeHost integration", () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-host-"));
     let durableMemoryId = "";
     try {
-      const firstHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      const firstHost = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       const events: RuntimeJournalEvent[] = [];
       const removeNotification = firstHost.onNotification((notification) => {
         if (notification.method === "event") {
@@ -677,7 +679,7 @@ describe("RuntimeHost integration", () => {
 
       expect(firstHost.isRunning).toBe(false);
 
-      const secondHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      const secondHost = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       try {
         const listed = await secondHost.request<{ threads: ThreadSummary[] }>("thread.list");
         expect(listed.threads).toHaveLength(1);
@@ -741,7 +743,7 @@ describe("RuntimeHost integration", () => {
     };
     let memoryId = "";
     try {
-      const firstHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      const firstHost = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       try {
         const created = await firstHost.request<RuntimeMemoryCreateResult>(
           "memory.create",
@@ -762,7 +764,7 @@ describe("RuntimeHost integration", () => {
         await firstHost.stop();
       }
 
-      const secondHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      const secondHost = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       try {
         const replayedCorrection = await secondHost.request<RuntimeMemoryMutationResult>(
           "memory.correct",
@@ -791,7 +793,7 @@ describe("RuntimeHost integration", () => {
         await secondHost.stop();
       }
 
-      const thirdHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      const thirdHost = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       try {
         const replayedForget = await thirdHost.request<RuntimeMemoryMutationResult>(
           "memory.forget",
@@ -847,7 +849,7 @@ describe("RuntimeHost integration", () => {
 
   it("shares concurrent stop calls and rejects restart until shutdown settles", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-concurrent-stop-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     try {
       await host.start();
 
@@ -869,7 +871,7 @@ describe("RuntimeHost integration", () => {
 
   it("reconnects the WebSocket without restarting the Runtime or losing events", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-reconnect-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     const events: RuntimeJournalEvent[] = [];
     const removeNotification = host.onNotification((notification) => {
       if (notification.method === "event") {
@@ -951,7 +953,7 @@ describe("RuntimeHost integration", () => {
 
   it("does not reconnect after stop wins a socket-close race", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-stop-race-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     try {
       await host.start();
       const internals = host as unknown as RuntimeHostInternals;
@@ -976,7 +978,7 @@ describe("RuntimeHost integration", () => {
 
   it("does not spawn a replacement when stopped during Runtime restart backoff", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-stop-backoff-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
     try {
       const initial = await host.start();
@@ -1007,7 +1009,7 @@ describe("RuntimeHost integration", () => {
 
   it("restarts a crashed Runtime and replays recovery events", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-crash-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     const events: RuntimeJournalEvent[] = [];
     const removeNotification = host.onNotification((notification) => {
       if (notification.method === "event") {
@@ -1089,7 +1091,7 @@ describe("RuntimeHost integration", () => {
 
   it("uses a dedicated shutdown connection after socket loss and cancels all runs", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-shutdown-reconnect-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
     const events: RuntimeJournalEvent[] = [];
     const removeNotification = host.onNotification((notification) => {
@@ -1140,7 +1142,7 @@ describe("RuntimeHost integration", () => {
       await host.stop();
       expect(host.isRunning).toBe(false);
 
-      inspectionHost = new RuntimeHost({ runtimeRoot, runtimeHome });
+      inspectionHost = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       await inspectionHost.start();
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
       const replay = await inspectionHost.request<RuntimeReplayResult>("event.replay", {
@@ -1171,7 +1173,7 @@ describe("RuntimeHost integration", () => {
   });
 
   it("isolates notification listener failures without skipping the event cursor", () => {
-    const host = new RuntimeHost({ runtimeRoot });
+    const host = new RuntimeHost({ runtimeRoot, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
     const delivered: number[] = [];
     const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -1210,7 +1212,7 @@ describe("RuntimeHost integration", () => {
 
   it("backs off repeated readiness failures, opens a circuit, and allows explicit retry", async () => {
     const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-runtime-circuit-"));
-    const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+    const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
     const realPython =
       process.platform === "win32"
