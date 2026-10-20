@@ -21,31 +21,69 @@ _PATH_LOCKS: dict[str, _PathLockEntry] = {}
 _BINARY_EXTENSIONS = {
     ".7z",
     ".a",
+    ".avi",
     ".bin",
+    ".bmp",
+    ".bz2",
     ".class",
     ".dat",
+    ".db",
     ".dll",
     ".doc",
     ".docx",
+    ".dylib",
+    ".eot",
     ".exe",
+    ".flac",
+    ".gif",
     ".gz",
+    ".ico",
+    ".iso",
     ".jar",
+    ".jpeg",
+    ".jpg",
     ".lib",
+    ".lz4",
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
     ".o",
     ".obj",
     ".odp",
     ".ods",
     ".odt",
+    ".ogg",
+    ".onnx",
+    ".otf",
+    ".parquet",
+    ".pdb",
+    ".pdf",
+    ".png",
     ".ppt",
     ".pptx",
+    ".psd",
     ".pyc",
     ".pyo",
     ".so",
+    ".sqlite",
+    ".sqlite3",
     ".tar",
+    ".tif",
+    ".tiff",
+    ".ttf",
     ".war",
     ".wasm",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".whl",
+    ".woff",
+    ".woff2",
     ".xls",
     ".xlsx",
+    ".xz",
     ".zip",
 }
 
@@ -89,6 +127,19 @@ class ExistingTextFormat:
 
 
 def validate_file_path(value: object, *, default_cwd: str | None) -> Path:
+    """Resolve one ``filePath`` argument with the shared file Tool path rules."""
+
+    return resolve_tool_path(value, default_cwd=default_cwd, argument_name="filePath")
+
+
+def resolve_tool_path(
+    value: object,
+    *,
+    default_cwd: str | None,
+    argument_name: str,
+) -> Path:
+    """Validate one path argument: bounded length, resolved against the workspace."""
+
     if (
         not isinstance(value, str)
         or not value.strip()
@@ -97,28 +148,60 @@ def validate_file_path(value: object, *, default_cwd: str | None) -> Path:
     ):
         raise FileToolError(
             "invalid_arguments",
-            f"filePath must be a non-empty string of at most {_PATH_LIMIT} characters",
+            f"{argument_name} must be a non-empty string of at most {_PATH_LIMIT} characters",
         )
 
     try:
         path = Path(value).expanduser()
         if not path.is_absolute():
-            base = Path(default_cwd).expanduser() if default_cwd is not None else Path.cwd()
-            try:
-                base = base.resolve(strict=True)
-            except OSError as error:
-                raise FileToolError(
-                    "invalid_workspace",
-                    f"workspace is not accessible: {error}",
-                ) from None
-            if not base.is_dir():
-                raise FileToolError("invalid_workspace", "workspace is not a directory")
-            path = base / path
+            path = resolve_workspace_directory(default_cwd=default_cwd) / path
         return path.resolve(strict=False)
     except FileToolError:
         raise
     except (OSError, RuntimeError, ValueError) as error:
-        raise FileToolError("invalid_path", f"filePath is not accessible: {error}") from None
+        raise FileToolError(
+            "invalid_path",
+            f"{argument_name} is not accessible: {error}",
+        ) from None
+
+
+def resolve_workspace_directory(*, default_cwd: str | None) -> Path:
+    """Resolve the Thread workspace, or the Runtime cwd, that relative paths use."""
+
+    base = Path(default_cwd).expanduser() if default_cwd is not None else Path.cwd()
+    try:
+        base = base.resolve(strict=True)
+    except OSError as error:
+        raise FileToolError(
+            "invalid_workspace",
+            f"workspace is not accessible: {error}",
+        ) from None
+    if not base.is_dir():
+        raise FileToolError("invalid_workspace", "workspace is not a directory")
+    return base
+
+
+def validate_directory_path(
+    value: object,
+    *,
+    default_cwd: str | None,
+    argument_name: str = "path",
+) -> Path:
+    """Resolve a directory argument with the shared rules and require a directory."""
+
+    path = resolve_tool_path(value, default_cwd=default_cwd, argument_name=argument_name)
+    try:
+        if not path.is_dir():
+            raise FileToolError(
+                "path_not_directory",
+                f"{argument_name} is not a directory: {path}",
+            )
+    except OSError as error:
+        raise FileToolError(
+            "invalid_path",
+            f"{argument_name} is not accessible: {error}",
+        ) from None
+    return path
 
 
 @asynccontextmanager

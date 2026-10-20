@@ -84,11 +84,34 @@ const TOOL_RESULT_REQUIRED_KEYS = [
   "output",
   "cancelled"
 ] as const;
+const PROCESS_TOOL_DETAIL_KEYS = [
+  "durationMs",
+  "cwd",
+  "processId",
+  "state",
+  "pid",
+  "startedAt",
+  "finishedAt",
+  "exitCode",
+  "cursor",
+  "nextCursor",
+  "hasMore",
+  "truncated",
+  "errorCode"
+] as const;
+const ARTIFACT_DETAIL_KEYS = [
+  "artifactPath",
+  "artifactBytes",
+  "artifactLines",
+  "artifactPreviewLines"
+] as const;
 const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
-  process_start: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
-  process_read: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
-  process_wait: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
-  process_stop: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_start: PROCESS_TOOL_DETAIL_KEYS,
+  process_read: PROCESS_TOOL_DETAIL_KEYS,
+  process_wait: PROCESS_TOOL_DETAIL_KEYS,
+  process_stop: PROCESS_TOOL_DETAIL_KEYS,
+  process_write: PROCESS_TOOL_DETAIL_KEYS,
+  process_resize: PROCESS_TOOL_DETAIL_KEYS,
   read: [
     "durationMs",
     "truncated",
@@ -100,7 +123,8 @@ const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
     "bom",
     "lineTruncations",
     "totalLines",
-    "nextOffset"
+    "nextOffset",
+    ...ARTIFACT_DETAIL_KEYS
   ],
   write: [
     "durationMs",
@@ -111,7 +135,8 @@ const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
     "bytesWritten",
     "verified",
     "bom",
-    "newline"
+    "newline",
+    ...ARTIFACT_DETAIL_KEYS
   ],
   edit: [
     "durationMs",
@@ -122,9 +147,40 @@ const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
     "verified",
     "bom",
     "newline",
-    "replacements"
+    "replacements",
+    ...ARTIFACT_DETAIL_KEYS
   ],
-  history_read: ["durationMs", "truncated", "errorCode", "itemId"]
+  history_read: ["durationMs", "truncated", "errorCode", "itemId", ...ARTIFACT_DETAIL_KEYS],
+  glob: [
+    "durationMs",
+    "truncated",
+    "errorCode",
+    "path",
+    "pattern",
+    "entryCount",
+    "maxResults",
+    ...ARTIFACT_DETAIL_KEYS
+  ],
+  grep: [
+    "durationMs",
+    "truncated",
+    "errorCode",
+    "path",
+    "pattern",
+    "matchCount",
+    "scannedFiles",
+    "maxMatches",
+    "lineTruncations",
+    ...ARTIFACT_DETAIL_KEYS
+  ],
+  list: [
+    "durationMs",
+    "truncated",
+    "errorCode",
+    "path",
+    "entryCount",
+    ...ARTIFACT_DETAIL_KEYS
+  ]
 } as const satisfies Record<string, readonly string[]>;
 const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYPES);
 const RUNTIME_PROVIDER_TOOL_ID_SET = new Set<string>(RUNTIME_PROVIDER_TOOL_IDS);
@@ -815,6 +871,20 @@ function isCanonicalToolResultDetail(key: string, value: unknown): boolean {
     return typeof value === "boolean";
   }
   if (key === "errorCode") return value === null || isWireIdentifier(value);
+  if (key === "artifactPath") return typeof value === "string" && value.length > 0;
+  if (key === "pattern") return typeof value === "string";
+  if (
+    key === "entryCount" ||
+    key === "matchCount" ||
+    key === "scannedFiles" ||
+    key === "maxResults" ||
+    key === "maxMatches" ||
+    key === "artifactBytes" ||
+    key === "artifactLines" ||
+    key === "artifactPreviewLines"
+  ) {
+    return isSafeNonNegativeInteger(value);
+  }
   if (key === "itemId") return typeof value === "string" && ITEM_ID_PATTERN.test(value);
   if (key === "path") return value === null || typeof value === "string";
   if (key === "newline") return value === null || value === "lf" || value === "crlf";

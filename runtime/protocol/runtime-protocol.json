@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 7,
+  "protocolVersion": 8,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -78,9 +78,14 @@
     "process_read",
     "process_wait",
     "process_stop",
+    "process_write",
+    "process_resize",
     "history_read",
     "read",
     "write",
-    "edit"
+    "edit",
+    "glob",
+    "grep",
+    "list"
   ]
 }

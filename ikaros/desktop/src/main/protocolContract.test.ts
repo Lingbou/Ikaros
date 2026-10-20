@@ -263,6 +263,21 @@ describe("Runtime protocol Golden Trace", () => {
     expect([...observedEvents].sort()).toEqual([...RUNTIME_JOURNAL_EVENT_TYPES].sort());
     expect(RUNTIME_RPC_METHODS).toHaveLength(32);
     expect(RUNTIME_PROVIDER_TOOL_IDS).toContain("process_start");
+    expect(RUNTIME_PROVIDER_TOOL_IDS).toEqual([
+      "process_start",
+      "process_read",
+      "process_wait",
+      "process_stop",
+      "process_write",
+      "process_resize",
+      "history_read",
+      "read",
+      "write",
+      "edit",
+      "glob",
+      "grep",
+      "list",
+    ]);
     expect(RUNTIME_PROVIDER_TOOL_IDS).not.toContain("process_run");
   });
 
@@ -917,10 +932,15 @@ describe("Runtime protocol Golden Trace", () => {
         "process_read",
         "process_wait",
         "process_stop",
+        "process_write",
+        "process_resize",
         "history_read",
         "read",
         "write",
-        "edit"
+        "edit",
+        "glob",
+        "grep",
+        "list"
       ]) {
         const terminal = cloneGoldenNotification("tool-result-completed");
         const terminalItem = asWireObject(terminal.payload.item, "Tool Result Item");
@@ -938,12 +958,68 @@ describe("Runtime protocol Golden Trace", () => {
           "processId", "state", "exitCode", "cwd", "pid", "startedAt", "finishedAt",
           "cursor", "nextCursor", "hasMore", "durationMs", "timedOut", "path", "lineStart",
           "lineEnd", "bytesRead", "bom", "lineTruncations", "totalLines", "nextOffset",
-          "created", "bytesWritten", "verified", "newline", "replacements", "itemId"
+          "created", "bytesWritten", "verified", "newline", "replacements", "itemId",
+          "pattern", "entryCount", "matchCount", "scannedFiles", "maxResults", "maxMatches",
+          "artifactPath", "artifactBytes", "artifactLines", "artifactPreviewLines"
         ]) delete terminalResult[key];
         terminalItem.content = JSON.stringify(terminalResult);
         expect(() => parseRuntimeEventNotification(terminal.envelope)).not.toThrow();
       }
     }
+  });
+
+  it("accepts search tool details, artifact references, and rejects unknown artifact keys", () => {
+    const glob = cloneGoldenNotification("tool-result-completed");
+    const globItem = asWireObject(glob.payload.item, "Tool Result Item");
+    const globData = asWireObject(globItem.data, "Tool Result data");
+    const globResult = asWireObject(globData.result, "Tool Result");
+    globData.toolName = "glob";
+    globResult.toolName = "glob";
+    globResult.path = "C:/work/src";
+    globResult.pattern = "**/*.py";
+    globResult.entryCount = 2;
+    globResult.maxResults = 1000;
+    globResult.truncated = false;
+    for (const key of [
+      "processId", "state", "exitCode", "cwd", "pid", "startedAt", "finishedAt",
+      "cursor", "nextCursor", "hasMore"
+    ]) delete globResult[key];
+    globItem.content = JSON.stringify(globResult);
+    expect(() => parseRuntimeEventNotification(glob.envelope)).not.toThrow();
+
+    const artifact = cloneGoldenNotification("tool-result-completed");
+    const artifactItem = asWireObject(artifact.payload.item, "Tool Result Item");
+    const artifactData = asWireObject(artifactItem.data, "Tool Result data");
+    const artifactResult = asWireObject(artifactData.result, "Tool Result");
+    artifactData.toolName = "read";
+    artifactResult.toolName = "read";
+    artifactResult.path = "C:/work/src/app.py";
+    artifactResult.artifactPath = "C:/Users/dev/.ikaros/artifacts/thread_1/item_1.txt";
+    artifactResult.artifactBytes = 102400;
+    artifactResult.artifactLines = 1200;
+    artifactResult.artifactPreviewLines = 200;
+    artifactResult.truncated = true;
+    for (const key of [
+      "processId", "state", "exitCode", "cwd", "pid", "startedAt", "finishedAt",
+      "cursor", "nextCursor", "hasMore"
+    ]) delete artifactResult[key];
+    artifactItem.content = JSON.stringify(artifactResult);
+    expect(() => parseRuntimeEventNotification(artifact.envelope)).not.toThrow();
+
+    const unknown = cloneGoldenNotification("tool-result-completed");
+    const unknownItem = asWireObject(unknown.payload.item, "Tool Result Item");
+    const unknownData = asWireObject(unknownItem.data, "Tool Result data");
+    const unknownResult = asWireObject(unknownData.result, "Tool Result");
+    unknownData.toolName = "list";
+    unknownResult.toolName = "list";
+    unknownResult.entryCount = 3;
+    unknownResult.artifactPreviewLine = 200;
+    for (const key of [
+      "processId", "state", "exitCode", "cwd", "pid", "startedAt", "finishedAt",
+      "cursor", "nextCursor", "hasMore"
+    ]) delete unknownResult[key];
+    unknownItem.content = JSON.stringify(unknownResult);
+    expect(() => parseRuntimeEventNotification(unknown.envelope)).toThrow();
   });
 
   it("rejects unknown top-level fields in paginated Item history", () => {
