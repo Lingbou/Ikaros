@@ -2659,6 +2659,9 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
                 "read": {"filePath"},
             "write": {"filePath", "content"},
             "edit": {"filePath", "oldString", "newString"},
+            "glob": {"pattern"},
+            "grep": {"pattern"},
+            "list": set(),
         }
         for request in endpoint.requests:
             definitions = {
@@ -2667,7 +2670,7 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
             }
             assert set(definitions) == set(expected_schemas)
             for name, required in expected_schemas.items():
-                assert set(definitions[name]["required"]) == required
+                assert set(definitions[name].get("required", [])) == required
 
         followup_messages = endpoint.requests[1]["messages"]
         narrated_message = next(
