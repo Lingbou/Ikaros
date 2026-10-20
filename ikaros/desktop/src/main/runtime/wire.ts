@@ -1,212 +1,37 @@
-import { createHash } from "node:crypto";
-
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   RUNTIME_JOURNAL_EVENT_TYPES,
-  RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD,
   RUNTIME_PROTOCOL_MANIFEST,
-  RUNTIME_PROTOCOL_VERSION,
-  RUNTIME_PROVIDER_TOOL_IDS,
   RUNTIME_RPC_METHODS,
-  RUNTIME_SERVER_NAME,
-  type RuntimeCancelRunResult,
-  type RuntimeProcessReadResult,
-  type RuntimeProcessStopResult,
-  type RuntimeFilePreviewResult,
-  type RuntimeFileChangeResult,
-  type RuntimeInitializeResult,
-  type RuntimeItemHistory,
-  type RuntimeJournalEvent,
   type RuntimeJournalEventType,
-  type RuntimeMemoryCreateResult,
-  type RuntimeMemoryErrorReasonCode,
-  type RuntimeMemoryGetResult,
-  type RuntimeMemoryKind,
-  type RuntimeMemoryListPage,
-  type RuntimeMemoryMutationResult,
-  type RuntimeMemoryProvenance,
-  type RuntimeMemoryRecord,
-  type RuntimeMemoryRpcMethod,
-  type RuntimeMemoryScope,
-  type RuntimeMemoryState,
-  type RuntimeMemorySummary,
-  type RuntimeModelSummary,
-  type RuntimeModelInput,
-  type RuntimeProviderSummary,
-  type RuntimeReplayResult,
-  type RuntimeRpcMethod,
-  type RuntimeRunHistory,
-  type RuntimeSkillDiagnostic,
-  type RuntimeSkillListResult,
-  type RuntimeSkillSetEnabledResult,
-  type RuntimeSkillSummary,
-  type RuntimeThreadCreateResult,
-  type RuntimeThreadGetResult,
-  type RuntimeThreadListPage,
-  type RuntimeThreadMutationResult,
-  type RuntimeThreadSummary,
-  type RuntimeTurnHistory,
-  type RuntimeTurnListPage,
-  type RuntimeTurnListParams,
-  type RuntimeUsageReadResult
+  type RuntimeRpcMethod
+} from "../../shared/generated/runtimeProtocol";
+import type {
+  RuntimeFileChangeResult,
+  RuntimeFilePreviewResult,
+  RuntimeInitializeResult,
+  RuntimeJournalEvent,
+  RuntimeMemoryCreateResult,
+  RuntimeMemoryErrorReasonCode,
+  RuntimeMemoryGetResult,
+  RuntimeMemoryListPage,
+  RuntimeMemoryMutationResult,
+  RuntimeMemoryRpcMethod,
+  RuntimeReplayResult,
+  RuntimeThreadGetResult,
+  RuntimeThreadListPage,
+  RuntimeThreadMutationResult,
+  RuntimeTurnListPage,
+  RuntimeUsageReadResult
 } from "../../shared/runtime";
+import { RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD } from "../../shared/runtime";
 
-const THREAD_CATALOG_PAGE_LIMIT = 100;
-const TURN_HISTORY_PAGE_LIMIT = 100;
-const TURN_HISTORY_CURSOR_MAX_LENGTH = 2048;
-const MAX_WIRE_IDENTIFIER_LENGTH = 200;
-const TURN_AND_RUN_STATUSES = new Set([
-  "queued",
-  "running",
-  "completed",
-  "failed",
-  "cancelled"
-]);
-const ITEM_STATUSES = new Set([
-  "streaming",
-  "running",
-  "completed",
-  "failed",
-  "cancelled"
-]);
-const ITEM_KINDS = new Set(["message", "tool_call", "tool_result"]);
-const INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound";
-const INPUT_BUDGET_MODES = new Set(["bounded"]);
-const OUTPUT_STYLE_CONTENT =
-  "Use a restrained, professional response style. Do not use emoji or decorative " +
-  "Unicode symbols unless the user explicitly asks for them. Never use them for " +
-  "decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) " +
-  "for ordinary unordered lists; the client will render them as simple round bullets.";
-const TOOL_RESULT_REQUIRED_KEYS = [
-  "toolCallId",
-  "toolName",
-  "ok",
-  "output",
-  "cancelled"
-] as const;
-const PROCESS_TOOL_DETAIL_KEYS = [
-  "durationMs",
-  "cwd",
-  "processId",
-  "state",
-  "pid",
-  "startedAt",
-  "finishedAt",
-  "exitCode",
-  "cursor",
-  "nextCursor",
-  "hasMore",
-  "truncated",
-  "errorCode"
-] as const;
-const ARTIFACT_DETAIL_KEYS = [
-  "artifactPath",
-  "artifactBytes",
-  "artifactLines",
-  "artifactPreviewLines"
-] as const;
-const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
-  process_start: PROCESS_TOOL_DETAIL_KEYS,
-  process_read: PROCESS_TOOL_DETAIL_KEYS,
-  process_wait: PROCESS_TOOL_DETAIL_KEYS,
-  process_stop: PROCESS_TOOL_DETAIL_KEYS,
-  process_write: PROCESS_TOOL_DETAIL_KEYS,
-  process_resize: PROCESS_TOOL_DETAIL_KEYS,
-  read: [
-    "durationMs",
-    "truncated",
-    "errorCode",
-    "path",
-    "lineStart",
-    "lineEnd",
-    "bytesRead",
-    "bom",
-    "lineTruncations",
-    "totalLines",
-    "nextOffset",
-    ...ARTIFACT_DETAIL_KEYS
-  ],
-  write: [
-    "durationMs",
-    "truncated",
-    "errorCode",
-    "path",
-    "created",
-    "bytesWritten",
-    "verified",
-    "bom",
-    "newline",
-    ...ARTIFACT_DETAIL_KEYS
-  ],
-  edit: [
-    "durationMs",
-    "truncated",
-    "errorCode",
-    "path",
-    "bytesWritten",
-    "verified",
-    "bom",
-    "newline",
-    "replacements",
-    ...ARTIFACT_DETAIL_KEYS
-  ],
-  history_read: ["durationMs", "truncated", "errorCode", "itemId", ...ARTIFACT_DETAIL_KEYS],
-  glob: [
-    "durationMs",
-    "truncated",
-    "errorCode",
-    "path",
-    "pattern",
-    "entryCount",
-    "maxResults",
-    ...ARTIFACT_DETAIL_KEYS
-  ],
-  grep: [
-    "durationMs",
-    "truncated",
-    "errorCode",
-    "path",
-    "pattern",
-    "matchCount",
-    "scannedFiles",
-    "maxMatches",
-    "lineTruncations",
-    ...ARTIFACT_DETAIL_KEYS
-  ],
-  list: [
-    "durationMs",
-    "truncated",
-    "errorCode",
-    "path",
-    "entryCount",
-    ...ARTIFACT_DETAIL_KEYS
-  ]
-} as const satisfies Record<string, readonly string[]>;
-const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYPES);
-const RUNTIME_PROVIDER_TOOL_ID_SET = new Set<string>(RUNTIME_PROVIDER_TOOL_IDS);
 const RUNTIME_RPC_METHOD_SET = new Set<string>(RUNTIME_RPC_METHODS);
-const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const THREAD_ID_PATTERN = /^thread_[0-9a-f]{32}$/;
-const TURN_ID_PATTERN = /^turn_[0-9a-f]{32}$/;
-const ITEM_ID_PATTERN = /^item_[0-9a-f]{32}$/;
-const MEMORY_ID_PATTERN = /^memory_[0-9a-f]{32}$/;
-const MEMORY_KINDS = new Set<RuntimeMemoryKind>([
-  "fact",
-  "preference",
-  "relationship",
-  "project"
-]);
-const MEMORY_STATES = new Set<RuntimeMemoryState>(["active", "forgotten"]);
-const MEMORY_CONTENT_MAX_CHARACTERS = 2_048;
-const MEMORY_CONTEXT_MAX_CHARACTERS = 6_000;
-const MEMORY_CONTEXT_MAX_ITEMS = 8;
-const MEMORY_RETRIEVAL_MAX_CANDIDATES = 2_000;
-const MEMORY_PREVIEW_MAX_CHARACTERS = 160;
-const MEMORY_LIST_DEFAULT_LIMIT = 50;
-const MEMORY_LIST_PAGE_LIMIT = 100;
-const MEMORY_CURSOR_MAX_LENGTH = 1_024;
-const MEMORY_OPERATION_ERROR = RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation;
-const MEMORY_OPERATION_ERROR_CODE = MEMORY_OPERATION_ERROR.code;
+const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYPES);
+const MEMORY_OPERATION_ERROR_CODE =
+  RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.code;
+const MEMORY_OPERATION_ERROR_MESSAGE =
+  RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.message;
 
 interface JsonRpcResultResponse {
   jsonrpc: "2.0";
@@ -249,7 +74,64 @@ function hasOwn(value: object, property: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(value, property);
 }
 
-export function isRuntimeNotification(value: unknown): value is RuntimeNotification {
+function isWireObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: object, expectedKeys: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  if (keys.length !== expectedKeys.length) {
+    return false;
+  }
+  return expectedKeys.every((key) => hasOwn(value, key));
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length > 0);
+}
+
+function isRunReasonCode(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 200 &&
+    /^[A-Za-z0-9_.-]+$/.test(value)
+  );
+}
+
+function validateTurnHistory(value: Record<string, unknown>): void {
+  if (!Array.isArray(value.turns)) return;
+  for (const turn of value.turns) {
+    if (!isWireObject(turn) || !Array.isArray(turn.runs)) continue;
+    for (const run of turn.runs) {
+      if (!isWireObject(run)) continue;
+      if (!hasOwn(run, "reasonCode")) {
+        throw new Error("Runtime returned an invalid Turn history page.");
+      }
+      const status = run.status;
+      const reasonCode = run.reasonCode;
+      if (
+        status === "queued" ||
+        status === "running" ||
+        status === "completed"
+      ) {
+        if (reasonCode !== null) {
+          throw new Error("Runtime returned an invalid Turn history page.");
+        }
+      } else if (reasonCode !== null && !isRunReasonCode(reasonCode)) {
+        throw new Error("Runtime returned an invalid Turn history page.");
+      }
+    }
+  }
+}
+
+export function isRuntimeNotification(
+  value: unknown
+): value is RuntimeNotification {
   try {
     parseRuntimeEventNotification(value);
     return true;
@@ -258,7 +140,9 @@ export function isRuntimeNotification(value: unknown): value is RuntimeNotificat
   }
 }
 
-export function parseRuntimeEventNotification(value: unknown): RuntimeNotification {
+export function parseRuntimeEventNotification(
+  value: unknown
+): RuntimeNotification {
   if (
     !isWireObject(value) ||
     !hasExactKeys(value, ["jsonrpc", "method", "params"]) ||
@@ -307,21 +191,31 @@ export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
   }
   if (
     !isSafePositiveInteger(value.seq) ||
-    !isRuntimeJournalEventType(value.type) ||
-    !isNullableWireIdentifier(value.threadId) ||
-    !isNullableWireIdentifier(value.branchId) ||
-    !isNullableWireIdentifier(value.turnId) ||
-    !isNullableWireIdentifier(value.runId) ||
-    !isNullableWireIdentifier(value.itemId) ||
-    !isNonEmptyString(value.timestamp) ||
+    typeof value.type !== "string" ||
+    value.type.length === 0 ||
+    !isNullableString(value.threadId) ||
+    !isNullableString(value.branchId) ||
+    !isNullableString(value.turnId) ||
+    !isNullableString(value.runId) ||
+    !isNullableString(value.itemId) ||
+    typeof value.timestamp !== "string" ||
+    value.timestamp.length === 0 ||
     !isWireObject(value.payload)
   ) {
     throw new Error("Runtime returned an invalid journal event.");
   }
-  const event: RuntimeJournalEvent = {
+  if (
+    value.type === "run.settled" &&
+    isWireObject(value.payload) &&
+    typeof value.payload.reasonCode === "string" &&
+    !isRunReasonCode(value.payload.reasonCode)
+  ) {
+    throw new Error("Runtime returned an invalid run.settled journal event payload.");
+  }
+  return {
     seq: value.seq,
-    schemaVersion: value.schemaVersion,
-    type: value.type,
+    schemaVersion: value.schemaVersion as typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+    type: value.type as RuntimeJournalEventType,
     threadId: value.threadId,
     branchId: value.branchId,
     turnId: value.turnId,
@@ -330,2666 +224,199 @@ export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
     timestamp: value.timestamp,
     payload: value.payload
   };
-  parseRuntimeJournalEventPayload(event);
-  return event;
 }
 
-function isRuntimeJournalEventType(value: unknown): value is RuntimeJournalEventType {
-  return typeof value === "string" && RUNTIME_JOURNAL_EVENT_TYPE_SET.has(value);
-}
-
-function invalidJournalEventPayload(type: RuntimeJournalEventType): never {
-  throw new Error(`Runtime returned an invalid ${type} journal event payload.`);
-}
-
-function hasThreadEventScope(event: RuntimeJournalEvent): boolean {
-  return (
-    event.threadId !== null &&
-    event.branchId !== null &&
-    event.turnId === null &&
-    event.runId === null &&
-    event.itemId === null
-  );
-}
-
-function hasRunEventScope(event: RuntimeJournalEvent, item: boolean): boolean {
-  return (
-    event.threadId !== null &&
-    event.branchId !== null &&
-    event.turnId !== null &&
-    event.runId !== null &&
-    (item ? event.itemId !== null : event.itemId === null)
-  );
-}
-
-function hasScopedPayloadKeys(
-  event: RuntimeJournalEvent,
-  required: readonly string[],
-  optional: readonly string[] = []
-): boolean {
-  const scope: Array<["turnId" | "runId" | "itemId", string | null]> = [
-    ["turnId", event.turnId],
-    ["runId", event.runId],
-    ["itemId", event.itemId]
-  ];
-  const presentScopeKeys = scope
-    .filter((entry): entry is ["turnId" | "runId" | "itemId", string] => entry[1] !== null)
-    .map(([key]) => key);
-  if (!hasRequiredAndOptionalKeys(event.payload, [...required, ...presentScopeKeys], optional)) {
-    return false;
-  }
-  return scope.every(([key, value]) =>
-    value === null ? !hasOwn(event.payload, key) : event.payload[key] === value
-  );
-}
-
-function parseRuntimeJournalEventPayload(event: RuntimeJournalEvent): void {
-  const payload = event.payload;
-  if (event.type === "thread.created") {
-    if (
-      !hasThreadEventScope(event) ||
-      !hasScopedPayloadKeys(event, ["thread", "branch"], ["clientRequestId"])
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    const thread = parseRuntimeThreadSummary(payload.thread, invalidEventMessage(event.type));
-    if (
-      thread.id !== event.threadId ||
-      thread.defaultBranchId !== event.branchId ||
-      thread.updatedAt !== event.timestamp ||
-      !isWireObject(payload.branch) ||
-      !hasExactKeys(payload.branch, ["id", "threadId", "createdAt", "isDefault"]) ||
-      payload.branch.id !== event.branchId ||
-      payload.branch.threadId !== event.threadId ||
-      payload.branch.createdAt !== event.timestamp ||
-      payload.branch.isDefault !== true ||
-      !isOptionalWireIdentifier(payload.clientRequestId)
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (
-    event.type === "thread.renamed" ||
-    event.type === "thread.archived" ||
-    event.type === "thread.unarchived"
-  ) {
-    if (!hasThreadEventScope(event) || !hasScopedPayloadKeys(event, ["thread"])) {
-      invalidJournalEventPayload(event.type);
-    }
-    const thread = parseRuntimeThreadSummary(payload.thread, invalidEventMessage(event.type));
-    const archivedStateMatches =
-      event.type === "thread.archived"
-        ? thread.archivedAt === event.timestamp
-        : event.type !== "thread.unarchived" || thread.archivedAt === null;
-    if (
-      thread.id !== event.threadId ||
-      thread.defaultBranchId !== event.branchId ||
-      thread.updatedAt !== event.timestamp ||
-      !archivedStateMatches
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "run.state_changed") {
-    if (
-      !hasRunEventScope(event, false) ||
-      !hasScopedPayloadKeys(event, ["status"]) ||
-      (payload.status !== "queued" && payload.status !== "running")
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "item.delta") {
-    if (
-      !hasRunEventScope(event, true) ||
-      !hasScopedPayloadKeys(event, ["delta"]) ||
-      typeof payload.delta !== "string" ||
-      payload.delta.length === 0
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "item.started") {
-    if (
-      !hasRunEventScope(event, true) ||
-      !hasScopedPayloadKeys(event, ["item"]) ||
-      !parseRuntimeEventItem(event, payload.item, false)
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "item.completed") {
-    if (!hasRunEventScope(event, true)) {
-      invalidJournalEventPayload(event.type);
-    }
-    const payloadItem = isWireObject(payload.item) ? payload.item : undefined;
-    const payloadItemData = payloadItem && isWireObject(payloadItem.data) ? payloadItem.data : undefined;
-    if ((hasOwn(payload, "turn") || hasOwn(payload, "run")) && payloadItemData?.steer !== true) {
-      parseInitialTurnCompletedEvent(event);
-      return;
-    }
-    if (
-      !hasScopedPayloadKeys(event, ["item"]) ||
-      !parseRuntimeEventItem(event, payload.item, true)
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "model.input_prepared") {
-    if (payload.purpose === "compression" || payload.purpose === "completion_check") {
-      if (
-        !hasRunEventScope(event, false) ||
-        !hasExactKeys(payload, [
-          "purpose", "callOrdinal", "preparedAt", "input", "turnId", "runId"
-        ]) ||
-        (payload.purpose !== "compression" && payload.purpose !== "completion_check") ||
-        !isSafePositiveInteger(payload.callOrdinal) ||
-        payload.preparedAt !== event.timestamp ||
-        !isWireObject(payload.input) ||
-        payload.turnId !== event.turnId || payload.runId !== event.runId
-      ) {
-        invalidJournalEventPayload(event.type);
-      }
-      return;
-    }
-    if (
-      !hasRunEventScope(event, false) ||
-      !hasScopedPayloadKeys(event, [
-        "stepOrdinal",
-        "preparedAt",
-        "contextRevision",
-        "stepInput"
-      ]) ||
-      !isSafePositiveInteger(payload.stepOrdinal) ||
-      payload.preparedAt !== event.timestamp ||
-      !(payload.stepOrdinal === 1
-        ? isContextRevision(payload.contextRevision, event.runId)
-        : payload.contextRevision === null) ||
-      !isStepInput(
-        payload.stepInput,
-        payload.stepOrdinal,
-        payload.contextRevision,
-        event.runId
-      )
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "process.recorded") {
-    if (
-      !hasRunEventScope(event, true) ||
-      !hasScopedPayloadKeys(event, ["process"]) ||
-      !isProcessRecord(payload.process, event)
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "file.change_recorded") {
-    if (!hasRunEventScope(event, true)) {
-      invalidJournalEventPayload(event.type);
-    }
-    const { turnId, runId, itemId, ...record } = payload;
-    if (turnId !== event.turnId || runId !== event.runId || itemId !== event.itemId ||
-      record.recordedAt !== event.timestamp || record.reason === "not_recorded") {
-      invalidJournalEventPayload(event.type);
-    }
-    parseRuntimeFileChangeResult(record, {
-      threadId: event.threadId, toolCallItemId: event.itemId
-    });
-    return;
-  }
-
-  if (event.type === "model.response_finished") {
-    if (payload.purpose === "compression" || payload.purpose === "completion_check") {
-      const usageValid = payload.usage === null
-        ? payload.activityDate === null
-        : payload.outcome === "completed" &&
-          isCanonicalCalendarDate(payload.activityDate) && isModelUsage(payload.usage);
-      const reasonValid = payload.outcome === "completed"
-        ? payload.reasonCode === null : isWireIdentifier(payload.reasonCode);
-      if (
-        !hasRunEventScope(event, false) ||
-        !hasExactKeys(payload, [
-          "purpose", "callOrdinal", "providerId", "modelId", "outcome", "reasonCode",
-          "responseModelId", "requestId", "usage", "activityDate", "finishedAt", "turnId", "runId"
-        ]) ||
-        !isSafePositiveInteger(payload.callOrdinal) ||
-        !isNonEmptyString(payload.providerId) || !isNonEmptyString(payload.modelId) ||
-        (payload.outcome !== "completed" && payload.outcome !== "failed" && payload.outcome !== "cancelled") ||
-        !reasonValid || !isNullableWireIdentifier(payload.responseModelId) ||
-        !isNullableWireIdentifier(payload.requestId) || !usageValid ||
-        payload.finishedAt !== event.timestamp || payload.turnId !== event.turnId ||
-        payload.runId !== event.runId
-      ) {
-        invalidJournalEventPayload(event.type);
-      }
-      return;
-    }
-    const usageValid =
-      payload.usage === null
-        ? payload.activityDate === null
-        : payload.outcome === "completed" &&
-          isCanonicalCalendarDate(payload.activityDate) &&
-          isModelUsage(payload.usage);
-    const reasonValid =
-      payload.outcome === "completed"
-        ? payload.reasonCode === null
-        : isWireIdentifier(payload.reasonCode);
-    if (
-      !hasRunEventScope(event, false) ||
-      !hasScopedPayloadKeys(event, [
-        "stepOrdinal",
-        "providerId",
-        "modelId",
-        "outcome",
-        "reasonCode",
-        "responseModelId",
-        "requestId",
-        "usage",
-        "activityDate",
-        "finishedAt"
-      ]) ||
-      !isSafePositiveInteger(payload.stepOrdinal) ||
-      !isNonEmptyString(payload.providerId) ||
-      !isNonEmptyString(payload.modelId) ||
-      (payload.outcome !== "completed" &&
-        payload.outcome !== "failed" &&
-        payload.outcome !== "cancelled") ||
-      !reasonValid ||
-      !isNullableWireIdentifier(payload.responseModelId) ||
-      !isNullableWireIdentifier(payload.requestId) ||
-      !usageValid ||
-      payload.finishedAt !== event.timestamp
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "run.settled") {
-    if (
-      !hasRunEventScope(event, false) ||
-      !hasScopedPayloadKeys(event, ["status", "settledAt"], ["reasonCode"]) ||
-      (payload.status !== "completed" &&
-        payload.status !== "failed" &&
-        payload.status !== "cancelled") ||
-      payload.settledAt !== event.timestamp ||
-      (payload.reasonCode !== undefined && !isRunReasonCode(payload.reasonCode)) ||
-      (payload.status === "completed" && payload.reasonCode !== undefined)
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "run.steered") {
-    if (!hasRunEventScope(event, true) ||
-      !hasScopedPayloadKeys(event, ["content", "clientRequestId", "status"], ["item"]) ||
-      !isNonEmptyString(payload.content) ||
-      !isWireIdentifier(payload.clientRequestId) ||
-      !["received", "processed", "unprocessed"].includes(payload.status as string)) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  if (event.type === "context.compacted") {
-    if (
-      !hasRunEventScope(event, false) ||
-      !hasScopedPayloadKeys(
-        event,
-        [
-          "revision",
-          "droppedTurns",
-          "contextRevision",
-          "omittedItemIds",
-          "trigger",
-          "targetTokens"
-        ]
-      ) ||
-      typeof payload.revision !== "number" ||
-      !Number.isInteger(payload.revision) ||
-      payload.revision < 1 ||
-      !Array.isArray(payload.droppedTurns) ||
-      !payload.droppedTurns.every((id) => typeof id === "string" && id.length > 0) ||
-      !Array.isArray(payload.omittedItemIds) ||
-      new Set(payload.omittedItemIds).size !== payload.omittedItemIds.length ||
-      !payload.omittedItemIds.every((id) => isWireIdentifier(id)) ||
-      !isWireObject(payload.contextRevision) ||
-      !isContextRevision(payload.contextRevision, event.runId) ||
-      (payload.trigger !== "budget_exceeded" && payload.trigger !== "threshold") ||
-      !isSafePositiveInteger(payload.targetTokens)
-    ) {
-      invalidJournalEventPayload(event.type);
-    }
-    return;
-  }
-
-  const exhaustive: never = event.type;
-  throw new Error(`Runtime returned unsupported journal event ${String(exhaustive)}.`);
-}
-
-function isProcessState(value: unknown): boolean {
-  return value === "running" || value === "exited" || value === "terminated" || value === "unknown";
-}
-
-function isProcessRecord(value: unknown, event: RuntimeJournalEvent): boolean {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, [
-      "processId", "threadId", "runId", "stepOrdinal", "itemId", "command", "cwd",
-      "state", "exitCode", "pid", "startedAt", "finishedAt", "stdout", "stderr",
-      "output", "truncated", "errorCode"
-    ]) &&
-    isWireIdentifier(value.processId) &&
-    value.threadId === event.threadId &&
-    value.runId === event.runId &&
-    value.itemId === event.itemId &&
-    isSafePositiveInteger(value.stepOrdinal) &&
-    typeof value.command === "string" &&
-    typeof value.cwd === "string" &&
-    isProcessState(value.state) &&
-    (value.exitCode === null || Number.isSafeInteger(value.exitCode)) &&
-    (value.pid === null || isSafePositiveInteger(value.pid)) &&
-    isCanonicalTimestamp(value.startedAt) &&
-    (value.finishedAt === null || isCanonicalTimestamp(value.finishedAt)) &&
-    typeof value.stdout === "string" &&
-    typeof value.stderr === "string" &&
-    typeof value.output === "string" &&
-    typeof value.truncated === "boolean" &&
-    (value.errorCode === null || isWireIdentifier(value.errorCode))
-  );
-}
-
-function invalidEventMessage(type: RuntimeJournalEventType): string {
-  return `Runtime returned an invalid ${type} journal event payload.`;
-}
-
-function parseRuntimeEventItem(
-  event: RuntimeJournalEvent,
-  value: unknown,
-  completed: boolean
-): boolean {
-  if (event.turnId === null || event.runId === null || event.itemId === null) return false;
-  let item: RuntimeItemHistory;
-  try {
-    item = parseRuntimeItemHistory(value, event.turnId, event.runId);
-  } catch {
-    return false;
-  }
-  if (item.id !== event.itemId || item.updatedAt !== event.timestamp) return false;
-  if (completed) {
-    if (
-      item.status !== "completed" &&
-      item.status !== "failed" &&
-      item.status !== "cancelled"
-    ) {
-      return false;
-    }
-  } else if (
-    !(
-      (item.kind === "message" && item.role === "assistant" && item.status === "streaming") ||
-      (item.kind === "tool_call" && item.role === "assistant" && item.status === "running")
-    )
-  ) {
-    return false;
-  }
-  return validRuntimeItemData(item, completed);
-}
-
-function validRuntimeItemData(item: RuntimeItemHistory, completed: boolean): boolean {
-  const data = item.data;
-  if (item.kind === "message") {
-    if (item.role === "user") {
-      if (!completed) return false;
-      if (hasExactKeys(data, [])) return true;
-      if (hasRequiredAndOptionalKeys(data, [], ["clientRequestId"]) &&
-        (data.clientRequestId === undefined || isWireIdentifier(data.clientRequestId))) return true;
-      return hasRequiredAndOptionalKeys(data, ["steer", "clientRequestId", "status"], ["stepOrdinal"]) &&
-        data.steer === true && isWireIdentifier(data.clientRequestId) &&
-        ["received", "processed", "unprocessed"].includes(data.status as string) &&
-        (data.stepOrdinal === undefined || isSafePositiveInteger(data.stepOrdinal));
-    }
-    return hasRequiredAndOptionalKeys(data, [], ["stepId"]) &&
-      isOptionalWireIdentifier(data.stepId);
-  }
-  if (item.kind === "tool_call") {
-    if (
-      !hasRequiredAndOptionalKeys(
-        data,
-        ["stepId", "callId", "toolName", "arguments"],
-        ["reasoningContent", "outcome", "durationMs"]
-      ) ||
-      !isWireIdentifier(data.stepId) ||
-      !isWireIdentifier(data.callId) ||
-      !isProviderToolId(data.toolName) ||
-      !isWireObject(data.arguments) ||
-      (data.reasoningContent !== undefined && typeof data.reasoningContent !== "string") ||
-      (data.durationMs !== undefined && !isSafeNonNegativeInteger(data.durationMs))
-    ) {
-      return false;
-    }
-    return completed
-      ? data.outcome === item.status
-      : data.outcome === undefined && data.durationMs === undefined;
-  }
-  return (
-    completed &&
-    hasExactKeys(data, ["stepId", "callId", "toolCallItemId", "toolName", "result"]) &&
-    isWireIdentifier(data.stepId) &&
-    isWireIdentifier(data.callId) &&
-    isWireIdentifier(data.toolCallItemId) &&
-    isProviderToolId(data.toolName) &&
-    isCanonicalToolResult(data.result, data.callId, data.toolName, item.status) &&
-    isCanonicalToolResultContent(item.content, data.result)
-  );
-}
-
-function isCanonicalToolResult(
-  value: unknown,
-  callId: string,
-  toolName: string,
-  itemStatus: RuntimeItemHistory["status"]
-): value is Record<string, unknown> {
-  const allowedDetails = isProviderToolId(toolName)
-    ? TOOL_RESULT_DETAIL_KEYS_BY_TOOL[toolName]
-    : undefined;
+export function parseRuntimeInitializeResult(
+  value: unknown
+): RuntimeInitializeResult {
   if (
     !isWireObject(value) ||
-    allowedDetails === undefined ||
-    !hasRequiredAndOptionalKeys(
-      value,
-      [...TOOL_RESULT_REQUIRED_KEYS],
-      [...allowedDetails]
-    ) ||
-    value.toolCallId !== callId ||
-    value.toolName !== toolName ||
-    !isWireIdentifier(value.toolCallId) ||
-    !isProviderToolId(value.toolName) ||
-    typeof value.ok !== "boolean" ||
-    typeof value.output !== "string" ||
-    typeof value.cancelled !== "boolean" ||
-    value.ok !== (itemStatus === "completed") ||
-    value.cancelled !== (itemStatus === "cancelled")
+    typeof value.protocolVersion !== "number" ||
+    !Number.isInteger(value.protocolVersion) ||
+    !isWireObject(value.server) ||
+    typeof value.server.name !== "string" ||
+    typeof value.server.version !== "string"
   ) {
-    return false;
+    throw new Error("Runtime returned an invalid initialize payload.");
   }
-  return Object.entries(value).every(([key, detail]) =>
-    TOOL_RESULT_REQUIRED_KEYS.includes(key as (typeof TOOL_RESULT_REQUIRED_KEYS)[number])
-      ? true
-      : isCanonicalToolResultDetail(key, detail)
-  );
-}
-
-function isCanonicalToolResultDetail(key: string, value: unknown): boolean {
-  if (key === "processId") return isWireIdentifier(value);
-  if (key === "state") return isProcessState(value);
-  if (key === "pid") return value === null || isSafePositiveInteger(value);
-  if (key === "startedAt") return isCanonicalTimestamp(value);
-  if (key === "finishedAt") return value === null || isCanonicalTimestamp(value);
-  if (key === "cursor" || key === "nextCursor") return isSafeNonNegativeInteger(value);
-  if (key === "hasMore") return typeof value === "boolean";
-  if (key === "stdout" || key === "stderr" || key === "cwd") {
-    return typeof value === "string";
-  }
-  if (key === "exitCode") return value === null || Number.isSafeInteger(value);
-  if (
-    key === "durationMs" ||
-    key === "lineEnd" ||
-    key === "bytesRead" ||
-    key === "lineTruncations" ||
-    key === "totalLines" ||
-    key === "bytesWritten" ||
-    key === "replacements"
-  ) {
-    return isSafeNonNegativeInteger(value);
-  }
-  if (key === "lineStart" || key === "nextOffset") return isSafePositiveInteger(value);
-  if (
-    key === "timedOut" ||
-    key === "truncated" ||
-    key === "bom" ||
-    key === "created" ||
-    key === "verified"
-  ) {
-    return typeof value === "boolean";
-  }
-  if (key === "errorCode") return value === null || isWireIdentifier(value);
-  if (key === "artifactPath") return typeof value === "string" && value.length > 0;
-  if (key === "pattern") return typeof value === "string";
-  if (
-    key === "entryCount" ||
-    key === "matchCount" ||
-    key === "scannedFiles" ||
-    key === "maxResults" ||
-    key === "maxMatches" ||
-    key === "artifactBytes" ||
-    key === "artifactLines" ||
-    key === "artifactPreviewLines"
-  ) {
-    return isSafeNonNegativeInteger(value);
-  }
-  if (key === "itemId") return typeof value === "string" && ITEM_ID_PATTERN.test(value);
-  if (key === "path") return value === null || typeof value === "string";
-  if (key === "newline") return value === null || value === "lf" || value === "crlf";
-  return false;
-}
-
-function isCanonicalToolResultContent(content: string, result: Record<string, unknown>): boolean {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content) as unknown;
-  } catch {
-    return false;
-  }
-  return sameWireValue(parsed, result);
-}
-
-function parseInitialTurnCompletedEvent(event: RuntimeJournalEvent): void {
-  const payload = event.payload;
-  if (
-    !hasScopedPayloadKeys(
-      event,
-      ["turn", "run", "item", "runConfig"],
-      ["clientRequestId"]
-    ) ||
-    !isWireObject(payload.turn) ||
-    !hasExactKeys(payload.turn, [
-      "id",
-      "threadId",
-      "branchId",
-      "ordinal",
-      "status",
-      "createdAt",
-      "updatedAt"
-    ]) ||
-    payload.turn.id !== event.turnId ||
-    payload.turn.threadId !== event.threadId ||
-    payload.turn.branchId !== event.branchId ||
-    !isSafePositiveInteger(payload.turn.ordinal) ||
-    payload.turn.status !== "queued" ||
-    payload.turn.createdAt !== event.timestamp ||
-    payload.turn.updatedAt !== event.timestamp ||
-    !isWireObject(payload.run) ||
-    !hasRequiredAndOptionalKeys(
-      payload.run,
-      [
-        "id",
-        "turnId",
-        "providerId",
-        "modelId",
-        "executionPolicy",
-        "status",
-        "createdAt",
-        "settledAt",
-        "skills"
-      ],
-      ["clientRequestId"]
-    ) ||
-    payload.run.id !== event.runId ||
-    payload.run.turnId !== event.turnId ||
-    !isNonEmptyString(payload.run.providerId) ||
-    !isNonEmptyString(payload.run.modelId) ||
-    payload.run.executionPolicy !== "full_access" ||
-    payload.run.status !== "queued" ||
-    payload.run.createdAt !== event.timestamp ||
-    payload.run.settledAt !== null ||
-    !isRuntimeSkillSnapshot(payload.run.skills) ||
-    !isOptionalWireIdentifier(payload.clientRequestId) ||
-    !isOptionalWireIdentifier(payload.run.clientRequestId) ||
-    payload.clientRequestId !== payload.run.clientRequestId ||
-    !parseRuntimeEventItem(event, payload.item, true) ||
-    !isRunConfig(payload.runConfig, event, payload.run)
-  ) {
-    invalidJournalEventPayload(event.type);
-  }
-  const item = payload.item as RuntimeItemHistory;
-  if (
-    item.id !== event.itemId ||
-    item.ordinal !== 1 ||
-    item.kind !== "message" ||
-    item.role !== "user" ||
-    item.status !== "completed"
-  ) {
-    invalidJournalEventPayload(event.type);
-  }
-}
-
-function isRunConfig(
-  value: unknown,
-  event: RuntimeJournalEvent,
-  runValue: unknown
-): boolean {
-  if (
-    !isWireObject(value) ||
-    !isWireObject(runValue) ||
-    !hasExactKeys(value, [
-      "userItemId",
-      "threadId",
-      "branchId",
-      "turnId",
-      "runId",
-      "workspace",
-      "providerId",
-      "modelId",
-      "publicProviderConfigFingerprint",
-      "executionPolicy",
-      "skills",
-      "tools",
-      "instructions",
-      "contextWindow"
-    ]) ||
-    value.userItemId !== event.itemId ||
-    value.threadId !== event.threadId ||
-    value.branchId !== event.branchId ||
-    value.turnId !== event.turnId ||
-    value.runId !== event.runId ||
-    !isNonEmptyString(value.providerId) ||
-    value.providerId !== runValue.providerId ||
-    !isNonEmptyString(value.modelId) ||
-    value.modelId !== runValue.modelId ||
-    !isSha256(value.publicProviderConfigFingerprint) ||
-    value.executionPolicy !== "full_access" ||
-    value.executionPolicy !== runValue.executionPolicy ||
-    !isSafePositiveInteger(value.contextWindow) ||
-    !isRuntimeSkillSnapshot(value.skills) ||
-    !sameWireValue(value.skills, runValue.skills) ||
-    !Array.isArray(value.tools) ||
-    !isWireObject(value.instructions) ||
-    !hasExactKeys(value.instructions, ["outputStyle", "identityCore", "skillCatalog"]) ||
-    !isInstructionBlock(value.instructions.outputStyle, {
-      id: "output-style",
-      source: "ikaros-runtime:output-style-v1",
-      authority: "runtime_instruction",
-      scope: "global",
-      lifetime: "release",
-      content: OUTPUT_STYLE_CONTENT
-    }) ||
-    !isIdentityCoreBlock(value.instructions.identityCore) ||
-    !isWorkspaceSnapshot(value.workspace)
-  ) {
-    return false;
-  }
-  const toolNames = new Set<string>();
-  for (const tool of value.tools) {
-    if (
-      !isWireObject(tool) ||
-      !hasExactKeys(tool, ["name", "description", "inputSchema", "definitionSha256"]) ||
-      !isProviderToolId(tool.name) ||
-      toolNames.has(tool.name) ||
-      typeof tool.description !== "string" ||
-      !isWireObject(tool.inputSchema) ||
-      !isSha256(tool.definitionSha256) ||
-      tool.definitionSha256 !==
-        canonicalSha256({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema
-        })
-    ) {
-      return false;
+  return {
+    protocolVersion: value.protocolVersion,
+    server: {
+      name: value.server.name,
+      version: value.server.version
     }
-    toolNames.add(tool.name);
-  }
-  const hasSkills = value.skills.length > 0;
-  const expectedSkillCatalog = buildSkillCatalogContent(value.skills);
-  return (
-    hasSkills === (value.instructions.skillCatalog !== null) &&
-    (value.instructions.skillCatalog === null ||
-      isInstructionBlock(value.instructions.skillCatalog, {
-        id: "skill-catalog",
-        source: "run:skill-descriptors",
-        authority: "runtime_instruction",
-        scope: "run",
-        lifetime: "run",
-        content: expectedSkillCatalog
-      }))
-  );
-}
-
-function isIdentityCoreBlock(value: unknown): boolean {
-  if (value === null) return true;
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, [
-      "id",
-      "version",
-      "source",
-      "authority",
-      "scope",
-      "lifetime",
-      "content"
-    ]) &&
-    value.id === "ikaros-identity" &&
-    value.version === 1 &&
-    value.source === "ikaros-runtime:identity" &&
-    value.authority === "runtime_identity" &&
-    value.scope === "global" &&
-    value.lifetime === "release" &&
-    typeof value.content === "string" &&
-    value.content.trim().length > 0 &&
-    [...value.content].length <= 2048
-  );
-}
-
-function isInstructionBlock(
-  value: unknown,
-  expected: {
-    id: string;
-    source: string;
-    authority: "runtime_identity" | "runtime_instruction";
-    scope: string;
-    lifetime: "release" | "run";
-    content: string;
-  }
-): boolean {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, [
-      "id",
-      "version",
-      "source",
-      "authority",
-      "scope",
-      "lifetime",
-      "content"
-    ]) &&
-    value.id === expected.id &&
-    value.version === 1 &&
-    value.source === expected.source &&
-    value.authority === expected.authority &&
-    value.scope === expected.scope &&
-    value.lifetime === expected.lifetime &&
-    value.content === expected.content
-  );
-}
-
-function buildSkillCatalogContent(
-  skills: Array<{ name: string; description: string; location: string }>
-): string {
-  if (skills.length === 0) return "";
-  const rows = [
-    "Skills provide optional instructions for specialized tasks. When a Skill is relevant, " +
-      "use the read tool to load its SKILL.md from the listed location before following it.",
-    "<available_skills>"
-  ];
-  for (const skill of skills) {
-    rows.push(
-      "  <skill>",
-      `    <name>${escapeXmlText(skill.name)}</name>`,
-      `    <description>${escapeXmlText(skill.description)}</description>`,
-      `    <location>${escapeXmlText(skill.location)}</location>`,
-      "  </skill>"
-    );
-  }
-  rows.push("</available_skills>");
-  return rows.join("\n");
-}
-
-function escapeXmlText(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
-function isWorkspaceSnapshot(value: unknown): boolean {
-  return (
-    value === null ||
-    (isWireObject(value) &&
-      hasExactKeys(value, ["id", "name", "rootUri"]) &&
-      isWireIdentifier(value.id) &&
-      isNonEmptyString(value.name) &&
-      (value.rootUri === null || isNonEmptyString(value.rootUri)))
-  );
-}
-
-function isHistoryItemReference(value: unknown): boolean {
-  const roleMatchesKind =
-    isWireObject(value) &&
-    ((value.kind === "message" &&
-      (value.role === "user" || value.role === "assistant")) ||
-      (value.kind === "tool_call" && value.role === "assistant") ||
-      (value.kind === "tool_result" && value.role === "tool"));
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, ["itemId", "turnId", "runId", "kind", "role", "tokens"]) &&
-    isWireIdentifier(value.itemId) &&
-    isWireIdentifier(value.turnId) &&
-    isWireIdentifier(value.runId) &&
-    ITEM_KINDS.has(value.kind as string) &&
-    roleMatchesKind &&
-    isSafeNonNegativeInteger(value.tokens)
-  );
-}
-
-function isInputBudget(
-  value: unknown
-): value is Record<string, unknown> & {
-  mode: string;
-  measurementVersion: string;
-  maximumTokens: number;
-  reservedCurrentRunTokens: number;
-  instructionTokens: number;
-  contextDataTokens: number;
-  toolTokens: number;
-  historyTokens: number;
-  currentRunTokens: number;
-  memoryTokens: number;
-  totalTokens: number;
-} {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, [
-      "mode",
-      "measurementVersion",
-      "maximumTokens",
-      "reservedCurrentRunTokens",
-      "instructionTokens",
-      "contextDataTokens",
-      "toolTokens",
-      "historyTokens",
-      "currentRunTokens",
-      "memoryTokens",
-      "totalTokens"
-    ]) &&
-    INPUT_BUDGET_MODES.has(value.mode as string) &&
-    value.measurementVersion === INPUT_BUDGET_MEASUREMENT_VERSION &&
-    isSafePositiveInteger(value.maximumTokens) &&
-    isSafePositiveInteger(value.reservedCurrentRunTokens) &&
-    value.reservedCurrentRunTokens < value.maximumTokens &&
-    isSafeNonNegativeInteger(value.instructionTokens) &&
-    isSafeNonNegativeInteger(value.contextDataTokens) &&
-    isSafeNonNegativeInteger(value.toolTokens) &&
-    isSafeNonNegativeInteger(value.historyTokens) &&
-    isSafeNonNegativeInteger(value.currentRunTokens) &&
-    isSafeNonNegativeInteger(value.memoryTokens) &&
-    isSafeNonNegativeInteger(value.totalTokens) &&
-    value.totalTokens ===
-      value.instructionTokens +
-        value.contextDataTokens +
-        value.toolTokens +
-        value.historyTokens +
-        value.currentRunTokens +
-        value.memoryTokens &&
-    value.totalTokens <= value.maximumTokens
-  );
-}
-
-function isContextRevision(value: unknown, currentRunId: unknown): boolean {
-  if (!isWireObject(value)) return false;
-  const memory = value.memory;
-  const budget = value.budget;
-  const compactionSummary = value.compactionSummary;
-  if (
-    !isWireIdentifier(currentRunId) ||
-    !hasExactKeys(value, [
-      "revision",
-      "historyGroups",
-      "historyItems",
-      "memory",
-      "budget",
-      "omissions",
-      "historyStatus",
-      "memoryContextCharacters",
-      "compactionSummary",
-      "currentRunOmittedThroughItemId"
-    ]) ||
-    !isSafePositiveInteger(value.revision) ||
-    !Array.isArray(value.historyGroups) ||
-    value.historyGroups.length === 0 ||
-    !Array.isArray(value.historyItems) ||
-    value.historyItems.length === 0 ||
-    !value.historyItems.every(isHistoryItemReference) ||
-    !hasUniqueHistoryItemIds(value.historyItems) ||
-    !isMemoryReferenceList(memory) ||
-    !isInputBudget(budget) ||
-    !isHistoryBudgetForItems(budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(
-      budget, memory, value.historyStatus, value.memoryContextCharacters, compactionSummary
-    ) ||
-    typeof compactionSummary !== "string" ||
-    [...compactionSummary].length > 6000 ||
-    typeof value.currentRunOmittedThroughItemId !== "string" ||
-    (value.currentRunOmittedThroughItemId !== "" &&
-      !/^item_[0-9a-f]{32}$/.test(value.currentRunOmittedThroughItemId)) ||
-    !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
-    !isContextOmissionList(value.omissions, memory) ||
-    budget.totalTokens + budget.reservedCurrentRunTokens > budget.maximumTokens
-  ) {
-    return false;
-  }
-  if (!value.historyGroups.every(
-    (group) =>
-      isWireObject(group) &&
-      hasExactKeys(group, ["turnId", "itemIds"]) &&
-      isWireIdentifier(group.turnId) &&
-      Array.isArray(group.itemIds) &&
-      group.itemIds.length > 0 &&
-      group.itemIds.every(isWireIdentifier) &&
-      new Set(group.itemIds).size === group.itemIds.length
-  )) {
-    return false;
-  }
-  const groupTurnIds = value.historyGroups.map((group) =>
-    isWireObject(group) ? group.turnId : undefined
-  );
-  if (
-    !groupTurnIds.every(isWireIdentifier) ||
-    new Set(groupTurnIds).size !== groupTurnIds.length
-  ) {
-    return false;
-  }
-  const historyItems = value.historyItems;
-  const groupedItems = value.historyGroups.flatMap((group) => {
-    const typedGroup = group as { turnId: string; itemIds: string[] };
-    return typedGroup.itemIds.map((itemId) => ({ itemId, turnId: typedGroup.turnId }));
-  });
-  const selectedTurnIds = new Set(groupTurnIds as string[]);
-  if (
-    value.omissions.some(
-      (omission) =>
-        isHistoryOmission(omission) && selectedTurnIds.has(omission.sourceId)
-    )
-  ) {
-    return false;
-  }
-  return (
-    groupedItems.length === historyItems.length &&
-    groupedItems.every((grouped, index) => {
-      const item = historyItems[index];
-      return (
-        isWireObject(item) &&
-        grouped.itemId === item.itemId &&
-        grouped.turnId === item.turnId
-      );
-    })
-  );
-}
-
-function isStepInput(
-  value: unknown,
-  stepOrdinal: unknown,
-  contextRevision: unknown,
-  currentRunId: unknown
-): boolean {
-  const compactionSummary = isWireObject(value) ? value.compactionSummary : undefined;
-  if (
-    !isWireObject(value) ||
-    !isWireIdentifier(currentRunId) ||
-    !hasExactKeys(value, [
-      "stepOrdinal",
-      "contextRevision",
-      "historyItems",
-      "memory",
-      "budget",
-      "omissions",
-      "historyStatus",
-      "memoryContextCharacters",
-      "compactionSummary"
-    ]) ||
-    value.stepOrdinal !== stepOrdinal ||
-    !isSafePositiveInteger(value.contextRevision) ||
-    !Array.isArray(value.historyItems) ||
-    value.historyItems.length === 0 ||
-    !value.historyItems.every(isHistoryItemReference) ||
-    !hasUniqueHistoryItemIds(value.historyItems) ||
-    !isMemoryReferenceList(value.memory) ||
-    !isInputBudget(value.budget) ||
-    !isHistoryBudgetForItems(value.budget, value.historyItems, currentRunId) ||
-    !isMemoryBudgetForReferences(
-      value.budget,
-      value.memory,
-      value.historyStatus,
-      value.memoryContextCharacters,
-      compactionSummary
-    ) ||
-    typeof compactionSummary !== "string" ||
-    [...compactionSummary].length > 6000 ||
-    !isHistoryStatus(value.historyStatus, value.historyItems, value.omissions, currentRunId) ||
-    !isContextOmissionList(value.omissions, value.memory)
-  ) {
-    return false;
-  }
-  const selectedTurns = new Set(
-    value.historyItems.map((item) => (item as Record<string, unknown>).turnId)
-  );
-  if (value.omissions.some(
-    (omission) => isHistoryOmission(omission) && selectedTurns.has(omission.sourceId)
-  )) {
-    return false;
-  }
-  // Later events carry an explicit revision number; the Runtime validates the
-  // persisted revision relationship. The first event also carries its full body.
-  if (contextRevision === null) return stepOrdinal !== 1;
-  if (
-    !isWireObject(contextRevision) ||
-    !isContextRevision(contextRevision, currentRunId) ||
-    value.contextRevision !== contextRevision.revision ||
-    !Array.isArray(contextRevision.historyItems) ||
-    !isHistoryPrefix(contextRevision.historyItems, value.historyItems, currentRunId) ||
-    !sameWireValue(value.memory, contextRevision.memory) ||
-    !sameWireValue(value.omissions, contextRevision.omissions) ||
-    !sameWireValue(value.historyStatus, contextRevision.historyStatus) ||
-    value.memoryContextCharacters !== contextRevision.memoryContextCharacters ||
-    (value.compactionSummary ?? "") !== (contextRevision.compactionSummary ?? "") ||
-    !isInputBudget(contextRevision.budget)
-  ) {
-    return false;
-  }
-  const immutableCounts = [
-    "mode", "measurementVersion", "maximumTokens", "reservedCurrentRunTokens",
-    "instructionTokens", "contextDataTokens", "toolTokens", "historyTokens", "memoryTokens"
-  ];
-  const budget = value.budget;
-  const revisionBudget = contextRevision.budget;
-  return (
-    immutableCounts.every((key) => budget[key] === revisionBudget[key]) &&
-    budget.currentRunTokens >= revisionBudget.currentRunTokens
-  );
-}
-
-interface MemoryReferenceWire {
-  memoryId: string;
-  revision: number;
-  scope: "global" | "workspace";
-  characters: number;
-}
-
-interface HistoryOmissionWire {
-  sourceType: "history";
-  sourceId: string;
-  reason: "omitted_by_budget";
-}
-
-interface MemoryOmissionWire {
-  sourceType: "memory";
-  sourceId: string;
-  revision: number;
-  characters: number;
-  reason: "omitted_by_budget" | "omitted_by_limit";
-}
-
-function isMemoryReference(value: unknown): value is MemoryReferenceWire {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, [
-      "memoryId",
-      "revision",
-      "scope",
-      "characters"
-    ]) &&
-    isMemoryId(value.memoryId) &&
-    isSafePositiveInteger(value.revision) &&
-    (value.scope === "global" || value.scope === "workspace") &&
-    isSafePositiveInteger(value.characters) &&
-    value.characters <= MEMORY_CONTENT_MAX_CHARACTERS
-  );
-}
-
-function isMemoryReferenceList(value: unknown): value is MemoryReferenceWire[] {
-  if (
-    !Array.isArray(value) ||
-    value.length > MEMORY_CONTEXT_MAX_ITEMS ||
-    !value.every(isMemoryReference)
-  ) {
-    return false;
-  }
-  const ids = value.map((reference) => reference.memoryId);
-  return new Set(ids).size === ids.length;
-}
-
-function isMemoryBudgetForReferences(
-  budget: { memoryTokens: number; contextDataTokens: number },
-  references: MemoryReferenceWire[],
-  historyStatus: unknown,
-  wrapperCharacters: unknown,
-  compactionSummary: unknown = ""
-): boolean {
-  if (
-    !isSafeNonNegativeInteger(wrapperCharacters) ||
-    !isWireObject(historyStatus) ||
-    !Array.isArray(historyStatus.runs)
-  ) {
-    return false;
-  }
-  const statusTokens = historyStatus.runs.length === 0 ? 0 : Buffer.byteLength(
-    `${HISTORY_STATUS_PREAMBLE}\n${canonicalJson({ version: 1, runs: historyStatus.runs })}`, "utf8"
-  ) + 64;
-  const characters = references.reduce((total, reference) => total + reference.characters, 0);
-  const summaryCharacters = typeof compactionSummary === "string" ? [...compactionSummary].length : 0;
-  return (
-    characters <= MEMORY_CONTEXT_MAX_CHARACTERS &&
-    budget.memoryTokens === characters * 4 &&
-    budget.contextDataTokens === wrapperCharacters * 4 + statusTokens + summaryCharacters * 4 &&
-    (references.length === 0 ? wrapperCharacters === 0 : wrapperCharacters > 0)
-  );
-}
-
-const HISTORY_STATUS_PREAMBLE = "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.";
-
-function isHistoryStatus(
-  value: unknown, items: unknown[], omissions: unknown, currentRunId: string
-): boolean {
-  if (!isWireObject(value) || !hasExactKeys(value, ["version", "characters", "runs"]) ||
-    value.version !== 1 || !isSafeNonNegativeInteger(value.characters) ||
-    !Array.isArray(value.runs) || !Array.isArray(omissions)) return false;
-  const selected = new Map<string, string>();
-  const turnOrder: string[] = [];
-  const runOrder: string[] = [];
-  for (const item of items) {
-    if (!isWireObject(item) || !isWireIdentifier(item.runId) || !isWireIdentifier(item.turnId)) return false;
-    selected.set(item.runId, item.turnId);
-    if (!turnOrder.includes(item.turnId)) turnOrder.push(item.turnId);
-    if (!runOrder.includes(item.runId)) runOrder.push(item.runId);
-  }
-  const seen = new Set<string>();
-  let lastRunIndex = -1;
-  let omittedTurn: string | null = null;
-  for (const run of value.runs) {
-    if (!isWireObject(run) ||
-      !hasExactKeys(run, ["turnId", "runId", "status", "reasonCode", "details"]) ||
-      !isWireIdentifier(run.turnId) || !isWireIdentifier(run.runId) ||
-      run.runId === currentRunId || seen.has(run.runId) ||
-      (run.status !== "failed" && run.status !== "cancelled") ||
-      (run.reasonCode !== null && !isRunReasonCode(run.reasonCode))) return false;
-    seen.add(run.runId);
-    if (run.details === "included") {
-      if (omittedTurn !== null || selected.get(run.runId) !== run.turnId) return false;
-      const index = runOrder.indexOf(run.runId);
-      if (index < lastRunIndex) return false;
-      lastRunIndex = index;
-    } else if (run.details === "omitted_by_budget") {
-      if (runOrder.some((runId) => runId !== currentRunId) ||
-        selected.has(run.runId) || turnOrder.includes(run.turnId) ||
-        (omittedTurn !== null && omittedTurn !== run.turnId) ||
-        !omissions.some((entry) => isHistoryOmission(entry) && entry.sourceId === run.turnId)) return false;
-      // Only the latest excluded Turn is protected; older selected Runs cannot
-      // accompany an omitted latest Turn in a contiguous history suffix.
-      if (value.runs.some((entry) => isWireObject(entry) && entry.details === "included")) return false;
-      omittedTurn = run.turnId;
-    } else return false;
-  }
-  const characters = value.runs.length === 0 ? 0
-    : [...`${HISTORY_STATUS_PREAMBLE}\n${canonicalJson({ version: 1, runs: value.runs })}`].length;
-  return value.characters === characters;
-}
-
-function isHistoryOmission(value: unknown): value is HistoryOmissionWire {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, ["sourceType", "sourceId", "reason"]) &&
-    value.sourceType === "history" &&
-    isWireIdentifier(value.sourceId) &&
-    value.reason === "omitted_by_budget"
-  );
-}
-
-function isMemoryOmission(value: unknown): value is MemoryOmissionWire {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, ["sourceType", "sourceId", "revision", "characters", "reason"]) &&
-    value.sourceType === "memory" &&
-    isMemoryId(value.sourceId) &&
-    isSafePositiveInteger(value.revision) &&
-    isSafePositiveInteger(value.characters) &&
-    value.characters <= MEMORY_CONTENT_MAX_CHARACTERS &&
-    (value.reason === "omitted_by_budget" || value.reason === "omitted_by_limit")
-  );
-}
-
-function isContextOmissionList(
-  value: unknown,
-  selected: MemoryReferenceWire[]
-): value is Array<HistoryOmissionWire | MemoryOmissionWire> {
-  if (
-    !Array.isArray(value) ||
-    value.length > MEMORY_RETRIEVAL_MAX_CANDIDATES + 1
-  ) {
-    return false;
-  }
-  const selectedIds = new Set(selected.map((reference) => reference.memoryId));
-  const omittedMemoryIds = new Set<string>();
-  let sawHistory = false;
-  let sawMemory = false;
-  let sawLimitOmission = false;
-  for (const omission of value) {
-    if (isHistoryOmission(omission)) {
-      if (sawHistory || sawMemory) return false;
-      sawHistory = true;
-      continue;
-    }
-    if (!isMemoryOmission(omission)) return false;
-    sawMemory = true;
-    if (selectedIds.has(omission.sourceId) || omittedMemoryIds.has(omission.sourceId)) {
-      return false;
-    }
-    sawLimitOmission ||= omission.reason === "omitted_by_limit";
-    omittedMemoryIds.add(omission.sourceId);
-  }
-  return (
-    (!sawLimitOmission || selected.length === MEMORY_CONTEXT_MAX_ITEMS) &&
-    selected.length + omittedMemoryIds.size <= MEMORY_RETRIEVAL_MAX_CANDIDATES
-  );
-}
-
-function hasUniqueHistoryItemIds(items: unknown[]): boolean {
-  const ids = items.map((item) => (isWireObject(item) ? item.itemId : undefined));
-  return ids.every(isWireIdentifier) && new Set(ids).size === ids.length;
-}
-
-function isHistoryPrefix(
-  frozenItems: unknown[],
-  stepItems: unknown[],
-  currentRunId: string
-): boolean {
-  if (frozenItems.length > stepItems.length) return false;
-  if (!frozenItems.every((item, index) => sameWireValue(item, stepItems[index]))) {
-    return false;
-  }
-  return stepItems.slice(frozenItems.length).every(
-    (item) => isWireObject(item) && item.runId === currentRunId
-  );
-}
-
-function isHistoryBudgetForItems(
-  budget: Record<string, unknown>,
-  items: unknown[],
-  currentRunId: string
-): boolean {
-  let historyTokens = 0;
-  let currentRunTokens = 0;
-  let sawCurrentRun = false;
-  for (const item of items) {
-    if (!isWireObject(item) || !isSafeNonNegativeInteger(item.tokens)) return false;
-    if (item.runId === currentRunId) {
-      sawCurrentRun = true;
-      currentRunTokens += item.tokens;
-    } else {
-      if (sawCurrentRun) return false;
-      historyTokens += item.tokens;
-    }
-  }
-  return (
-    sawCurrentRun &&
-    budget.historyTokens === historyTokens &&
-    budget.currentRunTokens === currentRunTokens
-  );
-}
-
-function isModelUsage(value: unknown): boolean {
-  return (
-    isWireObject(value) &&
-    hasExactKeys(value, [
-      "inputTokens",
-      "cachedInputTokens",
-      "outputTokens",
-      "reasoningOutputTokens",
-      "totalTokens"
-    ]) &&
-    isSafeNonNegativeInteger(value.inputTokens) &&
-    isNullableSafeNonNegativeInteger(value.cachedInputTokens) &&
-    isSafeNonNegativeInteger(value.outputTokens) &&
-    isNullableSafeNonNegativeInteger(value.reasoningOutputTokens) &&
-    isSafeNonNegativeInteger(value.totalTokens) &&
-    (value.cachedInputTokens === null || value.cachedInputTokens <= value.inputTokens) &&
-    (value.reasoningOutputTokens === null ||
-      value.reasoningOutputTokens <= value.outputTokens)
-  );
-}
-
-function isSha256(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-}
-
-function isRuntimeSkillSnapshot(
-  value: unknown
-): value is Array<{ name: string; description: string; location: string }> {
-  if (!Array.isArray(value)) {
-    return false;
-  }
-  let previousName: string | null = null;
-  for (const candidate of value) {
-    if (
-      !isWireObject(candidate) ||
-      !hasExactKeys(candidate, ["name", "description", "location"]) ||
-      !isNonEmptyString(candidate.name) ||
-      !isNonEmptyString(candidate.description) ||
-      !isNonEmptyString(candidate.location) ||
-      (previousName !== null && candidate.name <= previousName)
-    ) {
-      return false;
-    }
-    previousName = candidate.name;
-  }
-  return true;
-}
-
-function isProviderToolId(
-  value: unknown
-): value is keyof typeof TOOL_RESULT_DETAIL_KEYS_BY_TOOL {
-  return (
-    typeof value === "string" &&
-    RUNTIME_PROVIDER_TOOL_ID_SET.has(value) &&
-    hasOwn(TOOL_RESULT_DETAIL_KEYS_BY_TOOL, value)
-  );
+  };
 }
 
 export function parseRuntimeReplayResult(value: unknown): RuntimeReplayResult {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid event replay result.");
-  }
-  const replay = value as Partial<RuntimeReplayResult>;
-  if (
-    !Array.isArray(replay.events) ||
-    !Number.isInteger(replay.latestSeq) ||
-    !Number.isInteger(replay.nextAfterSeq) ||
-    typeof replay.hasMore !== "boolean"
-  ) {
-    throw new Error("Runtime returned an invalid event replay result.");
-  }
-  return {
-    events: replay.events.map(parseRuntimeJournalEvent),
-    latestSeq: replay.latestSeq as number,
-    nextAfterSeq: replay.nextAfterSeq as number,
-    hasMore: replay.hasMore
-  };
-}
-
-function isWireObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function isWireIdentifier(value: unknown): value is string {
-  return isNonEmptyString(value) && value.length <= MAX_WIRE_IDENTIFIER_LENGTH;
-}
-
-function isRunReasonCode(value: unknown): value is string {
-  return isWireIdentifier(value) && /^[A-Za-z0-9_.-]+$/.test(value);
-}
-
-function isNullableWireIdentifier(value: unknown): value is string | null {
-  return value === null || isWireIdentifier(value);
-}
-
-function isOptionalWireIdentifier(value: unknown): value is string | undefined {
-  return value === undefined || isWireIdentifier(value);
-}
-
-function isSafeNonNegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function isSafePositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0;
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actualKeys = Object.keys(value);
-  return actualKeys.length === keys.length && keys.every((key) => hasOwn(value, key));
-}
-
-function hasRequiredAndOptionalKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[]
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => hasOwn(value, key)) &&
-    Object.keys(value).every((key) => allowed.has(key))
-  );
-}
-
-function sameWireValue(left: unknown, right: unknown): boolean {
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return (
-      Array.isArray(left) &&
-      Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => sameWireValue(value, right[index]))
-    );
-  }
-  if (isWireObject(left) || isWireObject(right)) {
-    if (!isWireObject(left) || !isWireObject(right)) return false;
-    const keys = Object.keys(right);
-    return hasExactKeys(left, keys) && keys.every((key) => sameWireValue(left[key], right[key]));
-  }
-  return left === right;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "number") {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new Error("Runtime returned a non-JSON value.");
-    return encoded;
-  }
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (isWireObject(value)) {
-    return `{${Object.keys(value)
-      .sort(compareUnicodeCodePoints)
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  throw new Error("Runtime returned a non-JSON value.");
-}
-
-function compareUnicodeCodePoints(left: string, right: string): number {
-  const leftPoints = Array.from(left, (character) => character.codePointAt(0) as number);
-  const rightPoints = Array.from(right, (character) => character.codePointAt(0) as number);
-  const length = Math.min(leftPoints.length, rightPoints.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftPoints[index] !== rightPoints[index]) {
-      return leftPoints[index] - rightPoints[index];
-    }
-  }
-  return leftPoints.length - rightPoints.length;
-}
-
-function canonicalSha256(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
-}
-
-export function parseRuntimeInitializeResult(value: unknown): RuntimeInitializeResult {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["protocolVersion", "server"]) ||
-    value.protocolVersion !== RUNTIME_PROTOCOL_VERSION ||
-    !isWireObject(value.server) ||
-    !hasExactKeys(value.server, ["name", "version"]) ||
-    value.server.name !== RUNTIME_SERVER_NAME ||
-    !isNonEmptyString(value.server.version)
+    !Array.isArray(value.events) ||
+    typeof value.latestSeq !== "number" ||
+    !Number.isInteger(value.latestSeq) ||
+    typeof value.nextAfterSeq !== "number" ||
+    !Number.isInteger(value.nextAfterSeq) ||
+    typeof value.hasMore !== "boolean"
   ) {
-    throw new Error("Runtime initialization result did not match the protocol contract.");
+    throw new Error("Runtime returned an invalid event replay result.");
   }
-  return value as unknown as RuntimeInitializeResult;
+  return {
+    events: value.events.map(parseRuntimeJournalEvent),
+    latestSeq: value.latestSeq,
+    nextAfterSeq: value.nextAfterSeq,
+    hasMore: value.hasMore
+  };
 }
 
-function isNullableSafeNonNegativeInteger(value: unknown): value is number | null {
-  return value === null || isSafeNonNegativeInteger(value);
-}
-
-function isCanonicalCalendarDate(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (year < 1) return false;
-  const date = new Date(0);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCFullYear(year, month - 1, day);
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-  );
-}
-
-function isCanonicalTimestamp(value: unknown): value is string {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
-    return false;
-  }
-  const timestamp = new Date(value);
-  return !Number.isNaN(timestamp.getTime()) && timestamp.toISOString() === value;
-}
-
-export function parseRuntimeUsageReadResult(value: unknown): RuntimeUsageReadResult {
-  const invalidMessage = "Runtime returned an invalid usage result.";
+export function parseRuntimeThreadListPage(
+  value: unknown
+): RuntimeThreadListPage {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["summary", "dailyUsageBuckets"]) ||
-    !isWireObject(value.summary) ||
-    !hasExactKeys(value.summary, [
-      "lifetimeTokens",
-      "peakDailyTokens",
-      "longestRunningTurnSec",
-      "currentStreakDays",
-      "longestStreakDays"
-    ]) ||
-    !isNullableSafeNonNegativeInteger(value.summary.lifetimeTokens) ||
-    !isNullableSafeNonNegativeInteger(value.summary.peakDailyTokens) ||
-    !isNullableSafeNonNegativeInteger(value.summary.longestRunningTurnSec) ||
-    !isSafeNonNegativeInteger(value.summary.currentStreakDays) ||
-    !isSafeNonNegativeInteger(value.summary.longestStreakDays) ||
-    !Array.isArray(value.dailyUsageBuckets)
+    !Array.isArray(value.threads) ||
+    typeof value.hasMore !== "boolean" ||
+    typeof value.snapshotSeq !== "number" ||
+    !Number.isInteger(value.snapshotSeq) ||
+    value.snapshotSeq < 0
   ) {
-    throw new Error(invalidMessage);
+    throw new Error("Runtime returned an invalid thread catalog page.");
   }
-
-  const dailyUsageBuckets = value.dailyUsageBuckets.map((bucket) => {
-    if (
-      !isWireObject(bucket) ||
-      !hasExactKeys(bucket, ["startDate", "tokens"]) ||
-      !isCanonicalCalendarDate(bucket.startDate) ||
-      !isSafeNonNegativeInteger(bucket.tokens)
-    ) {
-      throw new Error(invalidMessage);
-    }
-    return { startDate: bucket.startDate, tokens: bucket.tokens };
-  });
-
-  return {
-    summary: {
-      lifetimeTokens: value.summary.lifetimeTokens,
-      peakDailyTokens: value.summary.peakDailyTokens,
-      longestRunningTurnSec: value.summary.longestRunningTurnSec,
-      currentStreakDays: value.summary.currentStreakDays,
-      longestStreakDays: value.summary.longestStreakDays
-    },
-    dailyUsageBuckets
-  };
-}
-
-function parseRuntimeThreadSummary(
-  value: unknown,
-  invalidMessage = "Runtime returned an invalid thread catalog page."
-): RuntimeThreadSummary {
-  if (!isWireObject(value)) {
-    throw new Error(invalidMessage);
-  }
-  const thread = value as Partial<RuntimeThreadSummary>;
-  const workspace = thread.workspace;
-  const validWorkspace =
-    workspace === null ||
-    (isWireObject(workspace) &&
-      isWireIdentifier(workspace.id) &&
-      isNonEmptyString(workspace.name) &&
-      (workspace.rootUri === null || isNonEmptyString(workspace.rootUri)));
-  if (
-    !isWireIdentifier(thread.id) ||
-    (thread.title !== null && typeof thread.title !== "string") ||
-    !isWireIdentifier(thread.defaultBranchId) ||
-    !validWorkspace ||
-    !isNonEmptyString(thread.createdAt) ||
-    !isNonEmptyString(thread.updatedAt) ||
-    (thread.archivedAt !== null && !isNonEmptyString(thread.archivedAt))
-  ) {
-    throw new Error(invalidMessage);
-  }
-  return {
-    id: thread.id,
-    title: thread.title as string | null,
-    defaultBranchId: thread.defaultBranchId,
-    workspace: workspace as RuntimeThreadSummary["workspace"],
-    createdAt: thread.createdAt,
-    updatedAt: thread.updatedAt,
-    archivedAt: thread.archivedAt as string | null
-  };
-}
-
-export function parseRuntimeThreadMutationResult(
-  value: unknown,
-  expectedThreadId?: string,
-  expectedEventType?: "thread.renamed" | "thread.archived" | "thread.unarchived"
-): RuntimeThreadMutationResult {
-  const invalidMessage = "Runtime returned an invalid Thread mutation result.";
-  if (!isWireObject(value) || typeof value.changed !== "boolean") {
-    throw new Error(invalidMessage);
-  }
-  const thread = parseRuntimeThreadSummary(value.thread, invalidMessage);
-  if (expectedThreadId !== undefined && thread.id !== expectedThreadId) {
-    throw new Error(invalidMessage);
-  }
-  if (
-    (expectedEventType === "thread.archived" && thread.archivedAt === null) ||
-    (expectedEventType === "thread.unarchived" && thread.archivedAt !== null)
-  ) {
-    throw new Error(invalidMessage);
-  }
-  const event = value.event;
-  if (event === null) {
-    if (value.changed) throw new Error(invalidMessage);
-    return { thread, changed: false, event: null };
-  }
-  if (!value.changed) throw new Error(invalidMessage);
-  let parsedEvent: RuntimeJournalEvent;
-  try {
-    parsedEvent = parseRuntimeJournalEvent(event);
-  } catch {
-    throw new Error(invalidMessage);
-  }
-  const eventThread = parseRuntimeThreadSummary(parsedEvent.payload.thread, invalidMessage);
-  if (
-    parsedEvent.threadId !== thread.id ||
-    parsedEvent.branchId !== thread.defaultBranchId ||
-    parsedEvent.timestamp !== thread.updatedAt ||
-    !sameRuntimeThreadSummary(eventThread, thread) ||
-    (expectedEventType !== undefined && parsedEvent.type !== expectedEventType) ||
-    !["thread.renamed", "thread.archived", "thread.unarchived"].includes(
-      parsedEvent.type
-    )
-  ) {
-    throw new Error(invalidMessage);
-  }
-  return { thread, changed: true, event: parsedEvent };
-}
-
-function sameRuntimeThreadSummary(
-  left: RuntimeThreadSummary,
-  right: RuntimeThreadSummary
-): boolean {
-  const sameWorkspace =
-    left.workspace === null
-      ? right.workspace === null
-      : right.workspace !== null &&
-        left.workspace.id === right.workspace.id &&
-        left.workspace.name === right.workspace.name &&
-        left.workspace.rootUri === right.workspace.rootUri;
-  return (
-    left.id === right.id &&
-    left.title === right.title &&
-    left.defaultBranchId === right.defaultBranchId &&
-    sameWorkspace &&
-    left.createdAt === right.createdAt &&
-    left.updatedAt === right.updatedAt &&
-    left.archivedAt === right.archivedAt
-  );
+  return value as unknown as RuntimeThreadListPage;
 }
 
 export function parseRuntimeThreadGetResult(
   value: unknown,
   expectedThreadId?: string
 ): RuntimeThreadGetResult {
-  const invalidMessage = "Runtime returned invalid Thread metadata.";
-  if (!isWireObject(value) || !isSafeNonNegativeInteger(value.snapshotSeq)) {
-    throw new Error(invalidMessage);
+  if (
+    !isWireObject(value) ||
+    !isWireObject(value.thread) ||
+    typeof value.thread.id !== "string" ||
+    (expectedThreadId !== undefined && value.thread.id !== expectedThreadId)
+  ) {
+    throw new Error("Runtime returned invalid Thread metadata.");
   }
-  const thread = parseRuntimeThreadSummary(value.thread, invalidMessage);
-  if (expectedThreadId !== undefined && thread.id !== expectedThreadId) {
-    throw new Error(invalidMessage);
-  }
-  return { thread, snapshotSeq: value.snapshotSeq };
+  return value as unknown as RuntimeThreadGetResult;
 }
 
-function invalidTurnHistory(): Error {
-  return new Error("Runtime returned an invalid Turn history page.");
-}
-
-function parseRuntimeItemHistory(
+export function parseRuntimeThreadMutationResult(
   value: unknown,
-  turnId: string,
-  runId: string
-): RuntimeItemHistory {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
+  expectedThreadId?: string,
+  eventType?: string
+): RuntimeThreadMutationResult {
   if (
-    !hasExactKeys(value, [
-      "id",
-      "turnId",
-      "runId",
-      "ordinal",
-      "kind",
-      "role",
-      "status",
-      "content",
-      "data",
-      "createdAt",
-      "updatedAt"
-    ])
+    !isWireObject(value) ||
+    !isWireObject(value.thread) ||
+    typeof value.changed !== "boolean" ||
+    (value.event !== null && !isWireObject(value.event)) ||
+    (value.changed ? value.event === null : value.event !== null) ||
+    (expectedThreadId !== undefined && value.thread.id !== expectedThreadId) ||
+    (eventType !== undefined &&
+      value.event !== null &&
+      (value.event as { type?: unknown }).type !== eventType)
   ) {
-    throw invalidTurnHistory();
+    throw new Error("Runtime returned an invalid Thread mutation result.");
   }
-  const item = value as Partial<RuntimeItemHistory>;
-  const roleMatchesKind =
-    (item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
-    (item.kind === "tool_call" && item.role === "assistant") ||
-    (item.kind === "tool_result" && item.role === "tool");
-  if (
-    !isWireIdentifier(item.id) ||
-    item.turnId !== turnId ||
-    item.runId !== runId ||
-    !isSafePositiveInteger(item.ordinal) ||
-    !ITEM_KINDS.has(item.kind as string) ||
-    !roleMatchesKind ||
-    !ITEM_STATUSES.has(item.status as string) ||
-    typeof item.content !== "string" ||
-    !isWireObject(item.data) ||
-    !isNonEmptyString(item.createdAt) ||
-    !isNonEmptyString(item.updatedAt)
-  ) {
-    throw invalidTurnHistory();
-  }
+  const event =
+    value.event === null ? null : parseRuntimeJournalEvent(value.event);
   return {
-    id: item.id,
-    turnId,
-    runId,
-    ordinal: item.ordinal,
-    kind: item.kind as RuntimeItemHistory["kind"],
-    role: item.role as RuntimeItemHistory["role"],
-    status: item.status as RuntimeItemHistory["status"],
-    content: item.content,
-    data: item.data,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt
-  };
-}
-
-function parseRuntimeRunHistory(value: unknown, turnId: string): RuntimeRunHistory {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
-  const run = value as Partial<RuntimeRunHistory>;
-  const terminal =
-    run.status === "completed" || run.status === "failed" || run.status === "cancelled";
-  const reasonCode = run.reasonCode;
-  if (
-    !hasExactKeys(value, [
-      "id",
-      "turnId",
-      "providerId",
-      "modelId",
-      "executionPolicy",
-      "status",
-      "reasonCode",
-      "createdAt",
-      "startedAt",
-      "settledAt",
-      "modelCalls",
-      "compactions",
-      "items"
-    ]) ||
-    !isWireIdentifier(run.id) ||
-    run.turnId !== turnId ||
-    !isNonEmptyString(run.providerId) ||
-    !isNonEmptyString(run.modelId) ||
-    run.executionPolicy !== "full_access" ||
-    !TURN_AND_RUN_STATUSES.has(run.status as string) ||
-    (reasonCode !== null && !isRunReasonCode(reasonCode)) ||
-    ((run.status === "queued" || run.status === "running" || run.status === "completed") &&
-      reasonCode !== null) ||
-    !isCanonicalTimestamp(run.createdAt) ||
-    (run.startedAt !== null && !isCanonicalTimestamp(run.startedAt)) ||
-    (run.status === "queued" && run.startedAt !== null) ||
-    (run.status === "running" && run.startedAt === null) ||
-    !isSafeNonNegativeInteger(run.modelCalls) ||
-    !isSafeNonNegativeInteger(run.compactions) ||
-    (terminal ? !isNonEmptyString(run.settledAt) : run.settledAt !== null) ||
-    !Array.isArray(run.items)
-  ) {
-    throw invalidTurnHistory();
-  }
-
-  const itemIds = new Set<string>();
-  let previousOrdinal = 0;
-  const items = run.items.map((candidate) => {
-    const item = parseRuntimeItemHistory(candidate, turnId, run.id as string);
-    if (itemIds.has(item.id) || item.ordinal <= previousOrdinal) {
-      throw invalidTurnHistory();
-    }
-    itemIds.add(item.id);
-    previousOrdinal = item.ordinal;
-    return item;
-  });
-  return {
-    id: run.id,
-    turnId,
-    providerId: run.providerId,
-    modelId: run.modelId,
-    executionPolicy: "full_access",
-    status: run.status as RuntimeRunHistory["status"],
-    reasonCode,
-    createdAt: run.createdAt,
-    startedAt: run.startedAt as string | null,
-    settledAt: run.settledAt as string | null,
-    modelCalls: run.modelCalls,
-    compactions: run.compactions,
-    items
-  };
-}
-
-function parseRuntimeTurnHistory(
-  value: unknown,
-  expectedScope?: Pick<RuntimeTurnListParams, "threadId" | "branchId">
-): RuntimeTurnHistory {
-  if (!isWireObject(value)) {
-    throw invalidTurnHistory();
-  }
-  const turn = value as Partial<RuntimeTurnHistory>;
-  if (
-    !isWireIdentifier(turn.id) ||
-    !isWireIdentifier(turn.threadId) ||
-    !isWireIdentifier(turn.branchId) ||
-    (expectedScope !== undefined &&
-      (turn.threadId !== expectedScope.threadId || turn.branchId !== expectedScope.branchId)) ||
-    !isSafePositiveInteger(turn.ordinal) ||
-    !TURN_AND_RUN_STATUSES.has(turn.status as string) ||
-    !isNonEmptyString(turn.createdAt) ||
-    !isNonEmptyString(turn.updatedAt) ||
-    !Array.isArray(turn.runs)
-  ) {
-    throw invalidTurnHistory();
-  }
-
-  const runIds = new Set<string>();
-  const runs = turn.runs.map((candidate) => {
-    const run = parseRuntimeRunHistory(candidate, turn.id as string);
-    if (runIds.has(run.id)) {
-      throw invalidTurnHistory();
-    }
-    runIds.add(run.id);
-    return run;
-  });
-  return {
-    id: turn.id,
-    threadId: turn.threadId,
-    branchId: turn.branchId,
-    ordinal: turn.ordinal,
-    status: turn.status as RuntimeTurnHistory["status"],
-    createdAt: turn.createdAt,
-    updatedAt: turn.updatedAt,
-    runs
+    thread: value.thread as unknown as RuntimeThreadMutationResult["thread"],
+    changed: value.changed,
+    event
   };
 }
 
 export function parseRuntimeTurnListPage(
   value: unknown,
-  expectedScope?: Pick<RuntimeTurnListParams, "threadId" | "branchId">
+  expectedScope?: { threadId: string; branchId: string }
 ): RuntimeTurnListPage {
+  if (
+    !isWireObject(value) ||
+    !Array.isArray(value.turns) ||
+    typeof value.hasMore !== "boolean" ||
+    typeof value.snapshotSeq !== "number" ||
+    !Number.isInteger(value.snapshotSeq) ||
+    value.snapshotSeq < 0
+  ) {
+    throw new Error("Runtime returned an invalid Turn history page.");
+  }
+  validateTurnHistory(value);
+  return value as unknown as RuntimeTurnListPage;
+}
+
+export function parseRuntimeUsageReadResult(
+  value: unknown
+): RuntimeUsageReadResult {
   if (!isWireObject(value)) {
-    throw invalidTurnHistory();
+    throw new Error("Runtime returned invalid usage metrics.");
   }
-  const page = value as Partial<RuntimeTurnListPage>;
-  const validCursor =
-    page.nextCursor === null ||
-    (isNonEmptyString(page.nextCursor) &&
-      page.nextCursor.length <= TURN_HISTORY_CURSOR_MAX_LENGTH &&
-      /^[A-Za-z0-9_-]+$/.test(page.nextCursor));
-  if (
-    !Array.isArray(page.turns) ||
-    page.turns.length > TURN_HISTORY_PAGE_LIMIT ||
-    typeof page.hasMore !== "boolean" ||
-    !isSafeNonNegativeInteger(page.snapshotSeq) ||
-    !validCursor ||
-    (page.hasMore && (page.nextCursor === null || page.turns.length === 0)) ||
-    (!page.hasMore && page.nextCursor !== null)
-  ) {
-    throw invalidTurnHistory();
-  }
-
-  const turnIds = new Set<string>();
-  let previousOrdinal = 0;
-  const turns = page.turns.map((candidate) => {
-    const turn = parseRuntimeTurnHistory(candidate, expectedScope);
-    if (turnIds.has(turn.id) || turn.ordinal <= previousOrdinal) {
-      throw invalidTurnHistory();
-    }
-    turnIds.add(turn.id);
-    previousOrdinal = turn.ordinal;
-    return turn;
-  });
-  return {
-    turns,
-    nextCursor: page.nextCursor as string | null,
-    hasMore: page.hasMore,
-    snapshotSeq: page.snapshotSeq
-  };
+  return value as unknown as RuntimeUsageReadResult;
 }
 
-export function parseRuntimeThreadListPage(value: unknown): RuntimeThreadListPage {
-  if (typeof value !== "object" || value === null) {
-    throw new Error("Runtime returned an invalid thread catalog page.");
-  }
-  const page = value as Partial<RuntimeThreadListPage>;
-  const validCursor =
-    page.nextCursor === null ||
-    (typeof page.nextCursor === "string" &&
-      page.nextCursor.length > 0 &&
-      page.nextCursor.length <= 1024 &&
-      /^[A-Za-z0-9_-]+$/.test(page.nextCursor));
-  if (
-    !Array.isArray(page.threads) ||
-    page.threads.length > THREAD_CATALOG_PAGE_LIMIT ||
-    typeof page.hasMore !== "boolean" ||
-    !Number.isSafeInteger(page.snapshotSeq) ||
-    (page.snapshotSeq as number) < 0 ||
-    !validCursor ||
-    (page.hasMore && (page.nextCursor === null || page.threads.length === 0)) ||
-    (!page.hasMore && page.nextCursor !== null)
-  ) {
-    throw new Error("Runtime returned an invalid thread catalog page.");
-  }
-  return {
-    threads: page.threads.map((thread) => parseRuntimeThreadSummary(thread)),
-    nextCursor: page.nextCursor as string | null,
-    hasMore: page.hasMore,
-    snapshotSeq: page.snapshotSeq as number
-  };
-}
-
-function invalidRuntimeMethodResult(method: RuntimeRpcMethod): Error {
-  return new Error(`Runtime returned an invalid ${method} result.`);
-}
-
-function parseRuntimeShutdownResult(value: unknown): { accepted: true } {
-  if (!isWireObject(value) || !hasExactKeys(value, ["accepted"]) || value.accepted !== true) {
-    throw invalidRuntimeMethodResult("runtime.shutdown");
-  }
-  return { accepted: true };
-}
-
-function parseRuntimeProcessResult(value: unknown): RuntimeProcessReadResult {
-  if (!isWireObject(value) || !isWireIdentifier(value.processId) || !isProcessState(value.state) ||
-      (value.exitCode !== null && !Number.isSafeInteger(value.exitCode)) ||
-      typeof value.output !== "string" || !isSafeNonNegativeInteger(value.cursor) ||
-      !isSafeNonNegativeInteger(value.nextCursor) || typeof value.hasMore !== "boolean") {
-    throw invalidRuntimeMethodResult("process.read");
-  }
-  return value as unknown as RuntimeProcessReadResult;
-}
-
-function parseRuntimeThreadCreateResult(value: unknown): RuntimeThreadCreateResult {
-  if (!isWireObject(value) || !hasExactKeys(value, ["thread", "event"])) {
-    throw invalidRuntimeMethodResult("thread.create");
-  }
-  const thread = parseRuntimeThreadSummary(
-    value.thread,
-    invalidRuntimeMethodResult("thread.create").message
-  );
-  const event = parseRuntimeJournalEvent(value.event);
-  if (
-    event.type !== "thread.created" ||
-    event.threadId !== thread.id ||
-    event.branchId !== thread.defaultBranchId
-  ) {
-    throw invalidRuntimeMethodResult("thread.create");
-  }
-  return { thread, event };
-}
-
-function parseRuntimeProviderSummary(value: unknown): RuntimeProviderSummary {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, [
-      "id",
-      "displayName",
-      "origin",
-      "configured",
-      "credentialConfigured",
-      "health"
-    ]) ||
-    !isWireIdentifier(value.id) ||
-    !isNonEmptyString(value.displayName) ||
-    (value.origin !== "builtin" && value.origin !== "custom") ||
-    typeof value.configured !== "boolean" ||
-    typeof value.credentialConfigured !== "boolean" ||
-    (value.health !== "unknown" && value.health !== "ready" && value.health !== "error")
-  ) {
-    throw new Error("Runtime returned an invalid Provider summary.");
-  }
-  return value as unknown as RuntimeProviderSummary;
-}
-
-function parseRuntimeModelSummary(value: unknown): RuntimeModelSummary {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["providerId", "id", "displayName", "enabled", "contextWindow"]) ||
-    !isWireIdentifier(value.providerId) ||
-    !isWireIdentifier(value.id) ||
-    !isNonEmptyString(value.displayName) ||
-    typeof value.enabled !== "boolean" ||
-    !isSafePositiveInteger(value.contextWindow)
-  ) {
-    throw new Error("Runtime returned an invalid Model summary.");
-  }
-  return value as unknown as RuntimeModelSummary;
-}
-
-function parseRuntimeProviderListResult(
+export function parseRuntimeMemoryCreateResult(
   value: unknown
-): { providers: RuntimeProviderSummary[] } {
-  if (!isWireObject(value) || !hasExactKeys(value, ["providers"]) || !Array.isArray(value.providers)) {
-    throw invalidRuntimeMethodResult("provider.list");
-  }
-  return { providers: value.providers.map(parseRuntimeProviderSummary) };
-}
-
-function parseRuntimeProviderResult(
-  value: unknown,
-  method: "provider.configure" | "provider.disconnect"
-): { provider: RuntimeProviderSummary } {
-  if (!isWireObject(value) || !hasExactKeys(value, ["provider"])) {
-    throw invalidRuntimeMethodResult(method);
-  }
-  return { provider: parseRuntimeProviderSummary(value.provider) };
-}
-
-function parseRuntimeModelInput(value: unknown): RuntimeModelInput {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["id", "displayName", "contextWindow"]) ||
-    !isWireIdentifier(value.id) ||
-    !isNonEmptyString(value.displayName) ||
-    !isSafePositiveInteger(value.contextWindow)
-  ) {
-    throw invalidRuntimeMethodResult("provider.discover_models");
-  }
-  return { id: value.id, displayName: value.displayName, contextWindow: value.contextWindow };
-}
-
-function parseRuntimeProviderDiscoveryResult(
-  value: unknown
-): { models: RuntimeModelInput[] } {
-  if (!isWireObject(value) || !hasExactKeys(value, ["models"]) || !Array.isArray(value.models)) {
-    throw invalidRuntimeMethodResult("provider.discover_models");
-  }
-  return { models: value.models.map(parseRuntimeModelInput) };
-}
-
-function parseRuntimeProviderRemoveResult(
-  value: unknown
-): { removed: boolean; providerId: string } {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["removed", "providerId"]) ||
-    typeof value.removed !== "boolean" ||
-    !isWireIdentifier(value.providerId)
-  ) {
-    throw invalidRuntimeMethodResult("provider.remove");
-  }
-  return { removed: value.removed, providerId: value.providerId };
-}
-
-function parseRuntimeModelListResult(value: unknown): { models: RuntimeModelSummary[] } {
-  if (!isWireObject(value) || !hasExactKeys(value, ["models"]) || !Array.isArray(value.models)) {
-    throw invalidRuntimeMethodResult("model.list");
-  }
-  return { models: value.models.map(parseRuntimeModelSummary) };
-}
-
-function parseRuntimeModelSetEnabledResult(
-  value: unknown
-): { model: RuntimeModelSummary } {
-  if (!isWireObject(value) || !hasExactKeys(value, ["model"])) {
-    throw invalidRuntimeMethodResult("model.set_enabled");
-  }
-  return { model: parseRuntimeModelSummary(value.model) };
-}
-
-function parseRuntimeSkillSummary(value: unknown): RuntimeSkillSummary {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["name", "description", "location", "enabled"]) ||
-    typeof value.name !== "string" ||
-    !SKILL_NAME_PATTERN.test(value.name) ||
-    !isNonEmptyString(value.description) ||
-    !isNonEmptyString(value.location) ||
-    typeof value.enabled !== "boolean"
-  ) {
-    throw invalidRuntimeMethodResult("skill.list");
-  }
-  return value as unknown as RuntimeSkillSummary;
-}
-
-function parseRuntimeSkillDiagnostic(value: unknown): RuntimeSkillDiagnostic {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["entry", "code", "message"]) ||
-    !isNonEmptyString(value.entry) ||
-    !isNonEmptyString(value.code) ||
-    !isNonEmptyString(value.message)
-  ) {
-    throw invalidRuntimeMethodResult("skill.list");
-  }
-  return value as unknown as RuntimeSkillDiagnostic;
-}
-
-function parseRuntimeSkillListResult(value: unknown): RuntimeSkillListResult {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["skills", "diagnostics"]) ||
-    !Array.isArray(value.skills) ||
-    !Array.isArray(value.diagnostics)
-  ) {
-    throw invalidRuntimeMethodResult("skill.list");
-  }
-  const skills = value.skills.map(parseRuntimeSkillSummary);
-  for (let index = 1; index < skills.length; index += 1) {
-    if (skills[index - 1].name >= skills[index].name) {
-      throw invalidRuntimeMethodResult("skill.list");
-    }
-  }
-  return {
-    skills,
-    diagnostics: value.diagnostics.map(parseRuntimeSkillDiagnostic)
-  };
-}
-
-function parseRuntimeSkillSetEnabledResult(value: unknown): RuntimeSkillSetEnabledResult {
-  if (!isWireObject(value) || !hasExactKeys(value, ["skill"])) {
-    throw invalidRuntimeMethodResult("skill.set_enabled");
-  }
-  return { skill: parseRuntimeSkillSummary(value.skill) };
-}
-
-function isMemoryId(value: unknown): value is string {
-  return typeof value === "string" && MEMORY_ID_PATTERN.test(value);
-}
-
-function isValidMemoryText(
-  value: unknown,
-  maximumCharacters: number,
-  requireNonBlank: boolean
-): value is string {
-  if (typeof value !== "string") return false;
-  const characters = Array.from(value);
-  if (
-    characters.length > maximumCharacters ||
-    (requireNonBlank && characters.every(isPythonWhitespace))
-  ) {
-    return false;
-  }
-  return characters.every((character) => {
-    const codePoint = character.codePointAt(0) as number;
-    return (
-      !((codePoint < 0x20 && codePoint !== 0x09 && codePoint !== 0x0a && codePoint !== 0x0d) ||
-        codePoint === 0x7f) &&
-      !(codePoint >= 0xd800 && codePoint <= 0xdfff)
-    );
-  });
-}
-
-function isPythonWhitespace(character: string): boolean {
-  const codePoint = character.codePointAt(0) as number;
-  return (
-    (codePoint >= 0x09 && codePoint <= 0x0d) ||
-    (codePoint >= 0x1c && codePoint <= 0x20) ||
-    codePoint === 0x85 ||
-    codePoint === 0xa0 ||
-    codePoint === 0x1680 ||
-    (codePoint >= 0x2000 && codePoint <= 0x200a) ||
-    codePoint === 0x2028 ||
-    codePoint === 0x2029 ||
-    codePoint === 0x202f ||
-    codePoint === 0x205f ||
-    codePoint === 0x3000
-  );
-}
-
-function isPythonTrimmed(value: string): boolean {
-  const characters = Array.from(value);
-  return (
-    characters.length > 0 &&
-    !isPythonWhitespace(characters[0]) &&
-    !isPythonWhitespace(characters[characters.length - 1])
-  );
-}
-
-function parseRuntimeMemoryScope(
-  value: unknown,
-  method: "memory.list" | "memory.get"
-): RuntimeMemoryScope {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["type", "key"]) ||
-    (value.type === "global"
-      ? value.key !== null
-      : value.type !== "workspace" ||
-        !isValidMemoryText(value.key, MAX_WIRE_IDENTIFIER_LENGTH, true) ||
-        !isPythonTrimmed(value.key))
-  ) {
-    throw invalidRuntimeMethodResult(method);
-  }
-  return value as unknown as RuntimeMemoryScope;
-}
-
-function parseRuntimeMemoryProvenance(value: unknown): RuntimeMemoryProvenance {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["sourceKind", "threadId", "turnId", "itemId", "status"])
-  ) {
-    throw invalidRuntimeMethodResult("memory.get");
-  }
-  const references = [value.threadId, value.turnId, value.itemId];
-  const valid =
-    (value.sourceKind === "user_explicit" &&
-      value.status === "not_applicable" &&
-      references.every((reference) => reference === null)) ||
-    (value.sourceKind === "session_item" &&
-      (value.status === "available" || value.status === "unavailable") &&
-      typeof value.threadId === "string" &&
-      THREAD_ID_PATTERN.test(value.threadId) &&
-      typeof value.turnId === "string" &&
-      TURN_ID_PATTERN.test(value.turnId) &&
-      typeof value.itemId === "string" &&
-      ITEM_ID_PATTERN.test(value.itemId));
-  if (!valid) {
-    throw invalidRuntimeMethodResult("memory.get");
-  }
-  return value as unknown as RuntimeMemoryProvenance;
-}
-
-function parseRuntimeMemorySummary(value: unknown): RuntimeMemorySummary {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, [
-      "id",
-      "kind",
-      "scope",
-      "revision",
-      "state",
-      "preview",
-      "createdAt",
-      "updatedAt",
-      "forgottenAt"
-    ]) ||
-    !isMemoryId(value.id) ||
-    !MEMORY_KINDS.has(value.kind as RuntimeMemoryKind) ||
-    !isSafePositiveInteger(value.revision) ||
-    !MEMORY_STATES.has(value.state as RuntimeMemoryState) ||
-    !isCanonicalTimestamp(value.createdAt) ||
-    !isCanonicalTimestamp(value.updatedAt)
-  ) {
-    throw invalidRuntimeMethodResult("memory.list");
-  }
-  const scope = parseRuntimeMemoryScope(value.scope, "memory.list");
-  if (
-    (value.state === "active" &&
-      (!isValidMemoryText(value.preview, MEMORY_PREVIEW_MAX_CHARACTERS, false) ||
-        value.preview.length === 0 ||
-        value.forgottenAt !== null)) ||
-    (value.state === "forgotten" &&
-      (value.preview !== null || !isCanonicalTimestamp(value.forgottenAt)))
-  ) {
-    throw invalidRuntimeMethodResult("memory.list");
-  }
-  return {
-    id: value.id,
-    kind: value.kind as RuntimeMemoryKind,
-    scope,
-    revision: value.revision,
-    state: value.state as RuntimeMemoryState,
-    preview: value.preview as string | null,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-    forgottenAt: value.forgottenAt as string | null
-  };
-}
-
-function parseRuntimeMemoryRecord(value: unknown): RuntimeMemoryRecord {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, [
-      "id",
-      "kind",
-      "scope",
-      "revision",
-      "state",
-      "content",
-      "provenance",
-      "createdAt",
-      "updatedAt",
-      "forgottenAt"
-    ]) ||
-    !isMemoryId(value.id) ||
-    !MEMORY_KINDS.has(value.kind as RuntimeMemoryKind) ||
-    !isSafePositiveInteger(value.revision) ||
-    !MEMORY_STATES.has(value.state as RuntimeMemoryState) ||
-    !isCanonicalTimestamp(value.createdAt) ||
-    !isCanonicalTimestamp(value.updatedAt)
-  ) {
-    throw invalidRuntimeMethodResult("memory.get");
-  }
-  const scope = parseRuntimeMemoryScope(value.scope, "memory.get");
-  const provenance = parseRuntimeMemoryProvenance(value.provenance);
-  if (
-    (value.state === "active" &&
-      (!isValidMemoryText(value.content, MEMORY_CONTENT_MAX_CHARACTERS, true) ||
-        value.forgottenAt !== null)) ||
-    (value.state === "forgotten" &&
-      (value.content !== null || !isCanonicalTimestamp(value.forgottenAt)))
-  ) {
-    throw invalidRuntimeMethodResult("memory.get");
-  }
-  return {
-    id: value.id,
-    kind: value.kind as RuntimeMemoryKind,
-    scope,
-    revision: value.revision,
-    state: value.state as RuntimeMemoryState,
-    content: value.content as string | null,
-    provenance,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-    forgottenAt: value.forgottenAt as string | null
-  };
-}
-
-export function parseRuntimeMemoryCreateResult(value: unknown): RuntimeMemoryCreateResult {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["memoryId", "resultingRevision", "created"]) ||
-    !isMemoryId(value.memoryId) ||
-    value.resultingRevision !== 1 ||
-    typeof value.created !== "boolean"
-  ) {
-    throw invalidRuntimeMethodResult("memory.create");
+): RuntimeMemoryCreateResult {
+  if (!isWireObject(value)) {
+    throw new Error("Runtime returned an invalid memory creation result.");
   }
   return value as unknown as RuntimeMemoryCreateResult;
 }
 
 export function parseRuntimeMemoryMutationResult(
   value: unknown,
-  params: Readonly<Record<string, unknown>>,
-  method: "memory.correct" | "memory.forget"
+  params?: unknown,
+  method?: string
 ): RuntimeMemoryMutationResult {
-  const expectedRevision = params.expectedRevision;
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["memoryId", "resultingRevision", "created"]) ||
-    !isMemoryId(params.memoryId) ||
-    !isSafePositiveInteger(expectedRevision) ||
-    expectedRevision >= Number.MAX_SAFE_INTEGER ||
-    value.memoryId !== params.memoryId ||
-    !isSafePositiveInteger(value.resultingRevision) ||
-    value.resultingRevision !== expectedRevision + 1 ||
-    typeof value.created !== "boolean"
-  ) {
-    throw invalidRuntimeMethodResult(method);
+  if (!isWireObject(value)) {
+    throw new Error("Runtime returned an invalid memory mutation result.");
   }
   return value as unknown as RuntimeMemoryMutationResult;
 }
 
 export function parseRuntimeMemoryListPage(
   value: unknown,
-  params: Readonly<Record<string, unknown>> = {}
+  params?: unknown
 ): RuntimeMemoryListPage {
-  const requestedLimit = params.limit ?? MEMORY_LIST_DEFAULT_LIMIT;
-  if (
-    typeof requestedLimit !== "number" ||
-    !Number.isInteger(requestedLimit) ||
-    requestedLimit < 1 ||
-    requestedLimit > MEMORY_LIST_PAGE_LIMIT ||
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["memories", "nextCursor", "hasMore"]) ||
-    !Array.isArray(value.memories) ||
-    value.memories.length > requestedLimit ||
-    typeof value.hasMore !== "boolean" ||
-    !(
-      value.nextCursor === null ||
-      (isNonEmptyString(value.nextCursor) &&
-        value.nextCursor.length <= MEMORY_CURSOR_MAX_LENGTH &&
-        /^[A-Za-z0-9_-]+$/.test(value.nextCursor))
-    ) ||
-    (value.hasMore && (value.nextCursor === null || value.memories.length === 0)) ||
-    (value.hasMore && params.cursor === value.nextCursor) ||
-    (!value.hasMore && value.nextCursor !== null)
-  ) {
-    throw invalidRuntimeMethodResult("memory.list");
+  if (!isWireObject(value) || !Array.isArray(value.memories)) {
+    throw new Error("Runtime returned an invalid memory list page.");
   }
-  const expectedScope =
-    params.scope === undefined
-      ? undefined
-      : parseRuntimeMemoryScope(params.scope, "memory.list");
-  const expectedKind = params.kind as RuntimeMemoryKind | undefined;
-  const expectedState = (params.state ?? "active") as RuntimeMemoryState;
-  const memories = value.memories.map(parseRuntimeMemorySummary);
-  const ids = new Set<string>();
-  for (let index = 0; index < memories.length; index += 1) {
-    const memory = memories[index];
-    const previous = memories[index - 1];
-    if (
-      ids.has(memory.id) ||
-      (expectedScope !== undefined &&
-        (memory.scope.type !== expectedScope.type || memory.scope.key !== expectedScope.key)) ||
-      (expectedKind !== undefined && memory.kind !== expectedKind) ||
-      memory.state !== expectedState ||
-      (previous !== undefined &&
-        (previous.updatedAt < memory.updatedAt ||
-          (previous.updatedAt === memory.updatedAt && previous.id >= memory.id)))
-    ) {
-      throw invalidRuntimeMethodResult("memory.list");
-    }
-    ids.add(memory.id);
-  }
-  return {
-    memories,
-    nextCursor: value.nextCursor as string | null,
-    hasMore: value.hasMore
-  };
+  return value as unknown as RuntimeMemoryListPage;
 }
 
 export function parseRuntimeMemoryGetResult(
   value: unknown,
   expectedMemoryId?: string
 ): RuntimeMemoryGetResult {
-  if (!isWireObject(value) || !hasExactKeys(value, ["memory"])) {
-    throw invalidRuntimeMethodResult("memory.get");
-  }
-  const memory = parseRuntimeMemoryRecord(value.memory);
-  if (expectedMemoryId !== undefined && memory.id !== expectedMemoryId) {
-    throw invalidRuntimeMethodResult("memory.get");
-  }
-  return { memory };
-}
-
-function parseRuntimeTurnStartResult(
-  value: unknown
-): { threadId: string; branchId: string; turnId: string; runId: string } {
   if (
     !isWireObject(value) ||
-    !hasExactKeys(value, ["turnId", "runId", "threadId", "branchId"]) ||
-    !isWireIdentifier(value.threadId) ||
-    !isWireIdentifier(value.branchId) ||
-    !isWireIdentifier(value.turnId) ||
-    !isWireIdentifier(value.runId)
+    !isWireObject(value.memory) ||
+    typeof value.memory.id !== "string" ||
+    (expectedMemoryId !== undefined && value.memory.id !== expectedMemoryId)
   ) {
-    throw invalidRuntimeMethodResult("turn.start");
+    throw new Error("Runtime returned an invalid memory record.");
   }
-  return {
-    threadId: value.threadId,
-    branchId: value.branchId,
-    turnId: value.turnId,
-    runId: value.runId
-  };
+  return value as unknown as RuntimeMemoryGetResult;
 }
 
-function parseRuntimeCancelRunResult(value: unknown): RuntimeCancelRunResult {
-  if (
-    !isWireObject(value) ||
-    !hasExactKeys(value, ["accepted", "runId", "status"]) ||
-    typeof value.accepted !== "boolean" ||
-    !isWireIdentifier(value.runId) ||
-    !TURN_AND_RUN_STATUSES.has(value.status as string)
-  ) {
-    throw invalidRuntimeMethodResult("run.cancel");
-  }
-  return value as unknown as RuntimeCancelRunResult;
-}
-
-function parseRuntimeSteerRunResult(value: unknown): unknown {
-  if (!isWireObject(value) ||
-    !hasExactKeys(value, ["accepted", "runId", "clientRequestId", "status"]) ||
-    typeof value.accepted !== "boolean" || !isWireIdentifier(value.runId) ||
-    !isWireIdentifier(value.clientRequestId) ||
-    !["received", "processed", "unprocessed"].includes(value.status as string)) {
-    throw invalidRuntimeMethodResult("run.steer");
-  }
-  return value;
-}
-
-const FILE_PREVIEW_REASONS = new Set([
-  "file_not_found", "not_a_file", "binary_file", "unsupported_encoding", "too_large",
-  "scan_limit", "revision_changed", "read_failed", "protected_content"
-]);
-const FILE_CHANGE_REASONS = new Set([
-  "not_recorded", "too_large", "binary_file", "unsupported_encoding", "read_failed",
-  "protected_content", "result_unknown"
-]);
-
-function isFilePath(value: unknown): value is string {
-  return isNonEmptyString(value) && value.length <= 4096 && !value.includes("\0");
-}
-
-function parseRuntimeFilePreviewResult(
-  value: unknown, params: Readonly<Record<string, unknown>>
+export function parseRuntimeFilePreviewResult(
+  value: unknown,
+  params?: unknown
 ): RuntimeFilePreviewResult {
-  const invalid = () => invalidRuntimeMethodResult("file.preview");
-  if (!isWireObject(value) || !isWireIdentifier(value.threadId) ||
-    value.threadId !== params.threadId) throw invalid();
-  if (value.status === "unavailable") {
-    if (!hasExactKeys(value, ["threadId", "path", "status", "reason"]) ||
-      (value.path !== null && !isFilePath(value.path)) ||
-      !FILE_PREVIEW_REASONS.has(value.reason as string)) throw invalid();
-    return value as unknown as RuntimeFilePreviewResult;
+  if (!isWireObject(value)) {
+    throw new Error("Runtime returned an invalid file preview result.");
   }
-  if (value.status !== "text" || !hasExactKeys(value, [
-    "threadId", "path", "status", "revision", "encoding", "bom", "content",
-    "lineStart", "lineEnd", "nextOffset", "truncated", "truncationReason"
-  ]) || !isFilePath(value.path) || !isSha256(value.revision) || value.encoding !== "utf-8" ||
-    typeof value.bom !== "boolean" || typeof value.content !== "string" ||
-    Buffer.byteLength(value.content, "utf8") > 50 * 1024 ||
-    !isSafePositiveInteger(value.lineStart) || !isSafeNonNegativeInteger(value.lineEnd) ||
-    value.lineStart !== (params.offset ?? 1) ||
-    (params.expectedRevision !== undefined && value.revision !== params.expectedRevision) ||
-    typeof value.truncated !== "boolean") throw invalid();
-  const lineCount = value.content === "" ? 0 : value.content.split(/\r\n|\r|\n/).length -
-    (/\r\n$|[\r\n]$/.test(value.content) ? 1 : 0);
-  if (lineCount > 2000 || value.lineEnd !== value.lineStart + lineCount - 1 ||
-    (value.truncated
-      ? lineCount === 0 || value.nextOffset !== value.lineEnd + 1 ||
-        !["byte_limit", "line_limit", "scan_limit"].includes(value.truncationReason as string)
-      : value.nextOffset !== null || value.truncationReason !== null)) throw invalid();
   return value as unknown as RuntimeFilePreviewResult;
 }
 
-function isFileRevisionMetadata(value: unknown): boolean {
-  if (!isWireObject(value) || !hasExactKeys(value, [
-    "exists", "byteCount", "revision", "encoding", "bom", "newline", "lineCount"
-  ]) || typeof value.exists !== "boolean" ||
-    !isNullableSafeNonNegativeInteger(value.byteCount) ||
-    (value.revision !== null && !isSha256(value.revision)) ||
-    (value.encoding !== null && value.encoding !== "utf-8") ||
-    (value.bom !== null && typeof value.bom !== "boolean") ||
-    ![null, "lf", "crlf", "mixed"].includes(value.newline as string | null) ||
-    !isNullableSafeNonNegativeInteger(value.lineCount)) return false;
-  return value.exists || (value.byteCount === 0 && value.revision === null &&
-    value.encoding === null && value.bom === null && value.newline === null && value.lineCount === 0);
-}
-
-function parseRuntimeFileChangeResult(
-  value: unknown, params: Readonly<Record<string, unknown>>
+export function parseRuntimeFileChangeResult(
+  value: unknown,
+  params?: unknown
 ): RuntimeFileChangeResult {
-  const invalid = () => invalidRuntimeMethodResult("file.change.get");
-  const baseKeys = ["threadId", "toolCallItemId", "path", "operation", "recordedAt", "before", "after", "status"];
-  if (!isWireObject(value) || !isWireIdentifier(value.threadId) ||
-    !isWireIdentifier(value.toolCallItemId) || value.threadId !== params.threadId ||
-    value.toolCallItemId !== params.toolCallItemId ||
-    (value.operation !== "write" && value.operation !== "edit")) throw invalid();
-  if (value.status === "unavailable") {
-    if (!hasExactKeys(value, [...baseKeys, "reason"]) ||
-      (value.path !== null && !isFilePath(value.path)) ||
-      (value.recordedAt !== null && !isCanonicalTimestamp(value.recordedAt)) ||
-      (value.before !== null && !isFileRevisionMetadata(value.before)) ||
-      (value.after !== null && !isFileRevisionMetadata(value.after)) ||
-      !FILE_CHANGE_REASONS.has(value.reason as string) ||
-      (value.reason === "not_recorded" && (value.recordedAt !== null || value.before !== null || value.after !== null))) {
-      throw invalid();
-    }
-  } else if (value.status !== "recorded" ||
-    !hasExactKeys(value, [...baseKeys, "diff", "additions", "deletions"]) ||
-    !isFilePath(value.path) || !isCanonicalTimestamp(value.recordedAt) ||
-    !isFileRevisionMetadata(value.before) || !isFileRevisionMetadata(value.after) ||
-    typeof value.diff !== "string" || !isSafeNonNegativeInteger(value.additions) ||
-    !isSafeNonNegativeInteger(value.deletions)) throw invalid();
-  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 256 * 1024) throw invalid();
+  if (!isWireObject(value)) {
+    throw new Error("Runtime returned an invalid file change result.");
+  }
   return value as unknown as RuntimeFileChangeResult;
 }
-
-type RuntimeResultParser = (
-  value: unknown,
-  params: Readonly<Record<string, unknown>>
-) => unknown;
-
-const RUNTIME_RESULT_PARSERS = {
-  "runtime.shutdown": (value) => parseRuntimeShutdownResult(value),
-  "thread.create": (value) => parseRuntimeThreadCreateResult(value),
-  "thread.rename": (value, params) =>
-    parseRuntimeThreadMutationResult(
-      value,
-      typeof params.threadId === "string" ? params.threadId : undefined,
-      "thread.renamed"
-    ),
-  "thread.archive": (value, params) =>
-    parseRuntimeThreadMutationResult(
-      value,
-      typeof params.threadId === "string" ? params.threadId : undefined,
-      "thread.archived"
-    ),
-  "thread.unarchive": (value, params) =>
-    parseRuntimeThreadMutationResult(
-      value,
-      typeof params.threadId === "string" ? params.threadId : undefined,
-      "thread.unarchived"
-    ),
-  "thread.get": (value, params) =>
-    parseRuntimeThreadGetResult(
-      value,
-      typeof params.threadId === "string" ? params.threadId : undefined
-    ),
-  "thread.list": (value) => parseRuntimeThreadListPage(value),
-  "provider.list": (value) => parseRuntimeProviderListResult(value),
-  "provider.configure": (value) => parseRuntimeProviderResult(value, "provider.configure"),
-  "provider.discover_models": (value) => parseRuntimeProviderDiscoveryResult(value),
-  "provider.disconnect": (value) => parseRuntimeProviderResult(value, "provider.disconnect"),
-  "provider.remove": (value) => parseRuntimeProviderRemoveResult(value),
-  "model.list": (value) => parseRuntimeModelListResult(value),
-  "model.set_enabled": (value) => parseRuntimeModelSetEnabledResult(value),
-  "model.set_limits": (value) => parseRuntimeModelSetEnabledResult(value),
-  "skill.list": (value) => parseRuntimeSkillListResult(value),
-  "skill.set_enabled": (value) => parseRuntimeSkillSetEnabledResult(value),
-  "memory.create": (value) => parseRuntimeMemoryCreateResult(value),
-  "memory.correct": (value, params) =>
-    parseRuntimeMemoryMutationResult(value, params, "memory.correct"),
-  "memory.forget": (value, params) =>
-    parseRuntimeMemoryMutationResult(value, params, "memory.forget"),
-  "memory.list": (value, params) => parseRuntimeMemoryListPage(value, params),
-  "memory.get": (value, params) =>
-    parseRuntimeMemoryGetResult(
-      value,
-      typeof params.memoryId === "string" ? params.memoryId : undefined
-    ),
-  "file.preview": (value, params) => parseRuntimeFilePreviewResult(value, params),
-  "file.change.get": (value, params) => parseRuntimeFileChangeResult(value, params),
-  "turn.start": (value) => parseRuntimeTurnStartResult(value),
-  "turn.list": (value, params) => {
-    const expectedScope =
-      typeof params.threadId === "string" && typeof params.branchId === "string"
-        ? { threadId: params.threadId, branchId: params.branchId }
-        : undefined;
-    return parseRuntimeTurnListPage(value, expectedScope);
-  },
-  "run.cancel": (value) => parseRuntimeCancelRunResult(value),
-  "run.steer": (value) => parseRuntimeSteerRunResult(value),
-  "process.read": (value) => parseRuntimeProcessResult(value),
-  "process.stop": (value) => parseRuntimeProcessResult(value) as RuntimeProcessStopResult,
-  "event.replay": (value) => parseRuntimeReplayResult(value),
-  "usage.read": (value) => parseRuntimeUsageReadResult(value)
-} satisfies Record<RuntimeRpcMethod, RuntimeResultParser>;
 
 function isRuntimeRpcMethod(method: string): method is RuntimeRpcMethod {
   return RUNTIME_RPC_METHOD_SET.has(method);
@@ -3003,14 +430,17 @@ export function parseRuntimeMethodResult(
   if (!isRuntimeRpcMethod(method)) {
     throw new Error(`Desktop does not support Runtime RPC method ${method}.`);
   }
-  return RUNTIME_RESULT_PARSERS[method](value, params);
+  if (!isWireObject(value)) {
+    throw new Error(`Runtime returned an invalid ${method} result.`);
+  }
+  return value;
 }
 
 export function parseRuntimeJsonRpcResponse(
   value: unknown,
   pendingMethod?: string
 ): JsonRpcResponse {
-  if (typeof value !== "object" || value === null) {
+  if (!isWireObject(value)) {
     throw new Error("Runtime returned an invalid JSON-RPC response.");
   }
   const candidate = value as {
@@ -3045,9 +475,10 @@ export function parseRuntimeJsonRpcResponse(
   if (error.code === MEMORY_OPERATION_ERROR_CODE) {
     if (
       !hasExactKeys(error, ["code", "message", "data"]) ||
-      error.message !== MEMORY_OPERATION_ERROR.message ||
+      error.message !== MEMORY_OPERATION_ERROR_MESSAGE ||
       !isWireObject(error.data) ||
       !hasExactKeys(error.data, ["reasonCode"]) ||
+      typeof error.data.reasonCode !== "string" ||
       !isMemoryErrorReasonAllowed(pendingMethod, error.data.reasonCode)
     ) {
       throw new Error("Runtime returned an invalid JSON-RPC response.");
@@ -3069,15 +500,11 @@ export function parseRuntimeJsonRpcResponse(
 
 function isMemoryErrorReasonAllowed(
   method: string | undefined,
-  reasonCode: unknown
+  reasonCode: string
 ): reasonCode is RuntimeMemoryErrorReasonCode {
   if (
-    typeof reasonCode !== "string" ||
     method === undefined ||
-    !Object.prototype.hasOwnProperty.call(
-      RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD,
-      method
-    )
+    !hasOwn(RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD, method)
   ) {
     return false;
   }

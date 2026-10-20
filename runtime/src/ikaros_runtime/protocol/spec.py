@@ -86,6 +86,16 @@ PROVIDER_TOOL_IDS: Final = (
     "list",
 )
 def protocol_manifest() -> dict[str, object]:
+    from ..history_status import HISTORY_STATUS_PREAMBLE_V1
+    from ..run_input import (
+        INPUT_BUDGET_MEASUREMENT_VERSION,
+        MEMORY_CONTENT_MAX_CHARACTERS_V1,
+        MEMORY_RETRIEVAL_MAX_CANDIDATES_V1,
+        MEMORY_SELECTION_MAX_CHARACTERS_V1,
+        MEMORY_SELECTION_MAX_ITEMS_V1,
+        OUTPUT_STYLE_CONTENT,
+    )
+
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "jsonrpcVersion": JSONRPC_VERSION,
@@ -105,6 +115,15 @@ def protocol_manifest() -> dict[str, object]:
             }
         },
         "providerToolIds": list(PROVIDER_TOOL_IDS),
+        "inputBudgetMeasurementVersion": INPUT_BUDGET_MEASUREMENT_VERSION,
+        "outputStyleContent": OUTPUT_STYLE_CONTENT,
+        "historyStatusPreamble": HISTORY_STATUS_PREAMBLE_V1,
+        "memoryLimits": {
+            "contentMaxChars": MEMORY_CONTENT_MAX_CHARACTERS_V1,
+            "contextMaxChars": MEMORY_SELECTION_MAX_CHARACTERS_V1,
+            "contextMaxItems": MEMORY_SELECTION_MAX_ITEMS_V1,
+            "retrievalMaxCandidates": MEMORY_RETRIEVAL_MAX_CANDIDATES_V1,
+        },
     }
 
 

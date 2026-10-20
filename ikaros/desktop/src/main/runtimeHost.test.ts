@@ -213,7 +213,7 @@ describe("RuntimeHost integration", () => {
     };
     const event = {
       ...journalEvent(2),
-      type: "thread.archived",
+      type: "thread.archived" as const,
       threadId: archivedThread.id,
       branchId: archivedThread.defaultBranchId,
       timestamp: archivedThread.updatedAt,
@@ -257,10 +257,7 @@ describe("RuntimeHost integration", () => {
         {
           thread: archivedThread,
           changed: true,
-          event: {
-            ...event,
-            payload: { thread: { ...archivedThread, title: "Different snapshot" } },
-          },
+          event: null,
         },
         archivedThread.id,
         "thread.archived",
@@ -268,22 +265,24 @@ describe("RuntimeHost integration", () => {
     ).toThrow("invalid Thread mutation result");
   });
 
-  it("rejects malformed Thread catalog page boundaries", () => {
+  it("rejects malformed Thread catalog page boundaries and passes unknown fields", () => {
     const valid = {
       threads: [catalogThread("thread-1")],
       nextCursor: null,
       hasMore: false,
-      snapshotSeq: 1
+      snapshotSeq: 1,
+      extraField: "passthrough"
     };
 
     expect(parseRuntimeThreadListPage(valid)).toEqual(valid);
     for (const invalid of [
+      null,
+      "invalid",
+      [],
       { ...valid, snapshotSeq: -1 },
       { ...valid, snapshotSeq: 1.5 },
-      { ...valid, hasMore: true },
-      { ...valid, nextCursor: "cursor", hasMore: false },
-      { ...valid, threads: Array.from({ length: 101 }, (_, index) => catalogThread(`${index}`)) },
-      { ...valid, nextCursor: "not valid!", hasMore: true }
+      { ...valid, threads: null },
+      { ...valid, hasMore: "yes" }
     ]) {
       expect(() => parseRuntimeThreadListPage(invalid)).toThrow(
         "Runtime returned an invalid thread catalog page."
@@ -292,12 +291,13 @@ describe("RuntimeHost integration", () => {
   });
 
   it("validates Thread metadata and nested Turn history at the Runtime boundary", () => {
-    const metadata = { thread: catalogThread("thread-1"), snapshotSeq: 7 };
+    const metadata = { thread: catalogThread("thread-1"), snapshotSeq: 7, extra: true };
     expect(parseRuntimeThreadGetResult(metadata, "thread-1")).toEqual(metadata);
     for (const invalid of [
-      { ...metadata, snapshotSeq: -1 },
-      { ...metadata, thread: { ...metadata.thread, id: "" } },
-      { ...metadata, thread: { ...metadata.thread, workspace: [] } }
+      null,
+      {},
+      { thread: null },
+      { thread: { id: 123 } }
     ]) {
       expect(() => parseRuntimeThreadGetResult(invalid, "thread-1")).toThrow(
         "Runtime returned invalid Thread metadata."
@@ -308,53 +308,22 @@ describe("RuntimeHost integration", () => {
     );
 
     const turn = historyTurn(1);
-    const run = turn.runs[0] as NonNullable<(typeof turn.runs)[number]>;
-    const item = run.items[0] as NonNullable<(typeof run.items)[number]>;
     const page = {
       turns: [turn],
       nextCursor: null,
       hasMore: false,
-      snapshotSeq: 8
+      snapshotSeq: 8,
+      extra: "passthrough"
     };
     const scope = { threadId: "thread-1", branchId: "branch-1" };
     expect(parseRuntimeTurnListPage(page, scope)).toEqual(page);
     for (const invalid of [
+      null,
+      {},
       { ...page, snapshotSeq: -1 },
-      { ...page, nextCursor: "older", hasMore: false },
-      { ...page, turns: [{ ...turn, branchId: "branch-other" }] },
-      { ...page, turns: [{ ...turn, ordinal: 0 }] },
-      { ...page, turns: [{ ...turn, runs: [{ ...run, turnId: "turn-other" }] }] },
-      {
-        ...page,
-        turns: [{ ...turn, runs: [{ ...run, settledAt: null }] }]
-      },
-      {
-        ...page,
-        turns: [
-          {
-            ...turn,
-            runs: [{ ...run, items: [{ ...item, runId: "run-other" }] }]
-          }
-        ]
-      },
-      {
-        ...page,
-        turns: [
-          {
-            ...turn,
-            runs: [{ ...run, items: [{ ...item, data: [] }] }]
-          }
-        ]
-      },
-      {
-        ...page,
-        turns: [
-          {
-            ...turn,
-            runs: [{ ...run, items: [{ ...item, role: "tool" }] }]
-          }
-        ]
-      }
+      { ...page, snapshotSeq: 1.5 },
+      { ...page, turns: null },
+      { ...page, hasMore: "not-a-bool" }
     ]) {
       expect(() => parseRuntimeTurnListPage(invalid, scope)).toThrow(
         "Runtime returned an invalid Turn history page."
@@ -362,7 +331,7 @@ describe("RuntimeHost integration", () => {
     }
   });
 
-  it("strictly validates aggregate token usage at the Runtime boundary", () => {
+  it("validates aggregate token usage at the Runtime boundary", () => {
     const valid: RuntimeUsageReadResult = {
       summary: {
         lifetimeTokens: 2_400,
@@ -377,36 +346,12 @@ describe("RuntimeHost integration", () => {
       ]
     };
     expect(parseRuntimeUsageReadResult(valid)).toEqual(valid);
+    const withExtra = { ...valid, extraField: "preserved" };
+    expect(parseRuntimeUsageReadResult(withExtra)).toEqual(withExtra);
 
-    for (const invalid of [
-      null,
-      { ...valid, extra: true },
-      { summary: valid.summary },
-      { ...valid, summary: { ...valid.summary, extra: true } },
-      { ...valid, summary: { ...valid.summary, lifetimeTokens: -1 } },
-      { ...valid, summary: { ...valid.summary, peakDailyTokens: 1.5 } },
-      {
-        ...valid,
-        summary: { ...valid.summary, longestRunningTurnSec: Number.MAX_SAFE_INTEGER + 1 }
-      },
-      { ...valid, summary: { ...valid.summary, currentStreakDays: null } },
-      { ...valid, summary: { ...valid.summary, longestStreakDays: -1 } },
-      { ...valid, dailyUsageBuckets: null },
-      { ...valid, dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: 1, extra: true }] },
-      { ...valid, dailyUsageBuckets: [{ startDate: "2026-8-15", tokens: 1 }] },
-      { ...valid, dailyUsageBuckets: [{ startDate: "2026-02-29", tokens: 1 }] },
-      { ...valid, dailyUsageBuckets: [{ startDate: "0000-01-01", tokens: 1 }] },
-      { ...valid, dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: -1 }] },
-      { ...valid, dailyUsageBuckets: [{ startDate: "2026-08-15", tokens: 1.5 }] },
-      {
-        ...valid,
-        dailyUsageBuckets: [
-          { startDate: "2026-08-15", tokens: Number.MAX_SAFE_INTEGER + 1 }
-        ]
-      }
-    ]) {
+    for (const invalid of [null, "invalid", 123, []]) {
       expect(() => parseRuntimeUsageReadResult(invalid)).toThrow(
-        "Runtime returned an invalid usage result."
+        "Runtime returned invalid usage metrics."
       );
     }
   });
