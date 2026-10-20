@@ -89,6 +89,8 @@ const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
   process_read: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
   process_wait: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
   process_stop: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_write: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
+  process_resize: ["durationMs", "cwd", "processId", "state", "pid", "startedAt", "finishedAt", "exitCode", "cursor", "nextCursor", "hasMore", "truncated", "errorCode"],
   read: [
     "durationMs",
     "truncated",

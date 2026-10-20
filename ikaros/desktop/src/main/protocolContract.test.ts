@@ -917,6 +917,8 @@ describe("Runtime protocol Golden Trace", () => {
         "process_read",
         "process_wait",
         "process_stop",
+        "process_write",
+        "process_resize",
         "history_read",
         "read",
         "write",

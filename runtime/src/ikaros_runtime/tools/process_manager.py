@@ -18,9 +18,15 @@ from ..errors import ProtectedValueError
 from ..json_codec import dumps as json_dumps
 from .core import ToolExecutionContext
 from .process_platform import (
+    PTY_DEFAULT_COLUMNS,
+    PTY_DEFAULT_ROWS,
+    PTY_MAX_CELLS,
+    PTY_MIN_CELLS,
     _await_uninterruptibly,
+    _PtySession,
     _resume_spawned_process,
     _spawn_process,
+    _spawn_pty,
     _SpawnedProcess,
     _terminate_process_tree,
 )
@@ -205,6 +211,7 @@ class _Entry:
     )
     truncated: bool = False
     spawned: _SpawnedProcess | None = None
+    pty: _PtySession | None = None
     monitor: asyncio.Task[None] | None = None
     pumps: list[asyncio.Task[None]] = field(default_factory=list)
     done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -238,6 +245,14 @@ class _Entry:
 
 def _now() -> str:
     return utc_now()
+
+
+def _child_returncode(entry: _Entry) -> int | None:
+    if entry.pty is not None:
+        return entry.pty.returncode
+    if entry.spawned is not None:
+        return entry.spawned.process.returncode
+    return None
 
 
 class ProcessManager:
@@ -301,6 +316,9 @@ class ProcessManager:
         *,
         context: ToolExecutionContext,
         cancellation: CancellationToken,
+        pty: bool = False,
+        columns: int = PTY_DEFAULT_COLUMNS,
+        rows: int = PTY_DEFAULT_ROWS,
     ) -> JsonObject:
         from ..security import ProtectedStreamGuard
 
@@ -308,7 +326,14 @@ class ProcessManager:
         process_id = (
             "process_" + uuid5(NAMESPACE_URL, f"ikaros:{context.run_id}:{context.item_id}").hex
         )
-        fingerprint = hashlib.sha256(json_dumps([command, cwd]).encode()).hexdigest()
+        if pty and not (
+            PTY_MIN_CELLS <= columns <= PTY_MAX_CELLS
+            and PTY_MIN_CELLS <= rows <= PTY_MAX_CELLS
+        ):
+            raise ProcessError("invalid_arguments", "terminal size is out of range.")
+        fingerprint = hashlib.sha256(
+            json_dumps([command, cwd, pty, columns, rows]).encode()
+        ).hexdigest()
         async with self._start_lock:
             if process_id in self._entries:
                 if self._entries[process_id].invocation_fingerprint != fingerprint:
@@ -340,29 +365,41 @@ class ProcessManager:
             self._persist(entry, force=True)
             self._entries[process_id] = entry
             entry.output_guard = ProtectedStreamGuard(self._protected_values())
-            spawn_task = asyncio.create_task(_spawn_process(command, cwd))
+            pty_task: asyncio.Task[_PtySession] | None = None
+            spawn_task: asyncio.Task[_SpawnedProcess] | None = None
+            if pty:
+                pty_task = asyncio.create_task(
+                    _spawn_pty(command, cwd, columns=columns, rows=rows)
+                )
+            else:
+                spawn_task = asyncio.create_task(_spawn_process(command, cwd))
             try:
-                entry.spawned = await asyncio.shield(spawn_task)
-                entry.pid = entry.spawned.process.pid
-                cancellation.raise_if_cancelled()
-                _resume_spawned_process(entry.spawned)
+                if pty_task is not None:
+                    entry.pty = await asyncio.shield(pty_task)
+                    entry.pid = entry.pty.pid
+                    cancellation.raise_if_cancelled()
+                else:
+                    assert spawn_task is not None
+                    entry.spawned = await asyncio.shield(spawn_task)
+                    entry.pid = entry.spawned.process.pid
+                    cancellation.raise_if_cancelled()
+                    _resume_spawned_process(entry.spawned)
                 entry.state = "running"
                 entry.error_code = None
                 self._persist(entry, force=True)
-                process = entry.spawned.process
-                if process.stdout is None or process.stderr is None:
-                    raise RuntimeError("process output pipes were not created")
-                entry.pumps = [
-                    asyncio.create_task(self._drain(entry, process.stdout, "stdout")),
-                    asyncio.create_task(self._drain(entry, process.stderr, "stderr")),
-                ]
+                entry.pumps = self._start_pumps(entry)
                 entry.monitor = asyncio.create_task(self._monitor(entry))
             except BaseException as error:
-                if entry.spawned is None:
+                if entry.spawned is None and entry.pty is None:
                     with suppress(BaseException):
-                        entry.spawned = await _await_uninterruptibly(spawn_task)
-                if entry.spawned is not None:
+                        if pty_task is not None:
+                            entry.pty = await _await_uninterruptibly(pty_task)
+                        elif spawn_task is not None:
+                            entry.spawned = await _await_uninterruptibly(spawn_task)
+                if entry.spawned is not None or entry.pty is not None:
                     await _await_uninterruptibly(self._kill(entry))
+                if entry.pty is not None:
+                    await _await_uninterruptibly(entry.pty.finish())
                 entry.state = "unknown"
                 entry.error_code = (
                     "spawn_failed" if isinstance(error, OSError) else "start_interrupted"
@@ -375,6 +412,19 @@ class ProcessManager:
                     raise ProcessError("spawn_failed", self._safe(str(error))) from error
                 raise
             return self.read(process_id, context=context)
+
+    def _start_pumps(self, entry: _Entry) -> list[asyncio.Task[None]]:
+        if entry.pty is not None:
+            # A terminal merges both streams into one raw byte stream.
+            return [asyncio.create_task(self._drain(entry, entry.pty.output, "stdout"))]
+        assert entry.spawned is not None
+        process = entry.spawned.process
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("process output pipes were not created")
+        return [
+            asyncio.create_task(self._drain(entry, process.stdout, "stdout")),
+            asyncio.create_task(self._drain(entry, process.stderr, "stderr")),
+        ]
 
     def _owned(self, process_id: str, context: ToolExecutionContext) -> _Entry:
         entry = self._entries.get(process_id)
@@ -466,6 +516,51 @@ class ProcessManager:
             )
         return await self.stop(process_id, context=entry.context, cursor=cursor)
 
+    async def write(
+        self,
+        process_id: str,
+        *,
+        context: ToolExecutionContext,
+        data: str,
+        cursor: int = 0,
+    ) -> JsonObject:
+        entry = self._owned(process_id, context)
+        self.read(process_id, context=context, cursor=cursor)
+        if entry.pty is None:
+            raise ProcessError(
+                "process_not_terminal", "Only a terminal command accepts input."
+            )
+        if entry.done.is_set():
+            raise ProcessError("process_closed", "The command has already finished.")
+        try:
+            await entry.pty.write(data.encode("utf-8"))
+        except OSError as error:
+            raise ProcessError("process_input_failed", self._safe(str(error))) from error
+        return self.read(process_id, context=context, cursor=cursor)
+
+    async def resize(
+        self,
+        process_id: str,
+        *,
+        context: ToolExecutionContext,
+        columns: int,
+        rows: int,
+        cursor: int = 0,
+    ) -> JsonObject:
+        entry = self._owned(process_id, context)
+        self.read(process_id, context=context, cursor=cursor)
+        if entry.pty is None:
+            raise ProcessError(
+                "process_not_terminal", "Only a terminal command has a window size."
+            )
+        if entry.done.is_set():
+            raise ProcessError("process_closed", "The command has already finished.")
+        try:
+            await entry.pty.resize(columns, rows)
+        except OSError as error:
+            raise ProcessError("process_resize_failed", self._safe(str(error))) from error
+        return self.read(process_id, context=context, cursor=cursor)
+
     async def _stop(self, entry: _Entry) -> None:
         if entry.done.is_set():
             return
@@ -493,6 +588,13 @@ class ProcessManager:
         )
 
     async def _kill(self, entry: _Entry) -> None:
+        if entry.pty is not None:
+            try:
+                await asyncio.wait_for(entry.pty.terminate_tree(), timeout=6)
+            except (OSError, TimeoutError):
+                entry.error_code = "process_cleanup_failed"
+                entry.pty.release()
+            return
         if entry.spawned is None:
             return
         try:
@@ -505,11 +607,10 @@ class ProcessManager:
                 transport.close()
 
     async def _monitor(self, entry: _Entry) -> None:
-        assert entry.spawned is not None
         try:
             # Process.wait may wait for inherited pipes after root exit. Watch the root's
             # exit status directly and terminate all remaining children before joining pipes.
-            while entry.spawned.process.returncode is None:
+            while _child_returncode(entry) is None:
                 if entry.error_code == "process_cleanup_failed":
                     raise RuntimeError("process tree could not be confirmed stopped")
                 if any(
@@ -520,8 +621,11 @@ class ProcessManager:
                 self._persist(entry)
                 await asyncio.sleep(0.02)
             await self._kill(entry)
+            if entry.pty is not None:
+                # Closing the terminal delivers the last bytes and ends the output stream.
+                await entry.pty.finish()
             await asyncio.wait_for(asyncio.gather(*entry.pumps), timeout=2)
-            entry.exit_code = entry.spawned.process.returncode
+            entry.exit_code = _child_returncode(entry)
             entry.state = "terminated" if entry.stopping else "exited"
             if entry.error_code == "process_cleanup_failed":
                 entry.state = "unknown"
@@ -535,6 +639,9 @@ class ProcessManager:
             for task in entry.pumps:
                 task.cancel()
             await asyncio.gather(*entry.pumps, return_exceptions=True)
+            if entry.pty is not None:
+                with suppress(Exception):
+                    await _await_uninterruptibly(entry.pty.finish())
             if entry.output_guard is not None and not entry.output_blocked:
                 entry.output.append(entry.output_guard.finish())
             entry.finished_at = _now()

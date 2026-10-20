@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：8 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：10 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -262,7 +262,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 7、32 方法、15 事件、8 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 8、32 方法、15 事件、10 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -277,6 +277,13 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   错误归一化（581 行）。
 - `openai_compatible/discovery.py` — `/models` 发现：响应 ≤1 MB、≤1,000 个模型。
 - `openai_compatible/streaming.py` — SSE 解析、工具参数分片、usage 装配。
+
+`resources/`（打包资源）：
+
+- `__init__.py` — 资源包标记。
+- `IKAROS.md` — Agent 身份提示词（英文原文）。
+- `windows_pty_launcher.py` — Windows PTY 客户端启动器：先把标准句柄重新指向
+  `CONIN$`/`CONOUT$`，再启动命令。
 
 `server/`：
 
@@ -335,12 +342,14 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
   终止 6 秒 / 排空 2 秒。
 - `process_platform.py` — 平台原语：Windows 挂起创建 + Job Object；POSIX 进程组；
-  环境白名单 + UTF-8 变量。
-- `process.py` — 4 个进程工具（start/read/wait/stop）的模型侧定义与参数校验。
+  环境白名单 + UTF-8 变量；PTY 会话（Windows ConPTY / POSIX pty）、输出流控与
+  窗口尺寸。
+- `process.py` — 6 个进程工具（start/read/wait/stop/write/resize）的模型侧定义与
+  参数校验。
 - `read.py` — `read`：≤2,000 行 / 50 KiB、行截断 2,000 字符、nextOffset 翻页。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 37 个 Python 文件）：
+`tests/`（Runtime 测试，共 38 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -369,6 +378,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_openai_compatible.py` — 适配器、流式、重试与错误归一测试。
 - `test_paths.py` — Runtime home 路径测试。
 - `test_process_manager.py` — 进程管理器与平台行为测试。
+- `test_process_pty.py` — PTY 会话测试：交互式 REPL、写 stdin、窗口 resize、
+  字节游标读取与终止（fixture `fixtures/pty_repl.py`）。
 - `test_protocol_contract.py` — 协议契约与生成物测试。
 - `test_protocol_router.py` — 方法派发与错误码测试。
 - `test_runtime_lock.py` — 单实例锁测试。
@@ -737,9 +748,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.2 协议与 RPC
 
-- 协议版本 7，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
+- 协议版本 8，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、8 个 provider
+- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、10 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -779,7 +790,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage check`：校验 schema、Journal 顺序、投影可重建性；
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
-- 数据策略：只支持当前格式（config 2 / schema 14 / Journal 10 / protocol 7）；
+- 数据策略：只支持当前格式（config 2 / schema 14 / Journal 10 / protocol 8）；
   不兼容的开发数据以"需要重置"错误失败，需要显式重建；更新代码不会动配置、
   Skills、桌面偏好与 `memory.db`。
 
@@ -862,14 +873,16 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（8 个）
+### 6.9 内建工具（10 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
-| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Run 最多 64 个运行中命令 |
+| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Run 最多 64 个运行中命令；`pty: true` 时挂接伪终端 |
 | `process_read` | `processId`、可选 `cursor` | 返回状态 + 最多 16 KiB 输出页；稳定字节游标 |
 | `process_wait` | `processId`、可选 `cursor`、`timeoutMs`（1–60,000，默认 1,000） | 等待退出；超时返回 `running` 且不杀进程 |
 | `process_stop` | `processId`、可选 `cursor` | 停止进程树；重复调用无害 |
+| `process_write` | `processId`、`data`（≤32,768 字符）、可选 `cursor` | 仅 PTY：写 UTF-8 输入，返回该游标起的输出页 |
+| `process_resize` | `processId`、`columns`/`rows`（1–4,096）、可选 `cursor` | 仅 PTY：调整终端尺寸，返回该游标起的输出页 |
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
 | `read` | `filePath`、`offset`、`limit`（1–2,000，默认 2,000） | UTF-8；每次 ≤50 KiB；单行超 2,000 字符截断；拒绝目录/二进制/非法编码；`nextOffset` 翻页 |
 | `write` | `filePath`、`content` | 建父目录；同目录临时文件 + SHA-256 校验 + fsync + 原子替换；保留 BOM/换行/文件模式 |
@@ -885,6 +898,11 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   才算成功。
 - 平台行为：Windows 挂起创建 + kill-on-close Job Object + 恢复；POSIX 新会话/
   进程组；根进程退出后清理残留后代。
+- PTY 会话：`process_start(pty=true)` 挂接伪终端（Windows ConPTY / POSIX pty），
+  stdout/stderr 合并为同一终端流，按同一 head/tail 缓冲与字节游标读取；
+  `process_write` 写 stdin（Windows 上换行规范化为 CRLF），`process_resize`
+  调整窗口尺寸；生命周期、超时、取消与进程树清理与非 PTY 命令一致，Run 结束时
+  一并终止（跨 Run / 重启存活留给后续版本）。
 - 清理超时：终止进程树 6 秒、排空管道 2 秒、Run 关闭清理等待 10 秒。
 - 环境：子进程只继承白名单环境变量，并强制 `PYTHONIOENCODING=utf-8`、
   `PYTHONUTF8=1`。
@@ -1138,7 +1156,7 @@ Process              running ──▶ exited / terminated
   （Provider 可能先完成）。
 - 历史 Tool 调用永不自动重放；`unknown` 进程必须在新 Turn 中重新检查。
 
-## 7. RPC 接口参考（协议 7，共 32 个方法）
+## 7. RPC 接口参考（协议 8，共 32 个方法）
 
 通用约定：
 
@@ -1869,13 +1887,14 @@ ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线门禁 | pytest 781 passed / 2 skipped |
+| Runtime 离线门禁 | pytest 785 passed / 2 skipped（Linux） |
 | Desktop 离线门禁 | Vitest 528 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Golden Trace、Desktop typecheck、生产构建 全部通过 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
 
-离线基线对应 2026-09-18 代码状态（此后仅文档变化）。
+离线基线对应 2026-10-20 代码状态。Windows 上 `test_file_preview.py` 与 golden
+trace 回放用例存在与 PTY 改动无关的 CRLF / 路径分隔符差异，基线以 Linux 为准。
 
 ### 10.1 测试布局
 
@@ -1939,7 +1958,7 @@ uv run --frozen pytest tests/test_live_identity.py -q -s
 
 尚未实现或未接通：
 
-- PTY 交互、跨 Run/重启的进程存活；
+- 跨 Run / 重启的进程存活（含 PTY 会话）；
 - 多个 Run 并发、Multi-Agent 与子 Agent；
 - cron 与主动唤醒任务；
 - 附件、Web/浏览器/桌面操作工具；
@@ -1997,11 +2016,12 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 进程 | wait | 默认 1,000 ms、上限 60,000 ms |
 | 进程 | 清理超时 | 终止 6 秒、排空 2 秒、Run 关闭 10 秒 |
 | 进程 | 命令/cwd 长度 | ≤32,768 / ≤4,096 字符 |
+| 进程 | PTY 尺寸 / 输入 | columns/rows 1–4,096（默认 80×24）；process_write ≤32,768 字符 |
 | Provider | 超时 | 连接 10 秒、响应头 30 秒、流空闲 300 秒 |
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 7；32 方法；15 事件；8 工具 |
+| 协议 | 版本/规模 | protocol 8；32 方法；15 事件；10 工具 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 1；config 2 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |

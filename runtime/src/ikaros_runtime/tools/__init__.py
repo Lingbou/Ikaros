@@ -15,7 +15,14 @@ from .core import (
 from .edit import EditTool
 from .history_read import HistoryReadTool
 from .policy import ExecutionPolicy, FullAccessPolicy
-from .process import ProcessReadTool, ProcessStartTool, ProcessStopTool, ProcessWaitTool
+from .process import (
+    ProcessReadTool,
+    ProcessResizeTool,
+    ProcessStartTool,
+    ProcessStopTool,
+    ProcessWaitTool,
+    ProcessWriteTool,
+)
 from .process_manager import ProcessManager
 from .read import ReadTool
 from .write import WriteTool
@@ -27,9 +34,11 @@ __all__ = [
     "HistoryReadTool",
     "ProcessManager",
     "ProcessReadTool",
+    "ProcessResizeTool",
     "ProcessStartTool",
     "ProcessStopTool",
     "ProcessWaitTool",
+    "ProcessWriteTool",
     "ReadTool",
     "Tool",
     "ToolCall",

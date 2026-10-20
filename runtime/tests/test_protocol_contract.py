@@ -200,7 +200,7 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
-    assert PROTOCOL_VERSION == 7
+    assert PROTOCOL_VERSION == 8
     assert JOURNAL_EVENT_SCHEMA_VERSION == 10
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {
@@ -212,8 +212,13 @@ def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> Non
     assert len(MEMORY_OPERATION_REASON_CODES) == len(set(MEMORY_OPERATION_REASON_CODES))
     assert len(RPC_METHODS) == len(RPC_METHOD_SET)
     assert {"memory.correct", "memory.forget"} <= RPC_METHOD_SET
-    assert {"process_start", "process_read", "process_wait", "process_stop"} <= set(
-        PROVIDER_TOOL_IDS
-    )
+    assert {
+        "process_start",
+        "process_read",
+        "process_wait",
+        "process_stop",
+        "process_write",
+        "process_resize",
+    } <= set(PROVIDER_TOOL_IDS)
     assert "process_run" not in PROVIDER_TOOL_IDS
     assert "process.run" not in PROVIDER_TOOL_IDS
