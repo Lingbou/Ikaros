@@ -8,7 +8,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 上下文压缩、完成检查）。真实 Provider 的双平台验收仍在进行。
 
 > 本文按模块描述"现状"，记录实现细节、重要常量和参数，用于快速索引；不是设计
-> 契约，具体行为以代码为准。核对日期：2026-10-20。
+> 契约，具体行为以代码为准。核对日期：2026-10-21。
 > 阅读顺序：架构与技术栈（第 1–2 节）→ 逐文件结构（第 3 节）→ 桌面端与界面交互
 > （第 4–5 节）→ Runtime 与接口参考（第 6–8 节）→ 数据目录、验证与速查（第 9–13 节）→ 故障排查（第 14 节）。
 
@@ -421,11 +421,11 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `index.ts` — 主进程入口：装配窗口、IPC、RuntimeHost 与应用生命周期。
 - `ipc.ts` — 类型化 IPC 注册与转发（`registerDesktopIpc`，559 行）。
 - `lifecycle.ts` — 退出前等待 Runtime 干净关闭。
-- `preferences.ts` — `ui-preferences.json` 读写、校验、原生主题同步（330 行）。
-- `runtime/wire.ts` — 线上 DTO 解析与校验：事件、目录页、历史页、Memory、文件、
-  进程（3,019 行）。
+- `preferences.ts` — `ui-preferences.json` 读写、校验、原生主题同步（340 行）。
+- `runtime/wire.ts` — JSON-RPC 信封与版本校验：方法 / 事件白名单、initialize
+  manifest、Memory 错误码映射（516 行）。
 - `runtimeHost.ts` — Runtime 子进程监督：启动/认证/WS 重连/进程重启/状态通知
-  （1,162 行）。
+  （1,164 行）。
 - `runtimePaths.ts` — 路径解析：Runtime home（`IKAROS_HOME` / `~/.ikaros`）、开发态
   checkout Runtime 根与 venv 解释器（25 行）。
 - `runtimeProvision.ts` — 内置 Runtime payload：读清单、校验归档 SHA-256、解压到
@@ -461,24 +461,22 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `runtimeHistory.ts` — 历史分页加载（每页 ≤100）。
 - `runtimeStore.liveEvidence.ts` — live 证据校验（工具配对完整性）。
 - `domain.ts` — 渲染领域类型与查找辅助（threads/projects/事件文本）。
-- `eventCopy.ts` — 事件与中断原因的本地化文案解析。
-- `i18n.ts` — en / zh-CN 双语文案表与 `useTranslation`（1,115 行）。
+- `eventCopy.ts` — 事件文案的本地化解析。
+- `i18n.ts` — en / zh-CN 双语文案表与 `useTranslation`（1,041 行）。
 - `platformPreferences.ts` — 偏好读取 hook。
 - `applyUiPreferences.ts` — 把偏好应用到文档（主题、字体、动效、颜色变量）。
 - `profileUsage.ts` — Profile 图表数据：周/日网格、月份标签、紧凑数字格式。
 - `localProfile.ts` — 本地用户名默认值与首字母。
-- `mockAgentClient.ts` — 测试/非 Electron 开发用 mock 客户端（690 行）。
 - `styles.css` — Tailwind 入口与全局样式（695 行）。
 
 `src/renderer/components/`（界面组件）：
 
 - `AppearanceSettings.tsx` — 外观设置：主题、颜色、字体、侧边栏、动效。
 - `ArchivedThreadsDialog.tsx` — 归档对话管理对话框（取消归档、空态、错误态）。
-- `Composer.tsx` — 输入框：发送/停止、草稿、slash 命令菜单、权限提示（415 行）。
+- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、模型选择与运行状态提示（311 行）。
 - `ConversationHeader.tsx` — 会话标题栏：重命名/归档菜单、Model 标识。
 - `CreateProjectDialog.tsx` — 新建项目（选择工作区文件夹）。
-- `EditMessageDialog.tsx` — 编辑消息对话框（mock 功能）。
-- `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口（674 行）。
+- `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口（526 行）。
 - `EventFeed.tsx` — 对话事件流：虚拟滚动、占位、回合导航快捷键（539 行）。
 - `FilePanel.tsx` — 右侧文件查看器：当前内容/操作 diff、分页与刷新。
 - `MemorySettings.tsx` — Memory 管理页：筛选、分页、创建/纠正/遗忘（928 行）。
@@ -494,7 +492,6 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   外观/通用）。
 - `Sidebar.tsx` — 侧边栏：对话列表、Projects、归档入口、搜索按钮（539 行）。
 - `SkillsSettings.tsx` — Skills 设置：列表、诊断、启用开关。
-- `SlashCommandMenu.tsx` — slash 命令菜单与命令表。
 - `ThemePreview.tsx` — 主题预览卡与代码 diff 预览。
 - `TitleBar.tsx` — 自定义标题栏与窗口控制（最小化/最大化/关闭）。
 - `TurnNavigator.tsx` — 回合导航条：锚点计算与键盘导航。
@@ -506,19 +503,18 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   IPC、生命周期与窗口单元测试。
 - `main/linuxPackaging.test.ts` — Linux 打包配置断言。
 - `main/preferences.test.ts` — 偏好校验与持久化测试。
-- `main/protocolContract.test.ts` — 协议契约与 golden trace 校验（1,331 行）。
+- `main/protocolContract.test.ts` — 协议契约与 golden trace 校验（277 行）。
 - `main/runtime/runOutcome.test.ts` — 回合结果解析测试。
-- `main/runtimeHost.test.ts` — Runtime 监督、重连与重启测试（1,304 行）。
+- `main/runtimeHost.test.ts` — Runtime 监督、重连与重启测试（1,251 行）。
 - `preload/index.test.ts` — preload API 转发测试。
 - `renderer/App.test.tsx` / `renderer/store.test.ts` — 根组件与状态 store 测试。
 - `renderer/applyUiPreferences.test.ts` / `platformPreferences.test.tsx` —
   偏好应用与 hook 测试。
 - `renderer/i18n.test.tsx` — 双语文案完整性测试。
-- `renderer/mockAgentClient.test.ts` — mock 客户端场景测试。
 - `renderer/profileUsage.test.ts` — usage 图表数据测试。
 - `renderer/runtimeClient.test.ts` / `runtimeHistory.test.ts` /
   `runtimeProjection.test.ts` — RPC 客户端、历史加载与投影测试。
-- `renderer/runtimeStore.integration.test.ts` — 端到端集成测试（4,539 行）。
+- `renderer/runtimeStore.integration.test.ts` — 端到端集成测试（4,538 行）。
 - `renderer/runtimeStore.live.test.ts` / `runtimeStore.liveEvidence.test.ts` —
   真实 DeepSeek live smoke 与证据校验。
 - `shared/theme.test.ts` — 颜色工具测试。
@@ -713,9 +709,6 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | 全局 | Ctrl/Cmd + N | 新建对话 |
 | Composer | Enter | 发送消息（无 Shift、非 IME 合成中） |
 | Composer | Shift + Enter | 换行 |
-| Composer | ↑ / ↓ | slash 命令菜单上下选择 |
-| Composer | Tab / Enter | 补全当前 slash 命令 |
-| Composer | Esc | 关闭 slash 命令菜单 |
 | 对话区 | Alt + ↑ / Alt + ↓ | 跳到上一个 / 下一个回合（输入框聚焦、对话框打开或 IME 合成时不触发） |
 | 会话标题菜单 | Esc | 关闭菜单 |
 | 搜索对话框 | Enter | 打开选中的结果 |
@@ -749,12 +742,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - 文件为空：“此文件为空。”；二进制、编码不支持、过大、扫描超限、版本变化等
   都有专门的不可用文案。
 - 归档对话、搜索结果、Memory 列表、Skills 列表均有各自空态与错误态。
-- `/mock-1`、`/mock-2`、`/mock-3` 只在 mock 模式插入占位文本；真实对话路径由
-  Runtime 驱动。
 
 ### 5.5 输入法与无障碍
 
-- IME 合成期间（`isComposing`）不触发快捷指令（slash 菜单、回合跳转）。
+- IME 合成期间（`isComposing`）不触发快捷指令（回合跳转）。
 - 主要交互元素带 `aria-label` 与 `role`（dialog / alert / status），菜单与列表
   支持方向键和 Home / End。
 
@@ -1977,19 +1968,19 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线基线 | pytest 823 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 555 passed / 1 skipped |
+| Runtime 离线基线 | pytest 822 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
+| Desktop 离线基线 | Vitest 485 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
 
-离线基线对应 2026-10-20 代码状态（并行 PR #25–#28 集成后的结果）。Windows 上
+离线基线对应 2026-10-21 代码状态（重构批次 PR #45–#58 集成后的结果）。Windows 上
 `test_file_preview.py`、golden trace 回放与 `test_file_changes.py` 存在 CRLF /
 路径分隔符 / 环境上限等平台差异，基线以 Linux 为准。
 
 ### 10.1 测试布局
 
-- Runtime：`runtime/tests/` 共 42 个测试文件，覆盖 agent 循环、上下文与压缩、
+- Runtime：`runtime/tests/` 共 45 个测试文件，覆盖 agent 循环、上下文与压缩、
   存储与 schema、协议契约与路由、Provider 适配、进程管理、工具、Memory 召回、
   Skills、服务器与运行时锁；测试使用隔离的临时 Runtime home。
 - Desktop：Vitest（`ikaros/desktop/src` 内 `*.test.ts(x)`），包含协议解析、
