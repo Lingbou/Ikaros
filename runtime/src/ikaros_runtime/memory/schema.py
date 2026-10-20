@@ -7,7 +7,7 @@ from functools import cache
 
 from ..errors import MemorySchemaIncompatibleError
 
-MEMORY_SCHEMA_VERSION = 1
+MEMORY_SCHEMA_VERSION = 2
 
 _CANONICAL_SCHEMA = """
 CREATE TABLE memory_records (
@@ -105,21 +105,25 @@ ON memory_records(state, scope_type, scope_key, updated_at DESC, id ASC);
 
 CREATE INDEX memory_records_scope_kind_order_idx
 ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
+
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    memory_id UNINDEXED,
+    tokens,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 """
 
-_EXPECTED_OBJECTS = frozenset(
-    {
-        "memory_operations",
-        "memory_records",
-        "memory_records_scope_kind_order_idx",
-        "memory_records_scope_order_idx",
-        "memory_records_state_order_idx",
-        "memory_revisions",
-    }
-)
 _INCOMPATIBLE_MESSAGE = (
     "memory database schema is incompatible; restore a compatible backup"
 )
+
+# ``memory_fts`` is a derived projection of the readable revisions: FTS5 owns
+# its shadow tables, so their DDL is emitted by the SQLite library instead of
+# this file.  Drift is therefore judged on the object names (which must still
+# match the canonical set) and on the virtual table's own DDL, while generated
+# shadow SQL is deliberately left out of the byte-level comparison.
+_FTS_TABLE = "memory_fts"
+_FTS_SHADOW_SUFFIXES = ("config", "content", "data", "docsize", "idx")
 
 
 def initialize_memory_schema(connection: sqlite3.Connection) -> None:
@@ -144,8 +148,8 @@ def _validate_version_and_schema(
 ) -> None:
     if (
         version != MEMORY_SCHEMA_VERSION
-        or _application_objects(connection) != _EXPECTED_OBJECTS
-        or _application_schema(connection) != _canonical_application_schema()
+        or _application_objects(connection) != _expected_objects()
+        or _stable_schema(connection) != _canonical_stable_schema()
     ):
         raise MemorySchemaIncompatibleError(_INCOMPATIBLE_MESSAGE)
 
@@ -190,6 +194,35 @@ def _canonical_application_schema() -> tuple[tuple[str, str, str, str], ...]:
         return _application_schema(connection)
     finally:
         connection.close()
+
+
+@cache
+def _canonical_stable_schema() -> tuple[tuple[str, str, str, str], ...]:
+    return _stable_rows(_canonical_application_schema())
+
+
+@cache
+def _expected_objects() -> frozenset[str]:
+    return frozenset(
+        name for _type, name, _table, _sql in _canonical_application_schema()
+    )
+
+
+def _stable_schema(connection: sqlite3.Connection) -> tuple[tuple[str, str, str, str], ...]:
+    return _stable_rows(_application_schema(connection))
+
+
+def _stable_rows(
+    rows: tuple[tuple[str, str, str, str], ...],
+) -> tuple[tuple[str, str, str, str], ...]:
+    return tuple(row for row in rows if not _is_fts_shadow(row[1]))
+
+
+def _is_fts_shadow(name: str) -> bool:
+    return (
+        name.startswith(f"{_FTS_TABLE}_")
+        and name.removeprefix(f"{_FTS_TABLE}_") in _FTS_SHADOW_SUFFIXES
+    )
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:

@@ -1,9 +1,16 @@
-"""Deterministic, bounded retrieval over explicit long-term Memory."""
+"""Deterministic, bounded retrieval over explicit long-term Memory.
+
+Recall fuses bounded ranked pools through Reciprocal Rank Fusion (k=60): an
+FTS5 BM25 pool maintained inside ``memory.db`` and the keyword overlap pool
+that scores the active candidate set in Python.  The vector pool is a reserved
+interface (``MemorySemanticPool``) that this generation does not implement; no
+LLM reranking and no external embedding service ever participate.
+"""
 
 from __future__ import annotations
 
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -23,8 +30,12 @@ MEMORY_RETRIEVAL_MAX_CANDIDATES = 2_000
 MEMORY_RETRIEVAL_FETCH_LIMIT = MEMORY_RETRIEVAL_MAX_CANDIDATES + 1
 MEMORY_RETRIEVAL_TOP_K = 8
 MEMORY_RETRIEVAL_CHARACTER_BUDGET = 6_000
-MEMORY_RETRIEVAL_VERSION: Literal["deterministic-keywords-v1"] = (
-    "deterministic-keywords-v1"
+MEMORY_RETRIEVAL_RRF_K = 60
+MEMORY_RETRIEVAL_POOL_DEPTH = 200
+MEMORY_RETRIEVAL_FTS_MAX_TERMS = 64
+MEMORY_RETRIEVAL_FTS_MAX_PHRASE_BIGRAMS = 16
+MEMORY_RETRIEVAL_VERSION: Literal["deterministic-hybrid-rrf-v2"] = (
+    "deterministic-hybrid-rrf-v2"
 )
 
 
@@ -135,7 +146,7 @@ class MemoryRetrievalOmissionV1:
 
 @dataclass(frozen=True, slots=True)
 class MemoryRetrievalV1:
-    version: Literal["deterministic-keywords-v1"]
+    version: Literal["deterministic-hybrid-rrf-v2"]
     selected: tuple[MaterializedMemoryV1, ...]
     omissions: tuple[MemoryRetrievalOmissionV1, ...]
     candidate_count: int
@@ -180,6 +191,14 @@ class MemoryRetrievalReader(Protocol):
         workspace_id: str | None,
     ) -> tuple[MemoryRetrievalCandidateV1, ...]: ...
 
+    def rank_active_memory_ids_by_bm25(
+        self,
+        *,
+        query: str,
+        workspace_id: str | None,
+        limit: int,
+    ) -> tuple[str, ...]: ...
+
     def materialize_memory_revisions(
         self,
         references: Sequence[MemorySnapshotReferenceV1],
@@ -188,9 +207,31 @@ class MemoryRetrievalReader(Protocol):
     ) -> tuple[MaterializedMemoryV1, ...]: ...
 
 
+class MemorySemanticPool(Protocol):
+    """Reserved ranking signal for a future deterministic vector pool.
+
+    This generation ships no implementation.  A pool may only reorder the
+    already-bounded active candidate set, and its order enters the fusion
+    exactly like the two lexical pools.
+    """
+
+    def rank(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[MemoryRetrievalCandidateV1],
+    ) -> Sequence[str]: ...
+
+
 class MemoryRetrieverV1:
-    def __init__(self, reader: MemoryRetrievalReader) -> None:
+    def __init__(
+        self,
+        reader: MemoryRetrievalReader,
+        *,
+        semantic_pool: MemorySemanticPool | None = None,
+    ) -> None:
         self._reader = reader
+        self._semantic_pool = semantic_pool
 
     def retrieve(
         self,
@@ -199,22 +240,34 @@ class MemoryRetrieverV1:
         workspace_id: str | None,
         accept_selection: Callable[[Sequence[MaterializedMemoryV1]], bool] | None = None,
     ) -> MemoryRetrievalV1:
-        """Select whole ranked records within both retrieval and caller capacity."""
+        """Fuse bounded pools, then select whole ranked records within capacity."""
         candidates = self._reader.read_active_candidates(workspace_id=workspace_id)
-        query_tokens = _tokenize(query)
-        ranked = [
-            (_relevance(query_tokens, _tokenize(candidate.content)), candidate)
-            for candidate in candidates
+        by_id = {candidate.memory_id: candidate for candidate in candidates}
+        keyword_scores = _keyword_scores(query, candidates)
+        pools = [
+            _bounded_pool(
+                self._reader.rank_active_memory_ids_by_bm25(
+                    query=query,
+                    workspace_id=workspace_id,
+                    limit=MEMORY_RETRIEVAL_POOL_DEPTH,
+                ),
+                by_id=by_id,
+            ),
+            _keyword_pool(keyword_scores, by_id=by_id),
         ]
-        ranked = [(score, candidate) for score, candidate in ranked if score > 0]
-        ranked.sort(key=lambda item: item[1].memory_id)
-        ranked.sort(key=lambda item: item[1].updated_at, reverse=True)
-        ranked.sort(key=lambda item: item[0], reverse=True)
+        if self._semantic_pool is not None:
+            pools.append(
+                _bounded_pool(
+                    self._semantic_pool.rank(query=query, candidates=candidates),
+                    by_id=by_id,
+                )
+            )
+        ranked = _fuse_pools(pools, by_id=by_id, keyword_scores=keyword_scores)
 
         selected: list[MaterializedMemoryV1] = []
         omissions: list[MemoryRetrievalOmissionV1] = []
         memory_characters = 0
-        for _score, candidate in ranked:
+        for candidate in ranked:
             if len(selected) >= MEMORY_RETRIEVAL_TOP_K:
                 omissions.append(_omission(candidate, "omitted_by_limit"))
                 continue
@@ -269,30 +322,148 @@ class _Tokens:
     han_bigrams: frozenset[str]
 
 
-def _tokenize(value: str) -> _Tokens:
-    normalized = unicodedata.normalize(
-        "NFKC",
-        unicodedata.normalize("NFKC", value).casefold(),
+def _keyword_scores(
+    query: str,
+    candidates: Sequence[MemoryRetrievalCandidateV1],
+) -> dict[str, int]:
+    """Score every candidate by weighted unique-token overlap (the fuzzy pool)."""
+    query_tokens = _tokenize(query)
+    scores: dict[str, int] = {}
+    for candidate in candidates:
+        score = _relevance(query_tokens, _tokenize(candidate.content))
+        if score > 0:
+            scores[candidate.memory_id] = score
+    return scores
+
+
+def _keyword_pool(
+    keyword_scores: Mapping[str, int],
+    *,
+    by_id: Mapping[str, MemoryRetrievalCandidateV1],
+) -> tuple[str, ...]:
+    """Rank the fuzzy pool: weighted score, then recency, then Memory ID."""
+    ranked = [by_id[memory_id] for memory_id in keyword_scores]
+    ranked.sort(key=lambda candidate: candidate.memory_id)
+    ranked.sort(key=lambda candidate: candidate.updated_at, reverse=True)
+    ranked.sort(key=lambda candidate: keyword_scores[candidate.memory_id], reverse=True)
+    return tuple(candidate.memory_id for candidate in ranked[:MEMORY_RETRIEVAL_POOL_DEPTH])
+
+
+def _bounded_pool(
+    ranking: Sequence[str],
+    *,
+    by_id: Mapping[str, MemoryRetrievalCandidateV1],
+) -> tuple[str, ...]:
+    """Keep the leading candidates of one pool, deduplicated and depth-bounded."""
+    pool: list[str] = []
+    seen: set[str] = set()
+    for memory_id in ranking:
+        if memory_id not in by_id or memory_id in seen:
+            continue
+        seen.add(memory_id)
+        pool.append(memory_id)
+        if len(pool) == MEMORY_RETRIEVAL_POOL_DEPTH:
+            break
+    return tuple(pool)
+
+
+def _fuse_pools(
+    pools: Sequence[Sequence[str]],
+    *,
+    by_id: Mapping[str, MemoryRetrievalCandidateV1],
+    keyword_scores: Mapping[str, int],
+) -> list[MemoryRetrievalCandidateV1]:
+    """Reciprocal Rank Fusion over bounded pools, best first.
+
+    A candidate absent from a pool contributes nothing for that pool.  Exact
+    score ties fall back to the deterministic keyword score, then to recency
+    and the Memory ID, so the fused order never depends on pool accidents.
+    """
+    scores: dict[str, float] = {}
+    for pool in pools:
+        for rank, memory_id in enumerate(pool, start=1):
+            scores[memory_id] = scores.get(memory_id, 0.0) + 1.0 / (
+                MEMORY_RETRIEVAL_RRF_K + rank
+            )
+    ranked = [by_id[memory_id] for memory_id in scores if memory_id in by_id]
+    ranked.sort(key=lambda candidate: candidate.memory_id)
+    ranked.sort(key=lambda candidate: candidate.updated_at, reverse=True)
+    ranked.sort(
+        key=lambda candidate: keyword_scores.get(candidate.memory_id, 0),
+        reverse=True,
     )
-    words: set[str] = set()
-    han_unigrams: set[str] = set()
-    han_bigrams: set[str] = set()
+    ranked.sort(key=lambda candidate: scores[candidate.memory_id], reverse=True)
+    return ranked
+
+
+def fts_token_stream(value: str) -> str:
+    """Index text for ``memory_fts``: words, Han unigrams, then Han bigrams.
+
+    FTS5 has no CJK tokenizer without a loadable extension, so tokenization
+    lives here and serves both sides: the index stores this stream and every
+    query reuses it.  Indexing unigrams keeps one and two character Han
+    queries on the index instead of degrading into a full-table scan.
+    """
+    tokens: list[str] = []
+    for segment in _segments(value):
+        if isinstance(segment, str):
+            tokens.append(segment)
+            continue
+        tokens.extend(segment)
+        tokens.extend(_bigrams(segment))
+    return " ".join(tokens)
+
+
+def fts_match_expression(query: str) -> str | None:
+    """Build the FTS5 MATCH expression, or None when nothing is indexable.
+
+    A Han run of two or more characters becomes a phrase of its consecutive
+    bigrams, so it matches only that exact substring; a single Han character
+    matches the indexed unigram.  Terms are quoted (an ordinary word such as
+    ``or`` must not be read as an FTS5 operator), deduplicated and bounded.
+    """
+    terms: list[str] = []
+    seen: set[str] = set()
+    for segment in _segments(query):
+        if isinstance(segment, str):
+            term = _quoted(segment)
+        elif len(segment) == 1:
+            term = _quoted(segment[0])
+        else:
+            phrase = " ".join(
+                _bigrams(segment)[:MEMORY_RETRIEVAL_FTS_MAX_PHRASE_BIGRAMS]
+            )
+            term = _quoted(phrase)
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+        if len(terms) == MEMORY_RETRIEVAL_FTS_MAX_TERMS:
+            break
+    return " OR ".join(terms) if terms else None
+
+
+def _quoted(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
+def _segments(value: str) -> tuple[str | tuple[str, ...], ...]:
+    """Ordered NFKC/casefold segments: Latin words and maximal Han runs."""
+    segments: list[str | tuple[str, ...]] = []
     word: list[str] = []
     han: list[str] = []
 
     def flush_word() -> None:
         if word:
-            words.add("".join(word))
+            segments.append("".join(word))
             word.clear()
 
     def flush_han() -> None:
-        if not han:
-            return
-        han_unigrams.update(han)
-        han_bigrams.update(left + right for left, right in zip(han, han[1:], strict=False))
-        han.clear()
+        if han:
+            segments.append(tuple(han))
+            han.clear()
 
-    for character in normalized:
+    for character in _normalize(value):
         if _is_han(character):
             flush_word()
             han.append(character)
@@ -305,7 +476,31 @@ def _tokenize(value: str) -> _Tokens:
             flush_word()
     flush_word()
     flush_han()
+    return tuple(segments)
+
+
+def _tokenize(value: str) -> _Tokens:
+    words: set[str] = set()
+    han_unigrams: set[str] = set()
+    han_bigrams: set[str] = set()
+    for segment in _segments(value):
+        if isinstance(segment, str):
+            words.add(segment)
+            continue
+        han_unigrams.update(segment)
+        han_bigrams.update(_bigrams(segment))
     return _Tokens(frozenset(words), frozenset(han_unigrams), frozenset(han_bigrams))
+
+
+def _normalize(value: str) -> str:
+    return unicodedata.normalize(
+        "NFKC",
+        unicodedata.normalize("NFKC", value).casefold(),
+    )
+
+
+def _bigrams(han: Sequence[str]) -> list[str]:
+    return [left + right for left, right in zip(han, han[1:], strict=False)]
 
 
 def _is_han(character: str) -> bool:
@@ -356,6 +551,8 @@ __all__ = [
     "MEMORY_RETRIEVAL_CHARACTER_BUDGET",
     "MEMORY_RETRIEVAL_FETCH_LIMIT",
     "MEMORY_RETRIEVAL_MAX_CANDIDATES",
+    "MEMORY_RETRIEVAL_POOL_DEPTH",
+    "MEMORY_RETRIEVAL_RRF_K",
     "MEMORY_RETRIEVAL_TOP_K",
     "MEMORY_RETRIEVAL_VERSION",
     "FrozenMemoryScope",
@@ -364,5 +561,8 @@ __all__ = [
     "MemoryRetrievalOmissionV1",
     "MemoryRetrievalV1",
     "MemoryRetrieverV1",
+    "MemorySemanticPool",
     "MemorySnapshotReferenceV1",
+    "fts_match_expression",
+    "fts_token_stream",
 ]

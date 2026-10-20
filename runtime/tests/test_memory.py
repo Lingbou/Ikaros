@@ -88,7 +88,23 @@ def test_memory_schema_is_independent_complete_and_wal_backed(tmp_path: Path) ->
             "memory_records_state_order_idx",
             "memory_records_scope_order_idx",
             "memory_records_scope_kind_order_idx",
+            "memory_fts",
+            "memory_fts_config",
+            "memory_fts_content",
+            "memory_fts_data",
+            "memory_fts_docsize",
+            "memory_fts_idx",
         }
+        assert (
+            store._connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'memory_fts'"
+            ).fetchone()[0]
+            == (
+                "CREATE VIRTUAL TABLE memory_fts USING fts5("
+                "\n    memory_id UNINDEXED,\n    tokens,\n"
+                "    tokenize = 'unicode61 remove_diacritics 2'\n)"
+            )
+        )
         assert [row[1] for row in store._connection.execute("PRAGMA database_list")] == [
             "main"
         ]
@@ -700,6 +716,33 @@ def test_same_version_memory_schema_drift_is_rejected(tmp_path: Path) -> None:
 
     connection = sqlite3.connect(path)
     connection.execute("ALTER TABLE memory_records ADD COLUMN unexpected TEXT")
+    connection.commit()
+    connection.close()
+    before = path.read_bytes()
+
+    with pytest.raises(MemorySchemaIncompatibleError, match="incompatible"):
+        SqliteMemoryStore(path)
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "DROP TABLE memory_fts",
+        "DROP TABLE memory_fts_data",
+        "CREATE TABLE memory_fts(memory_id TEXT, tokens TEXT)",
+    ),
+)
+def test_fts_index_drift_is_rejected(tmp_path: Path, statement: str) -> None:
+    path = tmp_path / "memory.db"
+    store = SqliteMemoryStore(path)
+    store.close()
+
+    connection = sqlite3.connect(path)
+    if statement.startswith("CREATE TABLE"):
+        connection.execute("DROP TABLE memory_fts")
+    connection.execute(statement)
     connection.commit()
     connection.close()
     before = path.read_bytes()

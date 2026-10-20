@@ -38,6 +38,8 @@ from .retrieval import (
     MaterializedMemoryV1,
     MemoryRetrievalCandidateV1,
     MemorySnapshotReferenceV1,
+    fts_match_expression,
+    fts_token_stream,
 )
 from .schema import initialize_memory_schema
 
@@ -151,6 +153,7 @@ class SqliteMemoryStore:
                     timestamp,
                 ),
             )
+            self._write_memory_index(memory_id=memory_id, content=content)
             self._connection.execute(
                 """
                 INSERT INTO memory_operations(
@@ -233,6 +236,7 @@ class SqliteMemoryStore:
             )
             if updated.rowcount != 1:
                 raise MemoryOperationError("memory_revision_conflict")
+            self._write_memory_index(memory_id=memory_id, content=content)
             self._insert_operation(
                 client_request_id=client_request_id,
                 method="memory.correct",
@@ -316,6 +320,7 @@ class SqliteMemoryStore:
             )
             if updated.rowcount != 1:
                 raise MemoryOperationError("memory_revision_conflict")
+            self._write_memory_index(memory_id=memory_id, content=None)
             self._insert_operation(
                 client_request_id=client_request_id,
                 method="memory.forget",
@@ -403,6 +408,55 @@ class SqliteMemoryStore:
             return tuple(_retrieval_candidate_from_row(row) for row in rows)
         except (TypeError, ValueError):
             raise MemoryRetrievalError("memory_snapshot_unavailable") from None
+
+    def rank_active_memory_ids_by_bm25(
+        self,
+        *,
+        query: str,
+        workspace_id: str | None,
+        limit: int,
+    ) -> tuple[str, ...]:
+        """Rank active Memory IDs by FTS5 BM25, best match first, within one scope.
+
+        The MATCH constraint drives the FTS5 index, so even one or two character
+        Han queries never fall back to a full-table scan; the join only filters
+        scope and state and reads nothing but the Memory ID.  Equal BM25 scores
+        fall back to recency and then to the Memory ID, mirroring the keyword
+        pool so the fused order degrades to the deterministic recency order
+        whenever both pools are tied.
+        """
+
+        expression = fts_match_expression(query)
+        if expression is None or limit < 1:
+            return ()
+        if workspace_id is None:
+            scope_clause = "records.scope_type = 'global' AND records.scope_key IS NULL"
+            parameters: tuple[object, ...] = (expression, limit)
+        else:
+            MemoryScope("workspace", workspace_id)
+            scope_clause = """
+                (records.scope_type = 'global' AND records.scope_key IS NULL)
+                OR
+                (records.scope_type = 'workspace' AND records.scope_key = ?)
+            """
+            parameters = (expression, workspace_id, limit)
+        rows = self._connection.execute(
+            """
+            SELECT memory_fts.memory_id
+            FROM memory_fts
+            JOIN memory_records AS records
+              ON records.id = memory_fts.memory_id
+            WHERE memory_fts MATCH ?
+              AND records.state = 'active'
+              AND ("""
+            + scope_clause
+            + """)
+            ORDER BY bm25(memory_fts) ASC, records.updated_at DESC, records.id ASC
+            LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+        return tuple(str(row["memory_id"]) for row in rows)
 
     def materialize_memory_revisions(
         self,
@@ -663,6 +717,25 @@ class SqliteMemoryStore:
                 resulting_revision,
                 timestamp,
             ),
+        )
+
+    def _write_memory_index(self, *, memory_id: str, content: str | None) -> None:
+        """Replace or drop one Memory's FTS row inside the caller's write transaction.
+
+        The index is a derived projection of the readable revision, so it is
+        rewritten with every create/correct and cleared on forget; no other code
+        path may write memory_revisions without going through this method.
+        """
+
+        self._connection.execute(
+            "DELETE FROM memory_fts WHERE memory_id = ?",
+            (memory_id,),
+        )
+        if content is None:
+            return
+        self._connection.execute(
+            "INSERT INTO memory_fts(memory_id, tokens) VALUES (?, ?)",
+            (memory_id, fts_token_stream(content)),
         )
 
     def _begin_immediate(self) -> None:
