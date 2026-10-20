@@ -178,8 +178,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   react-markdown、@tanstack/react-virtual、ws 8.18.3、electron-builder 26.15.3。
 - Runtime：Python 3.12–3.13（`>=3.12,<3.14`）、httpx 0.28.x、websockets 15.x、
   PyYAML 6.x；构建后端 Hatchling。
-- 包管理与锁：uv（`runtime/uv.lock`）、pnpm 11.9（`pnpm-lock.yaml`，CI 使用
-  frozen lockfile）。
+- 包管理与锁：uv（`runtime/uv.lock`）、pnpm 11.9（`pnpm-lock.yaml`）。
 - Desktop 脚本：`dev` / `build` / `preview` / `typecheck` / `test` /
   `test:live:deepseek` / `check` / `package:dir` / `package:linux` / `package:win`。
 
@@ -194,9 +193,6 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `.gitignore` — 忽略构建产物、依赖与本地状态。
 - `LICENSE` — GPL-3.0-only 许可证全文。
 - `README.md` — 本文档（架构 + 功能 + 参数 + 文件结构 + 接口参考）。
-- `.github/workflows/check.yml` — GitHub Actions 门禁：Runtime 矩阵（ubuntu +
-  windows × Python 3.12/3.13：ruff、mypy、协议生成检查、pytest）与 Desktop 矩阵
-  （ubuntu + windows：typecheck、Vitest、生产构建）。
 
 ### 3.2 runtime/（Python Runtime）
 
@@ -1968,14 +1964,15 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线门禁 | pytest 810 passed / 6 skipped（Windows 本机跑数） |
+| Runtime 离线门禁 | pytest 820 passed / 2 skipped（WSL Linux）；Windows 本机 809 passed，失败均为已知平台差异 |
 | Desktop 离线门禁 | Vitest 555 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
 
-离线基线对应 2026-10-20 代码状态。Windows 上 `test_file_preview.py` 与 golden
-trace 回放用例存在 CRLF / 路径分隔符差异，基线以 Linux 为准。
+离线基线对应 2026-10-20 代码状态（并行 PR #25–#28 集成后的结果）。Windows 上
+`test_file_preview.py`、golden trace 回放与 `test_file_changes.py` 存在 CRLF /
+路径分隔符 / 环境上限等平台差异，基线以 Linux 为准。
 
 ### 10.1 测试布局
 
@@ -2006,15 +2003,10 @@ uv run --frozen pytest tests/test_live_identity.py -q -s
 普通 `pnpm test` 与 `pytest` 默认跳过这些用例；凭据只从显式指定的 key file
 读取，且不应出现在命令行、事件、SQLite、日志或诊断输出中。
 
-### 10.3 CI 门禁
+### 10.3 本地验证（当前无 CI）
 
-`.github/workflows/check.yml`（push / PR / 手动触发）：
-
-
-- Runtime 任务：ubuntu + windows × Python 3.12/3.13；`uv sync --locked` → Ruff →
-  strict mypy → 协议生成检查 → pytest；单任务超时 20 分钟。
-- Desktop 任务：ubuntu + windows；Node 22 + pnpm 11.9（frozen lockfile）→
-  typecheck → Vitest（`--maxWorkers=2`）→ 生产构建；单任务超时 20 分钟。
+仓库当前不启用 CI 与强制门禁；提交前按需运行 Runtime 四连（ruff / mypy /
+pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第五节。
 
 ### 10.4 开发工作流（改协议 / 改 schema / 加能力）
 
