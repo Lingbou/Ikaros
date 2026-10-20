@@ -262,7 +262,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 8、32 方法、15 事件、10 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 8、32 方法、15 事件、13 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -1978,8 +1978,8 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线门禁 | pytest 823 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线门禁 | Vitest 555 passed / 1 skipped |
+| Runtime 离线基线 | pytest 823 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
+| Desktop 离线基线 | Vitest 555 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2038,7 +2038,7 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
    校验两套键集合一致。
 6. **改 Provider 行为**：修改 `providers/openai_compatible/`（adapter /
    streaming / discovery）并更新 `test_openai_compatible.py`。
-7. **提交前全量门禁**（与 CI 相同）：Runtime 四连（ruff / mypy / pytest /
+7. **按需本地自测**：Runtime 四连（ruff / mypy / pytest /
    protocol check）+ Desktop 三连（typecheck / vitest / build）。
 
 ## 11. 当前边界
