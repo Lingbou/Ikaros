@@ -807,7 +807,7 @@
               "tools": [
                 {
                   "name": "process_start",
-                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this Run and are stopped when the Run ends. Set pty true to attach an interactive terminal: process_write then sends input and process_resize changes its window size.",
+                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this thread: they keep running after the Run ends (including cancellation) and stay readable from later Runs. Set pty true to attach an interactive terminal: process_write then sends input and process_resize changes its window size.",
                   "inputSchema": {
                     "additionalProperties": false,
                     "properties": {
@@ -840,7 +840,7 @@
                     ],
                     "type": "object"
                   },
-                  "definitionSha256": "ae9f88547d9d2ba672a2af552590d72826a48842aafa410bcbcbfd8908dede4e"
+                  "definitionSha256": "1a4d7539e331f7b7a46d6fa038fc4d65f0a1681171d596c5066db3a9ff971412"
                 },
                 {
                   "name": "process_read",
@@ -1046,11 +1046,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2295,
+                "toolTokens": 2361,
                 "historyTokens": 0,
                 "currentRunTokens": 83,
                 "memoryTokens": 276,
-                "totalTokens": 4929
+                "totalTokens": 4995
               },
               "omissions": [],
               "historyStatus": {
@@ -1090,11 +1090,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2295,
+                "toolTokens": 2361,
                 "historyTokens": 0,
                 "currentRunTokens": 83,
                 "memoryTokens": 276,
-                "totalTokens": 4929
+                "totalTokens": 4995
               },
               "omissions": [],
               "historyStatus": {
@@ -1450,11 +1450,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2295,
+                "toolTokens": 2361,
                 "historyTokens": 0,
                 "currentRunTokens": 702,
                 "memoryTokens": 276,
-                "totalTokens": 5548
+                "totalTokens": 5614
               },
               "omissions": [],
               "historyStatus": {
@@ -1785,11 +1785,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2295,
+                "toolTokens": 2361,
                 "historyTokens": 0,
                 "currentRunTokens": 1408,
                 "memoryTokens": 276,
-                "totalTokens": 6254
+                "totalTokens": 6320
               },
               "omissions": [],
               "historyStatus": {

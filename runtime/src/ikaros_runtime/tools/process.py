@@ -37,7 +37,8 @@ class ProcessStartTool:
         description=(
             "Start a local shell command and return its processId immediately. A running "
             "state does not mean success: use process_wait/read to inspect actual completion. "
-            "Commands belong to this Run and are stopped when the Run ends. Set pty true to "
+            "Commands belong to this thread: they keep running after the Run ends (including "
+            "cancellation) and stay readable from later Runs. Set pty true to "
             "attach an interactive terminal: process_write then sends input and "
             "process_resize changes its window size."
         ),
