@@ -4,16 +4,17 @@ import uuid
 from collections.abc import AsyncIterator
 from xml.etree import ElementTree
 
-from ..cancellation import CancellationToken
-from ..json_codec import loads as json_loads
-from ..tools.core import ToolCall
-from .base import (
+from ikaros_runtime.cancellation import CancellationToken
+from ikaros_runtime.json_codec import loads as json_loads
+from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderRequest,
     ResponseCompleted,
     TextDelta,
     ToolCallCompleted,
 )
+from ikaros_runtime.run_input import ProviderExecutionSnapshot
+from ikaros_runtime.tools.core import ToolCall
 
 
 class ScriptedProvider:
@@ -205,3 +206,20 @@ def _scripted_skill_command(content: str) -> str | None:
         command = line[marker + len(prefix) :].strip()
         return command or None
     return None
+
+
+def scripted_provider_snapshot(
+    provider_id: str,
+    model_id: str,
+) -> ProviderExecutionSnapshot:
+    if provider_id == ScriptedProvider.id:
+        if model_id != ScriptedProvider.model_id:
+            raise ValueError("scripted model is unavailable")
+        return ProviderExecutionSnapshot(
+            provider_id=ScriptedProvider.id,
+            origin="scripted",
+            base_url=None,
+            model_id=ScriptedProvider.model_id,
+            supports_tools=True,
+        )
+    raise LookupError(f"unknown provider: {provider_id}")

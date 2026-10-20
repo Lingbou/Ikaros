@@ -19,7 +19,6 @@ from .base import (
     ProviderConfig,
 )
 from .model_defaults import default_model_capacity
-from .scripted import ScriptedProvider
 
 DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_DISPLAY_NAME = "DeepSeek"
@@ -27,7 +26,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _MAX_SECRET_LENGTH = 8192
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-_RESERVED_PROVIDER_IDS = frozenset({DEEPSEEK_PROVIDER_ID, "scripted"})
+_RESERVED_PROVIDER_IDS = frozenset({DEEPSEEK_PROVIDER_ID})
 _TRANSPORT_HEADERS = frozenset(
     {"accept", "connection", "content-length", "content-type", "host", "transfer-encoding"}
 )
@@ -687,17 +686,18 @@ class RuntimeProviderRegistry:
         config_store: ConfigStore,
         *,
         adapter_factory: AdapterFactory,
+        extra_providers: Mapping[str, ProviderAdapter] | None = None,
     ) -> None:
         self._config_store = config_store
-        self._scripted = ScriptedProvider()
         self._adapter_factory = adapter_factory
+        self._extra_providers = dict(extra_providers) if extra_providers is not None else {}
         self._adapters: dict[str, tuple[ProviderConfig, ManagedProviderAdapter]] = {}
         self._retired: list[ManagedProviderAdapter] = []
         self._close_tasks: set[asyncio.Task[None]] = set()
 
     def resolve(self, provider_id: str) -> ProviderAdapter | None:
-        if provider_id == self._scripted.id:
-            return self._scripted
+        if provider_id in self._extra_providers:
+            return self._extra_providers[provider_id]
         provider = self._config_store.get_provider(provider_id)
         if provider is None or not provider.configured:
             return None

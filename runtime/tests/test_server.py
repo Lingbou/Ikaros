@@ -45,9 +45,12 @@ from ikaros_runtime.services.turns import TurnService
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools.core import ToolDefinition
 
+from .fakes.scripted_provider import ScriptedProvider, scripted_provider_snapshot
 from .helpers import prepare_turn, run_config
 
 _HIDDEN_PROCESS_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+_RUNTIME_ROOT = Path(__file__).resolve().parent.parent
+_RUNTIME_SRC_ROOT = _RUNTIME_ROOT / "src"
 
 
 @pytest.mark.parametrize("protected", ["newline", "lf", "crlf"])
@@ -135,7 +138,6 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
     assert config.identity_core is not None
     for protected in (
         "full_access",
-        "scripted-v1",
         "runtime_instruction",
         "runtime_identity",
         "release",
@@ -303,10 +305,14 @@ class ControlledAckConnection:
 
 
 async def _start_runtime(token: str, runtime_home: Path) -> tuple[Process, dict[str, Any]]:
+    python_path = os.pathsep.join([str(_RUNTIME_SRC_ROOT), str(_RUNTIME_ROOT)])
+    if existing_pp := os.environ.get("PYTHONPATH"):
+        python_path = f"{python_path}{os.pathsep}{existing_pp}"
+
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "ikaros_runtime",
+        "tests.fakes.test_server_runner",
         "serve",
         "--host",
         "127.0.0.1",
@@ -317,7 +323,7 @@ async def _start_runtime(token: str, runtime_home: Path) -> tuple[Process, dict[
         str(os.getpid()),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "IKAROS_HOME": str(runtime_home)},
+        env={**os.environ, "IKAROS_HOME": str(runtime_home), "PYTHONPATH": python_path},
         creationflags=_HIDDEN_PROCESS_FLAGS,
     )
     try:
@@ -1775,6 +1781,8 @@ async def test_json_decoder_recursion_failure_returns_parse_error_and_keeps_conn
         store,
         event_bus.publish,
         memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        extra_providers={ScriptedProvider.id: ScriptedProvider()},
+        provider_snapshot_resolver=scripted_provider_snapshot,
     )
     connection = AckFailingConnection(
         [
@@ -3325,6 +3333,7 @@ def test_queued_run_config_preserves_exact_user_content_across_restart_and_rebui
         ConfigStore(tmp_path),
         lambda _value: None,
         load_identity_core(),
+        provider_snapshot=scripted_provider_snapshot,
     )
     thread, _ = store.create_thread("Exact queued input")
     outcome = service.start_turn(
@@ -3753,6 +3762,8 @@ async def test_accepted_turn_runs_even_when_the_ack_connection_disconnects(
         store,
         event_bus.publish,
         memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        extra_providers={ScriptedProvider.id: ScriptedProvider()},
+        provider_snapshot_resolver=scripted_provider_snapshot,
     )
     kernel.start()
     connection = AckFailingConnection(
@@ -3815,6 +3826,8 @@ async def test_accepted_cancel_runs_even_when_the_ack_connection_disconnects(
         store,
         event_bus.publish,
         memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        extra_providers={ScriptedProvider.id: ScriptedProvider()},
+        provider_snapshot_resolver=scripted_provider_snapshot,
     )
     kernel.start()
     started = kernel.turns.start_turn(
@@ -3889,6 +3902,8 @@ async def test_cancel_between_turn_prepare_and_activation_prevents_execution(
         store,
         event_bus.publish,
         memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        extra_providers={ScriptedProvider.id: ScriptedProvider()},
+        provider_snapshot_resolver=scripted_provider_snapshot,
     )
     kernel.start()
 
@@ -3943,6 +3958,8 @@ async def test_reverse_ack_order_preserves_persisted_turn_execution_order(
         store,
         event_bus.publish,
         memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        extra_providers={ScriptedProvider.id: ScriptedProvider()},
+        provider_snapshot_resolver=scripted_provider_snapshot,
     )
     kernel.start()
     first_ack_gate = asyncio.Event()
@@ -4086,6 +4103,8 @@ async def test_natural_completion_can_win_after_cancel_is_accepted(
         store,
         event_bus.publish,
         memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+        extra_providers={ScriptedProvider.id: ScriptedProvider()},
+        provider_snapshot_resolver=scripted_provider_snapshot,
     )
     kernel.start()
 

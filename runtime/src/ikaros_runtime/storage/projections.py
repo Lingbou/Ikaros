@@ -157,12 +157,7 @@ def _dynamic_provider_model_references(
     provider_id: str,
     model_id: str,
 ) -> tuple[str, ...]:
-    references: list[str] = []
-    if provider_id != "scripted":
-        references.append(provider_id)
-    if provider_id != "scripted" or model_id != "scripted-v1":
-        references.append(model_id)
-    return tuple(references)
+    return (provider_id, model_id)
 
 
 def _run_config_dynamic_values(frame: RunConfig) -> tuple[object, ...]:
