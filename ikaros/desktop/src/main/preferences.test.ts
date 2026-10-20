@@ -56,6 +56,7 @@ describe("stored UI preferences", () => {
       storedPreferences({ language: "fr" as never }),
       storedPreferences({ username: "" }),
       storedPreferences({ sidebarWidth: 260.5 }),
+      storedPreferences({ onboardingCompleted: "yes" as never }),
       storedPreferences({ darkTheme: partialTheme }),
     ]) {
       expect(sanitizeStoredPreferences(value)).toEqual(DEFAULT_UI_PREFERENCES);
@@ -98,6 +99,15 @@ describe("UI preference patches", () => {
     expect(sanitizePreferencesPatch({ language: "zh-CN" })).toEqual({ language: "zh-CN" });
     expect(() => sanitizePreferencesPatch({ language: "fr" })).toThrow(
       "Unsupported UI language preference.",
+    );
+  });
+
+  it("accepts onboarding completion patches and rejects invalid values", () => {
+    expect(sanitizePreferencesPatch({ onboardingCompleted: true })).toEqual({
+      onboardingCompleted: true,
+    });
+    expect(() => sanitizePreferencesPatch({ onboardingCompleted: "yes" })).toThrow(
+      "onboardingCompleted must be a boolean.",
     );
   });
 

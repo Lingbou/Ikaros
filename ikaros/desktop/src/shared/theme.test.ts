@@ -53,6 +53,7 @@ describe("effective color scheme", () => {
       sidebarCollapsed: false,
       sidebarWidth: 260,
       reduceMotion: false,
+      onboardingCompleted: false,
       lightTheme,
       darkTheme
     };

@@ -192,7 +192,7 @@ describe("Composer input and clearance", () => {
     expect(stopRun).toHaveBeenCalledTimes(1);
   });
 
-  it("opens provider configuration without losing the draft, thread, or workspace", () => {
+  it("stays quiet without a configured provider and keeps the draft, thread, and workspace", () => {
     const sendDraft = vi.fn(async () => undefined);
     const workspace = { id: "workspace-setup", name: "Setup", rootUri: "/workspace/setup" };
     useAppStore.setState({
@@ -212,22 +212,22 @@ describe("Composer input and clearance", () => {
       </Tooltip.Provider>,
     );
 
-    expect(screen.getByRole("button", { name: "Configure a model" })).toBeEnabled();
+    // First-run setup lives in the onboarding dialog: the composer shows no hint.
+    expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
+    expect(
+      screen.queryByText("Connect a provider and configure a model to send messages."),
+    ).toBeNull();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message Ikaros" }), {
       key: "Enter",
     });
     expect(sendDraft).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Configure a model" }));
     expect(useAppStore.getState()).toMatchObject({
-      settingsOpen: true,
-      settingsInitialSection: "providers",
+      settingsOpen: false,
       draft: "hello",
       selectedThreadId: "thread-setup",
       newThreadWorkspace: workspace,
     });
-    useAppStore.getState().setSettingsOpen(false);
-    expect(useAppStore.getState().draft).toBe("hello");
   });
 
   it("opens Models settings when configured models are disabled", () => {
@@ -273,7 +273,7 @@ describe("Composer input and clearance", () => {
     expect(useAppStore.getState().draft).toBe("saved draft");
   });
 
-  it("makes configuration available after a provider is disconnected", () => {
+  it("keeps the composer quiet when the only provider is disconnected", () => {
     useAppStore.setState({
       runtimeMode: true,
       providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: false, credentialConfigured: false, health: "unknown" }],
@@ -282,8 +282,9 @@ describe("Composer input and clearance", () => {
       draft: "saved draft",
     });
     render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
-    fireEvent.click(screen.getByRole("button", { name: "Configure a model" }));
-    expect(useAppStore.getState()).toMatchObject({ settingsInitialSection: "providers", draft: "saved draft" });
+    expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(useAppStore.getState().draft).toBe("saved draft");
   });
 
   it("sends the preserved draft after configuration supplies a runnable model", () => {
@@ -302,7 +303,8 @@ describe("Composer input and clearance", () => {
         <Composer onClearanceChange={() => undefined} />
       </Tooltip.Provider>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Configure a model" }));
+    expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
 
     act(() => {
       useAppStore.setState({

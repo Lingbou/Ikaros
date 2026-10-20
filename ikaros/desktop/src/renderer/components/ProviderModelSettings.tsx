@@ -466,7 +466,7 @@ function ModelDraftEditor({
   );
 }
 
-function DeepSeekConnectForm({
+export function DeepSeekConnectForm({
   existingModels,
   onConnected,
   onConnect,
@@ -585,7 +585,7 @@ function DeepSeekConnectForm({
   );
 }
 
-function CustomProviderForm({
+export function CustomProviderForm({
   onConfigured,
   onSubmit
 }: {

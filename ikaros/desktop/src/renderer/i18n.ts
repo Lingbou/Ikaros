@@ -152,7 +152,6 @@ const english = {
 
   "composer.stopRun": "Stop",
   "composer.localModel": "Local model",
-  "composer.configureModel": "Configure a model",
   "composer.selectModel": "Select a model",
   "composer.reconnectRuntime": "Reconnect",
   "composer.runtimeOffline": "The local runtime is offline. Reconnect to load your configured models.",
@@ -163,7 +162,15 @@ const english = {
   "composer.modelsLoadFailed": "Could not load your models. Your configuration and draft are kept.",
   "composer.enableModel": "Enable a model",
   "composer.modelsDisabled": "The configured models are disabled. Enable one in Models settings.",
-  "composer.connectProvider": "Connect a provider and configure a model to send messages.",
+
+  "onboarding.title": "Welcome to Ikaros",
+  "onboarding.description": "Ikaros runs entirely on this machine. Connect an OpenAI-compatible model provider to start — you can change this later in Settings.",
+  "onboarding.deepSeekTab": "DeepSeek",
+  "onboarding.customTab": "Custom provider",
+  "onboarding.skip": "Set up later",
+  "onboarding.connectedTitle": "You are all set",
+  "onboarding.connectedDescription": "The provider is connected and its models are enabled.",
+  "onboarding.start": "Start using Ikaros",
 
 
   "slash.label": "Slash commands",
@@ -703,7 +710,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
 
   "composer.stopRun": "停止",
   "composer.localModel": "本地模型",
-  "composer.configureModel": "配置模型",
   "composer.selectModel": "选择模型",
   "composer.reconnectRuntime": "重新连接",
   "composer.runtimeOffline": "本地运行时已断开，重新连接后可加载已配置的模型。",
@@ -714,7 +720,15 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "composer.modelsLoadFailed": "无法加载模型，你的配置和草稿会保留。",
   "composer.enableModel": "启用模型",
   "composer.modelsDisabled": "已配置的模型均未启用，请在模型设置中启用一个模型。",
-  "composer.connectProvider": "连接提供商并配置模型后即可发送消息。",
+
+  "onboarding.title": "欢迎使用 Ikaros",
+  "onboarding.description": "Ikaros 完全在本机运行。接入一个 OpenAI 兼容的模型提供商即可开始使用——之后随时可以在设置中修改。",
+  "onboarding.deepSeekTab": "DeepSeek",
+  "onboarding.customTab": "自定义提供商",
+  "onboarding.skip": "稍后设置",
+  "onboarding.connectedTitle": "配置完成",
+  "onboarding.connectedDescription": "提供商已连接，模型已启用。",
+  "onboarding.start": "开始使用",
 
 
   "slash.label": "斜杠命令",

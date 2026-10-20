@@ -577,6 +577,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   `https://api.deepseek.com/v1`。
 - Custom Provider：任意 OpenAI Chat Completions 兼容端点（Base URL、可选 API key、
   可选自定义 header、手动录入 model）。
+- 首次运行（没有已连接的 Provider 且未完成初始化）时显示初始化弹窗：选择 DeepSeek
+  或自定义 Provider 完成接入，可"稍后设置"；完成后不再自动出现，设置页随时可改。
 - Model 发现：DeepSeek 支持在线发现（请求上游 `/models`，响应体上限 1 MB，
   最多解析 1,000 个 model）；Custom Provider 手动录入。
 - Model 启用/禁用；新对话选择第一个启用 Model；打开旧对话优先恢复其最近使用的
@@ -639,7 +641,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 ### 4.9 本地偏好（`ui-preferences.json`）
 
 - 主题（含 accent/background/foreground 颜色）、界面语言、字体、减少动态效果、
-  侧边栏状态、本地用户名。
+  侧边栏状态、本地用户名、首启初始化完成标记（`onboardingCompleted`）。
 - 侧边栏宽度：整数，220–520 px；用户名：去空格后 1–32 字符。
 - 文件只支持当前格式；不完整或不支持时重置为默认值，不迁移。
 

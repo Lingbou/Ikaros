@@ -37,6 +37,7 @@ const preferences: UiPreferences = {
   sidebarCollapsed: false,
   sidebarWidth: 260,
   reduceMotion: true,
+  onboardingCompleted: false,
   darkTheme,
   lightTheme
 };

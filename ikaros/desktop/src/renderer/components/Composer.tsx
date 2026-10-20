@@ -110,17 +110,15 @@ export function Composer({
       const hasConfiguredModels = models.some((candidate) =>
         providers.some((provider) => provider.id === candidate.providerId && provider.configured),
       );
-      modelAccess = hasConfiguredModels
-        ? {
-            label: "composer.enableModel",
-            message: "composer.modelsDisabled",
-            action: () => setSettingsOpen(true, "models"),
-          }
-        : {
-            label: "composer.configureModel",
-            message: "composer.connectProvider",
-            action: () => setSettingsOpen(true, "providers"),
-          };
+      // Without any provider the composer stays quiet: first-run setup happens in
+      // the onboarding dialog, and settings remain reachable from the sidebar.
+      if (hasConfiguredModels) {
+        modelAccess = {
+          label: "composer.enableModel",
+          message: "composer.modelsDisabled",
+          action: () => setSettingsOpen(true, "models"),
+        };
+      }
     }
   }
   const slashMatch = draft.match(/^\/([^\s]*)$/);
@@ -320,7 +318,7 @@ export function Composer({
               >
                 {t(modelAccess.label)}
               </button>
-            ) : (
+            ) : runtimeMode && runtimeModelOptions.length === 0 ? null : (
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger asChild>
                   <button
