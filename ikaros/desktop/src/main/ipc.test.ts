@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  cloneUiPreferences,
+  DEFAULT_UI_PREFERENCES,
+} from "../shared/platform";
+import { getUiPreferences } from "./preferences";
+import {
   RUNTIME_HOST_STATUS_NOTIFICATION,
   RuntimeRpcError,
   type RuntimeNotification
@@ -13,6 +18,26 @@ const electron = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
   const windows: unknown[] = [];
   const runtimeNotification: { listener?: (notification: RuntimeNotification) => void } = {};
+  const notifications: Array<{
+    options: unknown;
+    show: ReturnType<typeof vi.fn>;
+    click?: () => void;
+  }> = [];
+  class Notification {
+    static isSupported = vi.fn(() => true);
+    readonly show = vi.fn();
+    readonly options: unknown;
+    click?: () => void;
+
+    constructor(options: unknown) {
+      this.options = options;
+      notifications.push(this);
+    }
+
+    on(event: "click", listener: () => void): void {
+      if (event === "click") this.click = listener;
+    }
+  }
   const targetWindow = {
     close: vi.fn(),
     isMaximized: vi.fn(() => false),
@@ -35,6 +60,8 @@ const electron = vi.hoisted(() => {
     dialog: {
       showOpenDialog: vi.fn(),
     },
+    Notification,
+    notifications,
     windows,
     targetWindow,
     runtimeNotification,
@@ -52,6 +79,7 @@ vi.mock("electron", () => ({
   BrowserWindow: electron.BrowserWindow,
   dialog: electron.dialog,
   ipcMain: electron.ipcMain,
+  Notification: electron.Notification,
 }));
 
 vi.mock("./preferences", () => ({
@@ -72,6 +100,11 @@ describe("desktop window controls", () => {
     electron.runtimeNotification.listener = undefined;
     electron.runtimeHost.request.mockReset();
     electron.dialog.showOpenDialog.mockReset();
+    electron.notifications.length = 0;
+    electron.Notification.isSupported.mockReset().mockReturnValue(true);
+    vi.mocked(getUiPreferences).mockReset().mockResolvedValue(
+      cloneUiPreferences(DEFAULT_UI_PREFERENCES),
+    );
   });
 
   it("routes file preview and change queries with their exact binding and pagination", async () => {
@@ -651,5 +684,61 @@ describe("desktop window controls", () => {
       state: "reconnecting",
       message: "socket closed",
     });
+  });
+
+  it("shows a background completion notification when the main window is unfocused", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    const window = {
+      isDestroyed: vi.fn(() => false),
+      isFocused: vi.fn(() => false),
+      isMinimized: vi.fn(() => true),
+      restore: vi.fn(),
+      show: vi.fn(),
+      focus: vi.fn(),
+      webContents: {
+        isDestroyed: vi.fn(() => false),
+        send: vi.fn(),
+      },
+    };
+    electron.windows.push(window);
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+
+    electron.runtimeNotification.listener?.({
+      jsonrpc: "2.0",
+      method: "event",
+      params: {
+        seq: 10,
+        schemaVersion: 10,
+        type: "process.recorded",
+        threadId: "thread-1",
+        branchId: "branch-1",
+        turnId: "turn-1",
+        runId: "run-1",
+        itemId: "call-1",
+        timestamp: "2026-10-21T00:00:00.000Z",
+        payload: {
+          process: {
+            processId: "process-1",
+            background: true,
+            state: "exited",
+            exitCode: 0,
+            command: "npm test",
+          },
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(electron.notifications).toHaveLength(1));
+    expect(electron.notifications[0]?.options).toMatchObject({
+      title: "Background command finished",
+    });
+    expect(electron.notifications[0]?.show).toHaveBeenCalledOnce();
+    electron.notifications[0]?.click?.();
+    expect(window.restore).toHaveBeenCalledOnce();
+    expect(window.show).toHaveBeenCalledOnce();
+    expect(window.focus).toHaveBeenCalledOnce();
   });
 });

@@ -120,6 +120,7 @@ export interface ToolResultEvent extends EventBase {
     entryCount?: number;
     matchCount?: number;
     processId?: string;
+    background?: boolean;
     processState?: "running" | "exited" | "terminated" | "unknown";
     exitCode?: number | null;
     cursor?: number;

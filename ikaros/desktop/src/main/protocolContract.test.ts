@@ -188,6 +188,18 @@ describe("Runtime protocol Golden Trace", () => {
     }
   });
 
+  it("accepts the background process fact field and rejects a non-boolean value", () => {
+    const source = cloneGoldenNotification("process-recorded-1");
+    const process = asWireObject(source.payload.process, "process fact");
+    process.background = true;
+    expect(() => parseRuntimeEventNotification(source.envelope)).not.toThrow();
+
+    process.background = "yes";
+    expect(() => parseRuntimeEventNotification(source.envelope)).toThrow(
+      "Runtime returned an invalid process.recorded journal event payload."
+    );
+  });
+
   it("passes through unknown event types and arbitrary payload shapes", () => {
     const source = cloneGoldenNotification("assistant-item-delta");
 

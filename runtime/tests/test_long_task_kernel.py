@@ -7,6 +7,7 @@ import os
 import shlex
 import sqlite3
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,8 @@ async def _start_durable_command(
     manager: ProcessManager,
     command: str,
     cwd: Path,
+    *,
+    background: bool = False,
 ) -> tuple[ToolExecutionContext, str]:
     executor = _executor(manager)
     thread, _ = store.create_thread("Process recovery")
@@ -76,7 +79,10 @@ async def _start_durable_command(
     )
     store.mark_run_running(turn.run_id)
     store.prepare_model_step(turn.run_id, step_ordinal=1)
-    call = ToolCall("start_command", "process_start", {"command": command, "cwd": str(cwd)})
+    arguments: JsonObject = {"command": command, "cwd": str(cwd)}
+    if background:
+        arguments["background"] = True
+    call = ToolCall("start_command", "process_start", arguments)
     step = store.complete_provider_step(
         turn.run_id,
         step_ordinal=1,
@@ -97,6 +103,46 @@ async def _start_durable_command(
         result_content=result.to_model_content(),
     )
     return context, str(result.details["processId"])
+
+
+@pytest.mark.asyncio
+async def test_background_command_does_not_block_run_completion_gate(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    manager = _manager(store)
+    command = "Start-Sleep 60" if os.name == "nt" else "sleep 60"
+    background_id = ""
+    background_context: ToolExecutionContext | None = None
+    foreground_id = ""
+    foreground_context: ToolExecutionContext | None = None
+    try:
+        background_context, background_id = await _start_durable_command(
+            store, manager, command, tmp_path, background=True
+        )
+        background = next(
+            record for record in store.process_records() if record["processId"] == background_id
+        )
+        assert background["background"] is True
+        assert store.has_unsettled_processes(background_context.run_id) is False
+        assert store.requires_completion_check(background_context.run_id) is False
+
+        foreground_context, foreground_id = await _start_durable_command(
+            store, manager, command, tmp_path
+        )
+        foreground = next(
+            record for record in store.process_records() if record["processId"] == foreground_id
+        )
+        assert foreground["background"] is False
+        assert store.has_unsettled_processes(foreground_context.run_id) is True
+        assert store.requires_completion_check(foreground_context.run_id) is True
+    finally:
+        if background_context is not None:
+            with suppress(ProcessError):
+                await manager.stop(background_id, context=background_context)
+        if foreground_context is not None:
+            with suppress(ProcessError):
+                await manager.stop(foreground_id, context=foreground_context)
+        await manager.close()
+        store.close()
 
 
 @pytest.mark.asyncio
@@ -162,9 +208,12 @@ async def test_restart_readopts_live_command_and_stop_settles_it(tmp_path: Path)
     command = "Start-Sleep 60" if os.name == "nt" else "sleep 60"
     checkpoint = tmp_path / "restart-state.db"
     try:
-        context, process_id = await _start_durable_command(original, manager, command, tmp_path)
+        context, process_id = await _start_durable_command(
+            original, manager, command, tmp_path, background=True
+        )
         running = original.process_records()[-1]
         assert running["state"] == "running"
+        assert running["background"] is True
         pid = int(running["pid"])
         target = sqlite3.connect(checkpoint)
         try:
@@ -183,11 +232,14 @@ async def test_restart_readopts_live_command_and_stop_settles_it(tmp_path: Path)
         fact = restored.process_records()[0]
         assert fact["processId"] == process_id
         assert fact["state"] == "running"
+        assert fact["background"] is True
         assert fact["errorCode"] == "runtime_recovered"
         read = recovery_manager.read(process_id, context=context)
         assert read["state"] == "running" and read["errorCode"] == "runtime_recovered"
+        assert read["background"] is True
         stopped = await recovery_manager.stop(process_id, context=context)
         assert stopped["state"] == "terminated" and stopped["exitCode"] is None
+        assert stopped["background"] is True
         await _wait_for_process_exit(pid)
         assert not _process_is_alive(pid)
         assert restored.process_records()[0]["state"] == "terminated"

@@ -38,15 +38,18 @@ class ProcessStartTool:
             "Start a local shell command and return its processId immediately. A running "
             "state does not mean success: use process_wait/read to inspect actual completion. "
             "Commands belong to this thread: they keep running after the Run ends (including "
-            "cancellation) and stay readable from later Runs. Set pty true to "
-            "attach an interactive terminal: process_write then sends input and "
-            "process_resize changes its window size."
+            "cancellation) and stay readable from later Runs. Set background true to detach "
+            "the command from this Run's completion check; foreground commands must be waited "
+            "for or stopped before the Run can finish normally. Set pty true to attach an "
+            "interactive terminal: process_write then sends input and process_resize changes "
+            "its window size."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "command": {"type": "string", "minLength": 1, "maxLength": _COMMAND_LIMIT},
                 "cwd": {"type": "string", "minLength": 1, "maxLength": _CWD_LIMIT},
+                "background": {"type": "boolean"},
                 "pty": {"type": "boolean"},
                 "columns": {
                     "type": "integer",
@@ -73,7 +76,7 @@ class ProcessStartTool:
         mismatch = require_exact_arguments(
             call.arguments,
             required={"command"},
-            optional={"cwd", "pty", "columns", "rows"},
+            optional={"cwd", "background", "pty", "columns", "rows"},
         )
         if mismatch is not None:
             return ToolResult.rejected(call, code="invalid_arguments", message=mismatch)
@@ -82,11 +85,18 @@ class ProcessStartTool:
             return terminal
         pty, columns, rows = terminal
         command = call.arguments["command"]
+        background = call.arguments.get("background", False)
         if not isinstance(command, str) or not command.strip() or len(command) > _COMMAND_LIMIT:
             return ToolResult.rejected(
                 call,
                 code="invalid_arguments",
                 message="command must be a non-empty bounded string.",
+            )
+        if not isinstance(background, bool):
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message="background must be a boolean.",
             )
         cwd_value = call.arguments.get("cwd", context.default_cwd)
         if cwd_value is not None and (
@@ -105,6 +115,7 @@ class ProcessStartTool:
                 str(resolved),
                 context=context,
                 cancellation=cancellation,
+                background=background,
                 pty=pty,
                 columns=columns,
                 rows=rows,

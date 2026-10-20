@@ -14,6 +14,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
   const [cursor, setCursor] = useState(event.details?.nextCursor ?? 0);
   const [hasMore, setHasMore] = useState(event.details?.hasMore ?? false);
   const [state, setState] = useState(event.details?.processState);
+  const [background, setBackground] = useState(event.details?.background ?? false);
   const [exitCode, setExitCode] = useState(event.details?.exitCode);
   const [truncated, setTruncated] = useState(event.details?.truncated ?? false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +33,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
     setCursor(event.details?.nextCursor ?? 0);
     setHasMore(event.details?.hasMore ?? false);
     setState(event.details?.processState);
+    setBackground(event.details?.background ?? false);
     setExitCode(event.details?.exitCode);
     setTruncated(event.details?.truncated ?? false);
     setError(null);
@@ -48,6 +50,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
       setState(page.state);
+      setBackground(page.background);
       setExitCode(page.exitCode);
       setTruncated(page.truncated);
     }).catch((failure: unknown) => {
@@ -66,6 +69,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
       setState(page.state);
+      setBackground(page.background);
       setExitCode(page.exitCode);
       setTruncated(page.truncated);
     }).catch((failure: unknown) => {
@@ -78,6 +82,18 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
       <div className="flex items-center gap-2 text-[11px] text-[var(--text)]">
         {running ? <LoaderCircle size={13} className="animate-spin text-[var(--muted)]" /> : failed || uncertain ? <AlertTriangle size={13} className={failed ? "text-[#ff8585]" : "text-[#d8a36f]"} /> : <Check size={13} className="text-[#72d3a7]" />}
         <span>{summary}</span>
+        {background ? (
+          <span
+            className={cx(
+              "rounded-full border px-1.5 py-0.5 text-[10px]",
+              running
+                ? "border-[#3f6f9e]/50 bg-[#20364b]/40 text-[#9dc8f5]"
+                : "border-[var(--border)] bg-[var(--panel-raised)] text-[var(--muted-strong)]",
+            )}
+          >
+            {t(running ? "events.result.processBackgroundRunning" : "events.result.processBackgroundFinished")}
+          </span>
+        ) : null}
         <code className="ml-auto text-[10px] text-[var(--muted)]">{processId}</code>
       </div>
       {typeof exitCode === "number" ? <div className="mt-1 text-[11px] text-[var(--muted)]">{t("events.result.exitCode", { code: exitCode })}</div> : null}

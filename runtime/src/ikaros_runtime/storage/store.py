@@ -230,8 +230,11 @@ class SqliteRuntimeStore:
 
     def has_unsettled_processes(self, run_id: str) -> bool:
         return any(
-            record.get("state") in {"running", "unknown"}
-            or record.get("errorCode") == "start_pending"
+            record.get("background") is not True
+            and (
+                record.get("state") in {"running", "unknown"}
+                or record.get("errorCode") == "start_pending"
+            )
             for record in self.process_records()
             if record.get("runId") == run_id
         )
@@ -264,6 +267,8 @@ class SqliteRuntimeStore:
             if tool_name in {"write", "edit"} and result.get("verified") is not True:
                 return True
             if tool_name in {"process_start", "process_wait", "process_stop"}:
+                if result.get("background") is True:
+                    continue
                 process_id = str(result.get("processId"))
                 if process_id not in settled_process_ids:
                     return True

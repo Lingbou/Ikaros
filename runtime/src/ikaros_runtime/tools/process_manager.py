@@ -199,6 +199,7 @@ class _Entry:
     cwd: str
     started_at: str
     invocation_fingerprint: str = ""
+    background: bool = False
     state: ProcessState = "unknown"
     error_code: str | None = "start_pending"
     finished_at: str | None = None
@@ -235,6 +236,7 @@ class _Entry:
             "itemId": self.context.item_id,
             "command": self.command,
             "cwd": self.cwd,
+            "background": self.background,
             "state": self.state,
             "exitCode": self.exit_code,
             "pid": self.pid,
@@ -344,6 +346,7 @@ class ProcessManager:
             str(fact["command"]),
             str(fact["cwd"]),
             started_at,
+            background=bool(fact.get("background", False)),
             state="running",
             error_code="runtime_recovered",
             pid=pid,
@@ -390,6 +393,7 @@ class ProcessManager:
         *,
         context: ToolExecutionContext,
         cancellation: CancellationToken,
+        background: bool = False,
         pty: bool = False,
         columns: int = PTY_DEFAULT_COLUMNS,
         rows: int = PTY_DEFAULT_ROWS,
@@ -406,7 +410,7 @@ class ProcessManager:
         ):
             raise ProcessError("invalid_arguments", "terminal size is out of range.")
         fingerprint = hashlib.sha256(
-            json_dumps([command, cwd, pty, columns, rows]).encode()
+            json_dumps([command, cwd, background, pty, columns, rows]).encode()
         ).hexdigest()
         async with self._start_lock:
             if process_id in self._entries:
@@ -435,6 +439,7 @@ class ProcessManager:
                 self._safe(cwd),
                 _now(),
                 invocation_fingerprint=fingerprint,
+                background=background,
             )
             # Record intent before spawning: a crash in the following gap has an unknown result.
             self._persist(entry, force=True)
@@ -521,6 +526,7 @@ class ProcessManager:
             ) from None
         return {
             "processId": process_id,
+            "background": entry.background,
             "state": entry.state,
             "exitCode": entry.exit_code,
             "cwd": entry.cwd,

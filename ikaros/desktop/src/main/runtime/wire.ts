@@ -212,6 +212,12 @@ export function parseRuntimeJournalEvent(value: unknown): RuntimeJournalEvent {
   ) {
     throw new Error("Runtime returned an invalid run.settled journal event payload.");
   }
+  if (value.type === "process.recorded" && isWireObject(value.payload.process)) {
+    const process = value.payload.process;
+    if (hasOwn(process, "background") && typeof process.background !== "boolean") {
+      throw new Error("Runtime returned an invalid process.recorded journal event payload.");
+    }
+  }
   return {
     seq: value.seq,
     schemaVersion: value.schemaVersion as typeof RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,

@@ -11,6 +11,8 @@ from ..run_input import canonical_json
 
 
 def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
+    # Facts written before the background flag existed are foreground commands.
+    value.setdefault("background", False)
     required = {
         "processId",
         "threadId",
@@ -19,6 +21,7 @@ def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
         "itemId",
         "command",
         "cwd",
+        "background",
         "state",
         "exitCode",
         "pid",
@@ -39,6 +42,8 @@ def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
         raise ValueError("process state is invalid")
     if type(value["stepOrdinal"]) is not int or value["stepOrdinal"] < 1:
         raise ValueError("process Step is invalid")
+    if type(value["background"]) is not bool:
+        raise ValueError("process background flag is invalid")
     if type(value["truncated"]) is not bool:
         raise ValueError("process truncation is invalid")
     output_limits = {

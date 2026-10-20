@@ -765,6 +765,7 @@ describe("Runtime event projection", () => {
             result: {
               output: "",
               processId: "process-1",
+              background: true,
               state: "running",
               exitCode: null,
             },
@@ -774,6 +775,7 @@ describe("Runtime event projection", () => {
       event(3, "process.recorded", "turn-process", "run-process", "call-process", {
         process: {
           processId: "process-1",
+          background: true,
           state: "exited",
           exitCode: 0,
           output: "done\n",
@@ -788,6 +790,7 @@ describe("Runtime event projection", () => {
       output: "done\n",
       details: {
         processId: "process-1",
+        background: true,
         processState: "exited",
         exitCode: 0,
         truncated: false,
