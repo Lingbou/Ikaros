@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import re
 import sqlite3
 from dataclasses import dataclass
+from typing import Any
 
 from ..domain import JsonObject, ThreadSummary
-from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
+from .cursor import decode_cursor, encode_cursor
 from .journal import latest_sequence
 from .projections import workspace_from_json
 
@@ -19,8 +17,8 @@ _CURSOR_VERSION = 1
 _MAX_CURSOR_LENGTH = 2048
 _MAX_RECORD_ID_LENGTH = 200
 _MAX_SQL_PARAMETERS = 500
-_CURSOR_CHARACTERS = re.compile(r"^[A-Za-z0-9_-]+$")
 _INVALID_CURSOR_MESSAGE = "turn.list cursor is invalid"
+_TURN_HISTORY_CURSOR_KEYS = {"v", "threadId", "branchId", "ordinal"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,17 +245,14 @@ def list_turn_history_page(
 
 def encode_turn_history_cursor(cursor: TurnHistoryCursor) -> str:
     _validate_cursor(cursor)
-    payload = json_dumps(
+    return encode_cursor(
         {
             "v": _CURSOR_VERSION,
             "threadId": cursor.thread_id,
             "branchId": cursor.branch_id,
             "ordinal": cursor.ordinal,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+        }
+    )
 
 
 def decode_turn_history_cursor(
@@ -266,38 +261,28 @@ def decode_turn_history_cursor(
     thread_id: str,
     branch_id: str,
 ) -> TurnHistoryCursor:
-    if not value or len(value) > _MAX_CURSOR_LENGTH or _CURSOR_CHARACTERS.fullmatch(value) is None:
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    try:
-        padding = "=" * (-len(value) % 4)
-        decoded = base64.b64decode(value + padding, altchars=b"-_", validate=True)
-        payload = json_loads(decoded)
-    except (UnicodeDecodeError, ValueError, binascii.Error):
-        raise ValueError(_INVALID_CURSOR_MESSAGE) from None
-    if not isinstance(payload, dict) or set(payload) != {
-        "v",
-        "threadId",
-        "branchId",
-        "ordinal",
-    }:
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    version = payload["v"]
-    cursor = TurnHistoryCursor(
-        thread_id=payload["threadId"],
-        branch_id=payload["branchId"],
-        ordinal=payload["ordinal"],
-    )
-    try:
-        if isinstance(version, bool) or not isinstance(version, int) or version != _CURSOR_VERSION:
-            raise ValueError(_INVALID_CURSOR_MESSAGE)
+    def _parse(payload: dict[str, Any]) -> TurnHistoryCursor:
+        return TurnHistoryCursor(
+            thread_id=payload["threadId"],
+            branch_id=payload["branchId"],
+            ordinal=payload["ordinal"],
+        )
+
+    def _validate(cursor: TurnHistoryCursor) -> None:
         _validate_cursor(cursor)
         if cursor.thread_id != thread_id or cursor.branch_id != branch_id:
             raise ValueError(_INVALID_CURSOR_MESSAGE)
-    except (TypeError, ValueError):
-        raise ValueError(_INVALID_CURSOR_MESSAGE) from None
-    if encode_turn_history_cursor(cursor) != value:
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    return cursor
+
+    return decode_cursor(
+        value,
+        expected_version=_CURSOR_VERSION,
+        expected_keys=_TURN_HISTORY_CURSOR_KEYS,
+        max_length=_MAX_CURSOR_LENGTH,
+        invalid_message=_INVALID_CURSOR_MESSAGE,
+        parse_payload=_parse,
+        validate_cursor=_validate,
+        reencode=encode_turn_history_cursor,
+    )
 
 
 def _turn_rows(

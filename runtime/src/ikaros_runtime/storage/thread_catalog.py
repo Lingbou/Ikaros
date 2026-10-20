@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from ..domain import JsonObject, ThreadSummary
-from ..json_codec import dumps as json_dumps
-from ..json_codec import loads as json_loads
+from .cursor import decode_cursor, encode_cursor
 from .journal import latest_sequence
 from .projections import workspace_from_json
 
@@ -19,11 +17,11 @@ THREAD_CATALOG_MAX_LIMIT = 100
 _CURSOR_VERSION = 2
 _MAX_CURSOR_LENGTH = 1024
 _MAX_THREAD_ID_LENGTH = 200
-_CURSOR_CHARACTERS = re.compile(r"^[A-Za-z0-9_-]+$")
 _CANONICAL_TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
 )
 _INVALID_CURSOR_MESSAGE = "thread.list cursor is invalid"
+_CATALOG_CURSOR_KEYS = {"v", "updatedAt", "id", "archived"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,67 +127,43 @@ def list_thread_page(
 
 def encode_thread_catalog_cursor(cursor: ThreadCatalogCursor) -> str:
     _validate_cursor_boundary(cursor.updated_at, cursor.thread_id)
-    payload = json_dumps(
+    return encode_cursor(
         {
             "v": _CURSOR_VERSION,
             "updatedAt": cursor.updated_at,
             "id": cursor.thread_id,
             "archived": cursor.archived,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+        }
+    )
 
 
 def decode_thread_catalog_cursor(value: str) -> ThreadCatalogCursor:
-    if (
-        not value
-        or len(value) > _MAX_CURSOR_LENGTH
-        or _CURSOR_CHARACTERS.fullmatch(value) is None
-    ):
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    try:
-        padding = "=" * (-len(value) % 4)
-        decoded = base64.b64decode(
-            value + padding,
-            altchars=b"-_",
-            validate=True,
+    def _parse(payload: dict[str, Any]) -> ThreadCatalogCursor:
+        updated_at = payload["updatedAt"]
+        thread_id = payload["id"]
+        archived = payload["archived"]
+        if (
+            not isinstance(updated_at, str)
+            or not isinstance(thread_id, str)
+            or not isinstance(archived, bool)
+        ):
+            raise ValueError(_INVALID_CURSOR_MESSAGE)
+        return ThreadCatalogCursor(
+            updated_at=updated_at,
+            thread_id=thread_id,
+            archived=archived,
         )
-        payload = json_loads(decoded)
-    except (UnicodeDecodeError, ValueError, binascii.Error):
-        raise ValueError(_INVALID_CURSOR_MESSAGE) from None
-    if not isinstance(payload, dict) or set(payload) != {
-        "v",
-        "updatedAt",
-        "id",
-        "archived",
-    }:
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    version = payload["v"]
-    updated_at = payload["updatedAt"]
-    thread_id = payload["id"]
-    archived = payload["archived"]
-    if isinstance(version, bool) or not isinstance(version, int) or version != _CURSOR_VERSION:
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    if (
-        not isinstance(updated_at, str)
-        or not isinstance(thread_id, str)
-        or not isinstance(archived, bool)
-    ):
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    cursor = ThreadCatalogCursor(
-        updated_at=updated_at,
-        thread_id=thread_id,
-        archived=archived,
+
+    return decode_cursor(
+        value,
+        expected_version=_CURSOR_VERSION,
+        expected_keys=_CATALOG_CURSOR_KEYS,
+        max_length=_MAX_CURSOR_LENGTH,
+        invalid_message=_INVALID_CURSOR_MESSAGE,
+        parse_payload=_parse,
+        validate_cursor=lambda c: _validate_cursor_boundary(c.updated_at, c.thread_id),
+        reencode=encode_thread_catalog_cursor,
     )
-    try:
-        _validate_cursor_boundary(cursor.updated_at, cursor.thread_id)
-    except ValueError:
-        raise ValueError(_INVALID_CURSOR_MESSAGE) from None
-    if encode_thread_catalog_cursor(cursor) != value:
-        raise ValueError(_INVALID_CURSOR_MESSAGE)
-    return cursor
 
 
 def _validate_cursor_boundary(updated_at: str, thread_id: str) -> None:
