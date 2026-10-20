@@ -102,6 +102,7 @@ const STORED_PREFERENCE_KEYS = [
   "sidebarCollapsed",
   "sidebarWidth",
   "reduceMotion",
+  "onboardingCompleted",
   "darkTheme",
   "lightTheme"
 ] as const;
@@ -197,6 +198,7 @@ export function sanitizeStoredPreferences(value: unknown): UiPreferences {
     typeof value.sidebarCollapsed !== "boolean" ||
     !isSidebarWidth(value.sidebarWidth) ||
     typeof value.reduceMotion !== "boolean" ||
+    typeof value.onboardingCompleted !== "boolean" ||
     !isStoredTheme(value.darkTheme) ||
     !isStoredTheme(value.lightTheme)
   ) {
@@ -210,6 +212,7 @@ export function sanitizeStoredPreferences(value: unknown): UiPreferences {
     sidebarCollapsed: value.sidebarCollapsed,
     sidebarWidth: value.sidebarWidth,
     reduceMotion: value.reduceMotion,
+    onboardingCompleted: value.onboardingCompleted,
     darkTheme: normalizedStoredTheme(value.darkTheme),
     lightTheme: normalizedStoredTheme(value.lightTheme)
   };
@@ -261,6 +264,13 @@ export function sanitizePreferencesPatch(value: unknown): UiPreferencesPatch {
       throw new TypeError("reduceMotion must be a boolean.");
     }
     patch.reduceMotion = value.reduceMotion;
+  }
+
+  if ("onboardingCompleted" in value) {
+    if (typeof value.onboardingCompleted !== "boolean") {
+      throw new TypeError("onboardingCompleted must be a boolean.");
+    }
+    patch.onboardingCompleted = value.onboardingCompleted;
   }
 
   if ("darkTheme" in value) {

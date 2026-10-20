@@ -30,6 +30,7 @@ export interface UiPreferences {
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   reduceMotion: boolean;
+  onboardingCompleted: boolean;
   darkTheme: ThemePreferences;
   lightTheme: ThemePreferences;
 }
@@ -86,6 +87,7 @@ export const DEFAULT_UI_PREFERENCES: Readonly<UiPreferences> = Object.freeze({
   sidebarCollapsed: false,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   reduceMotion: false,
+  onboardingCompleted: false,
   darkTheme: DEFAULT_DARK_THEME,
   lightTheme: DEFAULT_LIGHT_THEME
 });

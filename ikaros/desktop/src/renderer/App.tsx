@@ -5,6 +5,7 @@ import { ConversationHeader } from "./components/ConversationHeader";
 import { EditMessageDialog } from "./components/EditMessageDialog";
 import { EventFeed } from "./components/EventFeed";
 import { FilePanel } from "./components/FilePanel";
+import { OnboardingDialog } from "./components/OnboardingDialog";
 import { SearchDialog } from "./components/SearchDialog";
 import { RuntimeStatusBanner } from "./components/RuntimeStatusBanner";
 import { SettingsPage } from "./components/SettingsPage";
@@ -123,6 +124,7 @@ export function App() {
       </div>
       <SearchDialog />
       <EditMessageDialog />
+      <OnboardingDialog />
     </Tooltip.Provider>
   );
 }
