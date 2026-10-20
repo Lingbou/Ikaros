@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      tar:
+        specifier: 7.5.22
+        version: 7.5.22
       ws:
         specifier: 8.18.3
         version: 8.18.3

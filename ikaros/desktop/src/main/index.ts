@@ -6,7 +6,9 @@ import {
   type RuntimeShutdownState
 } from "./lifecycle";
 import { applyNativeTheme, getUiPreferences } from "./preferences";
-import { developmentRuntimeRoot, RuntimeHost } from "./runtimeHost";
+import { RuntimeHost } from "./runtimeHost";
+import { developmentRuntimeRoot, resolveRuntimeHome } from "./runtimePaths";
+import { createRuntimeLaunchResolver } from "./runtimeProvision";
 import { createRendererTrustPolicy } from "./security";
 import { createMainWindow, rendererEntryUrl, updateWindowChrome } from "./window";
 
@@ -35,7 +37,20 @@ async function initializeDesktop(): Promise<void> {
 
   Menu.setApplicationMenu(null);
 
-  runtimeHost = new RuntimeHost({ runtimeRoot: developmentRuntimeRoot(app.getAppPath()) });
+  const runtimeHome = resolveRuntimeHome();
+  runtimeHost = new RuntimeHost({
+    // Development runs keep using the checkout Runtime; packaged runs deploy and
+    // start the bundled payload under <runtime home>/runtime/<payload version>.
+    runtimeRoot: developmentRuntimeRoot(app.getAppPath()),
+    runtimeHome,
+    resolveLaunch: createRuntimeLaunchResolver({
+      isPackaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      runtimeHome,
+      onProgress: (message) => runtimeHost?.reportStartupProgress(message)
+    })
+  });
 
   const preferences = await getUiPreferences();
   applyNativeTheme(preferences);
