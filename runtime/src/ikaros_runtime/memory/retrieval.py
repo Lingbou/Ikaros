@@ -2,9 +2,8 @@
 
 Recall fuses bounded ranked pools through Reciprocal Rank Fusion (k=60): an
 FTS5 BM25 pool maintained inside ``memory.db`` and the keyword overlap pool
-that scores the active candidate set in Python.  The vector pool is a reserved
-interface (``MemorySemanticPool``) that this generation does not implement; no
-LLM reranking and no external embedding service ever participate.
+that scores the active candidate set in Python.  No LLM reranking and no
+external embedding service participate.
 """
 
 from __future__ import annotations
@@ -15,6 +14,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from ..errors import MemoryRetrievalError
+from ..run_input import (
+    MEMORY_RETRIEVAL_MAX_CANDIDATES_V1,
+    MEMORY_SELECTION_MAX_CHARACTERS_V1,
+    MEMORY_SELECTION_MAX_ITEMS_V1,
+)
 from .domain import (
     MEMORY_CONTENT_MAX_CHARACTERS,
     MEMORY_KINDS,
@@ -26,10 +30,10 @@ from .domain import (
 type FrozenMemoryScope = Literal["global", "workspace"]
 type MemoryOmissionReason = Literal["omitted_by_limit", "omitted_by_budget"]
 
-MEMORY_RETRIEVAL_MAX_CANDIDATES = 2_000
+MEMORY_RETRIEVAL_MAX_CANDIDATES = MEMORY_RETRIEVAL_MAX_CANDIDATES_V1
 MEMORY_RETRIEVAL_FETCH_LIMIT = MEMORY_RETRIEVAL_MAX_CANDIDATES + 1
-MEMORY_RETRIEVAL_TOP_K = 8
-MEMORY_RETRIEVAL_CHARACTER_BUDGET = 6_000
+MEMORY_RETRIEVAL_TOP_K = MEMORY_SELECTION_MAX_ITEMS_V1
+MEMORY_RETRIEVAL_CHARACTER_BUDGET = MEMORY_SELECTION_MAX_CHARACTERS_V1
 MEMORY_RETRIEVAL_RRF_K = 60
 MEMORY_RETRIEVAL_POOL_DEPTH = 200
 MEMORY_RETRIEVAL_FTS_MAX_TERMS = 64
@@ -207,31 +211,12 @@ class MemoryRetrievalReader(Protocol):
     ) -> tuple[MaterializedMemoryV1, ...]: ...
 
 
-class MemorySemanticPool(Protocol):
-    """Reserved ranking signal for a future deterministic vector pool.
-
-    This generation ships no implementation.  A pool may only reorder the
-    already-bounded active candidate set, and its order enters the fusion
-    exactly like the two lexical pools.
-    """
-
-    def rank(
-        self,
-        *,
-        query: str,
-        candidates: Sequence[MemoryRetrievalCandidateV1],
-    ) -> Sequence[str]: ...
-
-
 class MemoryRetrieverV1:
     def __init__(
         self,
         reader: MemoryRetrievalReader,
-        *,
-        semantic_pool: MemorySemanticPool | None = None,
     ) -> None:
         self._reader = reader
-        self._semantic_pool = semantic_pool
 
     def retrieve(
         self,
@@ -255,13 +240,6 @@ class MemoryRetrieverV1:
             ),
             _keyword_pool(keyword_scores, by_id=by_id),
         ]
-        if self._semantic_pool is not None:
-            pools.append(
-                _bounded_pool(
-                    self._semantic_pool.rank(query=query, candidates=candidates),
-                    by_id=by_id,
-                )
-            )
         ranked = _fuse_pools(pools, by_id=by_id, keyword_scores=keyword_scores)
 
         selected: list[MaterializedMemoryV1] = []
@@ -561,7 +539,6 @@ __all__ = [
     "MemoryRetrievalOmissionV1",
     "MemoryRetrievalV1",
     "MemoryRetrieverV1",
-    "MemorySemanticPool",
     "MemorySnapshotReferenceV1",
     "fts_match_expression",
     "fts_token_stream",
