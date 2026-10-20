@@ -5,11 +5,11 @@ from .context import ContextBuilder
 from .history import HistorySelection, HistorySelector
 from .loop import AgentLoop, EventPublisher, ProtectedValues
 from .model_input import (
-    ContextDataBlockV1,
+    ContextDataBlock,
     InputAuthority,
     InputLifetime,
     InstructionAuthority,
-    InstructionBlockV1,
+    InstructionBlock,
     ModelInputPlan,
     ModelInputPlanner,
 )
@@ -18,7 +18,7 @@ from .scheduler import AgentScheduler, RunExecutor
 __all__ = [
     "AgentLoop",
     "AgentScheduler",
-    "ContextDataBlockV1",
+    "ContextDataBlock",
     "ContextBuilder",
     "EventPublisher",
     "HistorySelection",
@@ -27,7 +27,7 @@ __all__ = [
     "InputBudgetRecord",
     "InputLifetime",
     "InstructionAuthority",
-    "InstructionBlockV1",
+    "InstructionBlock",
     "ModelInputPlan",
     "ModelInputPlanner",
     "ProtectedValues",

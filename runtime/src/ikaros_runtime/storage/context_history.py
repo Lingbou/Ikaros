@@ -7,18 +7,18 @@ from dataclasses import dataclass, replace
 
 from ..errors import ModelInputUnavailableError
 from ..history_status import (
-    EMPTY_HISTORY_STATUS_V1,
-    FrozenHistoryStatusV1,
-    HistoryRunStatusV1,
+    EMPTY_HISTORY_STATUS,
+    FrozenHistoryStatus,
+    HistoryRunStatus,
     historical_run_status,
 )
 from ..json_codec import loads as json_loads
 from ..run_input import (
-    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    ContextItemRecordV1,
+    EMPTY_FROZEN_MEMORY_CONTEXT,
+    ContextItemRecord,
     ContextRevision,
-    FrozenMemoryContextV1,
-    HistoryItemReferenceV1,
+    FrozenMemoryContext,
+    HistoryItemReference,
     RunConfig,
     build_context_revision,
     canonical_json,
@@ -29,16 +29,16 @@ _FROZEN_ITEM_QUERY_CHUNK = 256
 
 
 @dataclass(frozen=True, slots=True)
-class ContextTurnRecordV1:
+class ContextTurnRecord:
     turn_id: str
     ordinal: int
-    records: tuple[ContextItemRecordV1, ...]
-    run_statuses: tuple[HistoryRunStatusV1, ...] = ()
+    records: tuple[ContextItemRecord, ...]
+    run_statuses: tuple[HistoryRunStatus, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
-class ContextTurnPageV1:
-    turns: tuple[ContextTurnRecordV1, ...]
+class ContextTurnPage:
+    turns: tuple[ContextTurnRecord, ...]
     next_before_ordinal: int | None
 
 
@@ -63,7 +63,7 @@ def list_context_turn_page(
     branch_id: str,
     before_ordinal: int,
     limit: int,
-) -> ContextTurnPageV1:
+) -> ContextTurnPage:
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("context Turn page limit must be positive")
     rows = connection.execute(
@@ -79,13 +79,13 @@ def list_context_turn_page(
     has_more = len(rows) > limit
     selected_rows = rows[:limit]
     if not selected_rows:
-        return ContextTurnPageV1((), None)
+        return ContextTurnPage((), None)
 
     turn_ids = tuple(str(row["id"]) for row in selected_rows)
     records_by_turn = _records_for_turn_ids(connection, turn_ids)
     statuses_by_turn = _statuses_for_turn_ids(connection, turn_ids)
     turns = tuple(
-        ContextTurnRecordV1(
+        ContextTurnRecord(
             turn_id=str(row["id"]),
             ordinal=int(row["ordinal"]),
             records=tuple(records_by_turn.get(str(row["id"]), ())),
@@ -93,7 +93,7 @@ def list_context_turn_page(
         )
         for row in selected_rows
     )
-    return ContextTurnPageV1(
+    return ContextTurnPage(
         turns=turns,
         next_before_ordinal=(turns[-1].ordinal if has_more else None),
     )
@@ -103,7 +103,7 @@ def load_current_run_context(
     connection: sqlite3.Connection,
     *,
     run_id: str,
-) -> tuple[ContextItemRecordV1, ...]:
+) -> tuple[ContextItemRecord, ...]:
     rows = connection.execute(
         """
         SELECT i.id, i.turn_id, i.run_id, i.kind, i.role, i.status, i.content,
@@ -123,9 +123,9 @@ def load_context_for_revision(
     *,
     run_id: str,
     snapshot: ContextRevision,
-) -> tuple[ContextItemRecordV1, ...]:
+) -> tuple[ContextItemRecord, ...]:
     frozen_ids = tuple(reference.item_id for reference in snapshot.history_items)
-    frozen_by_id: dict[str, ContextItemRecordV1] = {}
+    frozen_by_id: dict[str, ContextItemRecord] = {}
     for offset in range(0, len(frozen_ids), _FROZEN_ITEM_QUERY_CHUNK):
         chunk = frozen_ids[offset : offset + _FROZEN_ITEM_QUERY_CHUNK]
         placeholders = ",".join("?" for _ in chunk)
@@ -148,7 +148,7 @@ def load_context_for_revision(
         frozen = tuple(frozen_by_id[item_id] for item_id in frozen_ids)
     except KeyError:
         raise ModelInputUnavailableError("model_input_unavailable") from None
-    if tuple(HistoryItemReferenceV1.from_record(record) for record in frozen) != (
+    if tuple(HistoryItemReference.from_record(record) for record in frozen) != (
         snapshot.history_items
     ):
         raise ModelInputUnavailableError("model_input_unavailable")
@@ -200,27 +200,27 @@ def select_context_revision(
     turn_id: str,
     run_id: str,
     config: RunConfig,
-    memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...]]:
+    memory_context: FrozenMemoryContext = EMPTY_FROZEN_MEMORY_CONTEXT,
+) -> tuple[ContextRevision, tuple[ContextItemRecord, ...]]:
     # Local import avoids the package-level agent -> loop -> storage dependency cycle.
-    from ..agent.history import HISTORY_TURN_PAGE_SIZE_V1, HistorySelector
+    from ..agent.history import HISTORY_TURN_PAGE_SIZE, HistorySelector
 
-    history_status = EMPTY_HISTORY_STATUS_V1
+    history_status = EMPTY_HISTORY_STATUS
     nearest_turn_id: str | None = None
-    omission_notice = EMPTY_HISTORY_STATUS_V1
+    omission_notice = EMPTY_HISTORY_STATUS
     omission_notice_tokens = 0
-    first_page: ContextTurnPageV1 | None = None
+    first_page: ContextTurnPage | None = None
     try:
         ordinal = context_turn_ordinal(connection, branch_id=branch_id, turn_id=turn_id)
         first_page = list_context_turn_page(
             connection,
             branch_id=branch_id,
             before_ordinal=ordinal,
-            limit=HISTORY_TURN_PAGE_SIZE_V1,
+            limit=HISTORY_TURN_PAGE_SIZE,
         )
         if first_page.turns:
             nearest_turn_id = first_page.turns[0].turn_id
-            omission_notice = FrozenHistoryStatusV1(
+            omission_notice = FrozenHistoryStatus(
                 tuple(
                     replace(run, details="omitted_by_budget")
                     for run in first_page.turns[0].run_statuses
@@ -242,14 +242,14 @@ def select_context_revision(
             connection,
             branch_id=branch_id,
             before_ordinal=before_ordinal,
-            limit=HISTORY_TURN_PAGE_SIZE_V1,
+            limit=HISTORY_TURN_PAGE_SIZE,
         )
         first_page = None
         for turn in page.turns:
             # Pages arrive newest-first; the frozen block is chronological. Charge
             # its actual included size before falling back to an omission notice.
             previous = tuple(run for run in history_status.runs if run.turn_id != turn.turn_id)
-            candidate_status = FrozenHistoryStatusV1((*turn.run_statuses, *previous))
+            candidate_status = FrozenHistoryStatus((*turn.run_statuses, *previous))
             try:
                 accepted = selector.consider_turn(
                     turn_id=turn.turn_id,
@@ -287,7 +287,7 @@ def select_context_revision(
 def _records_for_turn_ids(
     connection: sqlite3.Connection,
     turn_ids: tuple[str, ...],
-) -> dict[str, list[ContextItemRecordV1]]:
+) -> dict[str, list[ContextItemRecord]]:
     placeholders = ",".join("?" for _ in turn_ids)
     rows = connection.execute(
         f"""
@@ -300,7 +300,7 @@ def _records_for_turn_ids(
         """,
         turn_ids,
     ).fetchall()
-    grouped: dict[str, list[ContextItemRecordV1]] = {}
+    grouped: dict[str, list[ContextItemRecord]] = {}
     for row in rows:
         if not _row_is_context_eligible(row, None):
             continue
@@ -337,7 +337,7 @@ def _row_is_context_eligible(
 
 def _statuses_for_turn_ids(
     connection: sqlite3.Connection, turn_ids: tuple[str, ...]
-) -> dict[str, tuple[HistoryRunStatusV1, ...]]:
+) -> dict[str, tuple[HistoryRunStatus, ...]]:
     placeholders = ",".join("?" for _ in turn_ids)
     rows = connection.execute(
         f"""SELECT id, turn_id, status, reason_code FROM runs
@@ -345,7 +345,7 @@ def _statuses_for_turn_ids(
         ORDER BY turn_id, created_at, id""",
         turn_ids,
     ).fetchall()
-    grouped: dict[str, list[HistoryRunStatusV1]] = {}
+    grouped: dict[str, list[HistoryRunStatus]] = {}
     for row in rows:
         turn_id = str(row["turn_id"])
         grouped.setdefault(turn_id, []).append(
@@ -360,7 +360,7 @@ def _statuses_for_turn_ids(
 
 
 def _validate_frozen_status(
-    connection: sqlite3.Connection, *, run_id: str, status: FrozenHistoryStatusV1
+    connection: sqlite3.Connection, *, run_id: str, status: FrozenHistoryStatus
 ) -> None:
     for offset in range(0, len(status.runs), _FROZEN_ITEM_QUERY_CHUNK):
         requested = status.runs[offset : offset + _FROZEN_ITEM_QUERY_CHUNK]
@@ -387,7 +387,7 @@ def _validate_frozen_status(
 
 def _historical_record_from_row(
     row: sqlite3.Row,
-) -> ContextItemRecordV1:
+) -> ContextItemRecord:
     record = _record_from_row(row)
     if record.kind != "tool_result":
         return record
@@ -428,9 +428,9 @@ def _historical_record_from_row(
     )
 
 
-def _record_from_row(row: sqlite3.Row) -> ContextItemRecordV1:
+def _record_from_row(row: sqlite3.Row) -> ContextItemRecord:
     try:
-        record = ContextItemRecordV1(
+        record = ContextItemRecord(
             item_id=str(row["id"]),
             turn_id=str(row["turn_id"]),
             run_id=str(row["run_id"]),
@@ -446,8 +446,8 @@ def _record_from_row(row: sqlite3.Row) -> ContextItemRecordV1:
 
 
 __all__ = [
-    "ContextTurnPageV1",
-    "ContextTurnRecordV1",
+    "ContextTurnPage",
+    "ContextTurnRecord",
     "context_turn_ordinal",
     "list_context_turn_page",
     "load_context_for_revision",

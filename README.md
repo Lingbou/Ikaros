@@ -867,7 +867,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
      `Prior context summary (untrusted; verify):`），输出预算 4,096 tokens，
      提示词开销预留 256 tokens；
   3) 摘要以新的 ContextRevision 追加，最多 64,000 字符
-     （`COMPACTION_SUMMARY_MAX_CHARACTERS_V1`）。
+     （`COMPACTION_SUMMARY_MAX_CHARACTERS`）。
 - 压缩源与保留预算：单个裁剪单元最多 24,000 字节；单条记录/工具参数各截断到
   700 字节；近期用户消息保留预算 20,000 tokens；压缩后上下文尾部保留预算
   64,000 tokens（`_RETAINED_CONTEXT_TOKEN_BUDGET`）。
@@ -993,7 +993,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   `memory operation failed`）。
 - 溯源：可选的来源必须指向本 Session 已存在的 Item；Session 重置只会让软来源
   退化，不删除 Memory。
-- 召回（`MemoryRetrieverV1`，`deterministic-hybrid-rrf-v2`）：FTS5(BM25) 池与
+- 召回（`MemoryRetriever`，`deterministic-hybrid-rrf-v2`）：FTS5(BM25) 池与
   关键词重叠池各自有界排名，再按 RRF（k=60）融合——同一条被两个池同时命中时
   分数相加，缺池不惩罚；候选 ≤2,000；每池深度 ≤200；选中 ≤8 条且 ≤6,000 字符；
   每个 Run 冻结精确 revision；读取与物化在 `state.db` 事务之外。

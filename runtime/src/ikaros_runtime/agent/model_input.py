@@ -7,12 +7,12 @@ from dataclasses import dataclass
 
 from ..domain import ContextItem
 from ..run_input import (
-    ContextDataBlockV1,
+    ContextDataBlock,
     InputAuthority,
     InputBudgetRecord,
     InputLifetime,
     InstructionAuthority,
-    InstructionBlockV1,
+    InstructionBlock,
     RunConfig,
 )
 from ..tools.core import ToolDefinition
@@ -27,8 +27,8 @@ class ModelInputPlan:
     """
 
     model_id: str
-    instructions: tuple[InstructionBlockV1, ...]
-    context_data: tuple[ContextDataBlockV1, ...]
+    instructions: tuple[InstructionBlock, ...]
+    context_data: tuple[ContextDataBlock, ...]
     messages: tuple[ContextItem, ...]
     tools: tuple[ToolDefinition, ...]
     budget_snapshot: InputBudgetRecord
@@ -50,7 +50,7 @@ class ModelInputPlanner:
         *,
         config: RunConfig,
         items: Sequence[ContextItem],
-        context_data: Sequence[ContextDataBlockV1] = (),
+        context_data: Sequence[ContextDataBlock] = (),
         budget_snapshot: InputBudgetRecord,
     ) -> ModelInputPlan:
         return ModelInputPlan(
@@ -64,11 +64,11 @@ class ModelInputPlanner:
 
 
 __all__ = [
-    "ContextDataBlockV1",
+    "ContextDataBlock",
     "InputAuthority",
     "InputLifetime",
     "InstructionAuthority",
-    "InstructionBlockV1",
+    "InstructionBlock",
     "ModelInputPlan",
     "ModelInputPlanner",
 ]

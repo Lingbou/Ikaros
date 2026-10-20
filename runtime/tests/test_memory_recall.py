@@ -10,13 +10,13 @@ from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent
 from ikaros_runtime.memory import (
-    MaterializedMemoryV1,
-    MemoryRetrieverV1,
+    MaterializedMemory,
+    MemoryRetriever,
     MemoryScope,
-    MemorySnapshotReferenceV1,
+    MemorySnapshotReference,
     SqliteMemoryStore,
 )
-from ikaros_runtime.memory.retrieval import MemoryRetrievalCandidateV1
+from ikaros_runtime.memory.retrieval import MemoryRetrievalCandidate
 from ikaros_runtime.providers.base import (
     ProviderEvent,
     ProviderRequest,
@@ -119,7 +119,7 @@ class _TransactionCheckingMemoryReader:
         self,
         *,
         workspace_id: str | None,
-    ) -> tuple[MemoryRetrievalCandidateV1, ...]:
+    ) -> tuple[MemoryRetrievalCandidate, ...]:
         assert not self._state_store.in_transaction
         self.reads += 1
         return self._memory_store.read_active_candidates(workspace_id=workspace_id)
@@ -141,10 +141,10 @@ class _TransactionCheckingMemoryReader:
 
     def materialize_memory_revisions(
         self,
-        references: Sequence[MemorySnapshotReferenceV1],
+        references: Sequence[MemorySnapshotReference],
         *,
         workspace_id: str | None,
-    ) -> tuple[MaterializedMemoryV1, ...]:
+    ) -> tuple[MaterializedMemory, ...]:
         assert not self._state_store.in_transaction
         self.reads += 1
         return self._memory_store.materialize_memory_revisions(
@@ -215,7 +215,7 @@ async def test_memory_correction_does_not_change_a_frozen_tool_loop(
             {"memory-provider": provider},
             publish,
             executor,
-            memory_retriever=MemoryRetrieverV1(reader),
+            memory_retriever=MemoryRetriever(reader),
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -299,7 +299,7 @@ async def test_memory_forget_between_tool_steps_stops_without_switching_revision
             {"memory-provider": provider},
             publish,
             executor,
-            memory_retriever=MemoryRetrieverV1(reader),
+            memory_retriever=MemoryRetriever(reader),
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -362,7 +362,7 @@ async def test_memory_forget_while_prepared_event_is_published_blocks_provider_s
             state_store,
             {"memory-provider": provider},
             publish,
-            memory_retriever=MemoryRetrieverV1(reader),
+            memory_retriever=MemoryRetriever(reader),
         )
 
         await loop.run(prepared.run_id, CancellationToken())
@@ -431,7 +431,7 @@ async def test_large_memory_selection_keeps_user_input_and_failure_history_usabl
             state_store,
             {"memory-provider": provider},
             publish,
-            memory_retriever=MemoryRetrieverV1(memory_store),
+            memory_retriever=MemoryRetriever(memory_store),
         ).run(prepared.run_id, CancellationToken())
 
         assert state_store.run_status(prepared.run_id) == "completed"
@@ -505,7 +505,7 @@ async def test_window_budget_admits_later_small_memories_with_exact_omission_rea
             state_store,
             {"memory-provider": provider},
             publish,
-            memory_retriever=MemoryRetrieverV1(memory_store),
+            memory_retriever=MemoryRetriever(memory_store),
         ).run(prepared.run_id, CancellationToken())
 
         assert state_store.run_status(prepared.run_id) == "completed"

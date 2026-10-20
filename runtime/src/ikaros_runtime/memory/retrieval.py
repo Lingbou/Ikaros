@@ -15,9 +15,9 @@ from typing import Literal, Protocol
 
 from ..errors import MemoryRetrievalError
 from ..run_input import (
-    MEMORY_RETRIEVAL_MAX_CANDIDATES_V1,
-    MEMORY_SELECTION_MAX_CHARACTERS_V1,
-    MEMORY_SELECTION_MAX_ITEMS_V1,
+    MEMORY_RETRIEVAL_MAX_CANDIDATES,
+    MEMORY_SELECTION_MAX_CHARACTERS,
+    MEMORY_SELECTION_MAX_ITEMS,
 )
 from .domain import (
     MEMORY_CONTENT_MAX_CHARACTERS,
@@ -30,10 +30,10 @@ from .domain import (
 type FrozenMemoryScope = Literal["global", "workspace"]
 type MemoryOmissionReason = Literal["omitted_by_limit", "omitted_by_budget"]
 
-MEMORY_RETRIEVAL_MAX_CANDIDATES = MEMORY_RETRIEVAL_MAX_CANDIDATES_V1
+MEMORY_RETRIEVAL_MAX_CANDIDATES = MEMORY_RETRIEVAL_MAX_CANDIDATES
 MEMORY_RETRIEVAL_FETCH_LIMIT = MEMORY_RETRIEVAL_MAX_CANDIDATES + 1
-MEMORY_RETRIEVAL_TOP_K = MEMORY_SELECTION_MAX_ITEMS_V1
-MEMORY_RETRIEVAL_CHARACTER_BUDGET = MEMORY_SELECTION_MAX_CHARACTERS_V1
+MEMORY_RETRIEVAL_TOP_K = MEMORY_SELECTION_MAX_ITEMS
+MEMORY_RETRIEVAL_CHARACTER_BUDGET = MEMORY_SELECTION_MAX_CHARACTERS
 MEMORY_RETRIEVAL_RRF_K = 60
 MEMORY_RETRIEVAL_POOL_DEPTH = 200
 MEMORY_RETRIEVAL_FTS_MAX_TERMS = 64
@@ -44,7 +44,7 @@ MEMORY_RETRIEVAL_VERSION: Literal["deterministic-hybrid-rrf-v2"] = (
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryRetrievalCandidateV1:
+class MemoryRetrievalCandidate:
     memory_id: str
     kind: MemoryKind
     scope: MemoryScope
@@ -69,9 +69,9 @@ class MemoryRetrievalCandidateV1:
     def characters(self) -> int:
         return len(self.content)
 
-    def to_reference(self) -> MemorySnapshotReferenceV1:
+    def to_reference(self) -> MemorySnapshotReference:
         scope = self.frozen_scope
-        return MemorySnapshotReferenceV1(
+        return MemorySnapshotReference(
             memory_id=self.memory_id,
             revision=self.revision,
             scope=scope,
@@ -80,7 +80,7 @@ class MemoryRetrievalCandidateV1:
 
 
 @dataclass(frozen=True, slots=True)
-class MemorySnapshotReferenceV1:
+class MemorySnapshotReference:
     memory_id: str
     revision: int
     scope: FrozenMemoryScope
@@ -101,8 +101,8 @@ class MemorySnapshotReferenceV1:
 
 
 @dataclass(frozen=True, slots=True)
-class MaterializedMemoryV1:
-    reference: MemorySnapshotReferenceV1
+class MaterializedMemory:
+    reference: MemorySnapshotReference
     content: str
 
     def __post_init__(self) -> None:
@@ -128,7 +128,7 @@ class MaterializedMemoryV1:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryRetrievalOmissionV1:
+class MemoryRetrievalOmission:
     memory_id: str
     revision: int
     characters: int
@@ -149,10 +149,10 @@ class MemoryRetrievalOmissionV1:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryRetrievalV1:
+class MemoryRetrieval:
     version: Literal["deterministic-hybrid-rrf-v2"]
-    selected: tuple[MaterializedMemoryV1, ...]
-    omissions: tuple[MemoryRetrievalOmissionV1, ...]
+    selected: tuple[MaterializedMemory, ...]
+    omissions: tuple[MemoryRetrievalOmission, ...]
     candidate_count: int
     relevant_count: int
     memory_characters: int
@@ -184,7 +184,7 @@ class MemoryRetrievalV1:
             raise ValueError("Memory retrieval result contains duplicate IDs")
 
     @property
-    def references(self) -> tuple[MemorySnapshotReferenceV1, ...]:
+    def references(self) -> tuple[MemorySnapshotReference, ...]:
         return tuple(memory.reference for memory in self.selected)
 
 
@@ -193,7 +193,7 @@ class MemoryRetrievalReader(Protocol):
         self,
         *,
         workspace_id: str | None,
-    ) -> tuple[MemoryRetrievalCandidateV1, ...]: ...
+    ) -> tuple[MemoryRetrievalCandidate, ...]: ...
 
     def rank_active_memory_ids_by_bm25(
         self,
@@ -205,13 +205,13 @@ class MemoryRetrievalReader(Protocol):
 
     def materialize_memory_revisions(
         self,
-        references: Sequence[MemorySnapshotReferenceV1],
+        references: Sequence[MemorySnapshotReference],
         *,
         workspace_id: str | None,
-    ) -> tuple[MaterializedMemoryV1, ...]: ...
+    ) -> tuple[MaterializedMemory, ...]: ...
 
 
-class MemoryRetrieverV1:
+class MemoryRetriever:
     def __init__(
         self,
         reader: MemoryRetrievalReader,
@@ -223,8 +223,8 @@ class MemoryRetrieverV1:
         *,
         query: str,
         workspace_id: str | None,
-        accept_selection: Callable[[Sequence[MaterializedMemoryV1]], bool] | None = None,
-    ) -> MemoryRetrievalV1:
+        accept_selection: Callable[[Sequence[MaterializedMemory]], bool] | None = None,
+    ) -> MemoryRetrieval:
         """Fuse bounded pools, then select whole ranked records within capacity."""
         candidates = self._reader.read_active_candidates(workspace_id=workspace_id)
         by_id = {candidate.memory_id: candidate for candidate in candidates}
@@ -242,8 +242,8 @@ class MemoryRetrieverV1:
         ]
         ranked = _fuse_pools(pools, by_id=by_id, keyword_scores=keyword_scores)
 
-        selected: list[MaterializedMemoryV1] = []
-        omissions: list[MemoryRetrievalOmissionV1] = []
+        selected: list[MaterializedMemory] = []
+        omissions: list[MemoryRetrievalOmission] = []
         memory_characters = 0
         for candidate in ranked:
             if len(selected) >= MEMORY_RETRIEVAL_TOP_K:
@@ -255,7 +255,7 @@ class MemoryRetrieverV1:
             ):
                 omissions.append(_omission(candidate, "omitted_by_budget"))
                 continue
-            materialized = MaterializedMemoryV1(
+            materialized = MaterializedMemory(
                 reference=candidate.to_reference(),
                 content=candidate.content,
             )
@@ -267,7 +267,7 @@ class MemoryRetrieverV1:
             selected.append(materialized)
             memory_characters += materialized.characters
 
-        return MemoryRetrievalV1(
+        return MemoryRetrieval(
             version=MEMORY_RETRIEVAL_VERSION,
             selected=tuple(selected),
             omissions=tuple(omissions),
@@ -278,10 +278,10 @@ class MemoryRetrieverV1:
 
     def materialize_exact(
         self,
-        references: Sequence[MemorySnapshotReferenceV1],
+        references: Sequence[MemorySnapshotReference],
         *,
         workspace_id: str | None,
-    ) -> tuple[MaterializedMemoryV1, ...]:
+    ) -> tuple[MaterializedMemory, ...]:
         frozen = tuple(references)
         if len(frozen) > MEMORY_RETRIEVAL_TOP_K or len(
             {reference.memory_id for reference in frozen}
@@ -302,7 +302,7 @@ class _Tokens:
 
 def _keyword_scores(
     query: str,
-    candidates: Sequence[MemoryRetrievalCandidateV1],
+    candidates: Sequence[MemoryRetrievalCandidate],
 ) -> dict[str, int]:
     """Score every candidate by weighted unique-token overlap (the fuzzy pool)."""
     query_tokens = _tokenize(query)
@@ -317,7 +317,7 @@ def _keyword_scores(
 def _keyword_pool(
     keyword_scores: Mapping[str, int],
     *,
-    by_id: Mapping[str, MemoryRetrievalCandidateV1],
+    by_id: Mapping[str, MemoryRetrievalCandidate],
 ) -> tuple[str, ...]:
     """Rank the fuzzy pool: weighted score, then recency, then Memory ID."""
     ranked = [by_id[memory_id] for memory_id in keyword_scores]
@@ -330,7 +330,7 @@ def _keyword_pool(
 def _bounded_pool(
     ranking: Sequence[str],
     *,
-    by_id: Mapping[str, MemoryRetrievalCandidateV1],
+    by_id: Mapping[str, MemoryRetrievalCandidate],
 ) -> tuple[str, ...]:
     """Keep the leading candidates of one pool, deduplicated and depth-bounded."""
     pool: list[str] = []
@@ -348,9 +348,9 @@ def _bounded_pool(
 def _fuse_pools(
     pools: Sequence[Sequence[str]],
     *,
-    by_id: Mapping[str, MemoryRetrievalCandidateV1],
+    by_id: Mapping[str, MemoryRetrievalCandidate],
     keyword_scores: Mapping[str, int],
-) -> list[MemoryRetrievalCandidateV1]:
+) -> list[MemoryRetrievalCandidate]:
     """Reciprocal Rank Fusion over bounded pools, best first.
 
     A candidate absent from a pool contributes nothing for that pool.  Exact
@@ -501,10 +501,10 @@ def _relevance(query: _Tokens, candidate: _Tokens) -> int:
 
 
 def _omission(
-    candidate: MemoryRetrievalCandidateV1,
+    candidate: MemoryRetrievalCandidate,
     reason: MemoryOmissionReason,
-) -> MemoryRetrievalOmissionV1:
-    return MemoryRetrievalOmissionV1(
+) -> MemoryRetrievalOmission:
+    return MemoryRetrievalOmission(
         memory_id=candidate.memory_id,
         revision=candidate.revision,
         characters=candidate.characters,
@@ -534,12 +534,12 @@ __all__ = [
     "MEMORY_RETRIEVAL_TOP_K",
     "MEMORY_RETRIEVAL_VERSION",
     "FrozenMemoryScope",
-    "MaterializedMemoryV1",
-    "MemoryRetrievalCandidateV1",
-    "MemoryRetrievalOmissionV1",
-    "MemoryRetrievalV1",
-    "MemoryRetrieverV1",
-    "MemorySnapshotReferenceV1",
+    "MaterializedMemory",
+    "MemoryRetrievalCandidate",
+    "MemoryRetrieval",
+    "MemoryRetrievalOmission",
+    "MemoryRetriever",
+    "MemorySnapshotReference",
     "fts_match_expression",
     "fts_token_stream",
 ]

@@ -20,9 +20,9 @@ from ..file_changes import MAX_CHANGE_EVENT_BYTES, validate_file_change_record
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
-    ContextItemRecordV1,
+    ContextItemRecord,
     ContextRevision,
-    FrozenMemoryContextV1,
+    FrozenMemoryContext,
     RunConfig,
     StepInput,
     build_step_input,
@@ -331,7 +331,7 @@ def context_item_records(
     branch_id: str,
     *,
     through_turn_id: str,
-) -> list[ContextItemRecordV1]:
+) -> list[ContextItemRecord]:
     boundary = connection.execute(
         "SELECT ordinal FROM turns WHERE id = ? AND branch_id = ?",
         (through_turn_id, branch_id),
@@ -351,7 +351,7 @@ def context_item_records(
         (branch_id, int(boundary["ordinal"]), through_turn_id),
     ).fetchall()
     return [
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id=str(row["id"]),
             turn_id=str(row["turn_id"]),
             run_id=str(row["run_id"]),
@@ -369,7 +369,7 @@ def context_item_records_for_revision(
     *,
     run_id: str,
     snapshot: ContextRevision,
-) -> list[ContextItemRecordV1]:
+) -> list[ContextItemRecord]:
     return list(load_context_for_revision(connection, run_id=run_id, snapshot=snapshot))
 
 
@@ -854,7 +854,7 @@ def apply_event(
                 turn_id=str(event.turn_id),
                 run_id=str(event.run_id),
                 config=config,
-                memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                memory_context=FrozenMemoryContext.from_revision(snapshot),
             )
             if snapshot != expected_snapshot or snapshot.revision != step_input.context_revision:
                 raise RuntimeError("initial Context Revision is not canonical")

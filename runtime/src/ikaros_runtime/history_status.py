@@ -9,7 +9,7 @@ from typing import Literal, cast
 from .domain import JsonObject
 from .json_codec import dumps as json_dumps
 
-HISTORY_STATUS_PREAMBLE_V1 = (
+HISTORY_STATUS_PREAMBLE = (
     "Runtime history status (contextual data): failed or cancelled Runs did not complete. "
     "Earlier tools may already have changed files or external state; failed, cancelled, "
     "or missing results do not prove that an action was not executed. "
@@ -19,7 +19,7 @@ HISTORY_STATUS_PREAMBLE_V1 = (
 
 
 @dataclass(frozen=True, slots=True)
-class HistoryRunStatusV1:
+class HistoryRunStatus:
     turn_id: str
     run_id: str
     status: Literal["failed", "cancelled"]
@@ -52,7 +52,7 @@ class HistoryRunStatusV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> HistoryRunStatusV1:
+    def from_wire(cls, value: object) -> HistoryRunStatus:
         if not isinstance(value, dict) or set(value) != {
             "turnId",
             "runId",
@@ -71,12 +71,12 @@ class HistoryRunStatusV1:
 
 
 @dataclass(frozen=True, slots=True)
-class FrozenHistoryStatusV1:
-    runs: tuple[HistoryRunStatusV1, ...] = ()
+class FrozenHistoryStatus:
+    runs: tuple[HistoryRunStatus, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "runs", tuple(self.runs))
-        if any(not isinstance(run, HistoryRunStatusV1) for run in self.runs):
+        if any(not isinstance(run, HistoryRunStatus) for run in self.runs):
             raise ValueError("history status records are invalid")
         if len({run.run_id for run in self.runs}) != len(self.runs):
             raise ValueError("history status contains duplicate Runs")
@@ -87,7 +87,7 @@ class FrozenHistoryStatusV1:
             return ""
         payload = {"version": 1, "runs": [run.to_wire() for run in self.runs]}
         return (
-            HISTORY_STATUS_PREAMBLE_V1
+            HISTORY_STATUS_PREAMBLE
             + "\n"
             + json_dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         )
@@ -104,14 +104,14 @@ class FrozenHistoryStatusV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> FrozenHistoryStatusV1:
+    def from_wire(cls, value: object) -> FrozenHistoryStatus:
         if not isinstance(value, dict) or set(value) != {"version", "characters", "runs"}:
             raise ValueError("frozen history status is invalid")
         if type(value["version"]) is not int or value["version"] != 1:
             raise ValueError("history status version is unsupported")
         if not isinstance(value["runs"], list) or type(value["characters"]) is not int:
             raise ValueError("history status records or budget are invalid")
-        result = cls(tuple(HistoryRunStatusV1.from_wire(run) for run in value["runs"]))
+        result = cls(tuple(HistoryRunStatus.from_wire(run) for run in value["runs"]))
         if result.characters != value["characters"]:
             raise ValueError("history status character count does not match")
         return result
@@ -119,10 +119,10 @@ class FrozenHistoryStatusV1:
 
 def historical_run_status(
     *, turn_id: str, run_id: str, status: str, reason_code: str | None
-) -> HistoryRunStatusV1:
-    return HistoryRunStatusV1(
+) -> HistoryRunStatus:
+    return HistoryRunStatus(
         turn_id, run_id, cast(Literal["failed", "cancelled"], status), reason_code
     )
 
 
-EMPTY_HISTORY_STATUS_V1 = FrozenHistoryStatusV1()
+EMPTY_HISTORY_STATUS = FrozenHistoryStatus()

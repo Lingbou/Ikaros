@@ -8,7 +8,7 @@ from ..domain import CommandOutcome, SkillDescriptor
 from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
 from ..run_input import (
-    InstructionBlockV1,
+    InstructionBlock,
     ProviderExecutionSnapshot,
     RunConfigTemplate,
 )
@@ -29,7 +29,7 @@ class TurnService:
         scheduler: AgentScheduler,
         config_store: ConfigStore | None,
         assert_request_safe: RequestSafetyCheck,
-        identity_core: InstructionBlockV1,
+        identity_core: InstructionBlock,
         skill_snapshot: SkillSnapshotSource | None = None,
         tool_definitions: ToolDefinitionSource | None = None,
         execution_policy: str = "full_access",

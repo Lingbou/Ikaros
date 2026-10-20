@@ -13,7 +13,7 @@ from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, SkillDescriptor
 from ikaros_runtime.identity import load_identity_core
-from ikaros_runtime.memory import MemoryRetrieverV1, MemoryScope, SqliteMemoryStore
+from ikaros_runtime.memory import MemoryRetriever, MemoryScope, SqliteMemoryStore
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from ikaros_runtime.storage import SqliteRuntimeStore
@@ -203,7 +203,7 @@ async def test_model_input_preserves_complete_openai_wire_body(tmp_path: Path) -
                 publish,
                 tool_executor=executor,
                 identity_core=identity_core,
-                memory_retriever=MemoryRetrieverV1(memory_store),
+                memory_retriever=MemoryRetriever(memory_store),
             ).run(prepared.run_id, CancellationToken())
 
         expected = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))

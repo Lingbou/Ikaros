@@ -35,9 +35,9 @@ from .domain import (
 from .retrieval import (
     MEMORY_RETRIEVAL_FETCH_LIMIT,
     MEMORY_RETRIEVAL_MAX_CANDIDATES,
-    MaterializedMemoryV1,
-    MemoryRetrievalCandidateV1,
-    MemorySnapshotReferenceV1,
+    MaterializedMemory,
+    MemoryRetrievalCandidate,
+    MemorySnapshotReference,
     fts_match_expression,
     fts_token_stream,
 )
@@ -364,7 +364,7 @@ class SqliteMemoryStore:
         self,
         *,
         workspace_id: str | None,
-    ) -> tuple[MemoryRetrievalCandidateV1, ...]:
+    ) -> tuple[MemoryRetrievalCandidate, ...]:
         """Read every scoped active candidate, or fail instead of ranking a prefix."""
 
         if workspace_id is None:
@@ -460,10 +460,10 @@ class SqliteMemoryStore:
 
     def materialize_memory_revisions(
         self,
-        references: Sequence[MemorySnapshotReferenceV1],
+        references: Sequence[MemorySnapshotReference],
         *,
         workspace_id: str | None,
-    ) -> tuple[MaterializedMemoryV1, ...]:
+    ) -> tuple[MaterializedMemory, ...]:
         """Materialize an ordered frozen revision set in one SQLite read snapshot."""
 
         frozen = tuple(references)
@@ -507,7 +507,7 @@ class SqliteMemoryStore:
         if len(rows) != len(frozen):
             raise MemoryRetrievalError("memory_snapshot_unavailable")
 
-        materialized: list[MaterializedMemoryV1] = []
+        materialized: list[MaterializedMemory] = []
         try:
             for reference, row in zip(frozen, rows, strict=True):
                 if (
@@ -532,7 +532,7 @@ class SqliteMemoryStore:
                 content = str(row["content"])
                 if str(row["content_digest"]) != _canonical_sha256(content):
                     raise ValueError("stored Memory content digest does not match")
-                materialized.append(MaterializedMemoryV1(reference, content))
+                materialized.append(MaterializedMemory(reference, content))
         except (TypeError, ValueError):
             raise MemoryRetrievalError("memory_snapshot_unavailable") from None
         return tuple(materialized)
@@ -792,7 +792,7 @@ def _record_from_row(row: sqlite3.Row) -> MemoryRecord:
     )
 
 
-def _retrieval_candidate_from_row(row: sqlite3.Row) -> MemoryRetrievalCandidateV1:
+def _retrieval_candidate_from_row(row: sqlite3.Row) -> MemoryRetrievalCandidate:
     content = row["content"]
     digest = row["content_digest"]
     if content is None or digest is None or row["content_redacted_at"] is not None:
@@ -800,7 +800,7 @@ def _retrieval_candidate_from_row(row: sqlite3.Row) -> MemoryRetrievalCandidateV
     content_text = str(content)
     if str(digest) != _canonical_sha256(content_text):
         raise ValueError("active Memory candidate digest does not match")
-    return MemoryRetrievalCandidateV1(
+    return MemoryRetrievalCandidate(
         memory_id=str(row["id"]),
         kind=cast(MemoryKind, str(row["kind"])),
         scope=MemoryScope(

@@ -5,11 +5,11 @@ from __future__ import annotations
 from importlib.resources import files as resource_files
 
 from .run_input import (
-    IDENTITY_CORE_MAX_CHARACTERS_V1,
+    IDENTITY_CORE_MAX_CHARACTERS,
     IKAROS_IDENTITY_ID,
     IKAROS_IDENTITY_SOURCE,
     IKAROS_IDENTITY_VERSION,
-    InstructionBlockV1,
+    InstructionBlock,
 )
 
 _RESOURCE_PACKAGE = "ikaros_runtime.resources"
@@ -20,7 +20,7 @@ class IdentityResourceError(RuntimeError):
     """The packaged Runtime identity is missing or violates its release contract."""
 
 
-def load_identity_core() -> InstructionBlockV1:
+def load_identity_core() -> InstructionBlock:
     """Return the canonical, release-scoped Ikaros identity instruction."""
 
     try:
@@ -43,10 +43,10 @@ def load_identity_core() -> InstructionBlockV1:
 
     if not content.strip():
         raise IdentityResourceError("Ikaros identity resource must not be blank")
-    if len(content) > IDENTITY_CORE_MAX_CHARACTERS_V1:
+    if len(content) > IDENTITY_CORE_MAX_CHARACTERS:
         raise IdentityResourceError("Ikaros identity resource exceeds its character limit")
 
-    return InstructionBlockV1(
+    return InstructionBlock(
         id=IKAROS_IDENTITY_ID,
         version=IKAROS_IDENTITY_VERSION,
         source=IKAROS_IDENTITY_SOURCE,

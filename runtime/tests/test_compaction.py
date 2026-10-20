@@ -21,10 +21,10 @@ from ikaros_runtime.providers.base import (
     ToolCallCompleted,
 )
 from ikaros_runtime.run_input import (
-    ContextItemRecordV1,
-    FrozenMemoryContextV1,
-    MemoryReferenceV1,
-    OmissionRecordV1,
+    ContextItemRecord,
+    FrozenMemoryContext,
+    MemoryReference,
+    OmissionRecord,
     ProviderExecutionSnapshot,
     RunConfigTemplate,
 )
@@ -49,8 +49,8 @@ def _message(
     *,
     role: str = "user",
     data: dict[str, Any] | None = None,
-) -> ContextItemRecordV1:
-    return ContextItemRecordV1(
+) -> ContextItemRecord:
+    return ContextItemRecord(
         item_id=item_id,
         turn_id="turn_1",
         run_id="run_1",
@@ -61,8 +61,8 @@ def _message(
     )
 
 
-def _tool_call(item_id: str, step_id: str, call_id: str) -> ContextItemRecordV1:
-    return ContextItemRecordV1(
+def _tool_call(item_id: str, step_id: str, call_id: str) -> ContextItemRecord:
+    return ContextItemRecord(
         item_id=item_id,
         turn_id="turn_1",
         run_id="run_1",
@@ -75,8 +75,8 @@ def _tool_call(item_id: str, step_id: str, call_id: str) -> ContextItemRecordV1:
 
 def _tool_result(
     item_id: str, step_id: str, call_id: str, call_item_id: str
-) -> ContextItemRecordV1:
-    return ContextItemRecordV1(
+) -> ContextItemRecord:
+    return ContextItemRecord(
         item_id=item_id,
         turn_id="turn_1",
         run_id="run_1",
@@ -156,7 +156,7 @@ def test_failed_summary_can_leave_original_context_unchanged() -> None:
 
 def test_compaction_source_bounds_utf8_and_large_tool_arguments() -> None:
     record = _tool_call("call", "step", "c1")
-    record = ContextItemRecordV1(
+    record = ContextItemRecord(
         item_id=record.item_id,
         turn_id=record.turn_id,
         run_id=record.run_id,
@@ -372,9 +372,9 @@ def test_compaction_preserves_frozen_memory_omissions(tmp_path: Path) -> None:
             run_config_template=template,
         )
         store.mark_run_running(turn.run_id)
-        memory = FrozenMemoryContextV1(
+        memory = FrozenMemoryContext(
             memory=(
-                MemoryReferenceV1(
+                MemoryReference(
                     memory_id="memory_00000000000000000000000000000001",
                     revision=1,
                     scope="global",
@@ -382,7 +382,7 @@ def test_compaction_preserves_frozen_memory_omissions(tmp_path: Path) -> None:
                 ),
             ),
             omissions=(
-                OmissionRecordV1(
+                OmissionRecord(
                     source_type="memory",
                     source_id="memory_00000000000000000000000000000002",
                     revision=1,

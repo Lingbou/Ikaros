@@ -22,15 +22,15 @@ from ikaros_runtime.errors import (
     ModelInputUnavailableError,
     RunCancelled,
 )
-from ikaros_runtime.history_status import FrozenHistoryStatusV1, HistoryRunStatusV1
-from ikaros_runtime.memory import MemoryRetrieverV1, MemoryScope, SqliteMemoryStore
+from ikaros_runtime.history_status import FrozenHistoryStatus, HistoryRunStatus
+from ikaros_runtime.memory import MemoryRetriever, MemoryScope, SqliteMemoryStore
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import (
     OpenAICompatibleAdapter,
     ProviderRetryPolicy,
 )
 from ikaros_runtime.run_input import (
-    FrozenMemoryContextV1,
+    FrozenMemoryContext,
     StepInput,
     config_input_token_counts,
     history_status_tokens,
@@ -191,7 +191,7 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
                 },
                 publish,
                 tool_executor=executor,
-                memory_retriever=MemoryRetrieverV1(memory),
+                memory_retriever=MemoryRetriever(memory),
             )
             await loop.run(first.run_id, CancellationToken())
             assert target.read_text() == "first"
@@ -251,7 +251,7 @@ async def test_next_turn_sees_successful_write_after_provider_failure_without_re
             assert snapshot.budget.context_data_tokens > history_status_tokens(
                 snapshot.history_status
             )
-            assert FrozenMemoryContextV1.from_revision(snapshot).memory == snapshot.memory
+            assert FrozenMemoryContext.from_revision(snapshot).memory == snapshot.memory
         before = _persisted_inputs(store)
         final_snapshot = get_context_revision(store._connection, next_turn.run_id)
         assert final_snapshot is not None
@@ -493,24 +493,24 @@ async def test_oversized_nearest_failed_turn_keeps_a_status_notice(tmp_path: Pat
     ],
 )
 def test_history_status_rejects_non_metadata_fields(field: str, value: str) -> None:
-    wire = HistoryRunStatusV1("turn_a", "run_a", "failed", "provider_network").to_wire()
+    wire = HistoryRunStatus("turn_a", "run_a", "failed", "provider_network").to_wire()
     wire[field] = value
     with pytest.raises(ValueError):
-        HistoryRunStatusV1.from_wire(wire)
+        HistoryRunStatus.from_wire(wire)
 
 
 def test_history_status_budget_is_exact_and_has_no_unfrozen_body() -> None:
-    status = FrozenHistoryStatusV1((HistoryRunStatusV1("turn_你😀", "run_a", "cancelled", None),))
+    status = FrozenHistoryStatus((HistoryRunStatus("turn_你😀", "run_a", "cancelled", None),))
     assert status.characters == len(status.content)
-    assert FrozenHistoryStatusV1.from_wire(status.to_wire()) == status
+    assert FrozenHistoryStatus.from_wire(status.to_wire()) == status
     tampered = deepcopy(status.to_wire())
     tampered["characters"] += 1
     with pytest.raises(ValueError, match="character count"):
-        FrozenHistoryStatusV1.from_wire(tampered)
+        FrozenHistoryStatus.from_wire(tampered)
     tampered = deepcopy(status.to_wire())
     tampered["runs"][0]["body"] = "not metadata"
     with pytest.raises(ValueError):
-        FrozenHistoryStatusV1.from_wire(tampered)
+        FrozenHistoryStatus.from_wire(tampered)
 
 
 def test_frozen_failed_history_rejects_changed_status(tmp_path: Path) -> None:
@@ -569,9 +569,9 @@ def test_latest_failed_status_charges_actual_included_or_omitted_budget(
         )
         store.mark_run_running(old.run_id)
         store.terminalize_run(old.run_id, "failed", reason_code="agent_error")
-        status = FrozenHistoryStatusV1(
+        status = FrozenHistoryStatus(
             (
-                HistoryRunStatusV1(
+                HistoryRunStatus(
                     old.turn_id,
                     old.run_id,
                     "failed",

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
-from ..run_input import ContextItemRecordV1
+from ..run_input import ContextItemRecord
 
 _COMPACTION_SOURCE_MAX_BYTES = 24_000
 _COMPACTION_RECORD_MAX_BYTES = 700
@@ -22,7 +22,7 @@ _RETAINED_USER_MESSAGE_TOKEN_BUDGET = 20_000
 
 
 def build_compaction_source(
-    records: Sequence[ContextItemRecordV1],
+    records: Sequence[ContextItemRecord],
     *,
     max_bytes: int = _COMPACTION_SOURCE_MAX_BYTES,
 ) -> str:
@@ -91,14 +91,14 @@ class ContextTrimResult:
     in the original input, which makes the result suitable for an audit event.
     """
 
-    records: tuple[ContextItemRecordV1, ...]
+    records: tuple[ContextItemRecord, ...]
     omitted_item_ids: tuple[str, ...]
     retained_tokens: int
     truncated: bool
 
 
 def trim_context_records(
-    records: Sequence[ContextItemRecordV1],
+    records: Sequence[ContextItemRecord],
     *,
     maximum_tokens: int,
     preserve_prefix_units: int = 1,
@@ -197,10 +197,10 @@ def trim_context_records(
     )
 
 
-def _units(records: tuple[ContextItemRecordV1, ...]) -> tuple[tuple[ContextItemRecordV1, ...], ...]:
+def _units(records: tuple[ContextItemRecord, ...]) -> tuple[tuple[ContextItemRecord, ...], ...]:
     """Partition records into provider-valid atomic message/tool units."""
 
-    units: list[tuple[ContextItemRecordV1, ...]] = []
+    units: list[tuple[ContextItemRecord, ...]] = []
     index = 0
     while index < len(records):
         item = records[index]
