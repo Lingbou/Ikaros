@@ -23,7 +23,7 @@ function renderBanner() {
 
 describe("RuntimeStatusBanner", () => {
   it("shows startup and reconnect lifecycle without presenting an empty app", () => {
-    useAppStore.setState({ runtimeMode: true, runtimeConnectionStatus: "starting" });
+    useAppStore.setState({ runtimeConnectionStatus: "starting" });
     const view = renderBanner();
     expect(screen.getByRole("status")).toHaveTextContent("Starting local runtime");
 
@@ -39,8 +39,7 @@ describe("RuntimeStatusBanner", () => {
   it("offers the scoped send retry for a restored draft", () => {
     const retryRuntimeIssue = vi.fn(async () => undefined);
     useAppStore.setState({
-      runtimeMode: true,
-      runtimeConnectionStatus: "connected",
+            runtimeConnectionStatus: "connected",
       runtimeError: "request rejected",
       runtimeIssue: {
         kind: "send",
@@ -61,8 +60,7 @@ describe("RuntimeStatusBanner", () => {
 
   it("does not offer a stale send retry after navigation changes its target", () => {
     useAppStore.setState({
-      runtimeMode: true,
-      runtimeConnectionStatus: "connected",
+            runtimeConnectionStatus: "connected",
       runtimeError: "request rejected",
       runtimeIssue: {
         kind: "send",
@@ -83,8 +81,7 @@ describe("RuntimeStatusBanner", () => {
   it("keeps an offline connection retry visible and non-dismissible", () => {
     const retryRuntimeConnection = vi.fn(async () => undefined);
     useAppStore.setState({
-      runtimeMode: true,
-      runtimeConnectionStatus: "offline",
+            runtimeConnectionStatus: "offline",
       runtimeError: "socket closed",
       runtimeIssue: { kind: "connection", message: "socket closed" },
       retryRuntimeConnection,

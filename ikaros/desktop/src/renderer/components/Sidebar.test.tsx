@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findThread, flattenEvents, type MessageEvent } from "../domain";
 import { setUiLanguage } from "../i18n";
 import { LOCAL_PROFILE } from "../localProfile";
-import { TEST_EXPANDED_PROJECTS, TEST_PROJECTS, createFixtureThreads } from "../testFixtures";
+import { TEST_EXPANDED_PROJECTS, TEST_PROJECTS, createFixtureThreads } from "../__fixtures__/testFixtures";
 import { useAppStore } from "../store";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../shared/platform";
 import { Sidebar } from "./Sidebar";

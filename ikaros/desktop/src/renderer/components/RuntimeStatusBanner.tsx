@@ -18,7 +18,6 @@ const ISSUE_TITLE_KEYS: Record<RuntimeIssue["kind"], TranslationKey> = {
 
 export function RuntimeStatusBanner() {
   const { t } = useTranslation();
-  const runtimeMode = useAppStore((state) => state.runtimeMode);
   const status = useAppStore((state) => state.runtimeConnectionStatus);
   const error = useAppStore((state) => state.runtimeError);
   const issue = useAppStore((state) => state.runtimeIssue);
@@ -28,8 +27,6 @@ export function RuntimeStatusBanner() {
   const retryConnection = useAppStore((state) => state.retryRuntimeConnection);
   const retryIssue = useAppStore((state) => state.retryRuntimeIssue);
   const clearError = useAppStore((state) => state.clearRuntimeError);
-
-  if (!runtimeMode) return null;
 
   if (status === "starting" || status === "reconnecting") {
     return (

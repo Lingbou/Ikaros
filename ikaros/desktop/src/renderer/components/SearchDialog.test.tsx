@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TEST_PROJECTS, createFixtureThreads } from "../testFixtures";
+import { TEST_PROJECTS, createFixtureThreads } from "../__fixtures__/testFixtures";
 import { useAppStore } from "../store";
 import { SearchDialog } from "./SearchDialog";
 

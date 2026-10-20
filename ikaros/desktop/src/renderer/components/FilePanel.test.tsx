@@ -45,7 +45,7 @@ beforeEach(() => {
   api.previewFile.mockReset().mockResolvedValue(page());
   api.getFileChange.mockReset().mockResolvedValue(change());
   useAppStore.setState({
-    runtimeMode: true, selectedThreadId: "thread-files", draft: "Keep this request",
+    selectedThreadId: "thread-files", draft: "Keep this request",
     fileSelection: { threadId: "thread-files", path: "notes.txt", view: "current" },
   });
 });

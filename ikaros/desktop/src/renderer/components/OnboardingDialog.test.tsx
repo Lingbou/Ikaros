@@ -20,8 +20,7 @@ function installDesktopApi(onboardingCompleted: boolean) {
 
 beforeEach(() => {
   useAppStore.setState({
-    runtimeMode: true,
-    runtimeConnectionStatus: "connected",
+        runtimeConnectionStatus: "connected",
     providerCatalogStatus: "ready",
     providers: [],
     models: [],

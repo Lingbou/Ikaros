@@ -128,25 +128,6 @@ export interface ToolResultEvent extends EventBase {
   };
 }
 
-export type InterruptCopy =
-  | {
-      source: "app";
-      kind:
-        | "run_stopped"
-        | "worker_disconnected"
-        | "recovering_checkpoint"
-        | "retrying_export"
-        | "recovery_completed";
-    }
-  | { source: "external"; title: string; description: string };
-
-export interface InterruptEvent extends EventBase {
-  type: "interrupt";
-  copy: InterruptCopy;
-  recoverable: boolean;
-  status: "interrupted" | "recovering" | "recovered";
-}
-
 export interface FileChangeEvent extends EventBase {
   type: "file_change";
   path: string;
@@ -167,7 +148,6 @@ export type AgentEvent =
   | MessageEvent
   | ToolCallEvent
   | ToolResultEvent
-  | InterruptEvent
   | FileChangeEvent
   | StatusEvent;
 

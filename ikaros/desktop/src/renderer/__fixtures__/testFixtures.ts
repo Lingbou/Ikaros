@@ -3,9 +3,9 @@ import {
   type RuntimeThreadSummary,
   type RuntimeTurnHistory,
   type RuntimeWorkspaceSummary,
-} from "../shared/runtime";
-import type { Project, Thread } from "./domain";
-import { projectRuntimeThreadHistory } from "./runtimeProjection";
+} from "../../shared/runtime";
+import type { Project, Thread } from "../domain";
+import { projectRuntimeThreadHistory } from "../runtimeProjection";
 
 export const TEST_RUNTIME_AT = "2026-08-05T06:00:00.000Z";
 

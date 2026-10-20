@@ -804,7 +804,6 @@ describe("Runtime-backed renderer store", () => {
     vi.resetModules();
     const { useAppStore } = await import("./store");
 
-    expect(useAppStore.getState().runtimeMode).toBe(true);
     expect(useAppStore.getState().threads).toEqual([]);
     expect(useAppStore.getState().projects).toEqual([]);
     await useAppStore.getState().initializeRuntime();

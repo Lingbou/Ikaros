@@ -9,7 +9,7 @@ import {
   type Thread,
 } from "../domain";
 import { setUiLanguage } from "../i18n";
-import { TEST_EXPANDED_PROJECTS, TEST_PROJECTS, createFixtureThreads } from "../testFixtures";
+import { TEST_EXPANDED_PROJECTS, TEST_PROJECTS, createFixtureThreads } from "../__fixtures__/testFixtures";
 import { useAppStore } from "../store";
 import { ConversationHeader } from "./ConversationHeader";
 
@@ -42,8 +42,7 @@ afterEach(() => {
 describe("ConversationHeader actions", () => {
   it("opens a path entry for a regular conversation folder without a Git requirement", () => {
     useAppStore.setState({
-      runtimeMode: true,
-      projects: [{ id: "workspace-files", name: "Reports", color: "#ffffff", rootUri: "/tmp/plain-reports" }],
+            projects: [{ id: "workspace-files", name: "Reports", color: "#ffffff", rootUri: "/tmp/plain-reports" }],
       threads: [threadFixture("workspace-files")],
       selectedThreadId: "thread-localization",
       draft: "Keep my draft",

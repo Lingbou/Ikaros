@@ -117,7 +117,6 @@ export interface RuntimeFileSelection {
 }
 
 interface AppState {
-  runtimeMode: boolean;
   runtimeReady: boolean;
   runtimeConnectionStatus: RuntimeHostStatusState;
   runtimeError: string | null;
@@ -208,7 +207,6 @@ interface AppState {
   sendDraft: () => Promise<void>;
   steerRun: () => Promise<void>;
   stopRun: () => void;
-  recoverRun: (strategy: "retry" | "resume") => Promise<void>;
   appendAgentEvent: (
     threadId: string,
     branchId: string,
@@ -580,55 +578,44 @@ function ownsRuntimeSendForeground(
 function currentRunContext(state: AppState): RunContext | null {
   const thread = findThread(state.threads, state.selectedThreadId);
   const branch = activeBranch(thread);
-  if (state.runtimeMode) {
-    const activity = state.selectedThreadId
-      ? activeRuntimeActivityForThread(state, state.selectedThreadId)
-      : undefined;
-    if (thread && activity && isRunActive(activity.status)) {
-      return {
-        threadId: thread.id,
-        branchId: activity.branchId,
-        turnId: activity.turnId,
-        runId: activity.runId,
-        epoch: state.runEpoch,
-      };
-    }
-    const turn = [...(branch?.turns ?? [])]
-      .reverse()
-      .find((candidate) => isRunActive(candidate.status) && candidate.runId);
-    if (thread && branch && turn?.runId) {
-      return {
-        threadId: thread.id,
-        branchId: branch.id,
-        turnId: turn.id,
-        runId: turn.runId,
-        epoch: state.runEpoch,
-      };
-    }
-    const pending = thread ? state.pendingRuntimeSubmissions[thread.id] : undefined;
-    if (thread && branch && pending?.runId && pending.turnId) {
-      return {
-        threadId: thread.id,
-        branchId: pending.branchId ?? branch.id,
-        turnId: pending.turnId,
-        runId: pending.runId,
-        epoch: pending.epoch,
-      };
-    }
-    if (state.activeRun?.threadId === state.selectedThreadId) {
-      return state.activeRun;
-    }
-    return null;
+  const activity = state.selectedThreadId
+    ? activeRuntimeActivityForThread(state, state.selectedThreadId)
+    : undefined;
+  if (thread && activity && isRunActive(activity.status)) {
+    return {
+      threadId: thread.id,
+      branchId: activity.branchId,
+      turnId: activity.turnId,
+      runId: activity.runId,
+      epoch: state.runEpoch,
+    };
   }
-  if (state.activeRun) return state.activeRun;
-  const turn = branch?.turns.at(-1);
-  if (!thread || !branch || !turn) return null;
-  return {
-    threadId: thread.id,
-    branchId: branch.id,
-    turnId: turn.id,
-    epoch: state.runEpoch,
-  };
+  const turn = [...(branch?.turns ?? [])]
+    .reverse()
+    .find((candidate) => isRunActive(candidate.status) && candidate.runId);
+  if (thread && branch && turn?.runId) {
+    return {
+      threadId: thread.id,
+      branchId: branch.id,
+      turnId: turn.id,
+      runId: turn.runId,
+      epoch: state.runEpoch,
+    };
+  }
+  const pending = thread ? state.pendingRuntimeSubmissions[thread.id] : undefined;
+  if (thread && branch && pending?.runId && pending.turnId) {
+    return {
+      threadId: thread.id,
+      branchId: pending.branchId ?? branch.id,
+      turnId: pending.turnId,
+      runId: pending.runId,
+      epoch: pending.epoch,
+    };
+  }
+  if (state.activeRun?.threadId === state.selectedThreadId) {
+    return state.activeRun;
+  }
+  return null;
 }
 
 type StoreSet = StoreApi<AppState>["setState"];
@@ -2832,7 +2819,6 @@ async function steerRuntimeDraft(set: StoreSet, get: StoreGet, prompt: string): 
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
-  runtimeMode: true,
   runtimeReady: false,
   runtimeConnectionStatus: runtimeClient === null ? "offline" : "starting",
   runtimeError: null,
@@ -3116,7 +3102,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
     void cancelRuntimeRunWithRetry(set, get, context.runId);
   },
 
-  recoverRun: async () => {},
   appendAgentEvent: (threadId, branchId, event, status) =>
     set((state) => ({
       threads: updateThread(state.threads, threadId, (thread) =>
