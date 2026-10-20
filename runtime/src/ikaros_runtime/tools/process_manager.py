@@ -1,4 +1,4 @@
-"""Run-owned commands with durable facts and bounded, continuously drained output."""
+"""Thread-owned commands with durable facts and bounded, continuously drained output."""
 
 from __future__ import annotations
 
@@ -29,12 +29,16 @@ from .process_platform import (
     _spawn_pty,
     _SpawnedProcess,
     _terminate_process_tree,
+    probe_custody,
+    terminate_custody_tree,
 )
 
 _PROCESS_OUTPUT_LIMIT = 1024 * 1024
 _STREAM_OUTPUT_LIMIT = 256 * 1024
 _PAGE_LIMIT = 16 * 1024
-_MAX_RUNNING_PER_RUN = 64
+_MAX_RUNNING_PER_THREAD = 64
+_TERMINAL_RETENTION_SECONDS = 1800
+_MAX_RETAINED_ENTRIES = 256
 
 type ProcessState = Literal["running", "exited", "terminated", "unknown"]
 
@@ -216,6 +220,7 @@ class _Entry:
     pumps: list[asyncio.Task[None]] = field(default_factory=list)
     done: asyncio.Event = field(default_factory=asyncio.Event)
     stopping: bool = False
+    recovered: bool = False
     dirty: bool = False
     last_record: float = 0.0
     output_guard: _StreamGuard | None = None
@@ -289,13 +294,22 @@ class ProcessManager:
         entry.last_record = time.monotonic()
 
     def restore(self, records: Sequence[JsonObject]) -> None:
-        """Set interrupted persisted commands to unknown; never reattach or replay them."""
+        """Reconcile persisted commands after a Runtime restart.
+
+        Commands that are still alive are re-adopted by custody (PID plus
+        recorded start time) as thread-owned running entries: retained output
+        stays readable and ``process_stop`` remains available, while live
+        input/output is gone (``errorCode`` ``runtime_recovered``). Everything
+        else settles to ``unknown`` exactly as before.
+        """
         for fact in records:
             run_id = str(fact["runId"])
             if any(entry.context.run_id == run_id for entry in self._entries.values()):
                 raise ValueError("cannot restore processes for a Run active in this Runtime")
             self._closed_runs.add(run_id)
             if fact["state"] != "running" and fact.get("errorCode") != "start_pending":
+                continue
+            if fact["state"] == "running" and self._adopt(fact):
                 continue
             recovered = dict(fact)
             recovered.update(
@@ -308,6 +322,66 @@ class ProcessManager:
             )
             if self._record is not None:
                 self._record(recovered)
+
+    def _adopt(self, fact: JsonObject) -> bool:
+        """Re-adopt one still-alive command; False when custody cannot verify it."""
+        pid = fact.get("pid")
+        started_at = fact.get("startedAt")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return False
+        if not isinstance(started_at, str) or not started_at:
+            return False
+        if probe_custody(pid, started_at) != "alive":
+            return False
+        entry = _Entry(
+            str(fact["processId"]),
+            ToolExecutionContext(
+                run_id=str(fact["runId"]),
+                step_ordinal=int(fact["stepOrdinal"]),
+                item_id=str(fact["itemId"]),
+                thread_id=str(fact["threadId"]),
+            ),
+            str(fact["command"]),
+            str(fact["cwd"]),
+            started_at,
+            state="running",
+            error_code="runtime_recovered",
+            pid=pid,
+            recovered=True,
+        )
+        entry.output.append(str(fact.get("output", "")))
+        entry.stdout.append(str(fact.get("stdout", "")))
+        entry.stderr.append(str(fact.get("stderr", "")))
+        entry.truncated = bool(fact.get("truncated", False))
+        entry.done.set()
+        self._entries[entry.process_id] = entry
+        if self._record is not None:
+            self._record(entry.fact())
+        return True
+
+    def _prune(self) -> None:
+        """Drop old terminal entries; running and recovered entries are kept."""
+        now = time.monotonic()
+        for process_id, entry in list(self._entries.items()):
+            if (
+                entry.done.is_set()
+                and entry.state != "running"
+                and now - entry.last_record > _TERMINAL_RETENTION_SECONDS
+            ):
+                self._entries.pop(process_id, None)
+        overflow = len(self._entries) - _MAX_RETAINED_ENTRIES
+        if overflow <= 0:
+            return
+        candidates = sorted(
+            (
+                entry
+                for entry in self._entries.values()
+                if entry.done.is_set() and entry.state != "running"
+            ),
+            key=lambda entry: entry.last_record,
+        )
+        for entry in candidates[:overflow]:
+            self._entries.pop(entry.process_id, None)
 
     async def start(
         self,
@@ -346,11 +420,12 @@ class ProcessManager:
                 raise ProcessError(
                     "run_closed", "The owning Run has ended; cannot start a command."
                 )
-            owned = [e for e in self._entries.values() if e.context.run_id == context.run_id]
-            if sum(not e.done.is_set() for e in owned) >= _MAX_RUNNING_PER_RUN:
+            self._prune()
+            owned = [e for e in self._entries.values() if e.context.thread_id == context.thread_id]
+            if sum(not e.done.is_set() for e in owned) >= _MAX_RUNNING_PER_THREAD:
                 raise ProcessError(
                     "process_limit",
-                    f"A Run may own at most {_MAX_RUNNING_PER_RUN} active commands.",
+                    f"A thread may own at most {_MAX_RUNNING_PER_THREAD} active commands.",
                 )
             cancellation.raise_if_cancelled()
             entry = _Entry(
@@ -428,11 +503,9 @@ class ProcessManager:
 
     def _owned(self, process_id: str, context: ToolExecutionContext) -> _Entry:
         entry = self._entries.get(process_id)
-        if entry is None or (
-            entry.context.run_id != context.run_id or entry.context.thread_id != context.thread_id
-        ):
+        if entry is None or entry.context.thread_id != context.thread_id:
             raise ProcessError(
-                "process_not_found", "No command with that processId belongs to this Run."
+                "process_not_found", "No command with that processId belongs to this thread."
             )
         return entry
 
@@ -526,6 +599,11 @@ class ProcessManager:
     ) -> JsonObject:
         entry = self._owned(process_id, context)
         self.read(process_id, context=context, cursor=cursor)
+        if entry.recovered:
+            raise ProcessError(
+                "process_recovered",
+                "The command survived a Runtime restart; live input is unavailable.",
+            )
         if entry.pty is None:
             raise ProcessError(
                 "process_not_terminal", "Only a terminal command accepts input."
@@ -549,6 +627,11 @@ class ProcessManager:
     ) -> JsonObject:
         entry = self._owned(process_id, context)
         self.read(process_id, context=context, cursor=cursor)
+        if entry.recovered:
+            raise ProcessError(
+                "process_recovered",
+                "The command survived a Runtime restart; live window control is unavailable.",
+            )
         if entry.pty is None:
             raise ProcessError(
                 "process_not_terminal", "Only a terminal command has a window size."
@@ -562,6 +645,12 @@ class ProcessManager:
         return self.read(process_id, context=context, cursor=cursor)
 
     async def _stop(self, entry: _Entry) -> None:
+        if entry.recovered:
+            if entry.state != "running":
+                return
+            entry.stopping = True
+            await self._settle_recovered(entry)
+            return
         if entry.done.is_set():
             return
         entry.stopping = True
@@ -569,23 +658,32 @@ class ProcessManager:
         if entry.monitor is not None:
             await _await_uninterruptibly(entry.monitor)
 
+    async def _settle_recovered(self, entry: _Entry) -> None:
+        """Stop a command that was re-adopted after a Runtime restart."""
+        assert entry.pid is not None
+        outcome = await terminate_custody_tree(entry.pid, entry.started_at)
+        if outcome == "terminated":
+            entry.state = "terminated"
+            entry.error_code = None
+        else:
+            entry.state = "unknown"
+            entry.error_code = "runtime_interrupted"
+        entry.finished_at = _now()
+        entry.done.set()
+        with suppress(Exception):
+            self._persist(entry, force=True)
+
     async def close_run(self, run_id: str) -> None:
+        """Mark a Run closed without touching its commands (they are thread-owned)."""
         async with self._start_lock:
             self._closed_runs.add(run_id)
-            entries = [entry for entry in self._entries.values() if entry.context.run_id == run_id]
-        await asyncio.gather(*(self._stop(entry) for entry in entries))
-        # Durable history is in the repository; retaining every Run's buffers leaks memory.
-        for entry in entries:
-            self._entries.pop(entry.process_id, None)
 
     async def close(self) -> None:
+        """Persist facts and leave commands running; a restart re-adopts them."""
         self._closed = True
-        await asyncio.gather(
-            *(
-                self.close_run(run_id)
-                for run_id in {entry.context.run_id for entry in self._entries.values()}
-            )
-        )
+        for entry in list(self._entries.values()):
+            with suppress(Exception):
+                self._persist(entry, force=True)
 
     async def _kill(self, entry: _Entry) -> None:
         if entry.pty is not None:

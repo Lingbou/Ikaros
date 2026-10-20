@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +53,14 @@ def _executor(manager: ProcessManager) -> ToolExecutor:
         ),
         FullAccessPolicy(),
     )
+
+
+async def _dispose(manager: ProcessManager) -> None:
+    """Stop every command, then close (commands outlive Runs since B2)."""
+    for entry in list(manager._entries.values()):
+        with suppress(Exception):
+            await manager.stop(entry.process_id, context=entry.context)
+    await manager.close()
 
 
 def test_restart_process_read_uses_unicode_character_cursors() -> None:
@@ -245,8 +254,8 @@ async def test_repeated_start_and_read_do_not_replay_command(tmp_path: Path) -> 
         await manager.start(
             command, str(tmp_path.parent), context=context, cancellation=CancellationToken()
         )
-    with pytest.raises(ProcessError, match="belongs to this Run"):
-        manager.read(first["processId"], context=_context(run="run_other"))
+    # Commands are thread-owned: another Run of the same thread can still read them.
+    assert manager.read(first["processId"], context=_context(run="run_other"))["state"] == "exited"
     await manager.close()
 
 
@@ -295,8 +304,8 @@ async def test_wait_cancellation_does_not_spawn_or_implicitly_stop(tmp_path: Pat
         await task
     assert manager.read(result["processId"], context=context)["state"] == "running"
     await manager.close_run(context.run_id)
-    with pytest.raises(ProcessError, match="belongs to this Run"):
-        manager.read(result["processId"], context=context)
+    # Commands are thread-owned: closing the Run keeps them readable and stoppable.
+    assert manager.read(result["processId"], context=context)["state"] == "running"
     with pytest.raises(ProcessError, match="ended"):
         await manager.start(
             "echo forbidden",
@@ -304,6 +313,7 @@ async def test_wait_cancellation_does_not_spawn_or_implicitly_stop(tmp_path: Pat
             context=_context(item="item_late"),
             cancellation=CancellationToken(),
         )
+    await _dispose(manager)
 
 
 @pytest.mark.asyncio
@@ -465,7 +475,29 @@ async def test_secret_split_across_stream_chunks_never_reaches_read_or_record(
 
 
 @pytest.mark.asyncio
-async def test_restore_running_becomes_unknown_without_spawning(tmp_path: Path) -> None:
+async def test_commands_outlive_the_run_and_serve_later_runs(tmp_path: Path) -> None:
+    manager = ProcessManager()
+    first = _context(item="item_first", run="run_one")
+    started = await manager.start(
+        _command(windows="Start-Sleep 60", posix="sleep 60"),
+        str(tmp_path),
+        context=first,
+        cancellation=CancellationToken(),
+    )
+    process_id = started["processId"]
+    await manager.close_run("run_one")
+    later = _context(item="item_later", run="run_two")
+    assert manager.read(process_id, context=later)["state"] == "running"
+    stopped = await manager.stop(process_id, context=later)
+    assert stopped["state"] == "terminated"
+    other_thread = ToolExecutionContext("run_two", 1, "item_later", "thread_other", None)
+    with pytest.raises(ProcessError, match="belongs to this thread"):
+        manager.read(process_id, context=other_thread)
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_restore_readopts_a_live_command_and_stop_settles_it(tmp_path: Path) -> None:
     facts: list[JsonObject] = []
     manager = ProcessManager(record=facts.append)
     context = _context()
@@ -476,20 +508,54 @@ async def test_restore_running_becomes_unknown_without_spawning(tmp_path: Path) 
         cancellation=CancellationToken(),
     )
     running = dict(facts[-1])
-    await manager.close()
+    await manager.close()  # a Runtime exit keeps the command alive
     recovered: list[JsonObject] = []
     restored = ProcessManager(record=recovered.append)
     restored.restore([running])
+    assert recovered[-1]["state"] == "running"
+    assert recovered[-1]["errorCode"] == "runtime_recovered"
+    read = restored.read(started["processId"], context=context)
+    assert read["state"] == "running" and read["errorCode"] == "runtime_recovered"
+    with pytest.raises(ProcessError, match="live input is unavailable"):
+        await restored.write(started["processId"], context=context, data="x\n")
+    stopped = await restored.stop(started["processId"], context=context)
+    assert stopped["state"] == "terminated"
+    assert stopped["exitCode"] is None
+    await _wait_for_process_exit(int(started["pid"]))
+    assert not _process_is_alive(int(started["pid"]))
+    await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: Path) -> None:
+    facts: list[JsonObject] = []
+    manager = ProcessManager(record=facts.append)
+    context = _context()
+    started = await manager.start(
+        _command(windows="Start-Sleep 60", posix="sleep 60"),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+    )
+    running = dict(facts[-1])
+    await manager.stop(started["processId"], context=context)
+    await _wait_for_process_exit(int(running["pid"]))
+    await manager.close()
+    recovered: list[JsonObject] = []
+    restored = ProcessManager(record=recovered.append)
+    restored.restore([running])  # the command already exited
     assert recovered[-1]["state"] == "unknown"
     assert recovered[-1]["exitCode"] is None
     assert recovered[-1]["errorCode"] == "runtime_interrupted"
-    with pytest.raises(ProcessError, match="ended"):
-        await restored.start(
-            "echo must-not-run", str(tmp_path), context=context, cancellation=CancellationToken()
-        )
-    with pytest.raises(ProcessError, match="belongs to this Run"):
-        restored.read(started["processId"], context=context)
+    # A live PID whose recorded start time does not match must never be adopted.
+    mismatched = dict(running, pid=os.getpid(), startedAt="2020-01-01T00:00:00.000Z")
+    reused: list[JsonObject] = []
+    other = ProcessManager(record=reused.append)
+    other.restore([mismatched])
+    assert reused[-1]["state"] == "unknown"
+    assert reused[-1]["errorCode"] == "runtime_interrupted"
     await restored.close()
+    await other.close()
 
 
 @pytest.mark.asyncio
@@ -509,7 +575,7 @@ async def test_active_command_quota(tmp_path: Path) -> None:
             context=_context(item="item_sixty_fifth"),
             cancellation=CancellationToken(),
         )
-    await manager.close()
+    await _dispose(manager)
 
 
 @pytest.mark.asyncio
@@ -646,9 +712,7 @@ async def test_terminal_facts_keep_flushed_output_and_bounded_number_of_records(
 
 
 @pytest.mark.asyncio
-async def test_run_closure_releases_buffers_without_overwriting_persisted_output(
-    tmp_path: Path,
-) -> None:
+async def test_run_closure_keeps_settled_results_readable(tmp_path: Path) -> None:
     facts: list[JsonObject] = []
     manager = ProcessManager(record=facts.append)
     context = _context()
@@ -659,11 +723,11 @@ async def test_run_closure_releases_buffers_without_overwriting_persisted_output
         start["processId"], context=context, cancellation=CancellationToken(), timeout_ms=5000
     )
     await manager.close_run(context.run_id)
-    with pytest.raises(ProcessError, match="belongs to this Run"):
-        manager.read(start["processId"], context=context)
+    # Commands outlive their Run: settled output stays readable after closure.
+    after = manager.read(start["processId"], context=context)
+    assert after["output"] == before["output"]
     assert facts[-1]["output"] == before["output"]
     assert facts[-1]["state"] == "exited"
-    assert manager._entries == {}
     await manager.close()
 
 
@@ -737,6 +801,8 @@ async def test_cancelled_wait_tool_retains_partial_output_for_turn_history(tmp_p
     assert "partial" in interrupted.value.result.output
     assert interrupted.value.result.details["processId"] == start["processId"]
     await manager.close_run(context.run_id)
+    assert manager.read(start["processId"], context=context)["state"] == "running"
+    await _dispose(manager)
     assert facts[-1]["state"] == "terminated"
     assert "partial" in facts[-1]["stdout"]
 
@@ -830,4 +896,4 @@ async def test_sixty_four_active_commands_block_the_sixty_fifth_until_one_finish
         assert result["state"] == "exited" and result["exitCode"] == 0
         assert "released" in result["output"]
     finally:
-        await manager.close()
+        await _dispose(manager)

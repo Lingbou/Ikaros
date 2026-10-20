@@ -5209,8 +5209,17 @@ async def test_cancelling_process_wait_preserves_partial_output_and_clears_runni
             for event in run_events
             if event["type"] == "process.recorded"
         ]
-        assert process_facts[-1]["state"] == "terminated"
+        # Commands are thread-owned: cancelling the Run leaves the command running
+        # and the thread can still stop it through the process control plane.
+        assert process_facts[-1]["state"] == "running"
         assert "before-stop" in process_facts[-1]["stdout"]
+        stopped = await _rpc(
+            connection,
+            5,
+            "process.stop",
+            {"threadId": thread["id"], "processId": process_facts[-1]["processId"]},
+        )
+        assert stopped["result"]["state"] == "terminated"
         assert len(settled) == 1
         assert settled[0]["payload"]["status"] == "cancelled"
         assert not any(

@@ -14,6 +14,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -251,7 +252,9 @@ def _create_windows_job(pid: int) -> _WindowsJob:
         raise ctypes.WinError(ctypes.get_last_error())
     job = _WindowsJob(kernel32, job_handle)
     information = ExtendedLimitInformation()
-    information.basic_limit_information.limit_flags = 0x00002000
+    # Commands are thread-owned and survive a Runtime restart (B2); custody
+    # (PID plus start time) re-identifies them instead of a kill-on-close job.
+    information.basic_limit_information.limit_flags = 0
     if not kernel32.SetInformationJobObject(
         job_handle,
         9,
@@ -1126,3 +1129,173 @@ async def _spawn_pty(
         )
         return _WindowsPtySession(handles=handles, loop=loop)
     return _spawn_posix_pty(command, cwd, columns=columns, rows=rows, loop=loop)
+
+
+# --- Custody: re-identify and settle commands after a Runtime restart ---------
+
+_CUSTODY_START_TOLERANCE_SECONDS = 5.0
+
+
+def _parse_started_at(value: str) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+def _probe_windows_custody(pid: int, expected: float | None) -> str:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    process_query_limited_information = 0x1000
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        # ERROR_INVALID_PARAMETER means there is no process with this PID.
+        return "dead" if ctypes.get_last_error() == 87 else "unknown"
+    try:
+        # An exited process stays addressable while its handles are open; only
+        # STILL_ACTIVE (259) means it is really running.
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return "unknown"
+        if exit_code.value != 259:
+            return "dead"
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel_time = wintypes.FILETIME()
+        user_time = wintypes.FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return "unknown"
+    finally:
+        kernel32.CloseHandle(handle)
+    if expected is None:
+        return "unknown"
+    filetime = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    created_epoch = filetime / 10_000_000 - 11_644_473_600
+    if abs(created_epoch - expected) <= _CUSTODY_START_TOLERANCE_SECONDS:
+        return "alive"
+    # The PID was reused: the original command is gone.
+    return "dead"
+
+
+def _posix_process_state(pid: int) -> tuple[float, str] | None:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat = handle.read()
+        boot: float | None = None
+        with open("/proc/stat", "rb") as handle:
+            for line in handle:
+                if line.startswith(b"btime "):
+                    boot = float(line.split()[1])
+                    break
+        if boot is None:
+            return None
+    except (OSError, ValueError):
+        return None
+    try:
+        fields = stat[stat.rindex(b")") + 2 :].split()
+        state = fields[0].decode("ascii", errors="replace")
+        start_ticks = int(fields[19])  # field 22: starttime in clock ticks
+        sysconf = getattr(os, "sysconf", None)
+        if sysconf is None:
+            return None
+        hz = float(sysconf("SC_CLK_TCK"))
+    except (IndexError, OSError, ValueError):
+        return None
+    return boot + start_ticks / hz, state
+
+
+def _probe_posix_custody(pid: int, expected: float | None) -> str:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        pass
+    except OSError:
+        return "unknown"
+    if expected is None:
+        return "unknown"
+    probed = _posix_process_state(pid)
+    if probed is None:
+        return "unknown"
+    actual, state = probed
+    if state in {"Z", "X"}:
+        return "dead"
+    if abs(actual - expected) <= _CUSTODY_START_TOLERANCE_SECONDS:
+        return "alive"
+    return "dead"
+
+
+def probe_custody(pid: int, started_at: str) -> str:
+    """Classify a persisted command by PID plus recorded start time.
+
+    Returns ``alive`` only when a process with this PID started at the recorded
+    time, ``dead`` when the PID is gone or was reused, and ``unknown`` when the
+    platform cannot verify the identity.
+    """
+    expected = _parse_started_at(started_at)
+    if os.name == "nt":
+        return _probe_windows_custody(pid, expected)
+    return _probe_posix_custody(pid, expected)
+
+
+async def terminate_custody_tree(pid: int, started_at: str) -> str:
+    """Stop a command re-identified by custody after a Runtime restart.
+
+    Returns ``terminated``, ``gone`` (already exited) or ``unverifiable``
+    (identity mismatch or the platform refused to kill).
+    """
+    outcome = probe_custody(pid, started_at)
+    if outcome == "dead":
+        return "gone"
+    if outcome != "alive":
+        return "unverifiable"
+    if os.name == "nt":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill.exe",
+                "/PID",
+                str(pid),
+                "/T",
+                "/F",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)),
+            )
+            await asyncio.wait_for(killer.wait(), timeout=10)
+        except (OSError, TimeoutError):
+            return "unverifiable"
+        return "terminated"
+    killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", None)
+    if killpg is None or sigkill is None:
+        return "unverifiable"
+    with suppress(ProcessLookupError):
+        killpg(pid, sigkill)
+    return "terminated"

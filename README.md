@@ -142,7 +142,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - 单一事实来源：`state.db` 的 `events` 表是 append-only Journal，`seq` 全局单调
   递增；Thread/Turn/Run/Item 查询表都是可重建投影。
 - 恢复：异常退出后 `running` → `failed(runtime_interrupted)`，`queued` 按原顺序
-  重排，进程记录 → `unknown`；终态 Run 永不重跑。
+  重排；进程记录按 custody（PID + 启动时间）结算——仍存活的命令以 `running`
+  （`errorCode=runtime_recovered`）接管，其余标 `unknown`；终态 Run 永不重跑。
 - 重放：客户端从最后连续 `seq` 调用 `event.replay` 追赶，遇到缺口不推进游标；
   目录/历史页返回 `snapshotSeq` 水位线用于对齐。
 - 三个独立数据域：`state.db`（会话与执行）、`memory.db`（长期记忆）、
@@ -831,8 +832,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - 异常退出后启动：`running` Run → `failed`（原因码 `runtime_interrupted`，保留
   部分 assistant 文本）；`queued` Run 按原 Journal 顺序重新调度；终态 Run 永不
   重跑。
-- 进程记录：重启把 active/start-pending 命令标为 `unknown`；不重挂 PID、不重放
-  命令；继续工作需要在新的 Turn 里先检查当前状态。
+- 进程记录：重启按 custody（PID + 启动时间，容差 ±5 秒）结算——仍存活的命令以
+  `running` + `errorCode=runtime_recovered` 接管（保留输出可读、可 `process_stop`，
+  但实时输入/输出不可用）；已退出或无法核验的命令标 `unknown`
+  （`runtime_interrupted`）；不重放、不重跑命令。
 
 ### 6.5 Agent 执行模型
 
@@ -907,7 +910,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
-| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Run 最多 64 个运行中命令；`pty: true` 时挂接伪终端 |
+| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Thread 最多 64 个运行中命令；命令属于 Thread、跨 Run 存活；`pty: true` 时挂接伪终端 |
 | `process_read` | `processId`、可选 `cursor` | 返回状态 + 最多 16 KiB 输出页；稳定字节游标 |
 | `process_wait` | `processId`、可选 `cursor`、`timeoutMs`（1–60,000，默认 1,000） | 等待退出；超时返回 `running` 且不杀进程 |
 | `process_stop` | `processId`、可选 `cursor` | 停止进程树；重复调用无害 |
@@ -944,14 +947,23 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   写入。
 - 进程状态：`running` / `exited` / `terminated` / `unknown`；只有观察到成功退出
   才算成功。
-- 平台行为：Windows 挂起创建 + kill-on-close Job Object + 恢复；POSIX 新会话/
-  进程组；根进程退出后清理残留后代。
+- 归属与存活：命令属于 Thread；Run 结束（完成/失败/取消）不终止命令，同一
+  Thread 的后续 Run 仍可 `process_read/wait/stop`；每 Thread 并发上限 64。
+- 重启接管（custody）：按 PID + 启动时间核验存活命令，保留输出可读、可
+  `process_stop`；对已接管的命令，`process_write/resize` 返回
+  `process_recovered`。
+- 平台行为：Windows 挂起创建 + Job Object（用于树终止；不再随 Runtime 关闭
+  杀进程）+ 恢复；POSIX 新会话/进程组；根进程退出后清理残留后代。
 - PTY 会话：`process_start(pty=true)` 挂接伪终端（Windows ConPTY / POSIX pty），
   stdout/stderr 合并为同一终端流，按同一 head/tail 缓冲与字节游标读取；
   `process_write` 写 stdin（Windows 上换行规范化为 CRLF），`process_resize`
-  调整窗口尺寸；生命周期、超时、取消与进程树清理与非 PTY 命令一致，Run 结束时
-  一并终止（跨 Run / 重启存活留给后续版本）。
-- 清理超时：终止进程树 6 秒、排空管道 2 秒、Run 关闭清理等待 10 秒。
+  调整窗口尺寸；生命周期、超时、取消与进程树清理与非 PTY 命令一致；PTY 命令
+  同样跨 Run 存活，但 Runtime 退出会关闭伪终端（POSIX 通常 SIGHUP），重启后
+  一般无法接管。
+- 清理超时：终止进程树 6 秒、排空管道 2 秒；Run 关闭不再清理命令，Runtime
+  关闭只持久化事实（由下次启动接管）。
+- 已知限制：Runtime 退出后，继续写 stdout/stderr 的存活命令可能因管道断开而
+  退出；完整的后台执行需要常驻进程守护（后续方向）。
 - 环境：子进程只继承白名单环境变量，并强制 `PYTHONIOENCODING=utf-8`、
   `PYTHONUTF8=1`。
 - 文件路径锁：按解析后的绝对路径加锁；符号链接别名解析到目标后共享同一把锁。
@@ -1964,7 +1976,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线门禁 | pytest 820 passed / 2 skipped（WSL Linux）；Windows 本机 809 passed，失败均为已知平台差异 |
+| Runtime 离线门禁 | pytest 823 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
 | Desktop 离线门禁 | Vitest 555 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
@@ -2031,7 +2043,8 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
 
 尚未实现或未接通：
 
-- 跨 Run / 重启的进程存活（含 PTY 会话）；
+- 跨重启的 PTY 终端与持续输出（Runtime 退出会关闭管道/伪终端；非 PTY 命令可被
+  接管，但实时 IO 不可用）；
 - 多个 Run 并发、Multi-Agent 与子 Agent；
 - cron 与主动唤醒任务；
 - 附件、Web/浏览器/桌面操作工具；
@@ -2088,7 +2101,8 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 文件 | write/edit 捕获 | 各 ≤256 KiB / 5,000 行；事件 ≤256 KiB |
 | 文件 | history_read | before/after ≤41；maxChars 256–24,000 |
 | 文件 | 路径长度 | ≤4,096 字符 |
-| 进程 | 并发上限 | 64/ Run |
+| 进程 | 并发上限 | 64/ Thread（命令跨 Run 存活） |
+| 进程 | 重启接管 | PID + 启动时间核验（±5 秒）；存活命令以 `runtime_recovered` 接管 |
 | 进程 | 输出保留 | 总量 1 MiB（stdout/stderr 各 256 KiB）；分页 16 KiB |
 | 进程 | 快照频率 | ≤4 条/秒（0.25 秒间隔） |
 | 进程 | wait | 默认 1,000 ms、上限 60,000 ms |

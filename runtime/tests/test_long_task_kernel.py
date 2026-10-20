@@ -100,7 +100,7 @@ async def _start_durable_command(
 
 
 @pytest.mark.asyncio
-async def test_restart_marks_running_process_unknown_without_reattachment_or_replay(
+async def test_restart_settles_dead_running_process_without_reattachment_or_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -111,13 +111,15 @@ async def test_restart_marks_running_process_unknown_without_reattachment_or_rep
     try:
         context, process_id = await _start_durable_command(original, manager, command, tmp_path)
         assert original.process_records()[-1]["state"] == "running"
-        # Capture exactly the durable boundary a crash would leave, then clean the test's
-        # real process through its original owner to avoid leaking children into the host.
+        # Capture exactly the durable boundary a crash would leave, then stop the real
+        # process so recovery sees a dead command (custody cannot re-adopt it).
         target = sqlite3.connect(checkpoint)
         try:
             original._connection.backup(target)
         finally:
             target.close()
+        await manager.stop(process_id, context=context)
+        await _wait_for_process_exit(int(original.process_records()[-1]["pid"]))
     finally:
         await manager.close()
         original.close()
@@ -148,6 +150,47 @@ async def test_restart_marks_running_process_unknown_without_reattachment_or_rep
         before = restored.process_records()
         restored.rebuild_projections()
         assert restored.process_records() == before
+    finally:
+        await recovery_manager.close()
+        restored.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_readopts_live_command_and_stop_settles_it(tmp_path: Path) -> None:
+    original = SqliteRuntimeStore(tmp_path / "original.db")
+    manager = _manager(original)
+    command = "Start-Sleep 60" if os.name == "nt" else "sleep 60"
+    checkpoint = tmp_path / "restart-state.db"
+    try:
+        context, process_id = await _start_durable_command(original, manager, command, tmp_path)
+        running = original.process_records()[-1]
+        assert running["state"] == "running"
+        pid = int(running["pid"])
+        target = sqlite3.connect(checkpoint)
+        try:
+            original._connection.backup(target)
+        finally:
+            target.close()
+    finally:
+        # A Runtime exit persists facts and leaves the command alive (B2 custody).
+        await manager.close()
+        original.close()
+
+    restored = SqliteRuntimeStore(checkpoint)
+    recovery_manager = _manager(restored)
+    try:
+        recovery_manager.restore(restored.process_records())
+        fact = restored.process_records()[0]
+        assert fact["processId"] == process_id
+        assert fact["state"] == "running"
+        assert fact["errorCode"] == "runtime_recovered"
+        read = recovery_manager.read(process_id, context=context)
+        assert read["state"] == "running" and read["errorCode"] == "runtime_recovered"
+        stopped = await recovery_manager.stop(process_id, context=context)
+        assert stopped["state"] == "terminated" and stopped["exitCode"] is None
+        await _wait_for_process_exit(pid)
+        assert not _process_is_alive(pid)
+        assert restored.process_records()[0]["state"] == "terminated"
     finally:
         await recovery_manager.close()
         restored.close()
@@ -249,7 +292,8 @@ async def test_manual_cancellation_stops_wait_and_process_tree_but_preserves_par
         settled = [event for event in events if event.type == "run.settled"]
         assert len(settled) == 1 and settled[0].payload["reasonCode"] == "cancelled"
         facts = store.process_records()
-        assert len(facts) == 1 and facts[0]["state"] == "terminated"
+        # Cancelling a Run leaves its thread-owned command running (B2).
+        assert len(facts) == 1 and facts[0]["state"] == "running"
         assert "cancel-partial" in facts[0]["stdout"]
         wait_results = [
             event.payload["item"]["data"]["result"]
@@ -260,6 +304,16 @@ async def test_manual_cancellation_stops_wait_and_process_tree_but_preserves_par
         ]
         assert wait_results and "cancel-partial" in wait_results[-1]["output"]
         assert wait_results[-1]["cancelled"]
+        fact = facts[0]
+        context = ToolExecutionContext(
+            str(fact["runId"]),
+            int(fact["stepOrdinal"]),
+            str(fact["itemId"]),
+            str(fact["threadId"]),
+            None,
+        )
+        stopped = await manager.stop(str(fact["processId"]), context=context)
+        assert stopped["state"] == "terminated"
         root_pid, child_pid = int(root_pid_file.read_text()), int(child_pid_file.read_text())
         await _wait_for_process_exit(root_pid)
         await _wait_for_process_exit(child_pid)
