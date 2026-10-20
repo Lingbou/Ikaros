@@ -102,6 +102,7 @@ git worktree list   # 确认列表干净
 ### 1. `.temp/` 目录
 - 路径：`$PROJECT_ROOT/.temp/`，已加入 `.gitignore`，**永不提交**；
 - `.temp/worktrees/`：开发用 Git Worktree，合并后立即删除，不留孤立目录；
+- `.temp/research/`：调研笔记、分析报告、参考资料等非交付文档，一律放这里，不进仓库、不进 PR；
 - `.temp/` 其余目录：参考仓库克隆（airi、codex、openclaw 等）与实验脚本，仅用于阅读借鉴，不参与交付，不作为改动来源；
 - 定期清理，保持 `.temp/` 无长期残留。
 
