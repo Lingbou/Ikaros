@@ -999,8 +999,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - 索引（`memory_fts`）：正文经 NFKC + casefold 后切成 Latin 词、Han 单字与 Han
   bigram 词元写入 FTS5，1–2 字中文查询因此走索引而不是全表 LIKE；create/correct
   在写事务内重写该行、forget 清除该行，索引是当前 revision 的派生投影。
-- 池：目前只有两个确定性词法池；向量池接口（`MemorySemanticPool`）已预留但本期
-  未实现，不接外部 embedding 服务、不做 LLM 精排。
+- 池：只有两个确定性词法池（FTS5 BM25 + keyword overlap）；不接外部
+  embedding 服务、不做 LLM 精排。
 - 输入包装：Memory 正文以 contextual-data 包装进入模型，不改变工具权限、身份、
   执行策略或用户请求；审计只记录 ID/revision/scope/字符数。
 - 边界：没有自动 Memory 写入器、没有学习循环；Memory 不保存运行进度、命令日志
@@ -2049,7 +2049,7 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
 - cron 与主动唤醒任务；
 - 附件、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
-- 自动 Memory 提取与 Skill 学习（Memory 的向量/语义召回接口已预留，未实现）；
+- 自动 Memory 提取与 Skill 学习；
 - Linux 安装包内置 Runtime、自动更新、代码签名与正式发布渠道；
 - 交互式权限模式（当前只有 full_access）。
 

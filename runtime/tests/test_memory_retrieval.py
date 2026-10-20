@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from ikaros_runtime.memory import (
     SqliteMemoryStore,
 )
 from ikaros_runtime.memory.retrieval import (
-    MemoryRetrievalCandidateV1,
     fts_match_expression,
     fts_token_stream,
 )
@@ -402,36 +400,6 @@ def test_rrf_fuses_both_pools_and_keeps_a_stable_fused_order(tmp_path: Path) -> 
             between,
         ]
         assert result.relevant_count == 3
-    finally:
-        store.close()
-
-
-class _FixedSemanticPool:
-    """Stand-in for the reserved vector pool interface."""
-
-    def __init__(self, memory_id: str) -> None:
-        self._memory_id = memory_id
-
-    def rank(
-        self,
-        *,
-        query: str,
-        candidates: Sequence[MemoryRetrievalCandidateV1],
-    ) -> Sequence[str]:
-        return (self._memory_id,)
-
-
-def test_reserved_semantic_pool_fuses_into_the_same_selection(tmp_path: Path) -> None:
-    store = SqliteMemoryStore(tmp_path / "memory.db")
-    unrelated = _create(store, "semantic", "completely unrelated body")
-    try:
-        lexical = MemoryRetrieverV1(store)
-        fused = MemoryRetrieverV1(store, semantic_pool=_FixedSemanticPool(unrelated))
-        assert lexical.retrieve(query="needle", workspace_id=None).selected == ()
-        assert [
-            memory.memory_id
-            for memory in fused.retrieve(query="needle", workspace_id=None).selected
-        ] == [unrelated]
     finally:
         store.close()
 
