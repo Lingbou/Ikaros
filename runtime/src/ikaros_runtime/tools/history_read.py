@@ -17,6 +17,12 @@ from .core import (
     require_exact_arguments,
 )
 
+MIN_HISTORY_READ_ITEMS = 0
+MAX_HISTORY_READ_ITEMS = 41
+MIN_HISTORY_READ_CHARS = 256
+MAX_HISTORY_READ_CHARS = 24_000
+
+
 HistoryReader = Callable[..., JsonObject]
 
 
@@ -37,9 +43,21 @@ class HistoryReadTool:
             "type": "object",
             "properties": {
                 "itemId": {"type": "string", "minLength": 1},
-                "before": {"type": "integer", "minimum": 0, "maximum": 41},
-                "after": {"type": "integer", "minimum": 0, "maximum": 41},
-                "maxChars": {"type": "integer", "minimum": 256, "maximum": 24000},
+                "before": {
+                    "type": "integer",
+                    "minimum": MIN_HISTORY_READ_ITEMS,
+                    "maximum": MAX_HISTORY_READ_ITEMS,
+                },
+                "after": {
+                    "type": "integer",
+                    "minimum": MIN_HISTORY_READ_ITEMS,
+                    "maximum": MAX_HISTORY_READ_ITEMS,
+                },
+                "maxChars": {
+                    "type": "integer",
+                    "minimum": MIN_HISTORY_READ_CHARS,
+                    "maximum": MAX_HISTORY_READ_CHARS,
+                },
             },
             "required": ["itemId"],
             "additionalProperties": False,
@@ -70,7 +88,7 @@ class HistoryReadTool:
         limits = {
             "before": call.arguments.get("before", 10),
             "after": call.arguments.get("after", 10),
-            "max_chars": call.arguments.get("maxChars", 24_000),
+            "max_chars": call.arguments.get("maxChars", MAX_HISTORY_READ_CHARS),
         }
         if not all(is_json_integer(value) for value in limits.values()):
             return ToolResult.rejected(
@@ -79,9 +97,9 @@ class HistoryReadTool:
                 message="history limits must be integers",
             )
         if (
-            not 0 <= limits["before"] <= 41
-            or not 0 <= limits["after"] <= 41
-            or not 256 <= limits["max_chars"] <= 24_000
+            not MIN_HISTORY_READ_ITEMS <= limits["before"] <= MAX_HISTORY_READ_ITEMS
+            or not MIN_HISTORY_READ_ITEMS <= limits["after"] <= MAX_HISTORY_READ_ITEMS
+            or not MIN_HISTORY_READ_CHARS <= limits["max_chars"] <= MAX_HISTORY_READ_CHARS
         ):
             return ToolResult.rejected(
                 call,

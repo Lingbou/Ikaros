@@ -13,9 +13,12 @@ from typing import Any
 
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
-
-MAX_HISTORY_READ_ITEMS = 41
-MAX_HISTORY_READ_CHARS = 24_000
+from ..tools.history_read import (
+    MAX_HISTORY_READ_CHARS,
+    MAX_HISTORY_READ_ITEMS,
+    MIN_HISTORY_READ_CHARS,
+    MIN_HISTORY_READ_ITEMS,
+)
 
 
 def read_history_slice(
@@ -36,9 +39,6 @@ def read_history_slice(
     value suitable for a Runtime ToolResult.
     """
 
-    _validate_limit("before", before, 0, MAX_HISTORY_READ_ITEMS)
-    _validate_limit("after", after, 0, MAX_HISTORY_READ_ITEMS)
-    _validate_limit("max_chars", max_chars, 256, MAX_HISTORY_READ_CHARS)
     target = connection.execute(
         """
         SELECT i.id, i.turn_id, i.run_id, i.kind, i.role, i.status, i.content,
@@ -127,9 +127,10 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _validate_limit(name: str, value: int, minimum: int, maximum: int) -> None:
-    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
-        raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
-
-
-__all__ = ["MAX_HISTORY_READ_CHARS", "MAX_HISTORY_READ_ITEMS", "read_history_slice"]
+__all__ = [
+    "MAX_HISTORY_READ_CHARS",
+    "MAX_HISTORY_READ_ITEMS",
+    "MIN_HISTORY_READ_CHARS",
+    "MIN_HISTORY_READ_ITEMS",
+    "read_history_slice",
+]

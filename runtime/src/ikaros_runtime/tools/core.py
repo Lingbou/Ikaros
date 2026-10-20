@@ -9,7 +9,7 @@ from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JsonObject
 from ..file_changes import FileChangeCapture
 from ..json_codec import dumps as json_dumps
-from .policy import ExecutionPolicy
+from .policy import FullAccessPolicy
 
 if TYPE_CHECKING:
     from .artifacts import ToolArtifactStore
@@ -127,7 +127,7 @@ class ToolExecutor:
     def __init__(
         self,
         registry: ToolRegistry,
-        policy: ExecutionPolicy,
+        policy: FullAccessPolicy,
         *,
         artifacts: ToolArtifactStore | None = None,
     ) -> None:

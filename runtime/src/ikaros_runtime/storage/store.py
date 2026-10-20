@@ -43,7 +43,7 @@ from ..security import response_values_contain_protected_value
 from ..tools.core import ToolCall
 from .context_history import load_context_for_revision, select_context_revision
 from .file_changes import get_file_change, resolve_file_tool_path
-from .history_read import read_history_slice
+from .history_read import MAX_HISTORY_READ_CHARS, read_history_slice
 from .journal import (
     append_event,
     event_from_row,
@@ -782,7 +782,7 @@ class SqliteRuntimeStore:
         item_id: str,
         before: int = 10,
         after: int = 10,
-        max_chars: int = 24_000,
+        max_chars: int = MAX_HISTORY_READ_CHARS,
     ) -> JsonObject:
         """Read a bounded, settled history slice without mutating the store."""
 
