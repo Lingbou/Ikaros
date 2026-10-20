@@ -47,6 +47,8 @@ import { toolCallPairingIsComplete } from "./runtimeStore.liveEvidence";
 
 const liveEnabled = process.env.IKAROS_LIVE_DEEPSEEK_SMOKE === "1";
 const runtimeRoot = resolve(process.cwd(), "..", "..", "runtime");
+/** Module that launches the Runtime with the deterministic fake provider injected. */
+const testRuntimeModule = "tests.fakes.test_server_runner";
 
 async function bridgeInvocation<TResult>(
   operation: () => Promise<TResult>,
@@ -620,7 +622,7 @@ describe("Scripted Runtime store history vertical slice", () => {
     { timeout: 60_000 },
     async () => {
       const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-scripted-history-"));
-      const host = new RuntimeHost({ runtimeRoot, runtimeHome });
+      const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       try {
         await host.start();
         const created = await host.request<RuntimeThreadCreateResult>("thread.create", {
@@ -689,6 +691,7 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
       const host = new RuntimeHost({
         runtimeRoot,
         runtimeHome,
+        runtimeModule: testRuntimeModule,
         startTimeoutMs: 30_000,
         stopTimeoutMs: 15_000,
         stderrSink: (message) => runtimeStderr.push(message),
