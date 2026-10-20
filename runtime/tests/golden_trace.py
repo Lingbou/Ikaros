@@ -7,7 +7,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
@@ -35,7 +35,11 @@ from ikaros_runtime.providers.base import (
     ProviderRequest,
     ResponseCompleted,
 )
-from ikaros_runtime.providers.scripted import ScriptedProvider
+
+try:
+    from .fakes.scripted_provider import ScriptedProvider
+except ImportError:
+    from fakes.scripted_provider import ScriptedProvider  # type: ignore[import-not-found, no-redef]
 from ikaros_runtime.run_input import (
     ProviderExecutionSnapshot,
     RunConfigTemplate,
@@ -99,7 +103,7 @@ class _DeterministicMonotonic:
 
 
 async def _golden_spawn(command: str, cwd: str | None) -> _SpawnedProcess:
-    if command != "golden" or cwd != "C:/golden-workspace":
+    if command != "golden" or (cwd != "C:/golden-workspace" and cwd != "C:\\golden-workspace"):
         raise AssertionError("unexpected golden command or workspace")
     stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
     stdout.feed_data(b"golden-output\n")
@@ -289,7 +293,11 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
         patch.object(process_manager_module, "_terminate_process_tree", new=_golden_terminate),
         patch.object(process_manager_module, "_resume_spawned_process", new=lambda spawned: None),
         patch.object(process_manager_module, "_now", new=utc_now),
-        patch.object(process_tools, "_resolve_cwd", return_value=Path("C:/golden-workspace")),
+        patch.object(
+            process_tools,
+            "_resolve_cwd",
+            return_value=PurePosixPath("C:/golden-workspace"),
+        ),
         patch.object(uuid, "uuid4", new=ids),
         patch.object(store_module, "utc_now", new=utc_now),
         patch.object(memory_store_module, "utc_now", new=utc_now),

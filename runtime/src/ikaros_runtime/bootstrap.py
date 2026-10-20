@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from websockets.asyncio.server import ServerConnection
 
-from .agent.loop import AgentLoop, EventPublisher
+from .agent.loop import AgentLoop, EventPublisher, ProviderSnapshotResolver
 from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome, JournalEvent
@@ -17,10 +17,10 @@ from .identity import load_identity_core
 from .memory import MemoryRetrieverV1, SqliteMemoryStore
 from .paths import RuntimePaths
 from .protocol.router import RuntimeRouter
+from .providers.base import ProviderAdapter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
-from .providers.scripted import ScriptedProvider
 from .run_input import InstructionBlockV1, ProviderExecutionSnapshot
 from .security import RuntimeSecurity, contains_protected_value
 from .server.connection import handle_connection
@@ -69,6 +69,8 @@ class RuntimeApplication:
         config_store: ConfigStore | None = None,
         model_discovery: ModelDiscovery = discover_openai_compatible_models,
         identity_core: InstructionBlockV1 | None = None,
+        extra_providers: Mapping[str, ProviderAdapter] | None = None,
+        provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
     ) -> None:
         self._store = store
         self._memory_store = memory_store
@@ -95,6 +97,7 @@ class RuntimeApplication:
         self._provider_registry = RuntimeProviderRegistry(
             self._config,
             adapter_factory=OpenAICompatibleAdapter,
+            extra_providers=extra_providers,
         )
         self._process_events: set[asyncio.Task[None]] = set()
 
@@ -146,20 +149,15 @@ class RuntimeApplication:
             ),
         )
 
-        def provider_execution_snapshot(
+        def provider_snapshot(
             provider_id: str,
             model_id: str,
         ) -> ProviderExecutionSnapshot:
-            if provider_id == ScriptedProvider.id:
-                if model_id != ScriptedProvider.model_id:
-                    raise ValueError("scripted model is unavailable")
-                return ProviderExecutionSnapshot(
-                    provider_id=ScriptedProvider.id,
-                    origin="scripted",
-                    base_url=None,
-                    model_id=ScriptedProvider.model_id,
-                    supports_tools=True,
-                )
+            if provider_snapshot_resolver is not None:
+                try:
+                    return provider_snapshot_resolver(provider_id, model_id)
+                except LookupError:
+                    pass
             return self._config.execution_snapshot(provider_id, model_id)
 
         loop = AgentLoop(
@@ -169,7 +167,7 @@ class RuntimeApplication:
             tool_executor,
             process_manager=self._process_manager,
             protected_values=self.security.protected_values,
-            provider_snapshot_resolver=provider_execution_snapshot,
+            provider_snapshot_resolver=provider_snapshot,
             identity_core=self.identity_core,
             memory_retriever=MemoryRetrieverV1(memory_store),
         )
@@ -186,6 +184,7 @@ class RuntimeApplication:
             self.skills.enabled_descriptors,
             lambda: tool_executor.definitions,
             tool_executor.policy_name,
+            provider_snapshot=provider_snapshot,
         )
         self.providers = ProviderService(
             self._config,
@@ -234,7 +233,12 @@ class RuntimeApplication:
             self._memory_store.close()
 
 
-async def run_runtime_server(settings: ServerSettings) -> None:
+async def run_runtime_server(
+    settings: ServerSettings,
+    *,
+    extra_providers: Mapping[str, ProviderAdapter] | None = None,
+    provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
+) -> None:
     """Acquire the Runtime home, assemble the application, and serve it."""
 
     settings.validate()
@@ -269,6 +273,8 @@ async def run_runtime_server(settings: ServerSettings) -> None:
             memory_store=opened_memory_store,
             config_store=config_store,
             identity_core=identity_core,
+            extra_providers=extra_providers,
+            provider_snapshot_resolver=provider_snapshot_resolver,
         )
         memory_store = None
         application.start(recovery.queued_run_ids)

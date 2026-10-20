@@ -14,7 +14,6 @@ import pytest
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, JsonObject
-from ikaros_runtime.providers.scripted import ScriptedProvider
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools import (
     FullAccessPolicy,
@@ -32,6 +31,7 @@ from ikaros_runtime.tools import process_manager as process_module
 from ikaros_runtime.tools.process_manager import ProcessError
 from ikaros_runtime.tools.process_platform import _SpawnedProcess
 
+from .fakes.scripted_provider import ScriptedProvider
 from .helpers import prepare_turn
 from .test_process_manager import _process_is_alive, _wait_for_process_exit
 

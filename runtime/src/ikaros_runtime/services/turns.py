@@ -7,7 +7,6 @@ from ..agent.scheduler import AgentScheduler
 from ..domain import CommandOutcome, SkillDescriptor
 from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
-from ..providers.scripted import ScriptedProvider
 from ..run_input import (
     InstructionBlockV1,
     ProviderExecutionSnapshot,
@@ -20,6 +19,7 @@ from .threads import RequestSafetyCheck, client_request_id_from, record_id_from
 
 type SkillSnapshotSource = Callable[[], tuple[SkillDescriptor, ...]]
 type ToolDefinitionSource = Callable[[], tuple[ToolDefinition, ...]]
+type ProviderSnapshotSource = Callable[[str, str], ProviderExecutionSnapshot]
 
 
 class TurnService:
@@ -27,16 +27,23 @@ class TurnService:
         self,
         store: SqliteRuntimeStore,
         scheduler: AgentScheduler,
-        config_store: ConfigStore,
+        config_store: ConfigStore | None,
         assert_request_safe: RequestSafetyCheck,
         identity_core: InstructionBlockV1,
         skill_snapshot: SkillSnapshotSource | None = None,
         tool_definitions: ToolDefinitionSource | None = None,
         execution_policy: str = "full_access",
+        *,
+        provider_snapshot: ProviderSnapshotSource | None = None,
     ) -> None:
         self._store = store
         self._scheduler = scheduler
-        self._config = config_store
+        if provider_snapshot is not None:
+            self._provider_snapshot = provider_snapshot
+        elif config_store is not None:
+            self._provider_snapshot = config_store.execution_snapshot
+        else:
+            raise ValueError("TurnService requires either provider_snapshot or config_store")
         self._assert_request_safe = assert_request_safe
         self._identity_core = identity_core
         self._skill_snapshot = skill_snapshot or _empty_skill_snapshot
@@ -77,24 +84,13 @@ class TurnService:
                         "branchId": existing.branch_id,
                     }
                 )
-        if values["providerId"] == ScriptedProvider.id:
-            if values["modelId"] != ScriptedProvider.model_id:
-                raise InvalidParamsError("model is not available")
-            provider_snapshot = ProviderExecutionSnapshot(
-                provider_id=ScriptedProvider.id,
-                origin="scripted",
-                base_url=None,
-                model_id=ScriptedProvider.model_id,
-                supports_tools=True,
+        try:
+            provider_snapshot = self._provider_snapshot(
+                values["providerId"],
+                values["modelId"],
             )
-        else:
-            try:
-                provider_snapshot = self._config.execution_snapshot(
-                    values["providerId"],
-                    values["modelId"],
-                )
-            except ConfigError as error:
-                raise InvalidParamsError(str(error)) from None
+        except (ConfigError, ValueError) as error:
+            raise InvalidParamsError(str(error)) from None
         skills = self._skill_snapshot()
         run_config_template = RunConfigTemplate.create(
             provider=provider_snapshot,

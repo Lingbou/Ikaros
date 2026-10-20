@@ -271,7 +271,6 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `model_defaults.py` — 默认上下文窗口：DeepSeek V4 三个模型 1,000,000；未知 32,768。
 - `registry.py` — Provider/model 配置解析、注册表、DeepSeek 发现、密钥保护
   （752 行）。
-- `scripted.py` — 测试用确定性 Provider（`/process.run`、`/skill.run` 约定）。
 - `openai_compatible/__init__.py` — 适配器导出。
 - `openai_compatible/adapter.py` — 流式请求、重试（4/5）、超时（10/30/300 秒）、
   错误归一化（581 行）。
@@ -888,7 +887,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 ### 6.8 Provider 适配
 
 - 结构：`ProviderRegistry` + 单一 OpenAI 兼容流式适配器；DeepSeek 为内置 profile，
-  Custom Provider 复用的同一适配器；测试用 `ScriptedProvider`。
+  Custom Provider 复用的同一适配器；测试通过 `extra_providers` 注入确定性 Provider。
 - 流式事件：`response.started`、`text.delta`、`reasoning.delta`、
   `tool_call.arguments_delta`、`tool_call.completed`、`usage.updated`、
   `response.completed`。

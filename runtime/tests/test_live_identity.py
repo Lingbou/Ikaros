@@ -23,7 +23,6 @@ from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from ikaros_runtime.providers.registry import DEEPSEEK_BASE_URL
-from ikaros_runtime.providers.scripted import ScriptedProvider
 from ikaros_runtime.run_input import (
     InstructionBlockV1,
     ProviderExecutionSnapshot,
@@ -43,6 +42,8 @@ from ikaros_runtime.tools import (
     ToolRegistry,
     WriteTool,
 )
+
+from .fakes.scripted_provider import ScriptedProvider
 
 _LIVE_FLAG = "IKAROS_LIVE_DEEPSEEK_SMOKE"
 _KEY_FILE_VARIABLE = "IKAROS_LIVE_DEEPSEEK_KEY_FILE"

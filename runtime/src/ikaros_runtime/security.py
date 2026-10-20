@@ -295,7 +295,6 @@ _FIXED_RESPONSE_KEYS = frozenset(
         "runs",
         "runCancellation",
         "runId",
-        "scriptedProvider",
         "schemaVersion",
         "seq",
         "server",
@@ -552,16 +551,6 @@ def _is_fixed_response_value(
         path[-2:] == ("provenance", "status")
         and value in _FIXED_MEMORY_PROVENANCE_STATUSES
         and _is_memory_provenance_container(container)
-    ):
-        return True
-    if path and path[-1] == "providerId" and value == "scripted":
-        return True
-    if (
-        path
-        and path[-1] == "modelId"
-        and value == "scripted-v1"
-        and container is not None
-        and container.get("providerId") == "scripted"
     ):
         return True
     if path and path[-1] == "reasonCode":

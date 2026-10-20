@@ -12,7 +12,6 @@ from .base import (
     ToolCallCompleted,
 )
 from .registry import RuntimeProviderRegistry
-from .scripted import ScriptedProvider
 
 __all__ = [
     "ProviderAdapter",
@@ -23,7 +22,6 @@ __all__ = [
     "ReasoningDelta",
     "ResponseCompleted",
     "RuntimeProviderRegistry",
-    "ScriptedProvider",
     "TextDelta",
     "ToolCallCompleted",
 ]

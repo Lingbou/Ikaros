@@ -20,6 +20,7 @@ from ikaros_runtime.skills import SkillCatalog, build_skill_prompt
 from ikaros_runtime.skills.catalog import MAX_FRONTMATTER_BYTES, MAX_SKILL_BYTES
 from ikaros_runtime.storage import SqliteRuntimeStore
 
+from .fakes.scripted_provider import scripted_provider_snapshot
 from .helpers import prepare_turn
 
 
@@ -377,6 +378,7 @@ def test_client_request_retry_returns_before_rescanning_skills(tmp_path: Path) -
             lambda _value: None,
             load_identity_core(),
             snapshot,
+            provider_snapshot=scripted_provider_snapshot,
         )
         params = {
             "threadId": thread.id,
