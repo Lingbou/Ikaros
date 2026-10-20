@@ -3,10 +3,8 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  BranchEvent,
   InterruptEvent,
   MessageEvent,
-  PermissionEvent,
   StatusEvent,
   ToolCallEvent,
   ToolResultEvent,
@@ -273,115 +271,6 @@ describe("EventCard localization boundary", () => {
     expect(container).toHaveTextContent("错误代码：no_match");
   });
 
-  it("retranslates app-owned event copy while preserving command data and paths", () => {
-    setUiLanguage("en");
-    useAppStore.setState({ runStatus: "waiting_permission" });
-
-    const toolCall: ToolCallEvent = {
-      id: "tool-call-localization",
-      turnId: "turn-localization",
-      createdAt: "2026-08-05T06:00:00.000Z",
-      type: "tool_call",
-      toolName: "archive.inspect",
-      label: appEventText("tool.inspectArchiveMetadata"),
-      status: "success",
-      arguments: {
-        path: "sources/field-notes.zip",
-        verifyChecksums: true,
-      },
-    };
-    const rawOutput = "42 entries · SHA-256 manifest valid";
-    const toolResult: ToolResultEvent = {
-      id: "tool-result-localization",
-      turnId: "turn-localization",
-      createdAt: "2026-08-05T06:00:01.000Z",
-      type: "tool_result",
-      toolCallId: toolCall.id,
-      status: "success",
-      summary: appEventText("result.archiveManifestVerified"),
-      output: rawOutput,
-    };
-    const resource = "C:\\Users\\demo\\Downloads\\receipts\\*.pdf";
-    const permission: PermissionEvent = {
-      id: "permission-app-copy",
-      turnId: "turn-localization",
-      createdAt: "2026-08-05T06:00:02.000Z",
-      type: "permission_request",
-      requestId: "permission-app-copy",
-      title: appEventText("permission.moveReceiptsTitle", { count: 18 }),
-      description: appEventText("permission.moveReceiptsDescription"),
-      resource,
-      risk: "medium",
-      status: "pending",
-    };
-    const status: StatusEvent = {
-      id: "status-app-copy",
-      turnId: "turn-localization",
-      createdAt: "2026-08-05T06:00:03.000Z",
-      type: "status",
-      tone: "success",
-      label: appEventText("status.buildingBrief", { count: 12 }),
-      detail: appEventText("status.sourcesLinked"),
-    };
-
-    const { container } = render(
-      <>
-        <EventCard event={toolCall} />
-        <EventCard event={toolResult} />
-        <EventCard event={permission} />
-        <EventCard event={status} />
-      </>,
-    );
-
-    expect(screen.getByText("Inspecting archive metadata")).toBeInTheDocument();
-    expect(screen.getByText("Archive manifest verified")).toBeInTheDocument();
-    expect(screen.getByText("Allow moving 18 receipt files?")).toBeInTheDocument();
-    expect(screen.getByText("Building brief from 12 notes")).toBeInTheDocument();
-    expect(container).toHaveTextContent("Sources stay linked to the artifact.");
-
-    const invariantText = `archive.inspect · ${JSON.stringify(toolCall.arguments)}`;
-    expect(container).toHaveTextContent(invariantText);
-    expect(container).toHaveTextContent(rawOutput);
-    expect(container).toHaveTextContent(resource);
-
-    act(() => setUiLanguage("zh-CN"));
-
-    expect(screen.getByText("正在检查压缩包元数据")).toBeInTheDocument();
-    expect(screen.getByText("压缩包清单已验证")).toBeInTheDocument();
-    expect(screen.getByText("允许移动 18 个收据文件吗？")).toBeInTheDocument();
-    expect(screen.getByText("正在根据 12 条笔记生成简报")).toBeInTheDocument();
-    expect(container).toHaveTextContent("来源会继续与产物保持关联。");
-    expect(screen.queryByText("Inspecting archive metadata")).not.toBeInTheDocument();
-    expect(screen.queryByText("Archive manifest verified")).not.toBeInTheDocument();
-    expect(container).toHaveTextContent(invariantText);
-    expect(container).toHaveTextContent(rawOutput);
-    expect(container).toHaveTextContent(resource);
-  });
-
-  it("translates product actions while preserving event content", () => {
-    setUiLanguage("zh-CN");
-    useAppStore.setState({ runStatus: "waiting_permission" });
-    const event: PermissionEvent = {
-      id: "permission-localization",
-      turnId: "turn-localization",
-      createdAt: "2026-08-05T06:00:00.000Z",
-      type: "permission_request",
-      requestId: "permission-localization",
-      title: externalEventText("Allow deleting the temporary export?"),
-      description: externalEventText("This sentence belongs to the event payload."),
-      resource: "C:\\Temp\\export.pdf",
-      risk: "medium",
-      status: "pending",
-    };
-
-    render(<EventCard event={event} />);
-
-    expect(screen.getByText("Allow deleting the temporary export?")).toBeInTheDocument();
-    expect(screen.getByText("This sentence belongs to the event payload.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "允许一次" })).toBeInTheDocument();
-  });
-
   it("leaves user and assistant messages unchanged when the UI language changes", () => {
     const user: MessageEvent = {
       id: "user-localization-boundary",
@@ -539,7 +428,7 @@ describe("InterruptCard recovery states", () => {
     expect(screen.queryByRole("button", { name: "Recover session" })).not.toBeInTheDocument();
   });
 
-  it("retranslates app-authored stop and branch copy without rewriting external events", () => {
+  it("retranslates app-authored stop copy without rewriting external events", () => {
     const stopped: InterruptEvent = {
       id: "interrupt-stopped",
       turnId: "turn-stopped",
@@ -549,33 +438,16 @@ describe("InterruptCard recovery states", () => {
       recoverable: false,
       status: "interrupted",
     };
-    const branched: BranchEvent = {
-      id: "branch-created",
-      turnId: "turn-stopped",
-      createdAt: "2026-08-05T06:00:00.000Z",
-      type: "branch_created",
-      branchId: "branch-1",
-      sourceEventId: "message-1",
-      copy: { source: "app", kind: "edited_message" },
-    };
 
-    render(
-      <>
-        <EventCard event={stopped} />
-        <EventCard event={branched} />
-      </>,
-    );
+    render(<EventCard event={stopped} />);
 
     expect(screen.getByText("Run stopped")).toBeInTheDocument();
-    expect(screen.getByText("Branched from edited message")).toBeInTheDocument();
 
     act(() => setUiLanguage("zh-CN"));
 
     expect(screen.getByText("运行已停止")).toBeInTheDocument();
-    expect(screen.getByText("已从编辑的消息创建分支")).toBeInTheDocument();
     expect(screen.queryByText("Run stopped")).not.toBeInTheDocument();
   });
-
   it("uses warning semantics instead of a success check for a stopped run", () => {
     const event: StatusEvent = {
       id: "status-stopped",

@@ -95,7 +95,6 @@ const english = {
   "runtime.outcome.reason.providerInvalidRequest": "The provider rejected the model request. Check the model configuration.",
   "runtime.outcome.reason.providerUnavailable": "The selected provider is unavailable. Check Providers settings.",
   "runtime.outcome.reason.agentError": "The agent could not complete this run. Review the tool results before sending a new message.",
-  "runtime.outcome.reason.stepLimit": "The run reached its step limit. Review its results and send a new message with the remaining work.",
 
   "titlebar.showSidebar": "Show sidebar",
   "titlebar.hideSidebar": "Hide sidebar",
@@ -110,9 +109,6 @@ const english = {
   "titlebar.minimize": "Minimize",
   "titlebar.maximize": "Maximize",
   "titlebar.close": "Close",
-
-  "branch.main": "Main",
-  "branch.number": "Branch {number}",
 
   "composer.placeholder": "Ask Ikaros to work on something",
   "composer.steerPlaceholder": "Add a requirement while Ikaros is working",
@@ -172,17 +168,6 @@ const english = {
   "onboarding.connectedDescription": "The provider is connected and its models are enabled.",
   "onboarding.start": "Start using Ikaros",
 
-
-  "slash.label": "Slash commands",
-  "slash.heading": "Commands",
-  "slash.noMatches": "No matching commands",
-  "slash.mock1.label": "Mock feature 1",
-  "slash.mock1.description": "Summarize the current conversation",
-  "slash.mock2.label": "Mock feature 2",
-  "slash.mock2.description": "Create a structured plan",
-  "slash.mock3.label": "Mock feature 3",
-  "slash.mock3.description": "Inspect the available tools",
-
   "search.title": "Search chats",
   "search.close": "Close search",
   "search.noMatches": "No conversations match “{query}”.",
@@ -191,12 +176,6 @@ const english = {
   "search.hint": "Enter to open · Esc to close",
   "search.loadingAll": "Loading all chats…",
   "search.retryAll": "Some chats are missing · Retry",
-
-  "edit.title": "Edit into a new branch",
-  "edit.description":
-    "The original message and everything after it stay intact. Ikaros will create a new active branch from this point.",
-  "edit.cancel": "Cancel edit",
-  "edit.createBranch": "Create branch",
 
   "empty.heading": "What should we work on?",
   "empty.description": "Start a conversation to plan, explore, create, or get work done.",
@@ -210,19 +189,13 @@ const english = {
   "events.complete": "Complete",
   "events.failed": "Failed",
   "events.interrupted": "Interrupted",
-  "events.allowed": "Allowed",
-  "events.denied": "Denied",
-  "events.deny": "Deny",
-  "events.allowOnce": "Allow once",
   "events.recovering": "Recovering",
   "events.recovered": "Recovered",
   "events.retryStep": "Retry step",
   "events.recoverSession": "Recover session",
-  "events.artifactMetadata": "Markdown artifact · v{version} · Generated",
   "events.warning": "Warning",
   "events.error": "Error",
   "events.copyMessage": "Copy message",
-  "events.editAndBranch": "Edit and branch",
   "events.copyResponse": "Copy response",
   "events.file.created": "Created file",
   "events.file.modified": "Modified file",
@@ -231,10 +204,6 @@ const english = {
   "events.runStopped.title": "Run stopped",
   "events.runStopped.description":
     "You stopped this run. The conversation and completed activity are preserved.",
-  "events.branchCreatedFromEdit": "Branched from edited message",
-  "events.tool.inspectArchiveMetadata": "Inspecting archive metadata",
-  "events.tool.testArchiveExtraction": "Testing archive extraction",
-  "events.tool.exportReportPackage": "Exporting report package",
   "events.tool.runProcess": "Running command",
   "events.tool.readFile": "Reading file",
   "events.tool.writeFile": "Writing file",
@@ -245,8 +214,6 @@ const english = {
   "events.tool.offset": "offset {value}",
   "events.tool.limit": "limit {value}",
   "events.tool.replaceAll": "replace all",
-  "events.result.archiveManifestVerified": "Archive manifest verified",
-  "events.result.windowsReservedNames": "Two filenames cannot be extracted on Windows",
   "events.result.processCompleted": "Command completed",
   "events.tool.startProcess": "Start command",
   "events.tool.readProcess": "Read command output",
@@ -294,9 +261,6 @@ const english = {
   "events.result.refreshProcess": "Refresh status and logs",
   "events.result.waitFinished": "This wait ended. The command is still running and can be checked again.",
   "events.result.processControlFailed": "Could not update the command.",
-  "events.permission.moveReceiptsTitle": "Allow moving {count} receipt files?",
-  "events.permission.moveReceiptsDescription":
-    "The agent will create monthly folders and move matching PDFs. Originals remain recoverable from the Recycle Bin.",
   "events.workerDisconnected.title": "Local worker disconnected",
   "events.workerDisconnected.description":
     "The run stopped after the DOCX was written. Its checkpoint and generated files are still available.",
@@ -309,12 +273,6 @@ const english = {
   "events.recoveryCompleted.title": "Recovery completed",
   "events.recoveryCompleted.description":
     "The saved run is healthy again and both output files passed validation.",
-  "events.status.buildingBrief": "Building brief from {count} notes",
-  "events.status.briefBuilt": "Brief built from {count} notes",
-  "events.status.sourcesLinked": "Sources stay linked to the artifact.",
-  "events.status.checkpointRestored": "Checkpoint restored",
-  "events.status.exportStepRetried": "Export step retried",
-  "events.status.outputsValidated": "Both output files passed validation.",
 
   "sidebar.workspaceNavigation": "Workspace navigation",
   "sidebar.currentWorkspace": "Current workspace: {name}",
@@ -653,7 +611,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "runtime.outcome.reason.providerInvalidRequest": "提供商拒绝了模型请求，请检查模型配置。",
   "runtime.outcome.reason.providerUnavailable": "所选提供商不可用，请检查提供商设置。",
   "runtime.outcome.reason.agentError": "Ikaros 未能完成本次运行，请查看工具结果后再发送新消息。",
-  "runtime.outcome.reason.stepLimit": "本次运行已达到步骤上限，请查看结果后通过新消息补充剩余要求。",
 
   "titlebar.showSidebar": "显示边栏",
   "titlebar.hideSidebar": "隐藏边栏",
@@ -668,9 +625,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "titlebar.minimize": "最小化",
   "titlebar.maximize": "最大化",
   "titlebar.close": "关闭",
-
-  "branch.main": "主分支",
-  "branch.number": "分支 {number}",
 
   "composer.placeholder": "告诉 Ikaros 你想做什么",
   "composer.steerPlaceholder": "任务运行中，补充一个要求",
@@ -730,17 +684,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "onboarding.connectedDescription": "提供商已连接，模型已启用。",
   "onboarding.start": "开始使用",
 
-
-  "slash.label": "斜杠命令",
-  "slash.heading": "命令",
-  "slash.noMatches": "没有匹配的命令",
-  "slash.mock1.label": "模拟功能 1",
-  "slash.mock1.description": "总结当前对话",
-  "slash.mock2.label": "模拟功能 2",
-  "slash.mock2.description": "创建结构化计划",
-  "slash.mock3.label": "模拟功能 3",
-  "slash.mock3.description": "检查可用工具",
-
   "search.title": "搜索聊天",
   "search.close": "关闭搜索",
   "search.noMatches": "没有与“{query}”匹配的对话。",
@@ -749,11 +692,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "search.hint": "按 Enter 打开 · 按 Esc 关闭",
   "search.loadingAll": "正在加载全部对话…",
   "search.retryAll": "部分对话未加载 · 重试",
-
-  "edit.title": "编辑并创建新分支",
-  "edit.description": "原消息及其后的内容都会保留。Ikaros 将从这里创建并切换到一个新分支。",
-  "edit.cancel": "取消编辑",
-  "edit.createBranch": "创建分支",
 
   "empty.heading": "我们接下来做什么？",
   "empty.description": "开始一段对话，让 Ikaros 帮你规划、探索、创作或完成任务。",
@@ -767,19 +705,13 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.complete": "已完成",
   "events.failed": "失败",
   "events.interrupted": "已中断",
-  "events.allowed": "已允许",
-  "events.denied": "已拒绝",
-  "events.deny": "拒绝",
-  "events.allowOnce": "允许一次",
   "events.recovering": "恢复中",
   "events.recovered": "已恢复",
   "events.retryStep": "重试此步骤",
   "events.recoverSession": "恢复会话",
-  "events.artifactMetadata": "Markdown 产物 · v{version} · 已生成",
   "events.warning": "警告",
   "events.error": "错误",
   "events.copyMessage": "复制消息",
-  "events.editAndBranch": "编辑并创建分支",
   "events.copyResponse": "复制回复",
   "events.file.created": "已创建文件",
   "events.file.modified": "已修改文件",
@@ -787,10 +719,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.file.renamed": "已重命名文件",
   "events.runStopped.title": "运行已停止",
   "events.runStopped.description": "你已停止此次运行。对话和已完成的操作均已保留。",
-  "events.branchCreatedFromEdit": "已从编辑的消息创建分支",
-  "events.tool.inspectArchiveMetadata": "正在检查压缩包元数据",
-  "events.tool.testArchiveExtraction": "正在测试压缩包解压",
-  "events.tool.exportReportPackage": "正在导出报告包",
   "events.tool.runProcess": "正在运行命令",
   "events.tool.readFile": "正在读取文件",
   "events.tool.writeFile": "正在写入文件",
@@ -801,8 +729,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.tool.offset": "起始行 {value}",
   "events.tool.limit": "最多 {value} 行",
   "events.tool.replaceAll": "替换全部匹配项",
-  "events.result.archiveManifestVerified": "压缩包清单已验证",
-  "events.result.windowsReservedNames": "有两个文件名无法在 Windows 上解压",
   "events.result.processCompleted": "命令已完成",
   "events.tool.startProcess": "启动命令",
   "events.tool.readProcess": "读取命令输出",
@@ -850,9 +776,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.result.refreshProcess": "刷新状态和日志",
   "events.result.waitFinished": "本次等待已结束，命令仍在运行，可以继续查看结果。",
   "events.result.processControlFailed": "无法更新命令状态。",
-  "events.permission.moveReceiptsTitle": "允许移动 {count} 个收据文件吗？",
-  "events.permission.moveReceiptsDescription":
-    "Ikaros 将创建按月分类的文件夹并移动匹配的 PDF。原文件仍可从回收站恢复。",
   "events.workerDisconnected.title": "本地执行器已断开",
   "events.workerDisconnected.description":
     "DOCX 写入后运行停止。检查点和已生成的文件仍然可用。",
@@ -865,12 +788,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.recoveryCompleted.title": "恢复完成",
   "events.recoveryCompleted.description":
     "保存的运行已恢复正常，两个输出文件均已通过验证。",
-  "events.status.buildingBrief": "正在根据 {count} 条笔记生成简报",
-  "events.status.briefBuilt": "已根据 {count} 条笔记生成简报",
-  "events.status.sourcesLinked": "来源会继续与产物保持关联。",
-  "events.status.checkpointRestored": "检查点已恢复",
-  "events.status.exportStepRetried": "导出步骤已重试",
-  "events.status.outputsValidated": "两个输出文件均已通过验证。",
 
   "sidebar.workspaceNavigation": "工作区导航",
   "sidebar.currentWorkspace": "当前工作区：{name}",

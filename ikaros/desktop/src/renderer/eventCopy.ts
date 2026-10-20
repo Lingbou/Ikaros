@@ -6,9 +6,6 @@ import type {
 import type { Translate, TranslationKey } from "./i18n";
 
 const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
-  "tool.inspectArchiveMetadata": "events.tool.inspectArchiveMetadata",
-  "tool.testArchiveExtraction": "events.tool.testArchiveExtraction",
-  "tool.exportReportPackage": "events.tool.exportReportPackage",
   "tool.runProcess": "events.tool.runProcess",
   "tool.startProcess": "events.tool.startProcess",
   "tool.readProcess": "events.tool.readProcess",
@@ -22,8 +19,6 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "tool.globFiles": "events.tool.globFiles",
   "tool.searchFiles": "events.tool.searchFiles",
   "tool.listDirectory": "events.tool.listDirectory",
-  "result.archiveManifestVerified": "events.result.archiveManifestVerified",
-  "result.windowsReservedNames": "events.result.windowsReservedNames",
   "result.processRunning": "events.result.processRunning",
   "result.processStopped": "events.result.processStopped",
   "result.processUnknown": "events.result.processUnknown",
@@ -49,15 +44,7 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "result.listFailed": "events.result.listFailed",
   "result.listInterrupted": "events.result.listInterrupted",
   "result.entryCount": "events.result.entryCount",
-  "result.matchCount": "events.result.matchCount",
-  "permission.moveReceiptsTitle": "events.permission.moveReceiptsTitle",
-  "permission.moveReceiptsDescription": "events.permission.moveReceiptsDescription",
-  "status.buildingBrief": "events.status.buildingBrief",
-  "status.briefBuilt": "events.status.briefBuilt",
-  "status.sourcesLinked": "events.status.sourcesLinked",
-  "status.checkpointRestored": "events.status.checkpointRestored",
-  "status.exportStepRetried": "events.status.exportStepRetried",
-  "status.outputsValidated": "events.status.outputsValidated"
+  "result.matchCount": "events.result.matchCount"
 };
 
 const APP_INTERRUPT_COPY_KEYS: Record<

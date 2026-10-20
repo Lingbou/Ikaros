@@ -57,12 +57,12 @@ describe("renderer i18n", () => {
     expect(translate("sidebar.newChat", undefined, "zh-CN")).toBe("新对话");
     expect(translate("sidebar.noChats", undefined, "zh-CN")).toBe("没有聊天");
     expect(translate("sidebar.recents", undefined, "zh-CN")).toBe("最近");
-    expect(translate("branch.number", { number: 2 }, "zh-CN")).toBe("分支 2");
+    expect(translate("files.referenceText", { path: "a.ts", start: 1, end: 5 }, "zh-CN")).toBe("文件：a.ts（第 1–5 行）");
 
     expect(translate("settings.languageDescription", undefined, "en")).toBe(
       "Language for the app UI",
     );
     expect(translate("composer.stopRun", undefined, "en")).toBe("Stop");
-    expect(translate("branch.number", { number: 2 }, "en")).toBe("Branch 2");
+    expect(translate("files.referenceText", { path: "a.ts", start: 1, end: 5 }, "en")).toBe("File: a.ts (lines 1–5)");
   });
 });

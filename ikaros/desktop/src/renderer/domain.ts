@@ -1,13 +1,6 @@
-export type ScenarioId =
-  | "streaming"
-  | "tools"
-  | "artifact"
-  | "permission"
-  | "recovery";
 export type TurnStatus =
   | "queued"
   | "running"
-  | "waiting_permission"
   | "completed"
   | "failed"
   | "interrupted";
@@ -15,7 +8,7 @@ export type TurnStatus =
 export type RunStatus = "idle" | TurnStatus;
 
 export function isRunActive(status: RunStatus) {
-  return status === "queued" || status === "running" || status === "waiting_permission";
+  return status === "queued" || status === "running";
 }
 
 interface EventBase {
@@ -25,9 +18,6 @@ interface EventBase {
 }
 
 export type AppEventTextKind =
-  | "tool.inspectArchiveMetadata"
-  | "tool.testArchiveExtraction"
-  | "tool.exportReportPackage"
   | "tool.runProcess"
   | "tool.startProcess"
   | "tool.readProcess"
@@ -41,8 +31,6 @@ export type AppEventTextKind =
   | "tool.globFiles"
   | "tool.searchFiles"
   | "tool.listDirectory"
-  | "result.archiveManifestVerified"
-  | "result.windowsReservedNames"
   | "result.processCompleted"
   | "result.processRunning"
   | "result.processStopped"
@@ -68,15 +56,7 @@ export type AppEventTextKind =
   | "result.listFailed"
   | "result.listInterrupted"
   | "result.entryCount"
-  | "result.matchCount"
-  | "permission.moveReceiptsTitle"
-  | "permission.moveReceiptsDescription"
-  | "status.buildingBrief"
-  | "status.briefBuilt"
-  | "status.sourcesLinked"
-  | "status.checkpointRestored"
-  | "status.exportStepRetried"
-  | "status.outputsValidated";
+  | "result.matchCount";
 
 export type EventTextValues = Record<string, string | number>;
 
@@ -148,16 +128,6 @@ export interface ToolResultEvent extends EventBase {
   };
 }
 
-export interface PermissionEvent extends EventBase {
-  type: "permission_request";
-  requestId: string;
-  title: EventText;
-  description: EventText;
-  resource: string;
-  risk: "low" | "medium" | "high";
-  status: "pending" | "allowed" | "denied";
-}
-
 export type InterruptCopy =
   | {
       source: "app";
@@ -177,15 +147,6 @@ export interface InterruptEvent extends EventBase {
   status: "interrupted" | "recovering" | "recovered";
 }
 
-export interface ArtifactEvent extends EventBase {
-  type: "artifact";
-  artifactId: string;
-  title: string;
-  mediaType: "text/markdown" | "text/plain" | "application/json";
-  content: string;
-  version: number;
-}
-
 export interface FileChangeEvent extends EventBase {
   type: "file_change";
   path: string;
@@ -202,27 +163,13 @@ export interface StatusEvent extends EventBase {
   detail?: EventText;
 }
 
-export type BranchCreatedCopy =
-  | { source: "app"; kind: "edited_message" }
-  | { source: "external"; value: string };
-
-export interface BranchEvent extends EventBase {
-  type: "branch_created";
-  branchId: string;
-  sourceEventId: string;
-  copy: BranchCreatedCopy;
-}
-
 export type AgentEvent =
   | MessageEvent
   | ToolCallEvent
   | ToolResultEvent
-  | PermissionEvent
   | InterruptEvent
-  | ArtifactEvent
   | FileChangeEvent
-  | StatusEvent
-  | BranchEvent;
+  | StatusEvent;
 
 export type RuntimeModelSelection = { providerId: string; modelId: string };
 
@@ -246,17 +193,9 @@ export interface Turn {
   events: AgentEvent[];
 }
 
-export type BranchLabel =
-  | { source: "app"; kind: "main" }
-  | { source: "app"; kind: "number"; number: number }
-  | { source: "external"; value: string };
-
 export interface Branch {
   id: string;
   threadId: string;
-  label: BranchLabel;
-  parentBranchId?: string;
-  forkedFromEventId?: string;
   turns: Turn[];
   createdAt: string;
 }
@@ -267,7 +206,6 @@ export interface Thread {
   title: string;
   activeBranchId: string;
   branches: Branch[];
-  scenarioId?: ScenarioId;
   updatedAt: string;
 }
 
