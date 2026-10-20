@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 7,
+        "protocolVersion": 8,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 7,
+          "protocolVersion": 8,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
@@ -807,10 +807,15 @@
               "tools": [
                 {
                   "name": "process_start",
-                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this Run and are stopped when the Run ends.",
+                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this Run and are stopped when the Run ends. Set pty true to attach an interactive terminal: process_write then sends input and process_resize changes its window size.",
                   "inputSchema": {
                     "additionalProperties": false,
                     "properties": {
+                      "columns": {
+                        "maximum": 4096,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
                       "command": {
                         "maxLength": 32768,
                         "minLength": 1,
@@ -820,6 +825,14 @@
                         "maxLength": 4096,
                         "minLength": 1,
                         "type": "string"
+                      },
+                      "pty": {
+                        "type": "boolean"
+                      },
+                      "rows": {
+                        "maximum": 4096,
+                        "minimum": 1,
+                        "type": "integer"
                       }
                     },
                     "required": [
@@ -827,7 +840,7 @@
                     ],
                     "type": "object"
                   },
-                  "definitionSha256": "501442228a4183f513b36e456c3f08cba0e9884a2d801dea5d24628bb95e9614"
+                  "definitionSha256": "ae9f88547d9d2ba672a2af552590d72826a48842aafa410bcbcbfd8908dede4e"
                 },
                 {
                   "name": "process_read",
@@ -1033,11 +1046,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2038,
+                "toolTokens": 2295,
                 "historyTokens": 0,
                 "currentRunTokens": 83,
                 "memoryTokens": 276,
-                "totalTokens": 4672
+                "totalTokens": 4929
               },
               "omissions": [],
               "historyStatus": {
@@ -1077,11 +1090,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2038,
+                "toolTokens": 2295,
                 "historyTokens": 0,
                 "currentRunTokens": 83,
                 "memoryTokens": 276,
-                "totalTokens": 4672
+                "totalTokens": 4929
               },
               "omissions": [],
               "historyStatus": {
@@ -1437,11 +1450,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2038,
+                "toolTokens": 2295,
                 "historyTokens": 0,
                 "currentRunTokens": 702,
                 "memoryTokens": 276,
-                "totalTokens": 5291
+                "totalTokens": 5548
               },
               "omissions": [],
               "historyStatus": {
@@ -1772,11 +1785,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2038,
+                "toolTokens": 2295,
                 "historyTokens": 0,
                 "currentRunTokens": 1408,
                 "memoryTokens": 276,
-                "totalTokens": 5997
+                "totalTokens": 6254
               },
               "omissions": [],
               "historyStatus": {

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -578,7 +579,7 @@ async def test_windows_shell_hidden_suspended_until_job_assignment(
     if sys.platform != "win32":
         pytest.skip("Windows process creation flags")
     captured: dict[str, Any] = {}
-    fake_process = cast(asyncio.subprocess.Process, object())
+    fake_process = cast(asyncio.subprocess.Process, SimpleNamespace(pid=4242))
 
     async def fake_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
         captured.update(kwargs)
@@ -586,7 +587,7 @@ async def test_windows_shell_hidden_suspended_until_job_assignment(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
     monkeypatch.setattr(
-        process_platform, "_create_windows_job", lambda process: cast(Any, object())
+        process_platform, "_create_windows_job", lambda pid: cast(Any, object())
     )
     result = await process_platform._spawn_process("echo hidden", None)
     assert result.process is fake_process

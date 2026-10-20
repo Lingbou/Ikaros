@@ -256,6 +256,7 @@ function toolStatus(status: unknown): "running" | "success" | "error" | "interru
 const PROCESS_TOOL_LABELS = {
   process_start: "tool.startProcess", process_read: "tool.readProcess",
   process_wait: "tool.waitProcess", process_stop: "tool.stopProcess",
+  process_write: "tool.writeProcess", process_resize: "tool.resizeProcess",
 } as const satisfies Record<string, AppEventTextKind>;
 
 function isProcessTool(name: string): name is keyof typeof PROCESS_TOOL_LABELS {
@@ -279,6 +280,51 @@ function processDetails(result: Record<string, unknown>): ToolResultEvent["detai
     ...(Number.isSafeInteger(result.nextCursor) ? { nextCursor: result.nextCursor as number } : {}),
     ...(typeof result.hasMore === "boolean" ? { hasMore: result.hasMore } : {}),
   };
+}
+
+const SEARCH_TOOL_LABELS = {
+  glob: "tool.globFiles", grep: "tool.searchFiles", list: "tool.listDirectory",
+} as const satisfies Record<string, AppEventTextKind>;
+
+type SearchToolName = keyof typeof SEARCH_TOOL_LABELS;
+
+function isSearchTool(name: string): name is SearchToolName {
+  return Object.hasOwn(SEARCH_TOOL_LABELS, name);
+}
+
+const SEARCH_TOOL_RESULTS: Record<
+  SearchToolName,
+  Record<ToolResultEvent["status"], AppEventTextKind>
+> = {
+  glob: {
+    success: "result.globCompleted",
+    error: "result.globFailed",
+    interrupted: "result.globInterrupted",
+  },
+  grep: {
+    success: "result.searchCompleted",
+    error: "result.searchFailed",
+    interrupted: "result.searchInterrupted",
+  },
+  list: {
+    success: "result.listCompleted",
+    error: "result.listFailed",
+    interrupted: "result.listInterrupted",
+  },
+};
+
+function projectSearchResultDetails(
+  result: Record<string, unknown>,
+): ToolResultEvent["details"] | undefined {
+  const details: NonNullable<ToolResultEvent["details"]> = {};
+  if (Number.isInteger(result.entryCount) && Number(result.entryCount) >= 0) {
+    details.entryCount = Number(result.entryCount);
+  }
+  if (Number.isInteger(result.matchCount) && Number(result.matchCount) >= 0) {
+    details.matchCount = Number(result.matchCount);
+  }
+  if (typeof result.truncated === "boolean") details.truncated = result.truncated;
+  return Object.keys(details).length > 0 ? details : undefined;
 }
 
 type FileToolName = "read" | "write" | "edit";
@@ -511,7 +557,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           ? appEventText(FILE_TOOL_LABELS[toolName])
           : isProcessTool(toolName)
             ? appEventText(PROCESS_TOOL_LABELS[toolName])
-            : externalEventText(toolName),
+            : isSearchTool(toolName)
+              ? appEventText(SEARCH_TOOL_LABELS[toolName])
+              : externalEventText(toolName),
         status: toolStatus(item.status),
         arguments: projectToolArguments(toolName, item.data.arguments),
         durationMs:
@@ -533,9 +581,14 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           ? item.data.toolName
           : "tool";
       const fileTool = isFileToolName(toolName);
-      const fileDetails = fileTool
+      const searchTool = isSearchTool(toolName);
+      const resultDetails = fileTool
         ? projectFileResultDetails(item.data.result)
-        : isProcessTool(toolName) ? processDetails(item.data.result) : undefined;
+        : isProcessTool(toolName)
+          ? processDetails(item.data.result)
+          : searchTool
+            ? projectSearchResultDetails(item.data.result)
+            : undefined;
       const path =
         fileTool && typeof item.data.result.path === "string"
           ? item.data.result.path
@@ -556,7 +609,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           ? appEventText(FILE_TOOL_RESULTS[toolName][resultStatus])
           : isProcessTool(toolName)
             ? appEventText(processSummary(item.data.result, resultStatus))
-            : externalEventText(toolName),
+            : searchTool
+              ? appEventText(SEARCH_TOOL_RESULTS[toolName][resultStatus])
+              : externalEventText(toolName),
         output: fileTool
           ? safeFileResultOutput(item.data.result.output, resultStatus)
           : typeof item.data.result.output === "string"
@@ -564,7 +619,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
             : "",
         ...(path === undefined ? {} : { path }),
         ...(errorCode === undefined ? {} : { errorCode }),
-        ...(fileDetails === undefined ? {} : { details: fileDetails }),
+        ...(resultDetails === undefined ? {} : { details: resultDetails }),
         createdAt: typeof item.createdAt === "string" ? item.createdAt : event.timestamp
       });
     }

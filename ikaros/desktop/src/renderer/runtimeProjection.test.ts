@@ -346,6 +346,64 @@ function fileToolResultItem(
   };
 }
 
+function searchToolCallItem(
+  id: string,
+  turnId: string,
+  runId: string,
+  toolName: "glob" | "grep" | "list",
+  status: "running" | "completed" | "failed" | "cancelled",
+  argumentsValue: Record<string, unknown>,
+) {
+  return {
+    id,
+    turnId,
+    runId,
+    ordinal: 2,
+    kind: "tool_call",
+    role: "assistant",
+    status,
+    content: "",
+    data: {
+      stepId: "step-search",
+      callId: `provider-${id}`,
+      toolName,
+      arguments: argumentsValue,
+    },
+    createdAt: "2026-08-11T12:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z",
+  };
+}
+
+function searchToolResultItem(
+  id: string,
+  turnId: string,
+  runId: string,
+  toolName: "glob" | "grep" | "list",
+  status: "completed" | "failed" | "cancelled",
+  toolCallItemId: string,
+  result: Record<string, unknown>,
+) {
+  return {
+    id,
+    turnId,
+    runId,
+    ordinal: 3,
+    kind: "tool_result",
+    role: "tool",
+    status,
+    content: "{}",
+    data: {
+      stepId: "step-search",
+      callId: `provider-${toolCallItemId}`,
+      toolCallItemId,
+      toolName,
+      result,
+    },
+    createdAt: "2026-08-11T12:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z",
+  };
+}
+
 describe("Runtime event projection", () => {
   it.each([
     ["failed", "provider_timeout", "failed"],
@@ -886,6 +944,136 @@ describe("Runtime event projection", () => {
     expect(JSON.stringify(projected)).not.toContain(secretContent);
     expect(JSON.stringify(projected)).not.toContain(oldString);
     expect(JSON.stringify(projected)).not.toContain(newString);
+  });
+
+  it("projects compact, replay-safe search tool events with counts and truncation", () => {
+    const events = [
+      event(2, "item.completed", "turn-search", "run-search", "call-glob", {
+        item: searchToolCallItem(
+          "call-glob",
+          "turn-search",
+          "run-search",
+          "glob",
+          "completed",
+          { pattern: "**/*.py", path: "src", maxResults: 25 },
+        ),
+      }),
+      event(3, "item.completed", "turn-search", "run-search", "result-glob", {
+        item: searchToolResultItem(
+          "result-glob",
+          "turn-search",
+          "run-search",
+          "glob",
+          "completed",
+          "call-glob",
+          {
+            output: "C:\\work\\src\\app.py\t19\t2026-08-11T12:00:00Z",
+            path: "C:\\work\\src",
+            pattern: "**/*.py",
+            entryCount: 1,
+            maxResults: 25,
+            truncated: false,
+          },
+        ),
+      }),
+      event(4, "item.completed", "turn-search", "run-search", "call-grep", {
+        item: searchToolCallItem(
+          "call-grep",
+          "turn-search",
+          "run-search",
+          "grep",
+          "failed",
+          { pattern: "needle(", include: "*.py", contextLines: 2 },
+        ),
+      }),
+      event(5, "item.completed", "turn-search", "run-search", "result-grep", {
+        item: searchToolResultItem(
+          "result-grep",
+          "turn-search",
+          "run-search",
+          "grep",
+          "failed",
+          "call-grep",
+          {
+            output: "pattern is not a valid regular expression",
+            errorCode: "invalid_pattern",
+            matchCount: 0,
+            truncated: false,
+          },
+        ),
+      }),
+      event(6, "item.completed", "turn-search", "run-search", "call-list", {
+        item: searchToolCallItem(
+          "call-list",
+          "turn-search",
+          "run-search",
+          "list",
+          "completed",
+          {},
+        ),
+      }),
+      event(7, "item.completed", "turn-search", "run-search", "result-list", {
+        item: searchToolResultItem(
+          "result-list",
+          "turn-search",
+          "run-search",
+          "list",
+          "completed",
+          "call-list",
+          {
+            output: "src\tdir\t-\t2026-08-11T12:00:00Z",
+            path: "C:\\work",
+            entryCount: 1200,
+            truncated: true,
+          },
+        ),
+      }),
+    ];
+
+    const once = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    const twice = replayRuntimeEvents(once, events);
+    const projected = twice[0]?.branches[0]?.turns[0]?.events;
+
+    expect(projected).toHaveLength(6);
+    expect(projected?.[0]).toMatchObject({
+      type: "tool_call",
+      toolName: "glob",
+      label: { source: "app", kind: "tool.globFiles" },
+      arguments: { pattern: "**/*.py", path: "src", maxResults: 25 },
+    });
+    expect(projected?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "glob",
+      status: "success",
+      summary: { source: "app", kind: "result.globCompleted" },
+      details: { entryCount: 1, truncated: false },
+    });
+    expect(projected?.[2]).toMatchObject({
+      type: "tool_call",
+      toolName: "grep",
+      label: { source: "app", kind: "tool.searchFiles" },
+      arguments: { pattern: "needle(", include: "*.py", contextLines: 2 },
+    });
+    expect(projected?.[3]).toMatchObject({
+      type: "tool_result",
+      toolName: "grep",
+      status: "error",
+      summary: { source: "app", kind: "result.searchFailed" },
+      errorCode: "invalid_pattern",
+      details: { matchCount: 0, truncated: false },
+    });
+    expect(projected?.[4]).toMatchObject({
+      type: "tool_call",
+      toolName: "list",
+      label: { source: "app", kind: "tool.listDirectory" },
+    });
+    expect(projected?.[5]).toMatchObject({
+      type: "tool_result",
+      toolName: "list",
+      status: "success",
+      summary: { source: "app", kind: "result.listCompleted" },
+      details: { entryCount: 1200, truncated: true },
+    });
   });
 
   it("places each tool result directly after its matching call", () => {

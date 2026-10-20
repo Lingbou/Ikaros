@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：8 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：13 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -253,9 +253,11 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — 导出 Memory 存储与召回。
 - `domain.py` — Memory 领域类型：kind/state/scope、来源、revision、内容上限。
-- `retrieval.py` — 确定性关键词召回：候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
-- `schema.py` — memory.db schema 1 的 DDL 与逐字节校验。
-- `store.py` — memory.db SQLite 所有者（870 行）：CRUD、revision、墓碑、操作回执。
+- `retrieval.py` — 确定性混合召回：FTS5(BM25) 池 + 关键词重叠池，RRF（k=60）
+  融合；候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
+- `schema.py` — memory.db schema 2 的 DDL 与逐字节校验（含 FTS5 召回索引）。
+- `store.py` — memory.db SQLite 所有者（943 行）：CRUD、revision、墓碑、操作回执、
+  FTS 索引维护与 BM25 排名。
 
 `protocol/`：
 
@@ -263,7 +265,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 7、32 方法、15 事件、8 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 8、32 方法、15 事件、10 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -278,6 +280,13 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   错误归一化（581 行）。
 - `openai_compatible/discovery.py` — `/models` 发现：响应 ≤1 MB、≤1,000 个模型。
 - `openai_compatible/streaming.py` — SSE 解析、工具参数分片、usage 装配。
+
+`resources/`（打包资源）：
+
+- `__init__.py` — 资源包标记。
+- `IKAROS.md` — Agent 身份提示词（英文原文）。
+- `windows_pty_launcher.py` — Windows PTY 客户端启动器：先把标准句柄重新指向
+  `CONIN$`/`CONOUT$`，再启动命令。
 
 `server/`：
 
@@ -327,21 +336,31 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 `tools/`：
 
 - `__init__.py` — 工具注册与导出。
+- `artifacts.py` — 大工具结果落盘：>64 KiB 写
+  `<runtime home>/artifacts/<threadId>/<itemId>.txt`，回填头部预览与 `read` 续读提示。
 - `core.py` — Tool 契约、ToolExecutionContext、参数精确校验原语。
 - `edit.py` — `edit`：精确匹配、唯一匹配默认、replaceAll、stale_content 检测。
 - `file_common.py` — 文件工具共享行为：路径校验（≤4,096）、二进制嗅探、按路径锁、
-  原子写。
+  原子写；`resolve_tool_path` / `validate_directory_path` 供检索工具复用。
+- `glob.py` — `glob`：模式匹配文件（结果上限默认 1,000、忽略 .git/node_modules/
+  二进制、深度 ≤12）。
+- `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 200 字符。
 - `history_read.py` — `history_read` 工具：itemId 周边的有界切片。
+- `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
 - `policy.py` — 执行策略：当前固定 FullAccessPolicy。
 - `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
   终止 6 秒 / 排空 2 秒。
 - `process_platform.py` — 平台原语：Windows 挂起创建 + Job Object；POSIX 进程组；
-  环境白名单 + UTF-8 变量。
-- `process.py` — 4 个进程工具（start/read/wait/stop）的模型侧定义与参数校验。
+  环境白名单 + UTF-8 变量；PTY 会话（Windows ConPTY / POSIX pty）、输出流控与
+  窗口尺寸。
+- `process.py` — 6 个进程工具（start/read/wait/stop/write/resize）的模型侧定义与
+  参数校验。
 - `read.py` — `read`：≤2,000 行 / 50 KiB、行截断 2,000 字符、nextOffset 翻页。
+- `traversal.py` — 检索工具共享遍历：广度优先、确定性排序、不跟随目录符号链接、
+  取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 37 个 Python 文件）：
+`tests/`（Runtime 测试，共 42 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -370,6 +389,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_openai_compatible.py` — 适配器、流式、重试与错误归一测试。
 - `test_paths.py` — Runtime home 路径测试。
 - `test_process_manager.py` — 进程管理器与平台行为测试。
+- `test_process_pty.py` — PTY 会话测试：交互式 REPL、写 stdin、窗口 resize、
+  字节游标读取与终止（fixture `fixtures/pty_repl.py`）。
 - `test_protocol_contract.py` — 协议契约与生成物测试。
 - `test_protocol_router.py` — 方法派发与错误码测试。
 - `test_runtime_lock.py` — 单实例锁测试。
@@ -589,8 +610,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - 能力：创建（可附带一个 Session Item 来源）、纠正、遗忘（内容抹除的墓碑版本）、
   分页列表（默认 50、最大 100）、按 ID 详情。
 - 内容限制：单条正文最多 2,048 字符；列表预览最多 160 字符。
-- 召回：关键词相关性（`deterministic-keywords-v1`），候选上限 2,000 条，选中
-  上限 8 条 / 6,000 字符；每个 Run 冻结精确 revision。
+- 召回：FTS5(BM25) 池与关键词重叠池经 RRF（k=60）融合
+  （`deterministic-hybrid-rrf-v2`），候选上限 2,000 条，选中上限 8 条 / 6,000
+  字符；每个 Run 冻结精确 revision。
 - 语义：Run 执行中的纠正只影响之后的新 Run；遗忘阻止继续发送已不可用版本；
   没有自动写入或自动学习。
 
@@ -759,9 +781,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.2 协议与 RPC
 
-- 协议版本 7，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
+- 协议版本 8，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、8 个 provider
+- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、13 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -792,7 +814,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - `state.db`：SQLite，schema 14；Journal Event schema 10。保存 Threads/Branches/
   Turns/Runs/Items、事件 Journal、RunConfig、ContextRevision、StepInput 审计、
   usage、进程与文件操作事实；投影可从 Journal 重建。
-- `memory.db`：独立 schema 1；有自己的连接、事务、revision 与操作回执；与
+- `memory.db`：独立 schema 2；有自己的连接、事务、revision 与操作回执；与
   `state.db` 无跨库事务/外键，只共享 Runtime-home 锁。
 - `config.yaml`：version 2，上限 256 KiB（读/写都校验），原子替换写入；保存
   Provider/model 配置和 `skills.disabled`。
@@ -801,9 +823,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage check`：校验 schema、Journal 顺序、投影可重建性；
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
-- 数据策略：只支持当前格式（config 2 / schema 14 / Journal 10 / protocol 7）；
-  不兼容的开发数据以"需要重置"错误失败，需要显式重建；更新代码不会动配置、
-  Skills、桌面偏好与 `memory.db`。
+- 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 /
+  protocol 8 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
+  更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
+  要求显式重置。
 
 ### 6.4 崩溃恢复语义
 
@@ -884,18 +907,38 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（8 个）
+### 6.9 内建工具（13 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
-| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Run 最多 64 个运行中命令 |
+| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Run 最多 64 个运行中命令；`pty: true` 时挂接伪终端 |
 | `process_read` | `processId`、可选 `cursor` | 返回状态 + 最多 16 KiB 输出页；稳定字节游标 |
 | `process_wait` | `processId`、可选 `cursor`、`timeoutMs`（1–60,000，默认 1,000） | 等待退出；超时返回 `running` 且不杀进程 |
 | `process_stop` | `processId`、可选 `cursor` | 停止进程树；重复调用无害 |
+| `process_write` | `processId`、`data`（≤32,768 字符）、可选 `cursor` | 仅 PTY：写 UTF-8 输入，返回该游标起的输出页 |
+| `process_resize` | `processId`、`columns`/`rows`（1–4,096）、可选 `cursor` | 仅 PTY：调整终端尺寸，返回该游标起的输出页 |
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
 | `read` | `filePath`、`offset`、`limit`（1–2,000，默认 2,000） | UTF-8；每次 ≤50 KiB；单行超 2,000 字符截断；拒绝目录/二进制/非法编码；`nextOffset` 翻页 |
 | `write` | `filePath`、`content` | 建父目录；同目录临时文件 + SHA-256 校验 + fsync + 原子替换；保留 BOM/换行/文件模式 |
 | `edit` | `filePath`、`oldString`、`newString`、`replaceAll` | 精确匹配；默认要求唯一匹配；CRLF/孤立 CR 规范化为 LF；变更前检测 `stale_content` |
+| `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules`、已知二进制扩展名与深度 >12 的目录；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
+| `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–10）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 200 字符；单文件 ≤4 MiB，跳过二进制与非 UTF-8 |
+| `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
+
+检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
+相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
+`asyncio.to_thread` 中执行并定期检查取消令牌。
+
+大结果落盘（全部工具通用）：
+
+- 单次工具结果超过 64 KiB 时，完整输出原子写入
+  `~/.ikaros/artifacts/<threadId>/<itemId>.txt`，模型侧只保留头部预览
+  （约 200 行 / ≤32 KiB）与 `read offset=<预览行数 + 1>` 续读提示；details 增加
+  `artifactPath` / `artifactBytes` / `artifactLines` / `artifactPreviewLines`，
+  并将 `truncated` 置为 true。
+- 落盘失败不影响工具结果本身（原结果照常返回）；命中受保护凭据值的结果不落盘，
+  仍走既有的凭据拦截路径。
+- Desktop 的 wire 校验按工具允许列表校验这些字段，未知 detail 键一律拒绝。
 
 进程与输出细节：
 
@@ -907,6 +950,11 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   才算成功。
 - 平台行为：Windows 挂起创建 + kill-on-close Job Object + 恢复；POSIX 新会话/
   进程组；根进程退出后清理残留后代。
+- PTY 会话：`process_start(pty=true)` 挂接伪终端（Windows ConPTY / POSIX pty），
+  stdout/stderr 合并为同一终端流，按同一 head/tail 缓冲与字节游标读取；
+  `process_write` 写 stdin（Windows 上换行规范化为 CRLF），`process_resize`
+  调整窗口尺寸；生命周期、超时、取消与进程树清理与非 PTY 命令一致，Run 结束时
+  一并终止（跨 Run / 重启存活留给后续版本）。
 - 清理超时：终止进程树 6 秒、排空管道 2 秒、Run 关闭清理等待 10 秒。
 - 环境：子进程只继承白名单环境变量，并强制 `PYTHONIOENCODING=utf-8`、
   `PYTHONUTF8=1`。
@@ -929,15 +977,22 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.11 Memory 子系统
 
-- 存储：`memory.db`（schema 1）。记录包含 id、kind、state、scope、正文、来源
+- 存储：`memory.db`（schema 2）。记录包含 id、kind、state、scope、正文、来源
   引用、revision、内容完整性摘要（摘要私有，Forget 时清除）。
 - 操作：create / correct / forget / list / get；创建与纠正幂等；遗忘产生内容抹除
   的墓碑 revision；冲突返回有界 `reasonCode`（协议错误码 `-32020`
   `memory operation failed`）。
 - 溯源：可选的来源必须指向本 Session 已存在的 Item；Session 重置只会让软来源
   退化，不删除 Memory。
-- 召回（`MemoryRetrieverV1`）：确定性关键词相关性；候选 ≤2,000；选中 ≤8 条且
-  ≤6,000 字符；每个 Run 冻结精确 revision；读取与物化在 `state.db` 事务之外。
+- 召回（`MemoryRetrieverV1`，`deterministic-hybrid-rrf-v2`）：FTS5(BM25) 池与
+  关键词重叠池各自有界排名，再按 RRF（k=60）融合——同一条被两个池同时命中时
+  分数相加，缺池不惩罚；候选 ≤2,000；每池深度 ≤200；选中 ≤8 条且 ≤6,000 字符；
+  每个 Run 冻结精确 revision；读取与物化在 `state.db` 事务之外。
+- 索引（`memory_fts`）：正文经 NFKC + casefold 后切成 Latin 词、Han 单字与 Han
+  bigram 词元写入 FTS5，1–2 字中文查询因此走索引而不是全表 LIKE；create/correct
+  在写事务内重写该行、forget 清除该行，索引是当前 revision 的派生投影。
+- 池：目前只有两个确定性词法池；向量池接口（`MemorySemanticPool`）已预留但本期
+  未实现，不接外部 embedding 服务、不做 LLM 精排。
 - 输入包装：Memory 正文以 contextual-data 包装进入模型，不改变工具权限、身份、
   执行策略或用户请求；审计只记录 ID/revision/scope/字符数。
 - 边界：没有自动 Memory 写入器、没有学习循环；Memory 不保存运行进度、命令日志
@@ -1161,7 +1216,7 @@ Process              running ──▶ exited / terminated
   （Provider 可能先完成）。
 - 历史 Tool 调用永不自动重放；`unknown` 进程必须在新 Turn 中重新检查。
 
-## 7. RPC 接口参考（协议 7，共 32 个方法）
+## 7. RPC 接口参考（协议 8，共 32 个方法）
 
 通用约定：
 
@@ -1549,7 +1604,7 @@ tool）；`status`；`content`；`created_at`；`updated_at`；`data_json`（默
 `file_changes`：`tool_call_item_id` PK → items（CASCADE）；`record_json`
 （不可变 before/after 捕获与 diff）。
 
-### 8.2 memory.db（schema 1）
+### 8.2 memory.db（schema 2）
 
 `memory_records`：
 
@@ -1578,6 +1633,13 @@ tool）；`status`；`content`；`created_at`；`updated_at`；`data_json`（默
 `method`（memory.create / correct / forget）；`non_content_fingerprint`；
 `memory_id`；`resulting_revision`（≥1）；`created_at`；
 `UNIQUE(memory_id, resulting_revision)`；外键指向对应 revision（RESTRICT）。
+
+`memory_fts`（FTS5 虚表）：`memory_id`（UNINDEXED）+ `tokens`（Python 侧切好的
+词元流），`tokenize='unicode61 remove_diacritics 2'`。它是当前可读 revision 的
+派生投影：create/correct 在写事务内重写该行、forget 删除该行，正文仍只以原文形式
+存在 `memory_revisions`；FTS5 影子表（`memory_fts_config` / `_content` / `_data` /
+`_docsize` / `_idx`）由 SQLite 生成，漂移校验因此比对对象名与虚表自身 DDL，不比对
+影子表 SQL 文本。
 
 ### 8.3 打开参数与数值上限
 
@@ -1775,7 +1837,7 @@ CREATE TABLE file_changes (
 );
 ```
 
-`memory.db`（schema 1）的完整建表语句：
+`memory.db`（schema 2）的完整建表语句：
 
 ```sql
 CREATE TABLE memory_records (
@@ -1873,6 +1935,12 @@ ON memory_records(state, scope_type, scope_key, updated_at DESC, id ASC);
 
 CREATE INDEX memory_records_scope_kind_order_idx
 ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
+
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    memory_id UNINDEXED,
+    tokens,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 ```
 
 ## 9. 数据目录
@@ -1881,9 +1949,10 @@ ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
 ~/.ikaros/
   config.yaml          provider/model 配置、Skill 禁用列表（version 2，≤256 KiB）
   state.db             权威会话与执行记录（SQLite，schema 14）
-  memory.db            独立长期 Memory（schema 1）
+  memory.db            独立长期 Memory（schema 2，含 FTS5 召回索引）
   runtime.lock         单进程独占锁
   backups/             离线备份（按需创建，永不覆盖）
+  artifacts/           大工具结果落盘（>64 KiB，按 <threadId>/<itemId>.txt 存放）
   skills/              用户 Skills：<name>/SKILL.md
   logs/                持久文件日志（启用时创建）
   runtime/             内置 Runtime payload（打包态首次启动布置）
@@ -1899,17 +1968,18 @@ ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线门禁 | pytest 781 passed / 2 skipped |
-| Desktop 离线门禁 | Vitest 528 passed / 1 skipped |
-| 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Golden Trace、Desktop typecheck、生产构建 全部通过 |
+| Runtime 离线门禁 | pytest 810 passed / 6 skipped（Windows 本机跑数） |
+| Desktop 离线门禁 | Vitest 555 passed / 1 skipped |
+| 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
 
-离线基线对应 2026-09-18 代码状态（此后仅文档变化）。
+离线基线对应 2026-10-20 代码状态。Windows 上 `test_file_preview.py` 与 golden
+trace 回放用例存在 CRLF / 路径分隔符差异，基线以 Linux 为准。
 
 ### 10.1 测试布局
 
-- Runtime：`runtime/tests/` 共 37 个测试文件，覆盖 agent 循环、上下文与压缩、
+- Runtime：`runtime/tests/` 共 42 个测试文件，覆盖 agent 循环、上下文与压缩、
   存储与 schema、协议契约与路由、Provider 适配、进程管理、工具、Memory 召回、
   Skills、服务器与运行时锁；测试使用隔离的临时 Runtime home。
 - Desktop：Vitest（`ikaros/desktop/src` 内 `*.test.ts(x)`），包含协议解析、
@@ -1969,12 +2039,12 @@ uv run --frozen pytest tests/test_live_identity.py -q -s
 
 尚未实现或未接通：
 
-- PTY 交互、跨 Run/重启的进程存活；
+- 跨 Run / 重启的进程存活（含 PTY 会话）；
 - 多个 Run 并发、Multi-Agent 与子 Agent；
 - cron 与主动唤醒任务；
 - 附件、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
-- 自动 Memory 提取与 Skill 学习；
+- 自动 Memory 提取与 Skill 学习（Memory 的向量/语义召回接口已预留，未实现）；
 - Linux 安装包内置 Runtime、自动更新、代码签名与正式发布渠道；
 - 交互式权限模式（当前只有 full_access）。
 
@@ -2015,8 +2085,13 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 上下文 | Memory 预留 | 至少 4,096 tokens；Memory 最多占剩余一半 |
 | Memory | 单条正文 / 预览 | 2,048 字符 / 160 字符 |
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
+| Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
 | Memory | 列表分页 | 默认 50、最大 100 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
+| 文件 | glob | 结果上限默认 1,000、最大 5,000；扫描深度 ≤12；忽略 .git/node_modules/二进制 |
+| 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤10 行；单行 200 字符；单文件 ≤4 MiB |
+| 文件 | list | 单层目录；条目上限 5,000 |
+| 工具结果 | 落盘阈值 | >64 KiB → `~/.ikaros/artifacts/<threadId>/<itemId>.txt`；预览约 200 行 / ≤32 KiB |
 | 文件 | preview | ≤50 KiB、2,000 行/页；扫描 ≤8 MiB |
 | 文件 | write/edit 捕获 | 各 ≤256 KiB / 5,000 行；事件 ≤256 KiB |
 | 文件 | history_read | before/after ≤41；maxChars 256–24,000 |
@@ -2027,12 +2102,13 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 进程 | wait | 默认 1,000 ms、上限 60,000 ms |
 | 进程 | 清理超时 | 终止 6 秒、排空 2 秒、Run 关闭 10 秒 |
 | 进程 | 命令/cwd 长度 | ≤32,768 / ≤4,096 字符 |
+| 进程 | PTY 尺寸 / 输入 | columns/rows 1–4,096（默认 80×24）；process_write ≤32,768 字符 |
 | Provider | 超时 | 连接 10 秒、响应头 30 秒、流空闲 300 秒 |
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 7；32 方法；15 事件；8 工具 |
-| 存储 | 版本 | state schema 14；Journal 10；memory 1；config 2 |
+| 协议 | 版本/规模 | protocol 8；32 方法；15 事件；13 工具 |
+| 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |
 | 服务 | 锁超时 / 轮询 | 10 秒 / 50 ms |
@@ -2067,7 +2143,10 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
   停止 Runtime → 备份或移走 `state.db`（连同 `-wal` / `-shm`）→ 重启自动重建；
   `memory.db`、`config.yaml`、`skills/` 不受影响。
 - `memory database schema is incompatible; restore a compatible backup`：恢复
-  `memory.db` 备份，或移走后重建（会丢失记忆）。
+  与当前 Runtime 同版本的 `memory.db` 备份，或移走后重建（会丢失记忆）。
+  `memory.db` 现为 schema 2（schema 1 没有 FTS5 召回索引），开发期没有迁移路径。
+- `no such module: fts5`：当前 Python 自带的 SQLite 未编译 FTS5（官方 Windows
+  构建与主流发行版默认启用）；换用带 FTS5 的解释器后移走 `memory.db` 重建。
 - 同版本但结构漂移（表 / 索引变化）同样会被拒绝，不会被静默接受。
 
 ### 14.3 连接与运行状态
