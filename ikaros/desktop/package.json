@@ -25,11 +25,13 @@
     "test": "vitest run --passWithNoTests",
     "test:live:deepseek": "node scripts/run-live-deepseek.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build",
-    "package:dir": "pnpm run build && electron-builder --config electron-builder.config.ts --dir",
+    "package:dir": "pnpm run build && node scripts/prepare-runtime-payload.mjs --allow-unsupported && electron-builder --config electron-builder.config.ts --dir",
     "package:linux": "pnpm run build && electron-builder --config electron-builder.config.ts --linux",
-    "package:win": "pnpm run build && electron-builder --config electron-builder.config.ts --win nsis --x64"
+    "package:win": "pnpm run build && node scripts/prepare-runtime-payload.mjs --platform win32 --arch x64 && electron-builder --config electron-builder.config.ts --win nsis --x64",
+    "prepare:runtime": "node scripts/prepare-runtime-payload.mjs"
   },
   "dependencies": {
+    "tar": "7.5.22",
     "ws": "8.18.3"
   },
   "devDependencies": {

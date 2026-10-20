@@ -33,6 +33,7 @@
 
 # Ikaros desktop build and test artifacts
 /ikaros/desktop/node_modules/
+/ikaros/desktop/build/runtime/
 /ikaros/desktop/out/
 /ikaros/desktop/dist/
 /ikaros/desktop/coverage/

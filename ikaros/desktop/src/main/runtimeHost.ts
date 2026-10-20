@@ -1,7 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 import WebSocket, { type RawData } from "ws";
@@ -11,6 +10,8 @@ import {
   type RuntimeHostStatus,
   type RuntimeJournalEvent
 } from "../shared/runtime";
+import { runtimePython } from "./runtimePaths";
+import type { RuntimeLaunch } from "./runtimeProvision";
 import {
   RuntimeRpcError,
   isRuntimeNotification,
@@ -88,6 +89,8 @@ export interface RuntimeHostOptions {
   runtimeRoot: string;
   runtimeHome?: string;
   pythonExecutable?: string;
+  /** Overrides how the Runtime interpreter and working directory are resolved. */
+  resolveLaunch?: () => Promise<RuntimeLaunch>;
   stderrSink?: (message: string) => void;
   parentPid?: number;
   startTimeoutMs?: number;
@@ -364,19 +367,6 @@ class JsonRpcConnection {
   }
 }
 
-function runtimePython(runtimeRoot: string): string {
-  const relative = process.platform === "win32" ? [".venv", "Scripts", "python.exe"] : [
-    ".venv",
-    "bin",
-    "python"
-  ];
-  return resolve(runtimeRoot, ...relative);
-}
-
-export function developmentRuntimeRoot(desktopAppPath: string): string {
-  return resolve(desktopAppPath, "..", "..", "runtime");
-}
-
 function terminateRuntimeProcess(
   child: ChildProcessWithoutNullStreams,
   runtimePid: number | undefined
@@ -436,6 +426,11 @@ export class RuntimeHost {
 
   get pid(): number | undefined {
     return this.child?.pid;
+  }
+
+  /** Surfaces payload deployment progress on the existing host status channel. */
+  reportStartupProgress(message: string): void {
+    this.updateHostStatus("starting", message);
   }
 
   onNotification(listener: (notification: RuntimeNotification) => void): () => void {
@@ -516,11 +511,22 @@ export class RuntimeHost {
     return this.launchRuntime();
   }
 
+  private async resolveLaunch(): Promise<RuntimeLaunch> {
+    if (this.options.resolveLaunch) {
+      return this.options.resolveLaunch();
+    }
+    return {
+      runtimeRoot: this.options.runtimeRoot,
+      pythonExecutable:
+        this.options.pythonExecutable ??
+        process.env.IKAROS_RUNTIME_PYTHON ??
+        runtimePython(this.options.runtimeRoot)
+    };
+  }
+
   private async launchRuntime(): Promise<RuntimeConnectionInfo> {
-    const pythonExecutable =
-      this.options.pythonExecutable ??
-      process.env.IKAROS_RUNTIME_PYTHON ??
-      runtimePython(this.options.runtimeRoot);
+    const launch = await this.resolveLaunch();
+    const pythonExecutable = launch.pythonExecutable;
     if (!existsSync(pythonExecutable)) {
       throw new Error(
         `Ikaros Runtime Python was not found at ${pythonExecutable}. Run uv sync --project runtime --locked.`
@@ -553,7 +559,7 @@ export class RuntimeHost {
         String(this.options.parentPid)
       ],
       {
-        cwd: this.options.runtimeRoot,
+        cwd: launch.runtimeRoot,
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true

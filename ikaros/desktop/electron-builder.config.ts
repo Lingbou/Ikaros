@@ -53,7 +53,17 @@ const configuration: Configuration = {
     ],
     artifactName: "Ikaros-${version}-windows-${arch}-setup.${ext}",
     executableName: "Ikaros",
-    requestedExecutionLevel: "asInvoker"
+    requestedExecutionLevel: "asInvoker",
+    extraResources: [
+      {
+        from: "build/runtime/ikaros-runtime-win-x64.tar.gz",
+        to: "runtime/ikaros-runtime-win-x64.tar.gz"
+      },
+      {
+        from: "build/runtime/runtime-payload.json",
+        to: "runtime/runtime-payload.json"
+      }
+    ]
   },
   nsis: {
     oneClick: false,
