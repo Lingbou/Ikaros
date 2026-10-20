@@ -108,6 +108,7 @@ git worktree list   # 确认列表干净
 
 ### 2. 运行数据与密钥
 - 运行数据默认 `~/.ikaros`（Windows：`%USERPROFILE%\.ikaros`），由 Runtime 独占管理；
+- 开发阶段 `~/.ikaros` 数据视为可随时重建：schema / 协议不兼容时直接删除重建，**不创建备份**；
 - 做实验用 `IKAROS_HOME` 指向临时目录，避免污染日常数据；
 - 密钥只放本地 key 文件或 `/secrets/`（已忽略），不得进入命令行、Issue、PR、日志或提交。
 
