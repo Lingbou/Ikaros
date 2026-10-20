@@ -18,7 +18,7 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .history_read import HistoryReadTool
 from .list import ListTool
-from .policy import ExecutionPolicy, FullAccessPolicy
+from .policy import FullAccessPolicy
 from .process import (
     ProcessReadTool,
     ProcessResizeTool,
@@ -32,7 +32,6 @@ from .read import ReadTool
 from .write import WriteTool
 
 __all__ = [
-    "ExecutionPolicy",
     "EditTool",
     "FullAccessPolicy",
     "GlobTool",
