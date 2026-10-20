@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from ikaros_runtime.memory import (
     MemoryScope,
     MemorySnapshotReferenceV1,
     SqliteMemoryStore,
+)
+from ikaros_runtime.memory.retrieval import (
+    MemoryRetrievalCandidateV1,
+    fts_match_expression,
+    fts_token_stream,
 )
 
 
@@ -69,6 +75,10 @@ def _bulk_insert(store: SqliteMemoryStore, count: int) -> None:
         for index in range(count):
             memory_id = f"memory_{index + 1:032x}"
             content = f"overflow keyword {index}"
+            store._connection.execute(
+                "INSERT INTO memory_fts(memory_id, tokens) VALUES (?, ?)",
+                (memory_id, fts_token_stream(content)),
+            )
             store._connection.execute(
                 """
                 INSERT INTO memory_records(
@@ -167,6 +177,265 @@ def test_punctuation_and_emoji_only_query_retrieves_nothing(tmp_path: Path) -> N
         store.close()
 
 
+def _indexed_rows(store: SqliteMemoryStore, memory_id: str) -> int:
+    row = store._connection.execute(
+        "SELECT count(*) FROM memory_fts WHERE memory_id = ?",
+        (memory_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def test_bm25_pool_ranks_han_bigrams_and_single_characters(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    preference = _create(store, "han-preference", "用户偏好使用 DeepSeek 模型")
+    theme = _create(store, "han-theme", "偏好设置里可以调整主题")
+    cat = _create(store, "han-cat", "猫粮储备充足")
+    try:
+        # Two or more Han characters are a phrase of consecutive bigrams: only
+        # the exact substring matches, so 1-2 character queries stay indexed.
+        assert store.rank_active_memory_ids_by_bm25(
+            query="用户偏好", workspace_id=None, limit=200
+        ) == (preference,)
+        assert set(
+            store.rank_active_memory_ids_by_bm25(
+                query="偏好", workspace_id=None, limit=200
+            )
+        ) == {preference, theme}
+        # A single Han character is an indexed unigram instead of a table scan.
+        assert store.rank_active_memory_ids_by_bm25(
+            query="猫", workspace_id=None, limit=200
+        ) == (cat,)
+        # Reordered characters are not the substring the bigram phrase requires.
+        assert (
+            store.rank_active_memory_ids_by_bm25(
+                query="偏好用户", workspace_id=None, limit=200
+            )
+            == ()
+        )
+        # Punctuation carries no token and an empty depth asks for no ranking.
+        assert (
+            store.rank_active_memory_ids_by_bm25(
+                query="🌸……！？", workspace_id=None, limit=200
+            )
+            == ()
+        )
+        assert (
+            store.rank_active_memory_ids_by_bm25(
+                query="猫", workspace_id=None, limit=0
+            )
+            == ()
+        )
+    finally:
+        store.close()
+
+
+def test_bm25_pool_filters_scope_and_state(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    global_id = _create(store, "bm25-global", "shared keyword alpha")
+    workspace_id = _create(
+        store,
+        "bm25-workspace",
+        "shared keyword alpha",
+        scope=MemoryScope("workspace", "workspace-a"),
+    )
+    _create(
+        store,
+        "bm25-other-workspace",
+        "shared keyword alpha",
+        scope=MemoryScope("workspace", "workspace-b"),
+    )
+    try:
+        assert set(
+            store.rank_active_memory_ids_by_bm25(
+                query="alpha", workspace_id="workspace-a", limit=200
+            )
+        ) == {global_id, workspace_id}
+        assert store.rank_active_memory_ids_by_bm25(
+            query="alpha", workspace_id=None, limit=200
+        ) == (global_id,)
+
+        store.forget_memory_once(
+            memory_id=workspace_id,
+            expected_revision=1,
+            client_request_id="forget-bm25-workspace",
+        )
+        assert store.rank_active_memory_ids_by_bm25(
+            query="alpha", workspace_id="workspace-a", limit=200
+        ) == (global_id,)
+    finally:
+        store.close()
+
+
+def test_fts_index_tracks_create_correct_and_forget(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    memory_id = _create(store, "index-sync", "alpha preference")
+    try:
+        assert _indexed_rows(store, memory_id) == 1
+        assert store.rank_active_memory_ids_by_bm25(
+            query="alpha", workspace_id=None, limit=200
+        ) == (memory_id,)
+
+        store.correct_memory_once(
+            memory_id=memory_id,
+            expected_revision=1,
+            content="beta preference",
+            client_request_id="correct-index-sync",
+        )
+        assert _indexed_rows(store, memory_id) == 1
+        assert (
+            store.rank_active_memory_ids_by_bm25(
+                query="alpha", workspace_id=None, limit=200
+            )
+            == ()
+        )
+        assert store.rank_active_memory_ids_by_bm25(
+            query="beta", workspace_id=None, limit=200
+        ) == (memory_id,)
+
+        store.forget_memory_once(
+            memory_id=memory_id,
+            expected_revision=2,
+            client_request_id="forget-index-sync",
+        )
+        assert _indexed_rows(store, memory_id) == 0
+        assert (
+            store.rank_active_memory_ids_by_bm25(
+                query="beta", workspace_id=None, limit=200
+            )
+            == ()
+        )
+    finally:
+        store.close()
+
+
+def test_bm25_query_plan_uses_the_fts_index_not_a_table_scan(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    _create(store, "plan", "猫粮储备充足")
+    try:
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        try:
+            store.rank_active_memory_ids_by_bm25(query="猫", workspace_id=None, limit=200)
+        finally:
+            store._connection.set_trace_callback(None)
+        executed = [
+            statement
+            for statement in statements
+            if "memory_fts" in statement and "MATCH" in statement
+        ]
+        assert len(executed) == 1
+        # The trace hands back the statement with its parameters already bound.
+        assert f"MATCH '{fts_match_expression('猫')}'" in executed[0]
+        plan = [
+            str(row["detail"])
+            for row in store._connection.execute("EXPLAIN QUERY PLAN " + executed[0])
+        ]
+        assert any("VIRTUAL TABLE INDEX" in detail and ":M" in detail for detail in plan)
+        assert not any(detail.startswith("SCAN memory_records") for detail in plan)
+    finally:
+        store.close()
+
+
+def test_retrieval_matches_one_and_two_character_han_queries(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    cat = _create(store, "one-char-query", "猫粮储备充足")
+    theme = _create(store, "two-char-query", "用户偏好深色主题")
+    try:
+        retriever = MemoryRetrieverV1(store)
+        single = retriever.retrieve(query="猫", workspace_id=None)
+        assert [memory.memory_id for memory in single.selected] == [cat]
+        assert single.relevant_count == 1
+        pair = retriever.retrieve(query="深色", workspace_id=None)
+        assert [memory.memory_id for memory in pair.selected] == [theme]
+        assert pair.relevant_count == 1
+    finally:
+        store.close()
+
+
+def test_fuzzy_pool_still_recalls_han_tokens_the_bigram_phrase_rejects(
+    tmp_path: Path,
+) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    memory_id = _create(
+        store,
+        "fuzzy-han",
+        "用户偏好深色主题",
+    )
+    try:
+        assert (
+            store.rank_active_memory_ids_by_bm25(
+                query="深色主题偏好", workspace_id=None, limit=200
+            )
+            == ()
+        )
+        result = MemoryRetrieverV1(store).retrieve(
+            query="深色主题偏好",
+            workspace_id=None,
+        )
+        assert [memory.memory_id for memory in result.selected] == [memory_id]
+    finally:
+        store.close()
+
+
+def test_rrf_fuses_both_pools_and_keeps_a_stable_fused_order(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    focused = _create(store, "rrf-focused", "alpha alpha alpha")
+    recent = _create(
+        store,
+        "rrf-recent",
+        "alpha " + " ".join(f"filler{index}" for index in range(200)),
+    )
+    between = _create(store, "rrf-between", "alpha")
+    _set_updated(store, focused, "2026-08-17T12:00:00.000Z")
+    _set_updated(store, between, "2026-08-17T12:00:01.000Z")
+    _set_updated(store, recent, "2026-08-17T12:00:02.000Z")
+    try:
+        # The BM25 pool prefers the repeated term, the keyword pool is a tie and
+        # falls back to recency; the fused order rewards being first in either.
+        assert store.rank_active_memory_ids_by_bm25(
+            query="alpha", workspace_id=None, limit=200
+        ) == (focused, between, recent)
+        result = MemoryRetrieverV1(store).retrieve(query="alpha", workspace_id=None)
+        assert [memory.memory_id for memory in result.selected] == [
+            recent,
+            focused,
+            between,
+        ]
+        assert result.relevant_count == 3
+    finally:
+        store.close()
+
+
+class _FixedSemanticPool:
+    """Stand-in for the reserved vector pool interface."""
+
+    def __init__(self, memory_id: str) -> None:
+        self._memory_id = memory_id
+
+    def rank(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[MemoryRetrievalCandidateV1],
+    ) -> Sequence[str]:
+        return (self._memory_id,)
+
+
+def test_reserved_semantic_pool_fuses_into_the_same_selection(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(tmp_path / "memory.db")
+    unrelated = _create(store, "semantic", "completely unrelated body")
+    try:
+        lexical = MemoryRetrieverV1(store)
+        fused = MemoryRetrieverV1(store, semantic_pool=_FixedSemanticPool(unrelated))
+        assert lexical.retrieve(query="needle", workspace_id=None).selected == ()
+        assert [
+            memory.memory_id
+            for memory in fused.retrieve(query="needle", workspace_id=None).selected
+        ] == [unrelated]
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize(
     "candidate_count, overflows",
     (
@@ -226,7 +495,9 @@ def test_character_budget_skips_whole_item_then_accepts_shorter_item(
         )
     try:
         result = MemoryRetrieverV1(store).retrieve(query="key", workspace_id=None)
-        assert [memory.characters for memory in result.selected] == [2048, 2048, 1900, 4]
+        # BM25 length normalization ranks the four character record above the
+        # 1,900 character one; the budget then closes exactly at 6,000 characters.
+        assert [memory.characters for memory in result.selected] == [2048, 2048, 4, 1900]
         assert result.memory_characters == 6000
         assert [(item.memory_id, item.characters, item.reason) for item in result.omissions] == [
             (ids[3], 100, "omitted_by_budget")

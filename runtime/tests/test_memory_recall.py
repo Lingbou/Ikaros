@@ -124,6 +124,21 @@ class _TransactionCheckingMemoryReader:
         self.reads += 1
         return self._memory_store.read_active_candidates(workspace_id=workspace_id)
 
+    def rank_active_memory_ids_by_bm25(
+        self,
+        *,
+        query: str,
+        workspace_id: str | None,
+        limit: int,
+    ) -> tuple[str, ...]:
+        assert not self._state_store.in_transaction
+        self.reads += 1
+        return self._memory_store.rank_active_memory_ids_by_bm25(
+            query=query,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+
     def materialize_memory_revisions(
         self,
         references: Sequence[MemorySnapshotReferenceV1],
@@ -207,7 +222,9 @@ async def test_memory_correction_does_not_change_a_frozen_tool_loop(
 
         assert state_store.run_status(prepared.run_id) == "completed"
         assert len(provider.requests) == 2
-        assert reader.reads == 3  # selection plus exact materialization for both Steps
+        # candidate read and BM25 ranking for the selection, plus exact
+        # materialization for both Steps
+        assert reader.reads == 4
         for request in provider.requests:
             payload = _memory_payload(request)
             assert payload["records"] == [

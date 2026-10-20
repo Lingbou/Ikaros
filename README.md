@@ -8,7 +8,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 上下文压缩、完成检查）。真实 Provider 的双平台验收仍在进行。
 
 > 本文按模块描述"现状"，记录实现细节、重要常量和参数，用于快速索引；不是设计
-> 契约，具体行为以代码为准。核对日期：2026-10-01。
+> 契约，具体行为以代码为准。核对日期：2026-10-20。
 > 阅读顺序：架构与技术栈（第 1–2 节）→ 逐文件结构（第 3 节）→ 桌面端与界面交互
 > （第 4–5 节）→ Runtime 与接口参考（第 6–8 节）→ 数据目录、验证与速查（第 9–13 节）→ 故障排查（第 14 节）。
 
@@ -252,9 +252,11 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — 导出 Memory 存储与召回。
 - `domain.py` — Memory 领域类型：kind/state/scope、来源、revision、内容上限。
-- `retrieval.py` — 确定性关键词召回：候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
-- `schema.py` — memory.db schema 1 的 DDL 与逐字节校验。
-- `store.py` — memory.db SQLite 所有者（870 行）：CRUD、revision、墓碑、操作回执。
+- `retrieval.py` — 确定性混合召回：FTS5(BM25) 池 + 关键词重叠池，RRF（k=60）
+  融合；候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
+- `schema.py` — memory.db schema 2 的 DDL 与逐字节校验（含 FTS5 召回索引）。
+- `store.py` — memory.db SQLite 所有者（943 行）：CRUD、revision、墓碑、操作回执、
+  FTS 索引维护与 BM25 排名。
 
 `protocol/`：
 
@@ -581,8 +583,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - 能力：创建（可附带一个 Session Item 来源）、纠正、遗忘（内容抹除的墓碑版本）、
   分页列表（默认 50、最大 100）、按 ID 详情。
 - 内容限制：单条正文最多 2,048 字符；列表预览最多 160 字符。
-- 召回：关键词相关性（`deterministic-keywords-v1`），候选上限 2,000 条，选中
-  上限 8 条 / 6,000 字符；每个 Run 冻结精确 revision。
+- 召回：FTS5(BM25) 池与关键词重叠池经 RRF（k=60）融合
+  （`deterministic-hybrid-rrf-v2`），候选上限 2,000 条，选中上限 8 条 / 6,000
+  字符；每个 Run 冻结精确 revision。
 - 语义：Run 执行中的纠正只影响之后的新 Run；遗忘阻止继续发送已不可用版本；
   没有自动写入或自动学习。
 
@@ -770,7 +773,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - `state.db`：SQLite，schema 14；Journal Event schema 10。保存 Threads/Branches/
   Turns/Runs/Items、事件 Journal、RunConfig、ContextRevision、StepInput 审计、
   usage、进程与文件操作事实；投影可从 Journal 重建。
-- `memory.db`：独立 schema 1；有自己的连接、事务、revision 与操作回执；与
+- `memory.db`：独立 schema 2；有自己的连接、事务、revision 与操作回执；与
   `state.db` 无跨库事务/外键，只共享 Runtime-home 锁。
 - `config.yaml`：version 2，上限 256 KiB（读/写都校验），原子替换写入；保存
   Provider/model 配置和 `skills.disabled`。
@@ -779,9 +782,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage check`：校验 schema、Journal 顺序、投影可重建性；
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
-- 数据策略：只支持当前格式（config 2 / schema 14 / Journal 10 / protocol 7）；
-  不兼容的开发数据以"需要重置"错误失败，需要显式重建；更新代码不会动配置、
-  Skills、桌面偏好与 `memory.db`。
+- 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 /
+  protocol 7 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
+  更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
+  要求显式重置。
 
 ### 6.4 崩溃恢复语义
 
@@ -907,15 +911,22 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.11 Memory 子系统
 
-- 存储：`memory.db`（schema 1）。记录包含 id、kind、state、scope、正文、来源
+- 存储：`memory.db`（schema 2）。记录包含 id、kind、state、scope、正文、来源
   引用、revision、内容完整性摘要（摘要私有，Forget 时清除）。
 - 操作：create / correct / forget / list / get；创建与纠正幂等；遗忘产生内容抹除
   的墓碑 revision；冲突返回有界 `reasonCode`（协议错误码 `-32020`
   `memory operation failed`）。
 - 溯源：可选的来源必须指向本 Session 已存在的 Item；Session 重置只会让软来源
   退化，不删除 Memory。
-- 召回（`MemoryRetrieverV1`）：确定性关键词相关性；候选 ≤2,000；选中 ≤8 条且
-  ≤6,000 字符；每个 Run 冻结精确 revision；读取与物化在 `state.db` 事务之外。
+- 召回（`MemoryRetrieverV1`，`deterministic-hybrid-rrf-v2`）：FTS5(BM25) 池与
+  关键词重叠池各自有界排名，再按 RRF（k=60）融合——同一条被两个池同时命中时
+  分数相加，缺池不惩罚；候选 ≤2,000；每池深度 ≤200；选中 ≤8 条且 ≤6,000 字符；
+  每个 Run 冻结精确 revision；读取与物化在 `state.db` 事务之外。
+- 索引（`memory_fts`）：正文经 NFKC + casefold 后切成 Latin 词、Han 单字与 Han
+  bigram 词元写入 FTS5，1–2 字中文查询因此走索引而不是全表 LIKE；create/correct
+  在写事务内重写该行、forget 清除该行，索引是当前 revision 的派生投影。
+- 池：目前只有两个确定性词法池；向量池接口（`MemorySemanticPool`）已预留但本期
+  未实现，不接外部 embedding 服务、不做 LLM 精排。
 - 输入包装：Memory 正文以 contextual-data 包装进入模型，不改变工具权限、身份、
   执行策略或用户请求；审计只记录 ID/revision/scope/字符数。
 - 边界：没有自动 Memory 写入器、没有学习循环；Memory 不保存运行进度、命令日志
@@ -1526,7 +1537,7 @@ tool）；`status`；`content`；`created_at`；`updated_at`；`data_json`（默
 `file_changes`：`tool_call_item_id` PK → items（CASCADE）；`record_json`
 （不可变 before/after 捕获与 diff）。
 
-### 8.2 memory.db（schema 1）
+### 8.2 memory.db（schema 2）
 
 `memory_records`：
 
@@ -1555,6 +1566,13 @@ tool）；`status`；`content`；`created_at`；`updated_at`；`data_json`（默
 `method`（memory.create / correct / forget）；`non_content_fingerprint`；
 `memory_id`；`resulting_revision`（≥1）；`created_at`；
 `UNIQUE(memory_id, resulting_revision)`；外键指向对应 revision（RESTRICT）。
+
+`memory_fts`（FTS5 虚表）：`memory_id`（UNINDEXED）+ `tokens`（Python 侧切好的
+词元流），`tokenize='unicode61 remove_diacritics 2'`。它是当前可读 revision 的
+派生投影：create/correct 在写事务内重写该行、forget 删除该行，正文仍只以原文形式
+存在 `memory_revisions`；FTS5 影子表（`memory_fts_config` / `_content` / `_data` /
+`_docsize` / `_idx`）由 SQLite 生成，漂移校验因此比对对象名与虚表自身 DDL，不比对
+影子表 SQL 文本。
 
 ### 8.3 打开参数与数值上限
 
@@ -1752,7 +1770,7 @@ CREATE TABLE file_changes (
 );
 ```
 
-`memory.db`（schema 1）的完整建表语句：
+`memory.db`（schema 2）的完整建表语句：
 
 ```sql
 CREATE TABLE memory_records (
@@ -1850,6 +1868,12 @@ ON memory_records(state, scope_type, scope_key, updated_at DESC, id ASC);
 
 CREATE INDEX memory_records_scope_kind_order_idx
 ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
+
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    memory_id UNINDEXED,
+    tokens,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 ```
 
 ## 9. 数据目录
@@ -1858,7 +1882,7 @@ ON memory_records(state, scope_type, scope_key, kind, updated_at DESC, id ASC);
 ~/.ikaros/
   config.yaml          provider/model 配置、Skill 禁用列表（version 2，≤256 KiB）
   state.db             权威会话与执行记录（SQLite，schema 14）
-  memory.db            独立长期 Memory（schema 1）
+  memory.db            独立长期 Memory（schema 2，含 FTS5 召回索引）
   runtime.lock         单进程独占锁
   backups/             离线备份（按需创建，永不覆盖）
   skills/              用户 Skills：<name>/SKILL.md
@@ -1944,7 +1968,7 @@ uv run --frozen pytest tests/test_live_identity.py -q -s
 - cron 与主动唤醒任务；
 - 附件、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
-- 自动 Memory 提取与 Skill 学习；
+- 自动 Memory 提取与 Skill 学习（Memory 的向量/语义召回接口已预留，未实现）；
 - Python Runtime 打包与正式安装包、自动更新、代码签名；
 - 交互式权限模式（当前只有 full_access）。
 
@@ -1985,6 +2009,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 上下文 | Memory 预留 | 至少 4,096 tokens；Memory 最多占剩余一半 |
 | Memory | 单条正文 / 预览 | 2,048 字符 / 160 字符 |
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
+| Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
 | Memory | 列表分页 | 默认 50、最大 100 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
 | 文件 | preview | ≤50 KiB、2,000 行/页；扫描 ≤8 MiB |
@@ -2002,7 +2027,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 7；32 方法；15 事件；8 工具 |
-| 存储 | 版本 | state schema 14；Journal 10；memory 1；config 2 |
+| 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |
 | 服务 | 锁超时 / 轮询 | 10 秒 / 50 ms |
@@ -2034,7 +2059,10 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
   停止 Runtime → 备份或移走 `state.db`（连同 `-wal` / `-shm`）→ 重启自动重建；
   `memory.db`、`config.yaml`、`skills/` 不受影响。
 - `memory database schema is incompatible; restore a compatible backup`：恢复
-  `memory.db` 备份，或移走后重建（会丢失记忆）。
+  与当前 Runtime 同版本的 `memory.db` 备份，或移走后重建（会丢失记忆）。
+  `memory.db` 现为 schema 2（schema 1 没有 FTS5 召回索引），开发期没有迁移路径。
+- `no such module: fts5`：当前 Python 自带的 SQLite 未编译 FTS5（官方 Windows
+  构建与主流发行版默认启用）；换用带 FTS5 的解释器后移走 `memory.db` 重建。
 - 同版本但结构漂移（表 / 索引变化）同样会被拒绝，不会被静默接受。
 
 ### 14.3 连接与运行状态
