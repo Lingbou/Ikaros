@@ -15,6 +15,7 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Search,
   ShieldAlert,
   SquareTerminal,
   Wrench,
@@ -54,6 +55,10 @@ function isFileTool(toolName: string | undefined): toolName is "read" | "write" 
   return toolName === "read" || toolName === "write" || toolName === "edit";
 }
 
+function isSearchTool(toolName: string | undefined): boolean {
+  return toolName === "glob" || toolName === "grep" || toolName === "list";
+}
+
 function processCommand(event: ToolCallEvent): string | undefined {
   return event.toolName === "process_start" &&
     typeof event.arguments.command === "string"
@@ -65,6 +70,7 @@ function toolIcon(toolName: string) {
   if (toolName === "read") return <FileText size={14} />;
   if (toolName === "write") return <FileOutput size={14} />;
   if (toolName === "edit") return <FilePenLine size={14} />;
+  if (isSearchTool(toolName)) return <Search size={14} />;
   if (toolName.startsWith("process_") || toolName.includes("extract")) {
     return <SquareTerminal size={14} />;
   }
@@ -85,6 +91,32 @@ function fileToolCallDetails(event: ToolCallEvent, t: Translate) {
     metadata.push(t("events.tool.replaceAll"));
   }
   return { path, metadata };
+}
+
+function searchToolCallDetails(event: ToolCallEvent) {
+  const pattern = typeof event.arguments.pattern === "string" ? event.arguments.pattern : "";
+  const metadata: string[] = [];
+  if (typeof event.arguments.path === "string" && event.arguments.path) {
+    metadata.push(event.arguments.path);
+  }
+  if (typeof event.arguments.include === "string" && event.arguments.include) {
+    metadata.push(event.arguments.include);
+  }
+  return { path: pattern, metadata };
+}
+
+function searchToolResultDetails(event: ToolResultEvent, t: Translate): string[] {
+  const details = event.details;
+  if (!details) return [];
+  const metadata: string[] = [];
+  if (Number.isInteger(details.entryCount)) {
+    metadata.push(t("events.result.entryCount", { count: details.entryCount as number }));
+  }
+  if (Number.isInteger(details.matchCount)) {
+    metadata.push(t("events.result.matchCount", { count: details.matchCount as number }));
+  }
+  if (details.truncated === true) metadata.push(t("events.result.outputTruncated"));
+  return metadata;
 }
 
 function fileToolResultDetails(event: ToolResultEvent, t: Translate): string[] {
@@ -177,6 +209,8 @@ function ToolCallCard({
 }) {
   const { t } = useTranslation();
   const fileDetails = isFileTool(event.toolName) ? fileToolCallDetails(event, t) : undefined;
+  const callTarget = fileDetails
+    ?? (isSearchTool(event.toolName) ? searchToolCallDetails(event) : undefined);
   const command = processCommand(event);
   const status = {
     running: {
@@ -216,13 +250,13 @@ function ToolCallCard({
             {status.label}
           </span>
         </span>
-        {fileDetails ? (
+        {callTarget ? (
           <span className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-[16px] text-[var(--muted)]">
-            <span className="truncate" title={fileDetails.path || undefined}>
-              {fileDetails.path || event.toolName}
+            <span className="truncate" title={callTarget.path || undefined}>
+              {callTarget.path || event.toolName}
             </span>
-            {fileDetails.metadata.length > 0 ? (
-              <span className="shrink-0">· {fileDetails.metadata.join(" · ")}</span>
+            {callTarget.metadata.length > 0 ? (
+              <span className="shrink-0">· {callTarget.metadata.join(" · ")}</span>
             ) : null}
           </span>
         ) : (
@@ -289,7 +323,12 @@ function ToolCallCard({
 function ToolResultCard({ event }: { event: ToolResultEvent }) {
   const { t } = useTranslation();
   const isFileResult = isFileTool(event.toolName);
-  const metadata = isFileResult ? fileToolResultDetails(event, t) : [];
+  const isSearchResult = isSearchTool(event.toolName);
+  const metadata = isFileResult
+    ? fileToolResultDetails(event, t)
+    : isSearchResult
+      ? searchToolResultDetails(event, t)
+      : [];
   if (event.toolName?.startsWith("process_") && event.details) {
     if (typeof event.details.exitCode === "number") metadata.push(t("events.result.exitCode", { code: event.details.exitCode }));
     if (event.details.processId) metadata.push(event.details.processId);

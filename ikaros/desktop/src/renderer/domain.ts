@@ -36,6 +36,9 @@ export type AppEventTextKind =
   | "tool.readFile"
   | "tool.writeFile"
   | "tool.editFile"
+  | "tool.globFiles"
+  | "tool.searchFiles"
+  | "tool.listDirectory"
   | "result.archiveManifestVerified"
   | "result.windowsReservedNames"
   | "result.processCompleted"
@@ -53,6 +56,17 @@ export type AppEventTextKind =
   | "result.editCompleted"
   | "result.editFailed"
   | "result.editInterrupted"
+  | "result.globCompleted"
+  | "result.globFailed"
+  | "result.globInterrupted"
+  | "result.searchCompleted"
+  | "result.searchFailed"
+  | "result.searchInterrupted"
+  | "result.listCompleted"
+  | "result.listFailed"
+  | "result.listInterrupted"
+  | "result.entryCount"
+  | "result.matchCount"
   | "permission.moveReceiptsTitle"
   | "permission.moveReceiptsDescription"
   | "status.buildingBrief"
@@ -121,6 +135,8 @@ export interface ToolResultEvent extends EventBase {
     replacements?: number;
     created?: boolean;
     truncated?: boolean;
+    entryCount?: number;
+    matchCount?: number;
     processId?: string;
     processState?: "running" | "exited" | "terminated" | "unknown";
     exitCode?: number | null;

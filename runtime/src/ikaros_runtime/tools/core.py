@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JsonObject
 from ..file_changes import FileChangeCapture
 from ..json_codec import dumps as json_dumps
 from .policy import ExecutionPolicy
+
+if TYPE_CHECKING:
+    from .artifacts import ToolArtifactStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +124,16 @@ class ToolRegistry:
 
 
 class ToolExecutor:
-    def __init__(self, registry: ToolRegistry, policy: ExecutionPolicy) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        policy: ExecutionPolicy,
+        *,
+        artifacts: ToolArtifactStore | None = None,
+    ) -> None:
         self._registry = registry
         self._policy = policy
+        self._artifacts = artifacts
 
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
@@ -150,10 +160,17 @@ class ToolExecutor:
             )
         self._policy.authorize(call.name, call.arguments)
         cancellation.raise_if_cancelled()
-        return await tool.execute(
+        result = await tool.execute(
             call,
             cancellation=cancellation,
             context=context,
+        )
+        if self._artifacts is None:
+            return result
+        return await self._artifacts.materialize(
+            result,
+            thread_id=context.thread_id,
+            item_id=context.item_id,
         )
 
 

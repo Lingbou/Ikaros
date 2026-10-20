@@ -13,6 +13,7 @@ class RuntimePaths:
     state_db: Path
     memory_db: Path
     skills: Path
+    artifacts: Path
 
     @classmethod
     def from_home(cls, runtime_home: Path) -> RuntimePaths:
@@ -23,6 +24,7 @@ class RuntimePaths:
             state_db=home / "state.db",
             memory_db=home / "memory.db",
             skills=home / "skills",
+            artifacts=home / "artifacts",
         )
 
 
