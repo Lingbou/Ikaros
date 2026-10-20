@@ -14,6 +14,8 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "tool.readProcess": "events.tool.readProcess",
   "tool.waitProcess": "events.tool.waitProcess",
   "tool.stopProcess": "events.tool.stopProcess",
+  "tool.writeProcess": "events.tool.writeProcess",
+  "tool.resizeProcess": "events.tool.resizeProcess",
   "tool.readFile": "events.tool.readFile",
   "tool.writeFile": "events.tool.writeFile",
   "tool.editFile": "events.tool.editFile",

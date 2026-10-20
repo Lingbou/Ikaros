@@ -256,6 +256,7 @@ function toolStatus(status: unknown): "running" | "success" | "error" | "interru
 const PROCESS_TOOL_LABELS = {
   process_start: "tool.startProcess", process_read: "tool.readProcess",
   process_wait: "tool.waitProcess", process_stop: "tool.stopProcess",
+  process_write: "tool.writeProcess", process_resize: "tool.resizeProcess",
 } as const satisfies Record<string, AppEventTextKind>;
 
 function isProcessTool(name: string): name is keyof typeof PROCESS_TOOL_LABELS {

@@ -110,6 +110,8 @@ const TOOL_RESULT_DETAIL_KEYS_BY_TOOL = {
   process_read: PROCESS_TOOL_DETAIL_KEYS,
   process_wait: PROCESS_TOOL_DETAIL_KEYS,
   process_stop: PROCESS_TOOL_DETAIL_KEYS,
+  process_write: PROCESS_TOOL_DETAIL_KEYS,
+  process_resize: PROCESS_TOOL_DETAIL_KEYS,
   read: [
     "durationMs",
     "truncated",

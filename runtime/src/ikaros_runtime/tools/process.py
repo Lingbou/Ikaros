@@ -18,10 +18,17 @@ from .core import (
     require_exact_arguments,
 )
 from .process_manager import ProcessError, ProcessManager
+from .process_platform import (
+    PTY_DEFAULT_COLUMNS,
+    PTY_DEFAULT_ROWS,
+    PTY_MAX_CELLS,
+    PTY_MIN_CELLS,
+)
 
 _MAX_WAIT_MS = 60_000
 _COMMAND_LIMIT = 32_768
 _CWD_LIMIT = 4_096
+_STDIN_LIMIT = 32_768
 
 
 class ProcessStartTool:
@@ -30,13 +37,26 @@ class ProcessStartTool:
         description=(
             "Start a local shell command and return its processId immediately. A running "
             "state does not mean success: use process_wait/read to inspect actual completion. "
-            "Commands belong to this Run and are stopped when the Run ends."
+            "Commands belong to this Run and are stopped when the Run ends. Set pty true to "
+            "attach an interactive terminal: process_write then sends input and "
+            "process_resize changes its window size."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "command": {"type": "string", "minLength": 1, "maxLength": _COMMAND_LIMIT},
                 "cwd": {"type": "string", "minLength": 1, "maxLength": _CWD_LIMIT},
+                "pty": {"type": "boolean"},
+                "columns": {
+                    "type": "integer",
+                    "minimum": PTY_MIN_CELLS,
+                    "maximum": PTY_MAX_CELLS,
+                },
+                "rows": {
+                    "type": "integer",
+                    "minimum": PTY_MIN_CELLS,
+                    "maximum": PTY_MAX_CELLS,
+                },
             },
             "required": ["command"],
             "additionalProperties": False,
@@ -49,9 +69,17 @@ class ProcessStartTool:
     async def execute(
         self, call: ToolCall, *, cancellation: CancellationToken, context: ToolExecutionContext
     ) -> ToolResult:
-        mismatch = require_exact_arguments(call.arguments, required={"command"}, optional={"cwd"})
+        mismatch = require_exact_arguments(
+            call.arguments,
+            required={"command"},
+            optional={"cwd", "pty", "columns", "rows"},
+        )
         if mismatch is not None:
             return ToolResult.rejected(call, code="invalid_arguments", message=mismatch)
+        terminal = _validate_terminal_arguments(call)
+        if isinstance(terminal, ToolResult):
+            return terminal
+        pty, columns, rows = terminal
         command = call.arguments["command"]
         if not isinstance(command, str) or not command.strip() or len(command) > _COMMAND_LIMIT:
             return ToolResult.rejected(
@@ -72,7 +100,13 @@ class ProcessStartTool:
             return ToolResult.rejected(call, code="invalid_cwd", message=str(error))
         try:
             fact = await self._manager.start(
-                command, str(resolved), context=context, cancellation=cancellation
+                command,
+                str(resolved),
+                context=context,
+                cancellation=cancellation,
+                pty=pty,
+                columns=columns,
+                rows=rows,
             )
         except ProcessError as error:
             return ToolResult.rejected(call, code=error.code, message=str(error))
@@ -192,6 +226,183 @@ class ProcessStopTool:
             )
         except ProcessError as error:
             return ToolResult.rejected(call, code=error.code, message=str(error))
+
+
+def _validate_terminal_arguments(call: ToolCall) -> tuple[bool, int, int] | ToolResult:
+    pty = call.arguments.get("pty", False)
+    columns = call.arguments.get("columns", PTY_DEFAULT_COLUMNS)
+    rows = call.arguments.get("rows", PTY_DEFAULT_ROWS)
+    if not isinstance(pty, bool):
+        return ToolResult.rejected(
+            call, code="invalid_arguments", message="pty must be a boolean."
+        )
+    if not pty:
+        if "columns" in call.arguments or "rows" in call.arguments:
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message="columns and rows require pty true.",
+            )
+        return False, columns, rows
+    if (
+        not is_json_integer(columns)
+        or not PTY_MIN_CELLS <= columns <= PTY_MAX_CELLS
+        or not is_json_integer(rows)
+        or not PTY_MIN_CELLS <= rows <= PTY_MAX_CELLS
+    ):
+        return ToolResult.rejected(
+            call,
+            code="invalid_arguments",
+            message=(
+                f"columns and rows must be integers between {PTY_MIN_CELLS} "
+                f"and {PTY_MAX_CELLS}."
+            ),
+        )
+    return True, columns, rows
+
+
+class ProcessWriteTool:
+    definition = ToolDefinition(
+        name="process_write",
+        description=(
+            "Write UTF-8 text to the standard input of a command started with pty true. "
+            "The returned page shows terminal output produced so far; pass nextCursor to "
+            "keep reading. This never starts or reruns a command."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "processId": {"type": "string", "minLength": 1},
+                "data": {"type": "string", "minLength": 1, "maxLength": _STDIN_LIMIT},
+                "cursor": {"type": "integer", "minimum": 0},
+            },
+            "required": ["processId", "data"],
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self, manager: ProcessManager) -> None:
+        self._manager = manager
+
+    async def execute(
+        self, call: ToolCall, *, cancellation: CancellationToken, context: ToolExecutionContext
+    ) -> ToolResult:
+        validated = _validate_terminal_command(call, required={"data"})
+        if isinstance(validated, ToolResult):
+            return validated
+        process_id, cursor, _ = validated
+        data = call.arguments["data"]
+        if not isinstance(data, str) or not data or len(data) > _STDIN_LIMIT:
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message="data must be a non-empty bounded string.",
+            )
+        cancellation.raise_if_cancelled()
+        try:
+            return _result(
+                call,
+                await self._manager.write(
+                    process_id, context=context, data=data, cursor=cursor
+                ),
+            )
+        except ProcessError as error:
+            return ToolResult.rejected(call, code=error.code, message=str(error))
+
+
+class ProcessResizeTool:
+    definition = ToolDefinition(
+        name="process_resize",
+        description=(
+            "Resize the terminal of a command started with pty true. The returned page "
+            "shows terminal output produced so far; pass nextCursor to keep reading."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "processId": {"type": "string", "minLength": 1},
+                "columns": {
+                    "type": "integer",
+                    "minimum": PTY_MIN_CELLS,
+                    "maximum": PTY_MAX_CELLS,
+                },
+                "rows": {
+                    "type": "integer",
+                    "minimum": PTY_MIN_CELLS,
+                    "maximum": PTY_MAX_CELLS,
+                },
+                "cursor": {"type": "integer", "minimum": 0},
+            },
+            "required": ["processId", "columns", "rows"],
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self, manager: ProcessManager) -> None:
+        self._manager = manager
+
+    async def execute(
+        self, call: ToolCall, *, cancellation: CancellationToken, context: ToolExecutionContext
+    ) -> ToolResult:
+        validated = _validate_terminal_command(call, required={"columns", "rows"})
+        if isinstance(validated, ToolResult):
+            return validated
+        process_id, cursor, size = validated
+        cancellation.raise_if_cancelled()
+        try:
+            return _result(
+                call,
+                await self._manager.resize(
+                    process_id,
+                    context=context,
+                    columns=size[0],
+                    rows=size[1],
+                    cursor=cursor,
+                ),
+            )
+        except ProcessError as error:
+            return ToolResult.rejected(call, code=error.code, message=str(error))
+
+
+def _validate_terminal_command(
+    call: ToolCall, *, required: set[str]
+) -> tuple[str, int, tuple[int, int]] | ToolResult:
+    mismatch = require_exact_arguments(
+        call.arguments,
+        required={"processId", *required},
+        optional={"cursor"},
+    )
+    if mismatch is not None:
+        return ToolResult.rejected(call, code="invalid_arguments", message=mismatch)
+    process_id = call.arguments["processId"]
+    cursor = call.arguments.get("cursor", 0)
+    if (
+        not isinstance(process_id, str)
+        or not process_id
+        or len(process_id) > 128
+        or not is_json_integer(cursor)
+        or cursor < 0
+    ):
+        return ToolResult.rejected(
+            call, code="invalid_arguments", message="Invalid processId or cursor."
+        )
+    columns = call.arguments.get("columns", PTY_DEFAULT_COLUMNS)
+    rows = call.arguments.get("rows", PTY_DEFAULT_ROWS)
+    if ("columns" in call.arguments or "rows" in call.arguments) and (
+        not is_json_integer(columns)
+        or not PTY_MIN_CELLS <= columns <= PTY_MAX_CELLS
+        or not is_json_integer(rows)
+        or not PTY_MIN_CELLS <= rows <= PTY_MAX_CELLS
+    ):
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message=(
+                    f"columns and rows must be integers between {PTY_MIN_CELLS} "
+                    f"and {PTY_MAX_CELLS}."
+                ),
+            )
+    return process_id, cursor, (columns, rows)
 
 
 def _validate_reference(call: ToolCall, *, wait: bool = False) -> tuple[str, int, int] | ToolResult:

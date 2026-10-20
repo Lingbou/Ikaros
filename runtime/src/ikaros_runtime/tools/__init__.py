@@ -19,7 +19,14 @@ from .grep import GrepTool
 from .history_read import HistoryReadTool
 from .list import ListTool
 from .policy import ExecutionPolicy, FullAccessPolicy
-from .process import ProcessReadTool, ProcessStartTool, ProcessStopTool, ProcessWaitTool
+from .process import (
+    ProcessReadTool,
+    ProcessResizeTool,
+    ProcessStartTool,
+    ProcessStopTool,
+    ProcessWaitTool,
+    ProcessWriteTool,
+)
 from .process_manager import ProcessManager
 from .read import ReadTool
 from .write import WriteTool
@@ -35,9 +42,11 @@ __all__ = [
     "MAX_INLINE_RESULT_BYTES",
     "ProcessManager",
     "ProcessReadTool",
+    "ProcessResizeTool",
     "ProcessStartTool",
     "ProcessStopTool",
     "ProcessWaitTool",
+    "ProcessWriteTool",
     "ReadTool",
     "Tool",
     "ToolArtifactStore",

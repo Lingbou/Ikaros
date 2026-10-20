@@ -33,6 +33,8 @@ export type AppEventTextKind =
   | "tool.readProcess"
   | "tool.waitProcess"
   | "tool.stopProcess"
+  | "tool.writeProcess"
+  | "tool.resizeProcess"
   | "tool.readFile"
   | "tool.writeFile"
   | "tool.editFile"
