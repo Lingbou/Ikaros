@@ -13,11 +13,12 @@ from typing import Any
 
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
-
-MIN_HISTORY_READ_ITEMS = 0
-MAX_HISTORY_READ_ITEMS = 41
-MIN_HISTORY_READ_CHARS = 256
-MAX_HISTORY_READ_CHARS = 24_000
+from ..tools.history_read import (
+    MAX_HISTORY_READ_CHARS,
+    MAX_HISTORY_READ_ITEMS,
+    MIN_HISTORY_READ_CHARS,
+    MIN_HISTORY_READ_ITEMS,
+)
 
 
 def read_history_slice(

@@ -8,12 +8,6 @@ from dataclasses import dataclass
 from ..cancellation import CancellationToken
 from ..domain import JsonObject
 from ..json_codec import dumps as json_dumps
-from ..storage.history_read import (
-    MAX_HISTORY_READ_CHARS,
-    MAX_HISTORY_READ_ITEMS,
-    MIN_HISTORY_READ_CHARS,
-    MIN_HISTORY_READ_ITEMS,
-)
 from .core import (
     ToolCall,
     ToolDefinition,
@@ -22,6 +16,12 @@ from .core import (
     is_json_integer,
     require_exact_arguments,
 )
+
+MIN_HISTORY_READ_ITEMS = 0
+MAX_HISTORY_READ_ITEMS = 41
+MIN_HISTORY_READ_CHARS = 256
+MAX_HISTORY_READ_CHARS = 24_000
+
 
 HistoryReader = Callable[..., JsonObject]
 
