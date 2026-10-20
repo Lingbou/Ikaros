@@ -6,7 +6,7 @@ import {
   FolderPlus,
   Plus,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isRunActive } from "../domain";
 import { type TranslationKey, useTranslation } from "../i18n";
 import { useAppStore } from "../store";
@@ -14,10 +14,6 @@ import { IconButton, MenuItem } from "./ui";
 
 const MIN_COMPOSER_CLEARANCE = 150;
 const MESSAGE_TO_COMPOSER_GAP = 24;
-
-const MODEL_OPTIONS = ["Ikaros", "DeepSeek", "local"] as const;
-
-type ModelId = (typeof MODEL_OPTIONS)[number];
 
 export function Composer({
   onClearanceChange,
@@ -27,7 +23,6 @@ export function Composer({
   const { t } = useTranslation();
   const draft = useAppStore((state) => state.draft);
   const runStatus = useAppStore((state) => state.runStatus);
-  const runtimeMode = useAppStore((state) => state.runtimeMode);
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const selectedModel = useAppStore((state) => state.selectedModel);
@@ -42,13 +37,12 @@ export function Composer({
   const steerRun = useAppStore((state) => state.steerRun);
   const stopRun = useAppStore((state) => state.stopRun);
   const bindWorkspaceFromFolder = useAppStore((state) => state.bindWorkspaceFromFolder);
-  const [model, setModel] = useState<ModelId>("Ikaros");
   const [projectFolderError, setProjectFolderError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const canStop = runStatus === "queued" || runStatus === "running";
-  const canSteer = runtimeMode && runStatus === "running";
+  const canSteer = runStatus === "running";
   const primaryStops = canStop && (!canSteer || !draft.trim());
   const runtimeModelOptions = useMemo(() => {
     const configuredProviderIds = new Set(
@@ -70,47 +64,45 @@ export function Composer({
       candidate.providerId === selectedModel?.providerId &&
       candidate.modelId === selectedModel.modelId,
   );
-  const runtimeModelMissing = runtimeMode && !selectedRuntimeModel;
-  const runtimeModelUnavailable = runtimeMode &&
-    (runtimeModelMissing || connectionStatus !== "connected" || providerCatalogStatus !== "ready");
+  const runtimeModelMissing = !selectedRuntimeModel;
+  const runtimeModelUnavailable =
+    runtimeModelMissing || connectionStatus !== "connected" || providerCatalogStatus !== "ready";
   let modelAccess: {
     label: TranslationKey;
     message: TranslationKey;
     action?: () => void;
   } | null = null;
-  if (runtimeMode) {
-    if (connectionStatus === "offline") {
+  if (connectionStatus === "offline") {
+    modelAccess = {
+      label: "composer.reconnectRuntime",
+      message: "composer.runtimeOffline",
+      action: () => void retryRuntimeConnection(),
+    };
+  } else if (connectionStatus === "starting" || connectionStatus === "reconnecting") {
+    modelAccess = {
+      label: connectionStatus === "starting" ? "runtime.starting" : "runtime.reconnecting",
+      message: "composer.waitForRuntime",
+    };
+  } else if (providerCatalogStatus === "idle" || providerCatalogStatus === "loading") {
+    modelAccess = { label: "composer.loadingModels", message: "composer.waitForModels" };
+  } else if (providerCatalogStatus === "error") {
+    modelAccess = {
+      label: "composer.retryModels",
+      message: "composer.modelsLoadFailed",
+      action: () => void loadProviderCatalog().catch(() => undefined),
+    };
+  } else if (runtimeModelOptions.length === 0) {
+    const hasConfiguredModels = models.some((candidate) =>
+      providers.some((provider) => provider.id === candidate.providerId && provider.configured),
+    );
+    // Without any provider the composer stays quiet: first-run setup happens in
+    // the onboarding dialog, and settings remain reachable from the sidebar.
+    if (hasConfiguredModels) {
       modelAccess = {
-        label: "composer.reconnectRuntime",
-        message: "composer.runtimeOffline",
-        action: () => void retryRuntimeConnection(),
+        label: "composer.enableModel",
+        message: "composer.modelsDisabled",
+        action: () => setSettingsOpen(true, "models"),
       };
-    } else if (connectionStatus === "starting" || connectionStatus === "reconnecting") {
-      modelAccess = {
-        label: connectionStatus === "starting" ? "runtime.starting" : "runtime.reconnecting",
-        message: "composer.waitForRuntime",
-      };
-    } else if (providerCatalogStatus === "idle" || providerCatalogStatus === "loading") {
-      modelAccess = { label: "composer.loadingModels", message: "composer.waitForModels" };
-    } else if (providerCatalogStatus === "error") {
-      modelAccess = {
-        label: "composer.retryModels",
-        message: "composer.modelsLoadFailed",
-        action: () => void loadProviderCatalog().catch(() => undefined),
-      };
-    } else if (runtimeModelOptions.length === 0) {
-      const hasConfiguredModels = models.some((candidate) =>
-        providers.some((provider) => provider.id === candidate.providerId && provider.configured),
-      );
-      // Without any provider the composer stays quiet: first-run setup happens in
-      // the onboarding dialog, and settings remain reachable from the sidebar.
-      if (hasConfiguredModels) {
-        modelAccess = {
-          label: "composer.enableModel",
-          message: "composer.modelsDisabled",
-          action: () => setSettingsOpen(true, "models"),
-        };
-      }
     }
   }
   useLayoutEffect(() => {
@@ -241,7 +233,7 @@ export function Composer({
               >
                 {t(modelAccess.label)}
               </button>
-            ) : runtimeMode && runtimeModelOptions.length === 0 ? null : (
+            ) : runtimeModelOptions.length === 0 ? null : (
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger asChild>
                   <button
@@ -250,11 +242,7 @@ export function Composer({
                     className="hidden h-7 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[11px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
                   >
                     <span className="min-w-0 max-w-[148px] truncate">
-                      {runtimeMode
-                        ? selectedRuntimeModel?.label ?? t("composer.selectModel")
-                        : model === "local"
-                          ? t("composer.localModel")
-                          : model}
+                      {selectedRuntimeModel?.label ?? t("composer.selectModel")}
                     </span>
                     <ChevronDown size={11} />
                   </button>
@@ -266,8 +254,7 @@ export function Composer({
                     sideOffset={8}
                     className="glass-menu z-[90] min-w-48 max-w-[280px] rounded-xl p-1"
                   >
-                    {runtimeMode
-                      ? runtimeModelOptions.map((candidate) => (
+                    {runtimeModelOptions.map((candidate) => (
                           <DropdownMenu.Item
                             key={`${candidate.providerId}/${candidate.modelId}`}
                             onSelect={() =>
@@ -287,18 +274,7 @@ export function Composer({
                             <span className="min-w-0 truncate">{candidate.label}</span>
                           </DropdownMenu.Item>
                         ))
-                      : MODEL_OPTIONS.map((candidate) => (
-                          <DropdownMenu.Item
-                            key={candidate}
-                            onSelect={() => setModel(candidate)}
-                            className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                          >
-                            <span className="flex size-4 items-center justify-center text-[var(--accent)]">
-                              {model === candidate ? <Check size={12} /> : null}
-                            </span>
-                            {candidate === "local" ? t("composer.localModel") : candidate}
-                          </DropdownMenu.Item>
-                        ))}
+}
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
               </DropdownMenu.Root>

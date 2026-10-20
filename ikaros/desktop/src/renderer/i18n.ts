@@ -189,10 +189,6 @@ const english = {
   "events.complete": "Complete",
   "events.failed": "Failed",
   "events.interrupted": "Interrupted",
-  "events.recovering": "Recovering",
-  "events.recovered": "Recovered",
-  "events.retryStep": "Retry step",
-  "events.recoverSession": "Recover session",
   "events.warning": "Warning",
   "events.error": "Error",
   "events.copyMessage": "Copy message",
@@ -201,9 +197,6 @@ const english = {
   "events.file.modified": "Modified file",
   "events.file.deleted": "Deleted file",
   "events.file.renamed": "Renamed file",
-  "events.runStopped.title": "Run stopped",
-  "events.runStopped.description":
-    "You stopped this run. The conversation and completed activity are preserved.",
   "events.tool.runProcess": "Running command",
   "events.tool.readFile": "Reading file",
   "events.tool.writeFile": "Writing file",
@@ -261,18 +254,6 @@ const english = {
   "events.result.refreshProcess": "Refresh status and logs",
   "events.result.waitFinished": "This wait ended. The command is still running and can be checked again.",
   "events.result.processControlFailed": "Could not update the command.",
-  "events.workerDisconnected.title": "Local worker disconnected",
-  "events.workerDisconnected.description":
-    "The run stopped after the DOCX was written. Its checkpoint and generated files are still available.",
-  "events.recoveringCheckpoint.title": "Recovering from checkpoint",
-  "events.recoveringCheckpoint.description":
-    "Reattached to the saved run and verified the existing DOCX before continuing.",
-  "events.retryingExport.title": "Retrying export step",
-  "events.retryingExport.description":
-    "Started a fresh PDF export while preserving the completed DOCX.",
-  "events.recoveryCompleted.title": "Recovery completed",
-  "events.recoveryCompleted.description":
-    "The saved run is healthy again and both output files passed validation.",
 
   "sidebar.workspaceNavigation": "Workspace navigation",
   "sidebar.currentWorkspace": "Current workspace: {name}",
@@ -705,10 +686,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.complete": "已完成",
   "events.failed": "失败",
   "events.interrupted": "已中断",
-  "events.recovering": "恢复中",
-  "events.recovered": "已恢复",
-  "events.retryStep": "重试此步骤",
-  "events.recoverSession": "恢复会话",
   "events.warning": "警告",
   "events.error": "错误",
   "events.copyMessage": "复制消息",
@@ -717,8 +694,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.file.modified": "已修改文件",
   "events.file.deleted": "已删除文件",
   "events.file.renamed": "已重命名文件",
-  "events.runStopped.title": "运行已停止",
-  "events.runStopped.description": "你已停止此次运行。对话和已完成的操作均已保留。",
   "events.tool.runProcess": "正在运行命令",
   "events.tool.readFile": "正在读取文件",
   "events.tool.writeFile": "正在写入文件",
@@ -776,18 +751,6 @@ const simplifiedChinese: Record<TranslationKey, string> = {
   "events.result.refreshProcess": "刷新状态和日志",
   "events.result.waitFinished": "本次等待已结束，命令仍在运行，可以继续查看结果。",
   "events.result.processControlFailed": "无法更新命令状态。",
-  "events.workerDisconnected.title": "本地执行器已断开",
-  "events.workerDisconnected.description":
-    "DOCX 写入后运行停止。检查点和已生成的文件仍然可用。",
-  "events.recoveringCheckpoint.title": "正在从检查点恢复",
-  "events.recoveringCheckpoint.description":
-    "已重新连接到保存的运行，并在继续之前验证了现有 DOCX。",
-  "events.retryingExport.title": "正在重试导出步骤",
-  "events.retryingExport.description":
-    "在保留已完成 DOCX 的同时，开始重新导出 PDF。",
-  "events.recoveryCompleted.title": "恢复完成",
-  "events.recoveryCompleted.description":
-    "保存的运行已恢复正常，两个输出文件均已通过验证。",
 
   "sidebar.workspaceNavigation": "工作区导航",
   "sidebar.currentWorkspace": "当前工作区：{name}",

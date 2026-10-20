@@ -3,7 +3,6 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  InterruptEvent,
   MessageEvent,
   StatusEvent,
   ToolCallEvent,
@@ -45,7 +44,7 @@ afterEach(() => {
 
 describe("EventCard localization boundary", () => {
   it("opens file views using the Tool Call identity without toggling its result disclosure", () => {
-    useAppStore.setState({ runtimeMode: true, selectedThreadId: "thread-file-entry" });
+    useAppStore.setState({ selectedThreadId: "thread-file-entry" });
     const onToggle = vi.fn();
     const event: ToolCallEvent = {
       id: "call-file-entry", turnId: "turn-file-entry", createdAt: "2026-09-05T00:00:00Z",
@@ -62,7 +61,7 @@ describe("EventCard localization boundary", () => {
   });
 
   it("uses the bound call ID when opening a file from its result", () => {
-    useAppStore.setState({ runtimeMode: true, selectedThreadId: "thread-file-entry" });
+    useAppStore.setState({ selectedThreadId: "thread-file-entry" });
     const event: ToolResultEvent = {
       id: "result-file-entry", toolCallId: "call-original", turnId: "turn-file-entry", createdAt: "2026-09-05T00:00:00Z",
       type: "tool_result", toolName: "write", summary: appEventText("result.writeCompleted"), status: "success", output: "", path: "/workspace/notes.txt",
@@ -398,56 +397,7 @@ describe("Message typography", () => {
   });
 });
 
-describe("InterruptCard recovery states", () => {
-  it("renders a recovered run as a successful terminal state", () => {
-    useAppStore.setState({ runStatus: "completed" });
-    const event: InterruptEvent = {
-      id: "interrupt-recovered",
-      turnId: "turn-recovered",
-      createdAt: "2026-08-05T06:00:00.000Z",
-      type: "interrupt",
-      copy: {
-        source: "external",
-        title: "Recovery completed",
-        description: "The saved run is healthy again.",
-      },
-      recoverable: true,
-      status: "recovered",
-    };
-
-    const { container } = render(<EventCard event={event} />);
-
-    expect(container.querySelector('[data-status="recovered"]')).toHaveClass(
-      "border-[#72d3a7]/30",
-      "bg-[#24463a]/22",
-    );
-    expect(screen.getByRole("img", { name: "Recovered" })).toHaveClass(
-      "text-[#72d3a7]",
-    );
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Recover session" })).not.toBeInTheDocument();
-  });
-
-  it("retranslates app-authored stop copy without rewriting external events", () => {
-    const stopped: InterruptEvent = {
-      id: "interrupt-stopped",
-      turnId: "turn-stopped",
-      createdAt: "2026-08-05T06:00:00.000Z",
-      type: "interrupt",
-      copy: { source: "app", kind: "run_stopped" },
-      recoverable: false,
-      status: "interrupted",
-    };
-
-    render(<EventCard event={stopped} />);
-
-    expect(screen.getByText("Run stopped")).toBeInTheDocument();
-
-    act(() => setUiLanguage("zh-CN"));
-
-    expect(screen.getByText("运行已停止")).toBeInTheDocument();
-    expect(screen.queryByText("Run stopped")).not.toBeInTheDocument();
-  });
+describe("stopped run status semantics", () => {
   it("uses warning semantics instead of a success check for a stopped run", () => {
     const event: StatusEvent = {
       id: "status-stopped",

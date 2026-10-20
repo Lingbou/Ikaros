@@ -38,7 +38,6 @@ export function ConversationHeader() {
   const thread = useAppStore(selectHeaderThread);
   const renameThread = useAppStore((state) => state.renameThread);
   const archiveThread = useAppStore((state) => state.archiveThread);
-  const runtimeMode = useAppStore((state) => state.runtimeMode);
   const openFile = useAppStore((state) => state.openFile);
   const hasWorkspace = useAppStore((state) => {
     const current = findThread(state.threads, state.selectedThreadId);
@@ -137,7 +136,7 @@ export function ConversationHeader() {
         </h1>
       )}
 
-      {runtimeMode && hasWorkspace ? (
+      {hasWorkspace ? (
         <button
           type="button"
           onClick={() => openFile({ threadId: thread.id, path: "", view: "current" })}

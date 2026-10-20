@@ -109,7 +109,6 @@ function eventRowVisualOffset(viewport: HTMLElement, eventId: string): number | 
 export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   const { t } = useTranslation();
   const thread = useAppStore(selectCurrentThread);
-  const runtimeMode = useAppStore((state) => state.runtimeMode);
   const detail = useAppStore((state) =>
     thread ? state.runtimeThreadDetails[thread.id] : undefined,
   );
@@ -123,7 +122,6 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     () => turns?.flatMap((turn): FeedRow[] => {
       const rows: FeedRow[] = [...turn.events];
       if (
-        !runtimeMode ||
         !turn.runId ||
         (!turn.runProgress && turn.status !== "failed" && turn.status !== "interrupted")
       ) {
@@ -144,7 +142,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
       });
       return rows;
     }) ?? [],
-    [runtimeMode, turns],
+    [turns],
   );
   const toolCallIds = useMemo(
     () =>
@@ -197,7 +195,6 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
       const event = events[index];
       if (event?.type === "runtime_outcome") return event.turn.status === "failed" || event.turn.status === "interrupted" ? 200 : 32;
       if (event?.type === "message") return event.role === "user" ? 72 : 128;
-      if (event?.type === "interrupt") return 168;
       if (
         event?.type === "tool_result" &&
         toolCallIds.has(event.toolCallId) &&
@@ -409,7 +406,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
   }, [activeAnchorIndex, navigateToAnchor, turnAnchors.length]);
 
   if (!thread) return <EmptyConversation />;
-  if (runtimeMode && detail?.status === "error") {
+  if (detail?.status === "error") {
     return (
       <ConversationLoadState
         error={detail.error ?? t("runtime.error.history")}
@@ -417,7 +414,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
       />
     );
   }
-  if (runtimeMode && detail?.status === "loading" && events.length === 0) {
+  if (detail?.status === "loading" && events.length === 0) {
     return <ConversationLoadState />;
   }
   if (events.length === 0) return <EmptyConversation />;

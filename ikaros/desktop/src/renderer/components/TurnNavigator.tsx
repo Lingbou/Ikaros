@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import type { AgentEvent, Turn } from "../domain";
-import { resolveEventText, resolveInterruptCopy } from "../eventCopy";
+import { resolveEventText } from "../eventCopy";
 import { useTranslation, type Translate } from "../i18n";
 
 export const MIN_TURN_NAV_ITEMS = 4;
@@ -48,8 +48,6 @@ function eventExcerpt(event: AgentEvent, t: Translate): string {
       return cleanExcerpt(resolveEventText(event.label, t));
     case "tool_result":
       return cleanExcerpt(resolveEventText(event.summary, t));
-    case "interrupt":
-      return cleanExcerpt(resolveInterruptCopy(event.copy, t).title);
     case "file_change":
       return cleanExcerpt(event.path);
     case "status":

@@ -11,8 +11,7 @@ let resizeCallback: ResizeObserverCallback | undefined;
 beforeEach(() => {
   resizeCallback = undefined;
   useAppStore.setState({
-    runtimeMode: true,
-    runtimeReady: true,
+        runtimeReady: true,
     runtimeConnectionStatus: "connected",
     providerCatalogStatus: "ready",
   });
@@ -138,8 +137,7 @@ describe("Composer input and clearance", () => {
     useAppStore.setState({
       draft: "Write the next message",
       runStatus: "running",
-      runtimeMode: true,
-      sendDraft,
+            sendDraft,
       steerRun,
       stopRun,
     });
@@ -165,8 +163,7 @@ describe("Composer input and clearance", () => {
     const sendDraft = vi.fn(async () => undefined);
     const workspace = { id: "workspace-setup", name: "Setup", rootUri: "/workspace/setup" };
     useAppStore.setState({
-      runtimeMode: true,
-      providers: [],
+            providers: [],
       models: [],
       selectedModel: null,
       draft: "hello",
@@ -201,8 +198,7 @@ describe("Composer input and clearance", () => {
 
   it("opens Models settings when configured models are disabled", () => {
     useAppStore.setState({
-      runtimeMode: true,
-      providers: [{ id: "custom", displayName: "Custom", origin: "custom", configured: true, credentialConfigured: true, health: "unknown" }],
+            providers: [{ id: "custom", displayName: "Custom", origin: "custom", configured: true, credentialConfigured: true, health: "unknown" }],
       models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false, contextWindow: 32768 }],
       selectedModel: null,
       draft: "saved draft",
@@ -214,7 +210,7 @@ describe("Composer input and clearance", () => {
   });
 
   it.each(["idle", "loading"] as const)("keeps %s catalogs distinct from missing configuration", (providerCatalogStatus) => {
-    useAppStore.setState({ runtimeMode: true, providerCatalogStatus, providers: [], models: [], draft: "saved draft" });
+    useAppStore.setState({ providerCatalogStatus, providers: [], models: [], draft: "saved draft" });
     render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
     expect(screen.getByRole("button", { name: "Loading models…" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
@@ -223,7 +219,7 @@ describe("Composer input and clearance", () => {
 
   it("retries a failed model catalog without opening configuration or discarding the draft", () => {
     const loadProviderCatalog = vi.fn(async () => undefined);
-    useAppStore.setState({ runtimeMode: true, providerCatalogStatus: "error", providers: [], models: [], draft: "saved draft", loadProviderCatalog });
+    useAppStore.setState({ providerCatalogStatus: "error", providers: [], models: [], draft: "saved draft", loadProviderCatalog });
     render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
     fireEvent.click(screen.getByRole("button", { name: "Reload models" }));
     expect(loadProviderCatalog).toHaveBeenCalledOnce();
@@ -233,7 +229,7 @@ describe("Composer input and clearance", () => {
 
   it("reconnects the Runtime instead of treating an offline catalog as unconfigured", () => {
     const retryRuntimeConnection = vi.fn(async () => undefined);
-    useAppStore.setState({ runtimeMode: true, runtimeConnectionStatus: "offline", providerCatalogStatus: "error", draft: "saved draft", retryRuntimeConnection });
+    useAppStore.setState({ runtimeConnectionStatus: "offline", providerCatalogStatus: "error", draft: "saved draft", retryRuntimeConnection });
     render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(retryRuntimeConnection).toHaveBeenCalledOnce();
@@ -244,8 +240,7 @@ describe("Composer input and clearance", () => {
 
   it("keeps the composer quiet when the only provider is disconnected", () => {
     useAppStore.setState({
-      runtimeMode: true,
-      providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: false, credentialConfigured: false, health: "unknown" }],
+            providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: false, credentialConfigured: false, health: "unknown" }],
       models: [],
       selectedModel: null,
       draft: "saved draft",
@@ -259,8 +254,7 @@ describe("Composer input and clearance", () => {
   it("sends the preserved draft after configuration supplies a runnable model", () => {
     const sendDraft = vi.fn(async () => undefined);
     useAppStore.setState({
-      runtimeMode: true,
-      providers: [],
+            providers: [],
       models: [],
       selectedModel: null,
       draft: "Resume my original request",
@@ -299,8 +293,7 @@ describe("Composer input and clearance", () => {
 
   it("lets Runtime users change the selected model without showing a selection instruction", () => {
     useAppStore.setState({
-      runtimeMode: true,
-      providers: [
+            providers: [
         {
           id: "test-provider",
           displayName: "Test Provider",

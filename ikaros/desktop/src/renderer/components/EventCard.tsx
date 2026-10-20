@@ -10,25 +10,19 @@ import {
   FilePenLine,
   FileText,
   LoaderCircle,
-  Play,
-  RefreshCw,
-  RotateCcw,
   Search,
   SquareTerminal,
   Wrench,
-  X,
 } from "lucide-react";
 import { memo } from "react";
 import type {
   AgentEvent,
   FileChangeEvent,
-  InterruptEvent,
   StatusEvent,
   ToolCallEvent,
   ToolResultEvent,
 } from "../domain";
-import { isRunActive } from "../domain";
-import { resolveEventText, resolveInterruptCopy } from "../eventCopy";
+import { resolveEventText } from "../eventCopy";
 import { type Translate, useTranslation } from "../i18n";
 import { useAppStore } from "../store";
 import { ProcessSessionCard } from "./ProcessSessionCard";
@@ -161,10 +155,9 @@ function FileActions({
   running?: boolean;
 }) {
   const { t } = useTranslation();
-  const runtimeMode = useAppStore((state) => state.runtimeMode);
   const threadId = useAppStore((state) => state.selectedThreadId);
   const openFile = useAppStore((state) => state.openFile);
-  if (!runtimeMode || !threadId || !path || !isFileTool(toolName)) return null;
+  if (!threadId || !path || !isFileTool(toolName)) return null;
   const canHaveChange = toolName === "write" || toolName === "edit";
   return (
     <div className="flex flex-wrap items-center gap-2 px-3.5 pb-2.5 pt-0.5">
@@ -386,74 +379,6 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
   );
 }
 
-function InterruptCard({ event }: { event: InterruptEvent }) {
-  const { t } = useTranslation();
-  const recoverRun = useAppStore((state) => state.recoverRun);
-  const runStatus = useAppStore((state) => state.runStatus);
-  const interrupted = event.status === "interrupted" && runStatus === "interrupted";
-  const copy = resolveInterruptCopy(event.copy, t);
-  const visual = {
-    interrupted: {
-      card: "border-[#ff7474]/27 bg-[#472629]/28",
-      icon: "bg-[#ff7474]/10 text-[#ff8585]",
-      iconLabel: t("events.interrupted"),
-      glyph: <AlertTriangle size={15} />,
-    },
-    recovering: {
-      card: "border-[color-mix(in_srgb,var(--accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]",
-      icon: "bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] text-[var(--accent)]",
-      iconLabel: t("events.recovering"),
-      glyph: <RefreshCw size={15} className="animate-spin" />,
-    },
-    recovered: {
-      card: "border-[#72d3a7]/30 bg-[#24463a]/22",
-      icon: "bg-[#72d3a7]/12 text-[#72d3a7]",
-      iconLabel: t("events.recovered"),
-      glyph: <CheckCircle2 size={15} />,
-    },
-  }[event.status];
-  return (
-    <div
-      data-status={event.status}
-      className={cx("event-card-shadow rounded-xl border px-4 py-3.5", visual.card)}
-    >
-      <div className="flex items-start gap-3">
-        <span
-          role="img"
-          aria-label={visual.iconLabel}
-          className={cx("flex size-8 shrink-0 items-center justify-center rounded-xl", visual.icon)}
-        >
-          {visual.glyph}
-        </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[12px] font-medium leading-[18px] text-[var(--text)]">{copy.title}</h3>
-          <p className="mt-1 text-[11px] leading-[16px] text-[var(--muted)]">{copy.description}</p>
-          {interrupted && event.recoverable ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void recoverRun("retry")}
-                className="flex h-7.5 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-3 text-[12px] font-medium leading-[18px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-              >
-                <RotateCcw size={12} />
-                {t("events.retryStep")}
-              </button>
-              <button
-                type="button"
-                onClick={() => void recoverRun("resume")}
-                className="flex h-7.5 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] hover:opacity-90"
-              >
-                <Play size={12} fill="currentColor" />
-                {t("events.recoverSession")}
-              </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function FileChangeCard({ event }: { event: FileChangeEvent }) {
   const { t } = useTranslation();
   return (
@@ -580,7 +505,6 @@ function EventCardView({ event, toolDisclosure }: EventCardProps) {
       ? <ProcessSessionCard event={event} />
       : <ToolResultCard event={event} />;
   }
-  if (event.type === "interrupt") return <InterruptCard event={event} />;
   if (event.type === "file_change") return <FileChangeCard event={event} />;
   if (event.type === "status") return <StatusRow event={event} />;
 

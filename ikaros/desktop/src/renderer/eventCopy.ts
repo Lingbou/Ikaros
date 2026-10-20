@@ -1,7 +1,6 @@
 import type {
   AppEventTextKind,
-  EventText,
-  InterruptCopy
+  EventText
 } from "./domain";
 import type { Translate, TranslationKey } from "./i18n";
 
@@ -47,46 +46,8 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "result.matchCount": "events.result.matchCount"
 };
 
-const APP_INTERRUPT_COPY_KEYS: Record<
-  Extract<InterruptCopy, { source: "app" }>["kind"],
-  { title: TranslationKey; description: TranslationKey }
-> = {
-  run_stopped: {
-    title: "events.runStopped.title",
-    description: "events.runStopped.description"
-  },
-  worker_disconnected: {
-    title: "events.workerDisconnected.title",
-    description: "events.workerDisconnected.description"
-  },
-  recovering_checkpoint: {
-    title: "events.recoveringCheckpoint.title",
-    description: "events.recoveringCheckpoint.description"
-  },
-  retrying_export: {
-    title: "events.retryingExport.title",
-    description: "events.retryingExport.description"
-  },
-  recovery_completed: {
-    title: "events.recoveryCompleted.title",
-    description: "events.recoveryCompleted.description"
-  }
-};
-
 export function resolveEventText(copy: EventText, t: Translate): string {
   return copy.source === "app"
     ? t(APP_EVENT_TEXT_KEYS[copy.kind], copy.values)
     : copy.value;
-}
-
-export function resolveInterruptCopy(
-  copy: InterruptCopy,
-  t: Translate
-): { title: string; description: string } {
-  if (copy.source === "external") return copy;
-  const keys = APP_INTERRUPT_COPY_KEYS[copy.kind];
-  return {
-    title: t(keys.title),
-    description: t(keys.description)
-  };
 }

@@ -160,8 +160,7 @@ describe("EventFeed dynamic row measurement", () => {
       },
     });
     useAppStore.setState({
-      runtimeMode: true,
-      threads: [thread],
+            threads: [thread],
       selectedThreadId: thread.id,
     });
 
@@ -191,8 +190,7 @@ describe("EventFeed dynamic row measurement", () => {
       reasonCode: "provider_authentication",
     });
     useAppStore.setState({
-      runtimeMode: true,
-      threads: [thread],
+            threads: [thread],
       selectedThreadId: thread.id,
     });
 
@@ -212,8 +210,7 @@ describe("EventFeed dynamic row measurement", () => {
     const thread = threadWith([]);
     const retryRuntimeThread = vi.fn(async () => undefined);
     useAppStore.setState({
-      runtimeMode: true,
-      threads: [thread],
+            threads: [thread],
       selectedThreadId: thread.id,
       runtimeThreadDetails: {
         [thread.id]: {
@@ -249,8 +246,7 @@ describe("EventFeed dynamic row measurement", () => {
     ]);
     const loadOlderRuntimeTurns = vi.fn(async () => undefined);
     useAppStore.setState({
-      runtimeMode: true,
-      threads: [thread],
+            threads: [thread],
       selectedThreadId: thread.id,
       runtimeThreadDetails: {
         [thread.id]: {
@@ -339,8 +335,7 @@ describe("EventFeed dynamic row measurement", () => {
       });
     });
     useAppStore.setState({
-      runtimeMode: true,
-      threads: [thread],
+            threads: [thread],
       selectedThreadId: thread.id,
       runtimeThreadDetails: {
         [thread.id]: {

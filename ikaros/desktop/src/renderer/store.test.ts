@@ -46,7 +46,6 @@ afterEach(() => {
 describe("Runtime-only store baseline", () => {
   it("starts without mock projects or threads", () => {
     const state = useAppStore.getState();
-    expect(state.runtimeMode).toBe(true);
     expect(state.runtimeConnectionStatus).toBe("offline");
     expect(state.projects).toEqual([]);
     expect(state.threads).toEqual([]);
