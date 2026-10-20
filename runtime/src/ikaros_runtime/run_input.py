@@ -17,7 +17,6 @@ from .errors import ContextBudgetExceededError, ModelInputUnavailableError
 from .history_status import EMPTY_HISTORY_STATUS_V1, FrozenHistoryStatusV1
 from .json_codec import dumps as json_dumps
 from .json_codec import loads as json_loads
-from .memory.domain import MEMORY_CONTENT_MAX_CHARACTERS
 from .tools.core import ToolDefinition
 
 type InstructionAuthority = Literal[
@@ -34,7 +33,7 @@ type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]
 INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound"
 USABLE_CONTEXT_WINDOW_PERCENT = 95
 AUTO_COMPACT_TOKEN_LIMIT_PERCENT = 90
-MEMORY_CONTENT_MAX_CHARACTERS_V1 = MEMORY_CONTENT_MAX_CHARACTERS
+MEMORY_CONTENT_MAX_CHARACTERS_V1 = 2_048
 MEMORY_RETRIEVAL_MAX_CANDIDATES_V1 = 2_000
 MEMORY_SELECTION_MAX_ITEMS_V1 = 8
 MEMORY_SELECTION_MAX_CHARACTERS_V1 = 6_000

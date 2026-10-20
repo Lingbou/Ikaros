@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..domain import JsonObject
+from ..run_input import MEMORY_CONTENT_MAX_CHARACTERS_V1
 
 type MemoryKind = Literal["fact", "preference", "relationship", "project"]
 type MemoryState = Literal["active", "forgotten"]
@@ -16,7 +17,7 @@ type ProvenanceStatus = Literal["not_applicable", "available", "unavailable"]
 MEMORY_KINDS = frozenset({"fact", "preference", "relationship", "project"})
 MEMORY_STATES = frozenset({"active", "forgotten"})
 MEMORY_SCOPE_TYPES = frozenset({"global", "workspace"})
-MEMORY_CONTENT_MAX_CHARACTERS = 2_048
+MEMORY_CONTENT_MAX_CHARACTERS = MEMORY_CONTENT_MAX_CHARACTERS_V1
 MEMORY_PREVIEW_MAX_CHARACTERS = 160
 
 
