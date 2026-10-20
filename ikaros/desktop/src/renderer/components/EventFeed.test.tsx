@@ -79,7 +79,6 @@ function threadWith(events: AgentEvent[]): Thread {
       {
         id: "branch-feed-measurement",
         threadId: "thread-feed-measurement",
-        label: { source: "app", kind: "main" },
         turns: [
           {
             id: "turn-feed-measurement",

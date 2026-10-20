@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createInitialProjects, createInitialThreads } from "../mockAgentClient";
+import { TEST_PROJECTS, createFixtureThreads } from "../testFixtures";
 import { useAppStore } from "../store";
 import { SearchDialog } from "./SearchDialog";
 
@@ -10,8 +10,8 @@ const initialState = useAppStore.getState();
 
 beforeEach(() => {
   useAppStore.setState({
-    projects: createInitialProjects(),
-    threads: createInitialThreads(),
+    projects: TEST_PROJECTS,
+    threads: createFixtureThreads(),
     searchOpen: true,
     searchCatalogStatus: "ready",
     searchCatalogError: null,

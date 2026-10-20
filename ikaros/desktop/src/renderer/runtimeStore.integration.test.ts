@@ -1560,7 +1560,6 @@ describe("Runtime-backed renderer store", () => {
       },
       { type: "message", role: "assistant", status: "complete" }
     ]);
-    expect(projected?.events.some((event) => event.type === "permission_request")).toBe(false);
     expect(getThread).toHaveBeenCalledOnce();
     expect(listTurns).toHaveBeenCalledOnce();
   });

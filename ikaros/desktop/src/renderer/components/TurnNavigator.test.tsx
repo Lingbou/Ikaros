@@ -62,11 +62,13 @@ describe("TurnNavigator", () => {
     const turns = [
       turn(firstTurnId, [
         {
-          id: "status-1",
+          id: "call-1",
           turnId: firstTurnId,
-          type: "status",
-          tone: "neutral",
-          label: appEventText("status.buildingBrief", { count: 12 }),
+          type: "tool_call",
+          toolName: "run_process",
+          label: appEventText("tool.runProcess"),
+          status: "success",
+          arguments: { command: "echo hello" },
           createdAt,
         },
         message("user-1", firstTurnId, "user", "  First\n prompt  "),
@@ -100,19 +102,23 @@ describe("TurnNavigator", () => {
       const turnId = `localized-turn-${index + 1}`;
       return turn(turnId, [
         {
-          id: `localized-status-${index + 1}`,
+          id: `localized-call-${index + 1}`,
           turnId,
-          type: "status" as const,
-          tone: "success" as const,
-          label: appEventText("status.checkpointRestored"),
+          type: "tool_call" as const,
+          toolName: "read_file",
+          label: appEventText("tool.readFile"),
+          status: "success" as const,
+          arguments: { path: "notes.txt" },
           createdAt,
         },
         {
           id: `localized-detail-${index + 1}`,
           turnId,
-          type: "status" as const,
-          tone: "success" as const,
-          label: appEventText("status.outputsValidated"),
+          type: "tool_result" as const,
+          toolCallId: `localized-call-${index + 1}`,
+          summary: appEventText("result.readCompleted"),
+          status: "success" as const,
+          output: "content",
           createdAt,
         },
       ]);
@@ -121,12 +127,12 @@ describe("TurnNavigator", () => {
     const chineseAnchors = getTurnAnchors(turns, chineseTranslate);
 
     expect(englishAnchors[0]).toMatchObject({
-      preview: "Checkpoint restored",
-      detail: "Both output files passed validation.",
+      preview: "Reading file",
+      detail: "File read",
     });
     expect(chineseAnchors[0]).toMatchObject({
-      preview: "检查点已恢复",
-      detail: "两个输出文件均已通过验证。",
+      preview: "正在读取文件",
+      detail: "文件读取完成",
     });
 
     const { rerender } = render(
@@ -139,7 +145,7 @@ describe("TurnNavigator", () => {
     fireEvent.pointerEnter(
       screen.getByRole("button", { name: "Jump to turn 1 of 4" }),
     );
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Checkpoint restored");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Reading file");
 
     rerender(
       <TurnNavigator
@@ -148,9 +154,9 @@ describe("TurnNavigator", () => {
         onNavigate={() => undefined}
       />,
     );
-    expect(screen.getByRole("tooltip")).toHaveTextContent("检查点已恢复");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("正在读取文件");
     expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "两个输出文件均已通过验证。",
+      "文件读取完成",
     );
   });
 

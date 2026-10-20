@@ -5,40 +5,30 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findThread,
   flattenEvents,
-  type Branch,
   type MessageEvent,
   type Thread,
 } from "../domain";
 import { setUiLanguage } from "../i18n";
-import { createInitialProjects, createInitialThreads } from "../mockAgentClient";
+import { TEST_EXPANDED_PROJECTS, TEST_PROJECTS, createFixtureThreads } from "../testFixtures";
 import { useAppStore } from "../store";
 import { ConversationHeader } from "./ConversationHeader";
 
 const initialState = useAppStore.getState();
 
-function branch(id: string, label: Branch["label"]): Branch {
-  return {
-    id,
-    threadId: "thread-localization",
-    label,
-    turns: [],
-    createdAt: "2026-08-05T06:00:00.000Z",
-  };
-}
-
-const branches = [
-  branch("branch-main", { source: "app", kind: "main" }),
-  branch("branch-1", { source: "app", kind: "number", number: 1 }),
-  branch("branch-external", { source: "external", value: "feature/login" }),
-];
-
-function threadWithActiveBranch(activeBranchId: string): Thread {
+function threadFixture(projectId: string | null = null): Thread {
   return {
     id: "thread-localization",
-    projectId: null,
+    projectId,
     title: "Localization boundary",
-    activeBranchId,
-    branches,
+    activeBranchId: "branch-main",
+    branches: [
+      {
+        id: "branch-main",
+        threadId: "thread-localization",
+        turns: [],
+        createdAt: "2026-08-05T06:00:00.000Z",
+      },
+    ],
     updatedAt: "2026-08-05T06:00:00.000Z",
   };
 }
@@ -49,12 +39,12 @@ afterEach(() => {
   useAppStore.setState(initialState, true);
 });
 
-describe("ConversationHeader branch localization", () => {
+describe("ConversationHeader actions", () => {
   it("opens a path entry for a regular conversation folder without a Git requirement", () => {
     useAppStore.setState({
       runtimeMode: true,
       projects: [{ id: "workspace-files", name: "Reports", color: "#ffffff", rootUri: "/tmp/plain-reports" }],
-      threads: [{ ...threadWithActiveBranch("branch-main"), projectId: "workspace-files" }],
+      threads: [threadFixture("workspace-files")],
       selectedThreadId: "thread-localization",
       draft: "Keep my draft",
     });
@@ -66,54 +56,12 @@ describe("ConversationHeader branch localization", () => {
     });
   });
 
-  it("retranslates app branch labels and preserves external branch names", () => {
-    useAppStore.setState({
-      projects: [],
-      threads: [threadWithActiveBranch("branch-main")],
-      selectedThreadId: "thread-localization",
-      runStatus: "idle",
-    });
-
-    render(<ConversationHeader />);
-
-    const heading = screen.getByRole("heading", { name: "Localization boundary" });
-    expect(heading.className).toContain("text-[13px]");
-    expect(heading.className).toContain("leading-5");
-    expect(heading.className).not.toContain("font-medium");
-    expect(heading.parentElement?.className).toContain("h-10");
-    expect(heading.parentElement?.className).toContain("select-none");
-    expect(screen.queryByText("Chat")).toBeNull();
-    expect(screen.queryByText("Ready")).toBeNull();
-
-    const branchButton = screen.getByRole("button", { name: /Main/ });
-    expect(branchButton.className).toContain("text-[12px]");
-    expect(branchButton.className).toContain("leading-[18px]");
-
-    expect(screen.getByText("Main")).toBeInTheDocument();
-
-    act(() => setUiLanguage("zh-CN"));
-    expect(screen.getByText("主分支")).toBeInTheDocument();
-
-    act(() => {
-      useAppStore.setState({ threads: [threadWithActiveBranch("branch-1")] });
-    });
-    expect(screen.getByText("分支 1")).toBeInTheDocument();
-
-    act(() => {
-      useAppStore.setState({ threads: [threadWithActiveBranch("branch-external")] });
-    });
-    expect(screen.getByText("feature/login")).toBeInTheDocument();
-
-    act(() => setUiLanguage("en"));
-    expect(screen.getByText("feature/login")).toBeInTheDocument();
-  });
-
   it("renames and archives from the flat title menu without an ellipsis control", async () => {
     const renameThread = vi.fn(async () => undefined);
     const archiveThread = vi.fn(async () => undefined);
     useAppStore.setState({
       projects: [],
-      threads: [threadWithActiveBranch("branch-main")],
+      threads: [threadFixture()],
       selectedThreadId: "thread-localization",
       runStatus: "idle",
       renameThread,
@@ -147,8 +95,9 @@ describe("ConversationHeader branch localization", () => {
 describe("ConversationHeader store subscriptions", () => {
   it("skips event-only and run-status commits", () => {
     useAppStore.setState({
-      projects: createInitialProjects(),
-      threads: createInitialThreads(),
+      projects: TEST_PROJECTS,
+      threads: createFixtureThreads(),
+      expandedProjects: TEST_EXPANDED_PROJECTS,
       selectedThreadId: "thread-streaming",
       runStatus: "running",
     });
@@ -188,9 +137,8 @@ describe("ConversationHeader store subscriptions", () => {
     expect(onRender).toHaveBeenCalledTimes(commitsAfterMount);
 
     act(() => {
-      useAppStore.setState({ runStatus: "waiting_permission" });
+      useAppStore.setState({ runStatus: "interrupted" });
     });
-    expect(screen.queryByText("Needs permission")).toBeNull();
     expect(onRender).toHaveBeenCalledTimes(commitsAfterMount);
   });
 });

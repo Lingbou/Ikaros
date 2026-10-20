@@ -67,7 +67,6 @@ export function projectRuntimeThread(summary: RuntimeThreadSummary): Thread {
       {
         id: summary.defaultBranchId,
         threadId: summary.id,
-        label: { source: "app", kind: "main" },
         turns: [],
         createdAt: summary.createdAt
       }

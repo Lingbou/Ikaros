@@ -9,14 +9,11 @@ import {
   FileOutput,
   FilePenLine,
   FileText,
-  GitBranch,
   LoaderCircle,
-  Pencil,
   Play,
   RefreshCw,
   RotateCcw,
   Search,
-  ShieldAlert,
   SquareTerminal,
   Wrench,
   X,
@@ -24,11 +21,8 @@ import {
 import { memo } from "react";
 import type {
   AgentEvent,
-  ArtifactEvent,
-  BranchEvent,
   FileChangeEvent,
   InterruptEvent,
-  PermissionEvent,
   StatusEvent,
   ToolCallEvent,
   ToolResultEvent,
@@ -392,73 +386,6 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
   );
 }
 
-function PermissionCard({ event }: { event: PermissionEvent }) {
-  const { t } = useTranslation();
-  const resolvePermission = useAppStore((state) => state.resolvePermission);
-  const runStatus = useAppStore((state) => state.runStatus);
-  const unresolved = event.status === "pending";
-  const actionable = unresolved && runStatus === "waiting_permission";
-  return (
-    <div
-      role={unresolved ? "alert" : undefined}
-      aria-live={unresolved ? "assertive" : undefined}
-      aria-atomic={unresolved ? "true" : undefined}
-      className="event-card-shadow overflow-hidden rounded-xl border border-[#ff8549]/35 bg-[#3b291f]/45"
-    >
-      <div className="flex gap-3 px-4 py-3.5">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-[#ff8549]/12 text-[#ff9b68]">
-          <ShieldAlert size={16} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="text-[12px] font-medium leading-[18px] text-[var(--text)]">
-              {resolveEventText(event.title, t)}
-            </h3>
-            {!unresolved ? (
-              <span
-                className={cx(
-                  "ml-auto rounded-full px-2 py-0.5 text-[11px] font-medium leading-4",
-                  event.status === "allowed"
-                    ? "bg-[#72d3a7]/10 text-[#82dcb5]"
-                    : "bg-[var(--surface-hover)] text-[var(--muted-strong)]",
-                )}
-              >
-                {event.status === "allowed" ? t("events.allowed") : t("events.denied")}
-              </span>
-            ) : null}
-          </div>
-          <p className="mt-1 text-[11px] leading-[16px] text-[var(--muted-strong)]">
-            {resolveEventText(event.description, t)}
-          </p>
-          <div className="mt-2.5 overflow-hidden rounded-lg border border-[#ff8549]/15 bg-[var(--panel)] px-2.5 py-2 font-mono text-[11px] leading-[16px] text-[var(--muted-strong)]">
-            <div className="truncate">{event.resource}</div>
-          </div>
-        </div>
-      </div>
-      {actionable ? (
-        <div className="flex items-center justify-end gap-2 border-t border-[#ff8549]/16 bg-[color-mix(in_srgb,var(--panel)_55%,transparent)] px-3 py-2.5">
-          <button
-            type="button"
-            onClick={() => void resolvePermission("deny")}
-            className="flex h-7.5 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium leading-[18px] text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-          >
-            <X size={12} />
-            {t("events.deny")}
-          </button>
-          <button
-            type="button"
-            onClick={() => void resolvePermission("allow")}
-            className="flex h-7.5 items-center gap-1.5 rounded-lg bg-[var(--text)] px-3 text-[12px] font-medium leading-[18px] text-[var(--canvas)] hover:opacity-90"
-          >
-            <Check size={12} />
-            {t("events.allowOnce")}
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function InterruptCard({ event }: { event: InterruptEvent }) {
   const { t } = useTranslation();
   const recoverRun = useAppStore((state) => state.recoverRun);
@@ -523,23 +450,6 @@ function InterruptCard({ event }: { event: InterruptEvent }) {
           ) : null}
         </div>
       </div>
-    </div>
-  );
-}
-
-function ArtifactCard({ event }: { event: ArtifactEvent }) {
-  const { t } = useTranslation();
-  return (
-    <div className="event-card-shadow flex w-full items-center gap-3 rounded-xl border border-[color-mix(in_srgb,var(--accent)_24%,transparent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3.5 py-3 text-left">
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] text-[var(--accent)]">
-        <FileText size={17} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] font-medium leading-[18px] text-[var(--text)]">{event.title}</span>
-        <span className="mt-0.5 block text-[11px] leading-[16px] text-[var(--muted)]">
-          {t("events.artifactMetadata", { version: event.version })}
-        </span>
-      </span>
     </div>
   );
 }
@@ -610,21 +520,8 @@ function StatusRow({ event }: { event: StatusEvent }) {
   );
 }
 
-function BranchRow({ event }: { event: BranchEvent }) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] leading-[16px] text-[var(--accent)]">
-      <GitBranch size={12} />
-      {event.copy.source === "app" ? t("events.branchCreatedFromEdit") : event.copy.value}
-    </div>
-  );
-}
-
 function UserMessageCard({ event }: { event: Extract<AgentEvent, { type: "message" }> }) {
   const { t } = useTranslation();
-  const beginEditMessage = useAppStore((state) => state.beginEditMessage);
-  const runStatus = useAppStore((state) => state.runStatus);
-  const runtimeMode = useAppStore((state) => state.runtimeMode);
 
   return (
     <div className="group flex justify-end gap-1.5">
@@ -632,11 +529,6 @@ function UserMessageCard({ event }: { event: Extract<AgentEvent, { type: "messag
         <IconButton label={t("events.copyMessage")} onClick={() => copyText(event.content)}>
           <Clipboard size={12} />
         </IconButton>
-        {!runtimeMode && !isRunActive(runStatus) ? (
-          <IconButton label={t("events.editAndBranch")} onClick={() => beginEditMessage(event.id, event.content)}>
-            <Pencil size={12} />
-          </IconButton>
-        ) : null}
       </div>
       <div className="max-w-[78%] whitespace-pre-wrap rounded-[18px] rounded-br-md bg-[var(--panel-hover)] px-4 py-2.5 text-[14px] leading-[22px] text-[var(--text)]">
         {event.content}
@@ -688,12 +580,9 @@ function EventCardView({ event, toolDisclosure }: EventCardProps) {
       ? <ProcessSessionCard event={event} />
       : <ToolResultCard event={event} />;
   }
-  if (event.type === "permission_request") return <PermissionCard event={event} />;
   if (event.type === "interrupt") return <InterruptCard event={event} />;
-  if (event.type === "artifact") return <ArtifactCard event={event} />;
   if (event.type === "file_change") return <FileChangeCard event={event} />;
   if (event.type === "status") return <StatusRow event={event} />;
-  if (event.type === "branch_created") return <BranchRow event={event} />;
 
   if (event.role === "user") {
     return <UserMessageCard event={event} />;

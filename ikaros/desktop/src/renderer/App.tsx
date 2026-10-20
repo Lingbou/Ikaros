@@ -2,7 +2,6 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { useEffect, useState } from "react";
 import { Composer } from "./components/Composer";
 import { ConversationHeader } from "./components/ConversationHeader";
-import { EditMessageDialog } from "./components/EditMessageDialog";
 import { EventFeed } from "./components/EventFeed";
 import { FilePanel } from "./components/FilePanel";
 import { OnboardingDialog } from "./components/OnboardingDialog";
@@ -123,7 +122,6 @@ export function App() {
         )}
       </div>
       <SearchDialog />
-      <EditMessageDialog />
       <OnboardingDialog />
     </Tooltip.Provider>
   );

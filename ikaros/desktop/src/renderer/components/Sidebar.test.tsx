@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findThread, flattenEvents, type MessageEvent } from "../domain";
 import { setUiLanguage } from "../i18n";
 import { LOCAL_PROFILE } from "../localProfile";
-import { createInitialProjects, createInitialThreads } from "../mockAgentClient";
+import { TEST_EXPANDED_PROJECTS, TEST_PROJECTS, createFixtureThreads } from "../testFixtures";
 import { useAppStore } from "../store";
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../shared/platform";
 import { Sidebar } from "./Sidebar";
@@ -46,8 +46,9 @@ beforeEach(() => {
     },
   });
   useAppStore.setState({
-    projects: createInitialProjects(),
-    threads: createInitialThreads(),
+    projects: TEST_PROJECTS,
+    threads: createFixtureThreads(),
+    expandedProjects: TEST_EXPANDED_PROJECTS,
     selectedThreadId: null,
     sidebarOpen: true,
     sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -199,7 +200,7 @@ describe("Sidebar conversation ownership", () => {
   });
 
   it("sorts chats by latest activity and preserves the loaded page on continuation failure", () => {
-    const seeded = createInitialThreads();
+    const seeded = createFixtureThreads();
     const older = findThread(seeded, "thread-recent-priorities");
     const newer = findThread(seeded, "thread-recent-notes");
     if (!older || !newer) throw new Error("Expected standalone thread fixtures");

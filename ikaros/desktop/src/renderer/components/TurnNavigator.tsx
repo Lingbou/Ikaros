@@ -48,18 +48,12 @@ function eventExcerpt(event: AgentEvent, t: Translate): string {
       return cleanExcerpt(resolveEventText(event.label, t));
     case "tool_result":
       return cleanExcerpt(resolveEventText(event.summary, t));
-    case "permission_request":
-      return cleanExcerpt(resolveEventText(event.title, t));
     case "interrupt":
       return cleanExcerpt(resolveInterruptCopy(event.copy, t).title);
-    case "artifact":
-      return cleanExcerpt(event.title);
     case "file_change":
       return cleanExcerpt(event.path);
     case "status":
       return cleanExcerpt(resolveEventText(event.label, t));
-    case "branch_created":
-      return "";
   }
 }
 

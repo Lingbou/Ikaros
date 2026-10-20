@@ -10,11 +10,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isRunActive } from "../domain";
 import { type TranslationKey, useTranslation } from "../i18n";
 import { useAppStore } from "../store";
-import {
-  SLASH_COMMANDS,
-  SlashCommandMenu,
-  type SlashCommand,
-} from "./SlashCommandMenu";
 import { IconButton, MenuItem } from "./ui";
 
 const MIN_COMPOSER_CLEARANCE = 150;
@@ -49,9 +44,6 @@ export function Composer({
   const bindWorkspaceFromFolder = useAppStore((state) => state.bindWorkspaceFromFolder);
   const [model, setModel] = useState<ModelId>("Ikaros");
   const [projectFolderError, setProjectFolderError] = useState(false);
-  const [activeSlashIndex, setActiveSlashIndex] = useState(0);
-  const [slashDismissed, setSlashDismissed] = useState(false);
-  const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -121,20 +113,6 @@ export function Composer({
       }
     }
   }
-  const slashMatch = draft.match(/^\/([^\s]*)$/);
-  const slashQuery = slashMatch?.[1].toLowerCase() ?? "";
-  const slashCommands = useMemo(
-    () =>
-      SLASH_COMMANDS.filter((command) => {
-        if (!slashQuery) return true;
-        return `${command.token} ${t(command.labelKey)} ${t(command.descriptionKey)}`
-          .toLowerCase()
-          .includes(slashQuery);
-      }),
-    [slashQuery, t],
-  );
-  const slashMenuOpen = Boolean(slashMatch) && !slashDismissed && !isComposing;
-
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -142,9 +120,6 @@ export function Composer({
     textarea.style.height = `${Math.min(154, Math.max(34, textarea.scrollHeight))}px`;
   }, [draft]);
 
-  useEffect(() => {
-    setActiveSlashIndex(0);
-  }, [slashQuery]);
 
   useLayoutEffect(() => {
     const overlay = overlayRef.current;
@@ -188,11 +163,6 @@ export function Composer({
     send();
   };
 
-  const selectSlashCommand = (command: SlashCommand) => {
-    setDraft(`${command.token} `);
-    setSlashDismissed(true);
-    queueMicrotask(() => textareaRef.current?.focus());
-  };
 
   const addProjectFolder = () => {
     setProjectFolderError(false);
@@ -208,14 +178,6 @@ export function Composer({
       className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[var(--canvas)] via-[var(--canvas)]/96 to-transparent px-3 pb-3 pt-16 sm:px-5 sm:pb-3.5"
     >
       <div className="conversation-rail pointer-events-auto relative mx-auto w-full">
-        {slashMenuOpen ? (
-          <SlashCommandMenu
-            commands={slashCommands}
-            activeIndex={activeSlashIndex}
-            onActiveIndexChange={setActiveSlashIndex}
-            onSelect={selectSlashCommand}
-          />
-        ) : null}
 
         <div
           ref={surfaceRef}
@@ -228,40 +190,10 @@ export function Composer({
             value={draft}
             onChange={(event) => {
               setDraft(event.target.value);
-              setSlashDismissed(false);
             }}
-            onCompositionStart={() => setIsComposing(true)}
-            onCompositionEnd={() => setIsComposing(false)}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing) return;
 
-              if (slashMenuOpen) {
-                if (event.key === "ArrowDown" && slashCommands.length) {
-                  event.preventDefault();
-                  setActiveSlashIndex((index) => (index + 1) % slashCommands.length);
-                  return;
-                }
-                if (event.key === "ArrowUp" && slashCommands.length) {
-                  event.preventDefault();
-                  setActiveSlashIndex(
-                    (index) => (index - 1 + slashCommands.length) % slashCommands.length,
-                  );
-                  return;
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setSlashDismissed(true);
-                  return;
-                }
-                if (
-                  (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) &&
-                  slashCommands[activeSlashIndex]
-                ) {
-                  event.preventDefault();
-                  selectSlashCommand(slashCommands[activeSlashIndex]);
-                  return;
-                }
-              }
 
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -270,14 +202,6 @@ export function Composer({
             }}
             placeholder={t(canSteer ? "composer.steerPlaceholder" : "composer.placeholder")}
             aria-label={t("composer.messageLabel")}
-            aria-autocomplete="list"
-            aria-controls={slashMenuOpen ? "slash-command-menu" : undefined}
-            aria-expanded={slashMenuOpen}
-            aria-activedescendant={
-              slashMenuOpen && slashCommands[activeSlashIndex]
-                ? `slash-command-${slashCommands[activeSlashIndex].id}`
-                : undefined
-            }
             className="app-scrollbar block max-h-[154px] min-h-[34px] w-full resize-none overflow-y-auto bg-transparent px-1 text-[14px] leading-[22px] text-[var(--text)] outline-none placeholder:text-[var(--muted)] focus-visible:outline-none"
           />
 
@@ -287,7 +211,6 @@ export function Composer({
                 <IconButton
                   label={t("composer.addContext")}
                   className="size-7 rounded-full border border-[var(--border-soft)] bg-[var(--panel)]"
-                  onPointerDown={() => setSlashDismissed(true)}
                 >
                   <Plus size={13} />
                 </IconButton>
@@ -324,7 +247,6 @@ export function Composer({
                   <button
                     type="button"
                     data-model-settings-trigger
-                    onPointerDown={() => setSlashDismissed(true)}
                     className="hidden h-7 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[11px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
                   >
                     <span className="min-w-0 max-w-[148px] truncate">

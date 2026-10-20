@@ -197,7 +197,7 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
       const event = events[index];
       if (event?.type === "runtime_outcome") return event.turn.status === "failed" || event.turn.status === "interrupted" ? 200 : 32;
       if (event?.type === "message") return event.role === "user" ? 72 : 128;
-      if (event?.type === "permission_request" || event?.type === "interrupt") return 168;
+      if (event?.type === "interrupt") return 168;
       if (
         event?.type === "tool_result" &&
         toolCallIds.has(event.toolCallId) &&

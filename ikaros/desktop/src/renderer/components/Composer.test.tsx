@@ -10,6 +10,12 @@ let resizeCallback: ResizeObserverCallback | undefined;
 
 beforeEach(() => {
   resizeCallback = undefined;
+  useAppStore.setState({
+    runtimeMode: true,
+    runtimeReady: true,
+    runtimeConnectionStatus: "connected",
+    providerCatalogStatus: "ready",
+  });
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -43,12 +49,36 @@ describe("Composer input and clearance", () => {
     expect(screen.queryByRole("button", { name: "Research" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Full access" })).toBeNull();
     expect(screen.getByRole("button", { name: "Add context" })).toHaveClass("size-7");
-    expect(screen.getByRole("button", { name: "Ikaros" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message Ikaros" })).toBeVisible();
   });
 
   it("does not submit while an IME composition is being confirmed", () => {
     const sendDraft = vi.fn(async () => undefined);
-    useAppStore.setState({ draft: "你好", runStatus: "idle", sendDraft });
+    useAppStore.setState({
+      draft: "你好",
+      runStatus: "idle",
+      sendDraft,
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: true,
+          credentialConfigured: true,
+          health: "ready",
+        },
+      ],
+      models: [
+        {
+          contextWindow: 32768,
+          providerId: "deepseek",
+          id: "deepseek-chat",
+          displayName: "DeepSeek Chat",
+          enabled: true,
+        },
+      ],
+      selectedModel: { providerId: "deepseek", modelId: "deepseek-chat" },
+    });
     render(
       <Tooltip.Provider>
         <Composer onClearanceChange={() => undefined} />
@@ -61,67 +91,6 @@ describe("Composer input and clearance", () => {
 
     fireEvent.keyDown(textarea, { key: "Enter", isComposing: false });
     expect(sendDraft).toHaveBeenCalledTimes(1);
-  });
-
-  it("opens the slash command palette and inserts the keyboard-selected command", () => {
-    const sendDraft = vi.fn(async () => undefined);
-    useAppStore.setState({ draft: "", runStatus: "idle", sendDraft });
-    render(
-      <Tooltip.Provider>
-        <Composer onClearanceChange={() => undefined} />
-      </Tooltip.Provider>,
-    );
-
-    const textarea = screen.getByRole("textbox", { name: "Message Ikaros" });
-    fireEvent.change(textarea, { target: { value: "/" } });
-
-    expect(screen.getByRole("listbox", { name: "Slash commands" })).toBeVisible();
-    expect(screen.getAllByRole("option")).toHaveLength(3);
-    fireEvent.keyDown(textarea, { key: "ArrowDown" });
-    expect(screen.getByRole("option", { name: /Mock feature 2/ })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    fireEvent.keyDown(textarea, { key: "Enter" });
-
-    expect(useAppStore.getState().draft).toBe("/mock-2 ");
-    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
-    expect(sendDraft).not.toHaveBeenCalled();
-  });
-
-  it("filters slash commands and lets Escape dismiss the palette", () => {
-    useAppStore.setState({ draft: "", runStatus: "idle" });
-    render(
-      <Tooltip.Provider>
-        <Composer onClearanceChange={() => undefined} />
-      </Tooltip.Provider>,
-    );
-
-    const textarea = screen.getByRole("textbox", { name: "Message Ikaros" });
-    fireEvent.change(textarea, { target: { value: "/3" } });
-    expect(screen.getAllByRole("option")).toHaveLength(1);
-    expect(screen.getByRole("option", { name: /Mock feature 3/ })).toBeVisible();
-
-    fireEvent.keyDown(textarea, { key: "Escape" });
-    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
-    expect(useAppStore.getState().draft).toBe("/3");
-  });
-
-  it("does not open the slash palette during IME composition", () => {
-    useAppStore.setState({ draft: "", runStatus: "idle" });
-    render(
-      <Tooltip.Provider>
-        <Composer onClearanceChange={() => undefined} />
-      </Tooltip.Provider>,
-    );
-
-    const textarea = screen.getByRole("textbox", { name: "Message Ikaros" });
-    fireEvent.compositionStart(textarea);
-    fireEvent.change(textarea, { target: { value: "/" } });
-    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
-
-    fireEvent.compositionEnd(textarea);
-    expect(screen.getByRole("listbox", { name: "Slash commands" })).toBeVisible();
   });
 
   it("binds a selected project folder from the context menu", async () => {
