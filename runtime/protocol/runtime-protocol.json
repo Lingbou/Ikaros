@@ -87,5 +87,14 @@
     "glob",
     "grep",
     "list"
-  ]
+  ],
+  "inputBudgetMeasurementVersion": "conservative-utf8-upper-bound",
+  "outputStyleContent": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets.",
+  "historyStatusPreamble": "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.",
+  "memoryLimits": {
+    "contentMaxChars": 2048,
+    "contextMaxChars": 6000,
+    "contextMaxItems": 8,
+    "retrievalMaxCandidates": 2000
+  }
 }

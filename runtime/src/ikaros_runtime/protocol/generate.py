@@ -52,6 +52,14 @@ def _typescript_text() -> str:
         "RUNTIME_PROTOCOL_MANIFEST.providerToolIds;\n"
         "export type RuntimeProviderToolId = "
         "(typeof RUNTIME_PROVIDER_TOOL_IDS)[number];\n"
+        "export const RUNTIME_INPUT_BUDGET_MEASUREMENT_VERSION = "
+        "RUNTIME_PROTOCOL_MANIFEST.inputBudgetMeasurementVersion;\n"
+        "export const RUNTIME_OUTPUT_STYLE_CONTENT = "
+        "RUNTIME_PROTOCOL_MANIFEST.outputStyleContent;\n"
+        "export const RUNTIME_HISTORY_STATUS_PREAMBLE = "
+        "RUNTIME_PROTOCOL_MANIFEST.historyStatusPreamble;\n"
+        "export const RUNTIME_MEMORY_LIMITS = "
+        "RUNTIME_PROTOCOL_MANIFEST.memoryLimits;\n"
     )
 
 

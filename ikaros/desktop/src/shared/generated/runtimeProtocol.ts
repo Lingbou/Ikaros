@@ -90,7 +90,16 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "glob",
     "grep",
     "list"
-  ]
+  ],
+  "inputBudgetMeasurementVersion": "conservative-utf8-upper-bound",
+  "outputStyleContent": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets.",
+  "historyStatusPreamble": "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.",
+  "memoryLimits": {
+    "contentMaxChars": 2048,
+    "contextMaxChars": 6000,
+    "contextMaxItems": 8,
+    "retrievalMaxCandidates": 2000
+  }
 } as const;
 
 export const RUNTIME_PROTOCOL_VERSION = RUNTIME_PROTOCOL_MANIFEST.protocolVersion;
@@ -105,3 +114,7 @@ export const RUNTIME_JOURNAL_EVENT_TYPES = RUNTIME_PROTOCOL_MANIFEST.journal.eve
 export type RuntimeJournalEventType = (typeof RUNTIME_JOURNAL_EVENT_TYPES)[number];
 export const RUNTIME_PROVIDER_TOOL_IDS = RUNTIME_PROTOCOL_MANIFEST.providerToolIds;
 export type RuntimeProviderToolId = (typeof RUNTIME_PROVIDER_TOOL_IDS)[number];
+export const RUNTIME_INPUT_BUDGET_MEASUREMENT_VERSION = RUNTIME_PROTOCOL_MANIFEST.inputBudgetMeasurementVersion;
+export const RUNTIME_OUTPUT_STYLE_CONTENT = RUNTIME_PROTOCOL_MANIFEST.outputStyleContent;
+export const RUNTIME_HISTORY_STATUS_PREAMBLE = RUNTIME_PROTOCOL_MANIFEST.historyStatusPreamble;
+export const RUNTIME_MEMORY_LIMITS = RUNTIME_PROTOCOL_MANIFEST.memoryLimits;
