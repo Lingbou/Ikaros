@@ -7,23 +7,23 @@ from dataclasses import dataclass
 
 from ..errors import ContextBudgetExceededError
 from ..run_input import (
-    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    ContextItemRecordV1,
-    FrozenMemoryContextV1,
-    OmissionRecordV1,
+    EMPTY_FROZEN_MEMORY_CONTEXT,
+    ContextItemRecord,
+    FrozenMemoryContext,
+    OmissionRecord,
     RunConfig,
     config_input_token_counts,
 )
 
-HISTORY_TURN_PAGE_SIZE_V1 = 32
+HISTORY_TURN_PAGE_SIZE = 32
 
 
 @dataclass(frozen=True, slots=True)
 class HistorySelection:
-    records: tuple[ContextItemRecordV1, ...]
+    records: tuple[ContextItemRecord, ...]
     maximum_tokens: int
     reserved_current_run_tokens: int
-    omissions: tuple[OmissionRecordV1, ...]
+    omissions: tuple[OmissionRecord, ...]
 
 
 class HistorySelector:
@@ -40,8 +40,8 @@ class HistorySelector:
         current_run_id: str,
         current_turn_id: str,
         current_turn_ordinal: int,
-        current_records: Sequence[ContextItemRecordV1],
-        memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
+        current_records: Sequence[ContextItemRecord],
+        memory_context: FrozenMemoryContext = EMPTY_FROZEN_MEMORY_CONTEXT,
         maximum_tokens: int | None = None,
         reserved_current_run_tokens: int | None = None,
     ) -> None:
@@ -99,8 +99,8 @@ class HistorySelector:
         self._maximum_tokens = maximum_tokens
         self._reserved_current_run_tokens = reserved_current_run_tokens
         self._remaining_history_tokens = maximum_tokens - fixed_with_reserve
-        self._selected_newest_first: list[tuple[ContextItemRecordV1, ...]] = []
-        self._omissions: tuple[OmissionRecordV1, ...] = ()
+        self._selected_newest_first: list[tuple[ContextItemRecord, ...]] = []
+        self._omissions: tuple[OmissionRecord, ...] = ()
         self._last_ordinal = current_turn_ordinal
         self._stopped = False
 
@@ -113,7 +113,7 @@ class HistorySelector:
         *,
         turn_id: str,
         ordinal: int,
-        records: Sequence[ContextItemRecordV1],
+        records: Sequence[ContextItemRecord],
         additional_tokens: int = 0,
     ) -> bool:
         if self._stopped:
@@ -130,7 +130,7 @@ class HistorySelector:
         tokens = sum(record.estimated_tokens for record in group) + additional_tokens
         if tokens > self._remaining_history_tokens:
             self._omissions = (
-                OmissionRecordV1(
+                OmissionRecord(
                     source_type="history",
                     source_id=turn_id,
                     reason="omitted_by_budget",
@@ -159,7 +159,7 @@ class HistorySelector:
 
 def _validate_turn_group(
     turn_id: str,
-    records: Sequence[ContextItemRecordV1],
+    records: Sequence[ContextItemRecord],
     *,
     required_run_id: str | None = None,
     required_user_item_id: str | None = None,
@@ -186,8 +186,8 @@ def _validate_turn_group(
     if required_user_item_id is not None and user_items[0].item_id != required_user_item_id:
         raise ValueError("current Turn group does not contain the frozen User Item")
 
-    calls: dict[tuple[str, str, str], ContextItemRecordV1] = {}
-    results: dict[tuple[str, str, str], ContextItemRecordV1] = {}
+    calls: dict[tuple[str, str, str], ContextItemRecord] = {}
+    results: dict[tuple[str, str, str], ContextItemRecord] = {}
     for record in records:
         _ = record.estimated_tokens
         if record.kind == "tool_call":
@@ -234,7 +234,7 @@ def _validate_turn_group(
 
 
 __all__ = [
-    "HISTORY_TURN_PAGE_SIZE_V1",
+    "HISTORY_TURN_PAGE_SIZE",
     "HistorySelection",
     "HistorySelector",
 ]

@@ -17,7 +17,7 @@ from ..memory.domain import (
     validate_memory_content,
 )
 from ..memory.store import MEMORY_LIST_DEFAULT_LIMIT, MEMORY_LIST_MAX_LIMIT
-from ..storage.session_provenance import SessionItemProvenanceSnapshotV1
+from ..storage.session_provenance import SessionItemProvenanceSnapshot
 from .threads import client_request_id_from
 
 RequestSafetyCheck = Callable[[object], None]
@@ -28,11 +28,11 @@ class SessionProvenanceReader(Protocol):
     def capture_session_item_provenance(
         self,
         item_id: str,
-    ) -> SessionItemProvenanceSnapshotV1: ...
+    ) -> SessionItemProvenanceSnapshot: ...
 
     def session_item_provenance_is_available(
         self,
-        expected: SessionItemProvenanceSnapshotV1,
+        expected: SessionItemProvenanceSnapshot,
     ) -> bool: ...
 
 
@@ -203,7 +203,7 @@ class MemoryService:
         memory = self._store.get_memory(memory_id)
         source = self._store.current_source_snapshot(memory_id)
         if source is not None:
-            expected = SessionItemProvenanceSnapshotV1(
+            expected = SessionItemProvenanceSnapshot(
                 thread_id=source.thread_id,
                 turn_id=source.turn_id,
                 item_id=source.item_id,

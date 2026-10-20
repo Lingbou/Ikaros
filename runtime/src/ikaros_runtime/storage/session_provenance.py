@@ -13,7 +13,7 @@ SESSION_ITEM_PROVENANCE_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
-class SessionItemProvenanceSnapshotV1:
+class SessionItemProvenanceSnapshot:
     thread_id: str
     turn_id: str
     item_id: str
@@ -23,7 +23,7 @@ class SessionItemProvenanceSnapshotV1:
 def capture_session_item_provenance(
     connection: sqlite3.Connection,
     item_id: str,
-) -> SessionItemProvenanceSnapshotV1:
+) -> SessionItemProvenanceSnapshot:
     row = item_row(connection, item_id)
     if (
         row["kind"] != "message"
@@ -54,7 +54,7 @@ def capture_session_item_provenance(
             "updatedAt": str(row["updated_at"]),
         },
     }
-    return SessionItemProvenanceSnapshotV1(
+    return SessionItemProvenanceSnapshot(
         thread_id=thread_id,
         turn_id=turn_id,
         item_id=str(row["id"]),
@@ -64,7 +64,7 @@ def capture_session_item_provenance(
 
 def session_item_provenance_is_available(
     connection: sqlite3.Connection,
-    expected: SessionItemProvenanceSnapshotV1,
+    expected: SessionItemProvenanceSnapshot,
 ) -> bool:
     try:
         return capture_session_item_provenance(connection, expected.item_id) == expected
@@ -74,7 +74,7 @@ def session_item_provenance_is_available(
 
 __all__ = [
     "SESSION_ITEM_PROVENANCE_SCHEMA_VERSION",
-    "SessionItemProvenanceSnapshotV1",
+    "SessionItemProvenanceSnapshot",
     "capture_session_item_provenance",
     "session_item_provenance_is_available",
 ]

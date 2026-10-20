@@ -20,9 +20,9 @@ from ..errors import (
 )
 from ..json_codec import loads as json_loads
 from ..memory import (
-    MaterializedMemoryV1,
-    MemoryRetrieverV1,
-    MemorySnapshotReferenceV1,
+    MaterializedMemory,
+    MemoryRetriever,
+    MemorySnapshotReference,
 )
 from ..providers.base import (
     ProviderAdapter,
@@ -36,14 +36,14 @@ from ..providers.base import (
     ToolCallCompleted,
 )
 from ..run_input import (
-    COMPACTION_SUMMARY_MAX_CHARACTERS_V1,
-    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    ContextDataBlockV1,
-    ContextItemRecordV1,
-    FrozenMemoryContextV1,
-    InstructionBlockV1,
-    MemoryReferenceV1,
-    OmissionRecordV1,
+    COMPACTION_SUMMARY_MAX_CHARACTERS,
+    EMPTY_FROZEN_MEMORY_CONTEXT,
+    ContextDataBlock,
+    ContextItemRecord,
+    FrozenMemoryContext,
+    InstructionBlock,
+    MemoryReference,
+    OmissionRecord,
     ProviderExecutionSnapshot,
     RunConfig,
     canonical_json,
@@ -137,9 +137,9 @@ class AgentLoop:
         protected_values: ProtectedValues | None = None,
         context_builder: ContextBuilder | None = None,
         model_input_planner: ModelInputPlanner | None = None,
-        memory_retriever: MemoryRetrieverV1 | None = None,
+        memory_retriever: MemoryRetriever | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
-        identity_core: InstructionBlockV1 | None = None,
+        identity_core: InstructionBlock | None = None,
     ) -> None:
         self._store = store
         self._providers = providers
@@ -358,7 +358,7 @@ class AgentLoop:
         *,
         config: RunConfig,
         provider: ProviderAdapter,
-        omitted_records: Sequence[ContextItemRecordV1],
+        omitted_records: Sequence[ContextItemRecord],
         existing_summary: str,
         cancellation: CancellationToken,
     ) -> tuple[str, tuple[str, ...]]:
@@ -473,7 +473,7 @@ class AgentLoop:
             )
             await self._publish(finished_event)
             summary_limit = min(
-                COMPACTION_SUMMARY_MAX_CHARACTERS_V1 - len(_COMPACTION_SUMMARY_PREFIX),
+                COMPACTION_SUMMARY_MAX_CHARACTERS - len(_COMPACTION_SUMMARY_PREFIX),
                 max(6_000, config.maximum_input_tokens // 8),
             )
             return _COMPACTION_SUMMARY_PREFIX + summary[:summary_limit], source_item_ids
@@ -640,13 +640,13 @@ class AgentLoop:
         config: RunConfig,
         query: str,
         workspace_id: str | None,
-    ) -> FrozenMemoryContextV1:
+    ) -> FrozenMemoryContext:
         retriever = self._memory_retriever
         if retriever is None:
-            return EMPTY_FROZEN_MEMORY_CONTEXT_V1
+            return EMPTY_FROZEN_MEMORY_CONTEXT
         self._assert_memory_read_outside_state_transaction()
         instruction_tokens, tool_tokens = config_input_token_counts(config)
-        user_tokens = ContextItemRecordV1(
+        user_tokens = ContextItemRecord(
             config.user_item_id, config.turn_id, config.run_id, "message", "user", query, {}
         ).estimated_tokens
         remaining = (
@@ -661,7 +661,7 @@ class AgentLoop:
         # a small model window therefore drops Memory before blocking user input.
         memory_allowance = max(0, min(remaining // 2, remaining - 4096))
 
-        def fits_memory_capacity(records: Sequence[MaterializedMemoryV1]) -> bool:
+        def fits_memory_capacity(records: Sequence[MaterializedMemory]) -> bool:
             return (
                 4
                 * (
@@ -677,7 +677,7 @@ class AgentLoop:
             accept_selection=fits_memory_capacity,
         )
         references = tuple(
-            MemoryReferenceV1(
+            MemoryReference(
                 memory_id=record.memory_id,
                 revision=record.revision,
                 scope=record.scope,
@@ -686,7 +686,7 @@ class AgentLoop:
             for record in retrieval.selected
         )
         omissions = tuple(
-            OmissionRecordV1(
+            OmissionRecord(
                 source_type="memory",
                 source_id=omission.memory_id,
                 revision=omission.revision,
@@ -695,7 +695,7 @@ class AgentLoop:
             )
             for omission in retrieval.omissions
         )
-        return FrozenMemoryContextV1(
+        return FrozenMemoryContext(
             memory=references,
             omissions=omissions,
             memory_characters=retrieval.memory_characters,
@@ -704,11 +704,11 @@ class AgentLoop:
 
     def _materialize_memory_context(
         self,
-        references: Sequence[MemoryReferenceV1],
+        references: Sequence[MemoryReference],
         *,
         workspace_id: str | None,
         expected_context_data_characters: int,
-    ) -> tuple[ContextDataBlockV1, ...]:
+    ) -> tuple[ContextDataBlock, ...]:
         if not references:
             if expected_context_data_characters != 0:
                 raise MemoryRetrievalError("memory_snapshot_unavailable")
@@ -719,7 +719,7 @@ class AgentLoop:
         self._assert_memory_read_outside_state_transaction()
         materialized = retriever.materialize_exact(
             tuple(
-                MemorySnapshotReferenceV1(
+                MemorySnapshotReference(
                     memory_id=reference.memory_id,
                     revision=reference.revision,
                     scope=reference.scope,

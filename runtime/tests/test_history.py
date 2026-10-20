@@ -14,7 +14,7 @@ from ikaros_runtime.json_codec import dumps as json_dumps
 from ikaros_runtime.json_codec import loads as json_loads
 from ikaros_runtime.providers.base import ProviderEvent, ProviderRequest, TextDelta
 from ikaros_runtime.run_input import (
-    ContextItemRecordV1,
+    ContextItemRecord,
     canonical_json,
     config_input_token_counts,
 )
@@ -30,8 +30,8 @@ def _message_record(
     run_id: str,
     role: str,
     content: str,
-) -> ContextItemRecordV1:
-    return ContextItemRecordV1(
+) -> ContextItemRecord:
+    return ContextItemRecord(
         item_id=item_id,
         turn_id=turn_id,
         run_id=run_id,
@@ -148,7 +148,7 @@ def test_history_selector_rejects_non_atomic_tool_pairs() -> None:
         current_turn_ordinal=2,
         current_records=(current,),
     )
-    orphan_call = ContextItemRecordV1(
+    orphan_call = ContextItemRecord(
         item_id="item_call",
         turn_id="turn_old",
         run_id="run_old",
@@ -190,14 +190,14 @@ def test_history_selector_allows_call_id_reuse_in_different_steps() -> None:
         current_turn_ordinal=2,
         current_records=(current,),
     )
-    records: list[ContextItemRecordV1] = [
+    records: list[ContextItemRecord] = [
         _message_record("item_user", "turn_old", "run_old", "user", "old")
     ]
     for step in (1, 2):
         call_item_id = f"item_call_{step}"
         records.extend(
             (
-                ContextItemRecordV1(
+                ContextItemRecord(
                     item_id=call_item_id,
                     turn_id="turn_old",
                     run_id="run_old",
@@ -211,7 +211,7 @@ def test_history_selector_allows_call_id_reuse_in_different_steps() -> None:
                         "arguments": {"command": f"echo {step}"},
                     },
                 ),
-                ContextItemRecordV1(
+                ContextItemRecord(
                     item_id=f"item_result_{step}",
                     turn_id="turn_old",
                     run_id="run_old",

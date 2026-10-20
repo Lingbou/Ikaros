@@ -10,10 +10,10 @@ from ikaros_runtime.errors import MemoryRetrievalError
 from ikaros_runtime.json_codec import dumps as json_dumps
 from ikaros_runtime.memory import (
     MEMORY_RETRIEVAL_MAX_CANDIDATES,
-    MaterializedMemoryV1,
-    MemoryRetrieverV1,
+    MaterializedMemory,
+    MemoryRetriever,
     MemoryScope,
-    MemorySnapshotReferenceV1,
+    MemorySnapshotReference,
     SqliteMemoryStore,
 )
 from ikaros_runtime.memory.retrieval import (
@@ -114,7 +114,7 @@ def test_retrieval_normalizes_nfkc_casefold_and_filters_scope(tmp_path: Path) ->
         "DeepSeek model 42",
         scope=MemoryScope("workspace", "workspace-b"),
     )
-    retriever = MemoryRetrieverV1(store)
+    retriever = MemoryRetriever(store)
     try:
         result = retriever.retrieve(
             query="ＳＴＲＡＳＳＥ 用户偏好 deepseek ４２",
@@ -141,7 +141,7 @@ def test_retrieval_uses_weighted_unique_tokens_and_stable_ties(tmp_path: Path) -
     han_id = _create(store, "han", "用户偏好")
     for memory_id in (alpha_id, words_id, han_id):
         _set_updated(store, memory_id, "2026-08-17T12:00:00.000Z")
-    retriever = MemoryRetrieverV1(store)
+    retriever = MemoryRetriever(store)
     try:
         result = retriever.retrieve(query="alpha beta 用户偏好", workspace_id=None)
         assert [memory.memory_id for memory in result.selected] == [
@@ -166,7 +166,7 @@ def test_punctuation_and_emoji_only_query_retrieves_nothing(tmp_path: Path) -> N
     store = SqliteMemoryStore(tmp_path / "memory.db")
     _create(store, "candidate", "a relevant-looking Memory")
     try:
-        result = MemoryRetrieverV1(store).retrieve(query="🌸……！？", workspace_id=None)
+        result = MemoryRetriever(store).retrieve(query="🌸……！？", workspace_id=None)
         assert result.candidate_count == 1
         assert result.relevant_count == 0
         assert result.selected == ()
@@ -339,7 +339,7 @@ def test_retrieval_matches_one_and_two_character_han_queries(tmp_path: Path) -> 
     cat = _create(store, "one-char-query", "猫粮储备充足")
     theme = _create(store, "two-char-query", "用户偏好深色主题")
     try:
-        retriever = MemoryRetrieverV1(store)
+        retriever = MemoryRetriever(store)
         single = retriever.retrieve(query="猫", workspace_id=None)
         assert [memory.memory_id for memory in single.selected] == [cat]
         assert single.relevant_count == 1
@@ -366,7 +366,7 @@ def test_fuzzy_pool_still_recalls_han_tokens_the_bigram_phrase_rejects(
             )
             == ()
         )
-        result = MemoryRetrieverV1(store).retrieve(
+        result = MemoryRetriever(store).retrieve(
             query="深色主题偏好",
             workspace_id=None,
         )
@@ -393,7 +393,7 @@ def test_rrf_fuses_both_pools_and_keeps_a_stable_fused_order(tmp_path: Path) -> 
         assert store.rank_active_memory_ids_by_bm25(
             query="alpha", workspace_id=None, limit=200
         ) == (focused, between, recent)
-        result = MemoryRetrieverV1(store).retrieve(query="alpha", workspace_id=None)
+        result = MemoryRetriever(store).retrieve(query="alpha", workspace_id=None)
         assert [memory.memory_id for memory in result.selected] == [
             recent,
             focused,
@@ -435,7 +435,7 @@ def test_top_k_records_every_relevant_item_omitted_by_limit(tmp_path: Path) -> N
     for memory_id in ids:
         _set_updated(store, memory_id, "2026-08-17T12:00:00.000Z")
     try:
-        result = MemoryRetrieverV1(store).retrieve(query="needle", workspace_id=None)
+        result = MemoryRetriever(store).retrieve(query="needle", workspace_id=None)
         expected = sorted(ids)
         assert [memory.memory_id for memory in result.selected] == expected[:8]
         assert [(item.memory_id, item.reason) for item in result.omissions] == [
@@ -462,7 +462,7 @@ def test_character_budget_skips_whole_item_then_accepts_shorter_item(
             f"2026-08-17T12:00:{50 - index:02d}.000Z",
         )
     try:
-        result = MemoryRetrieverV1(store).retrieve(query="key", workspace_id=None)
+        result = MemoryRetriever(store).retrieve(query="key", workspace_id=None)
         # BM25 length normalization ranks the four character record above the
         # 1,900 character one; the budget then closes exactly at 6,000 characters.
         assert [memory.characters for memory in result.selected] == [2048, 2048, 4, 1900]
@@ -490,7 +490,7 @@ def test_capacity_budget_skips_large_candidates_before_filling_top_k(
     for index, memory_id in enumerate(ids):
         _set_updated(store, memory_id, f"2026-08-17T12:00:{50 - index:02d}.000Z")
     try:
-        result = MemoryRetrieverV1(store).retrieve(
+        result = MemoryRetriever(store).retrieve(
             query="key",
             workspace_id=None,
             accept_selection=lambda records: sum(record.characters for record in records)
@@ -511,7 +511,7 @@ def test_snapshot_reference_omits_content_fingerprints(tmp_path: Path) -> None:
     store = SqliteMemoryStore(tmp_path / "memory.db")
     memory_id = _create(store, "digest", "alpha\n\"quoted\"")
     try:
-        selected = MemoryRetrieverV1(store).retrieve(query="alpha", workspace_id=None).selected[0]
+        selected = MemoryRetriever(store).retrieve(query="alpha", workspace_id=None).selected[0]
         assert {field.name for field in fields(selected.reference)} == {
             "memory_id",
             "revision",
@@ -530,7 +530,7 @@ def test_exact_materialization_keeps_old_revision_after_correction_then_fails_fo
     memory_path = tmp_path / "memory.db"
     store = SqliteMemoryStore(memory_path)
     memory_id = _create(store, "lifecycle", "remember alpha")
-    retriever = MemoryRetrieverV1(store)
+    retriever = MemoryRetriever(store)
     try:
         reference = retriever.retrieve(query="alpha", workspace_id=None).references[0]
         store.correct_memory_once(
@@ -542,9 +542,9 @@ def test_exact_materialization_keeps_old_revision_after_correction_then_fails_fo
 
         store.close()
         store = SqliteMemoryStore(memory_path)
-        retriever = MemoryRetrieverV1(store)
+        retriever = MemoryRetriever(store)
         materialized = retriever.materialize_exact((reference,), workspace_id=None)
-        assert materialized == (MaterializedMemoryV1(reference, "remember alpha"),)
+        assert materialized == (MaterializedMemory(reference, "remember alpha"),)
 
         store.forget_memory_once(
             memory_id=memory_id,
@@ -574,7 +574,7 @@ def test_exact_materialization_preserves_order_and_validates_workspace(
         "workspace alpha second",
         scope=MemoryScope("workspace", "workspace-a"),
     )
-    retriever = MemoryRetrieverV1(store)
+    retriever = MemoryRetriever(store)
     try:
         result = retriever.retrieve(query="alpha", workspace_id="workspace-a")
         references = {reference.memory_id: reference for reference in result.references}
@@ -599,10 +599,10 @@ def test_exact_materialization_rejects_reference_drift(
 ) -> None:
     store = SqliteMemoryStore(tmp_path / f"memory-{mutation}.db")
     _create(store, "drift", "alpha snapshot")
-    retriever = MemoryRetrieverV1(store)
+    retriever = MemoryRetriever(store)
     try:
         reference = retriever.retrieve(query="alpha", workspace_id=None).references[0]
-        changed: MemorySnapshotReferenceV1
+        changed: MemorySnapshotReference
         if mutation == "missing_revision":
             changed = replace(reference, revision=99)
         else:
@@ -619,7 +619,7 @@ def test_exact_materialization_rejects_stored_digest_drift_and_duplicate_refs(
 ) -> None:
     store = SqliteMemoryStore(tmp_path / "memory.db")
     memory_id = _create(store, "stored-drift", "alpha snapshot")
-    retriever = MemoryRetrieverV1(store)
+    retriever = MemoryRetriever(store)
     try:
         reference = retriever.retrieve(query="alpha", workspace_id=None).references[0]
         with pytest.raises(MemoryRetrievalError) as duplicate:

@@ -22,7 +22,7 @@ from ikaros_runtime.domain import JournalEvent, ModelUsage
 from ikaros_runtime.file_changes import FileChangeCapture, FileRevisionCapture, build_file_change
 from ikaros_runtime.file_preview import preview_text_file
 from ikaros_runtime.identity import load_identity_core
-from ikaros_runtime.memory import MemoryRetrieverV1, SqliteMemoryStore
+from ikaros_runtime.memory import MemoryRetriever, SqliteMemoryStore
 from ikaros_runtime.protocol.spec import (
     EVENT_NOTIFICATION_METHOD,
     INITIALIZE_METHOD,
@@ -361,7 +361,7 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
                 process_manager=manager,
                 provider_snapshot_resolver=_snapshot_resolver(snapshot),
                 identity_core=identity_core,
-                memory_retriever=MemoryRetrieverV1(memory_store),
+                memory_retriever=MemoryRetriever(memory_store),
             )
             await loop.run(prepared.run_id, CancellationToken())
             if store.run_status(prepared.run_id) != "completed":

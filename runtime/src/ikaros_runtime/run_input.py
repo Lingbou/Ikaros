@@ -14,7 +14,7 @@ from typing import Any, Literal, cast
 
 from .domain import ContextItem, JournalEvent, JsonObject, SkillDescriptor, WorkspaceSummary
 from .errors import ContextBudgetExceededError, ModelInputUnavailableError
-from .history_status import EMPTY_HISTORY_STATUS_V1, FrozenHistoryStatusV1
+from .history_status import EMPTY_HISTORY_STATUS, FrozenHistoryStatus
 from .json_codec import dumps as json_dumps
 from .json_codec import loads as json_loads
 from .tools.core import ToolDefinition
@@ -33,15 +33,15 @@ type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]
 INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound"
 USABLE_CONTEXT_WINDOW_PERCENT = 95
 AUTO_COMPACT_TOKEN_LIMIT_PERCENT = 90
-MEMORY_CONTENT_MAX_CHARACTERS_V1 = 2_048
-MEMORY_RETRIEVAL_MAX_CANDIDATES_V1 = 2_000
-MEMORY_SELECTION_MAX_ITEMS_V1 = 8
-MEMORY_SELECTION_MAX_CHARACTERS_V1 = 6_000
+MEMORY_CONTENT_MAX_CHARACTERS = 2_048
+MEMORY_RETRIEVAL_MAX_CANDIDATES = 2_000
+MEMORY_SELECTION_MAX_ITEMS = 8
+MEMORY_SELECTION_MAX_CHARACTERS = 6_000
 IKAROS_IDENTITY_ID = "ikaros-identity"
 IKAROS_IDENTITY_VERSION = 1
 IKAROS_IDENTITY_SOURCE = "ikaros-runtime:identity"
-IDENTITY_CORE_MAX_CHARACTERS_V1 = 2_048
-COMPACTION_SUMMARY_MAX_CHARACTERS_V1 = 64_000
+IDENTITY_CORE_MAX_CHARACTERS = 2_048
+COMPACTION_SUMMARY_MAX_CHARACTERS = 64_000
 
 OUTPUT_STYLE_CONTENT = (
     "Use a restrained, professional response style. Do not use emoji or decorative "
@@ -76,7 +76,7 @@ def deep_frozen_json_object(value: Mapping[str, Any]) -> JsonObject:
 
 
 @dataclass(frozen=True, slots=True)
-class InstructionBlockV1:
+class InstructionBlock:
     id: str
     version: int
     source: str
@@ -112,7 +112,7 @@ class InstructionBlockV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> InstructionBlockV1:
+    def from_wire(cls, value: object) -> InstructionBlock:
         row = _object(value, "instruction", _INSTRUCTION_KEYS)
         return cls(
             id=_as_str(row["id"]),
@@ -126,7 +126,7 @@ class InstructionBlockV1:
 
 
 @dataclass(frozen=True, slots=True)
-class ContextDataBlockV1:
+class ContextDataBlock:
     id: str
     version: int
     source: str
@@ -182,7 +182,7 @@ class ProviderExecutionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolDefinitionSnapshotV1:
+class ToolDefinitionSnapshot:
     name: str
     description: str
     input_schema: JsonObject
@@ -205,7 +205,7 @@ class ToolDefinitionSnapshotV1:
             raise ValueError("Tool definition hash does not match its definition")
 
     @classmethod
-    def from_definition(cls, definition: ToolDefinition) -> ToolDefinitionSnapshotV1:
+    def from_definition(cls, definition: ToolDefinition) -> ToolDefinitionSnapshot:
         body = {
             "name": definition.name,
             "description": definition.description,
@@ -234,7 +234,7 @@ class ToolDefinitionSnapshotV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> ToolDefinitionSnapshotV1:
+    def from_wire(cls, value: object) -> ToolDefinitionSnapshot:
         row = _object(value, "Tool definition snapshot", _TOOL_SNAPSHOT_KEYS)
         schema = row["inputSchema"]
         if not isinstance(schema, dict):
@@ -248,7 +248,7 @@ class ToolDefinitionSnapshotV1:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryReferenceV1:
+class MemoryReference:
     memory_id: str
     revision: int
     scope: MemoryScope
@@ -262,7 +262,7 @@ class MemoryReferenceV1:
         if (
             not isinstance(self.characters, int)
             or isinstance(self.characters, bool)
-            or not 1 <= self.characters <= MEMORY_CONTENT_MAX_CHARACTERS_V1
+            or not 1 <= self.characters <= MEMORY_CONTENT_MAX_CHARACTERS
         ):
             raise ValueError("Memory character count is invalid")
 
@@ -275,7 +275,7 @@ class MemoryReferenceV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> MemoryReferenceV1:
+    def from_wire(cls, value: object) -> MemoryReference:
         row = _object(value, "Memory reference", _MEMORY_REFERENCE_KEYS)
         return cls(
             memory_id=_as_str(row["memoryId"]),
@@ -290,10 +290,10 @@ class RunConfigTemplate:
     provider: ProviderExecutionSnapshot
     execution_policy: str
     skills: tuple[SkillDescriptor, ...]
-    tools: tuple[ToolDefinitionSnapshotV1, ...]
-    output_style: InstructionBlockV1
-    identity_core: InstructionBlockV1 | None
-    skill_catalog: InstructionBlockV1 | None
+    tools: tuple[ToolDefinitionSnapshot, ...]
+    output_style: InstructionBlock
+    identity_core: InstructionBlock | None
+    skill_catalog: InstructionBlock | None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "skills", _skill_snapshot(self.skills))
@@ -320,7 +320,7 @@ class RunConfigTemplate:
         execution_policy: str,
         skills: Sequence[SkillDescriptor],
         tools: Sequence[ToolDefinition],
-        identity_core: InstructionBlockV1 | None,
+        identity_core: InstructionBlock | None,
     ) -> RunConfigTemplate:
         from .skills import build_skill_prompt
 
@@ -330,8 +330,8 @@ class RunConfigTemplate:
             provider=provider,
             execution_policy=execution_policy,
             skills=frozen_skills,
-            tools=tuple(ToolDefinitionSnapshotV1.from_definition(tool) for tool in tools),
-            output_style=InstructionBlockV1(
+            tools=tuple(ToolDefinitionSnapshot.from_definition(tool) for tool in tools),
+            output_style=InstructionBlock(
                 id="output-style",
                 version=1,
                 source="ikaros-runtime:output-style-v1",
@@ -342,7 +342,7 @@ class RunConfigTemplate:
             ),
             identity_core=identity_core,
             skill_catalog=(
-                InstructionBlockV1(
+                InstructionBlock(
                     id="skill-catalog",
                     version=1,
                     source="run:skill-descriptors",
@@ -370,10 +370,10 @@ class RunConfig:
     public_provider_config_fingerprint: str
     execution_policy: str
     skills: tuple[SkillDescriptor, ...]
-    tools: tuple[ToolDefinitionSnapshotV1, ...]
-    output_style: InstructionBlockV1
-    identity_core: InstructionBlockV1 | None
-    skill_catalog: InstructionBlockV1 | None
+    tools: tuple[ToolDefinitionSnapshot, ...]
+    output_style: InstructionBlock
+    identity_core: InstructionBlock | None
+    skill_catalog: InstructionBlock | None
 
     context_window: int = 32768
 
@@ -453,7 +453,7 @@ class RunConfig:
         )
 
     @property
-    def instructions(self) -> tuple[InstructionBlockV1, ...]:
+    def instructions(self) -> tuple[InstructionBlock, ...]:
         return tuple(
             block
             for block in (self.identity_core, self.output_style, self.skill_catalog)
@@ -512,15 +512,15 @@ class RunConfig:
             public_provider_config_fingerprint=_as_str(row["publicProviderConfigFingerprint"]),
             execution_policy=_as_str(row["executionPolicy"]),
             skills=tuple(SkillDescriptor.from_wire(skill) for skill in skills_value),
-            tools=tuple(ToolDefinitionSnapshotV1.from_wire(tool) for tool in tools_value),
-            output_style=InstructionBlockV1.from_wire(instructions["outputStyle"]),
+            tools=tuple(ToolDefinitionSnapshot.from_wire(tool) for tool in tools_value),
+            output_style=InstructionBlock.from_wire(instructions["outputStyle"]),
             identity_core=(
-                InstructionBlockV1.from_wire(instructions["identityCore"])
+                InstructionBlock.from_wire(instructions["identityCore"])
                 if instructions["identityCore"] is not None
                 else None
             ),
             skill_catalog=(
-                InstructionBlockV1.from_wire(instructions["skillCatalog"])
+                InstructionBlock.from_wire(instructions["skillCatalog"])
                 if instructions["skillCatalog"] is not None
                 else None
             ),
@@ -529,7 +529,7 @@ class RunConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class ContextItemRecordV1:
+class ContextItemRecord:
     item_id: str
     turn_id: str
     run_id: str
@@ -575,7 +575,7 @@ class ContextItemRecordV1:
 
 
 @dataclass(frozen=True, slots=True)
-class HistoryItemReferenceV1:
+class HistoryItemReference:
     item_id: str
     turn_id: str
     run_id: str
@@ -601,7 +601,7 @@ class HistoryItemReferenceV1:
             raise ValueError("history Item character count is invalid")
 
     @classmethod
-    def from_record(cls, record: ContextItemRecordV1) -> HistoryItemReferenceV1:
+    def from_record(cls, record: ContextItemRecord) -> HistoryItemReference:
         return cls(
             item_id=record.item_id,
             turn_id=record.turn_id,
@@ -622,7 +622,7 @@ class HistoryItemReferenceV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> HistoryItemReferenceV1:
+    def from_wire(cls, value: object) -> HistoryItemReference:
         row = _object(value, "history Item reference", _HISTORY_ITEM_KEYS)
         role = row["role"]
         if not isinstance(role, str):
@@ -638,7 +638,7 @@ class HistoryItemReferenceV1:
 
 
 @dataclass(frozen=True, slots=True)
-class HistoryGroupReferenceV1:
+class HistoryGroupReference:
     turn_id: str
     item_ids: tuple[str, ...]
 
@@ -656,7 +656,7 @@ class HistoryGroupReferenceV1:
         return {"turnId": self.turn_id, "itemIds": list(self.item_ids)}
 
     @classmethod
-    def from_wire(cls, value: object) -> HistoryGroupReferenceV1:
+    def from_wire(cls, value: object) -> HistoryGroupReference:
         row = _object(value, "history group", {"turnId", "itemIds"})
         item_ids = row["itemIds"]
         if not isinstance(item_ids, list) or any(not isinstance(item, str) for item in item_ids):
@@ -750,7 +750,7 @@ class InputBudgetRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class OmissionRecordV1:
+class OmissionRecord:
     source_type: OmissionSourceType
     source_id: str
     reason: OmissionReason
@@ -777,7 +777,7 @@ class OmissionRecordV1:
         if (
             not isinstance(self.characters, int)
             or isinstance(self.characters, bool)
-            or not 1 <= self.characters <= MEMORY_CONTENT_MAX_CHARACTERS_V1
+            or not 1 <= self.characters <= MEMORY_CONTENT_MAX_CHARACTERS
         ):
             raise ValueError("Memory omission character count is invalid")
 
@@ -797,7 +797,7 @@ class OmissionRecordV1:
         }
 
     @classmethod
-    def from_wire(cls, value: object) -> OmissionRecordV1:
+    def from_wire(cls, value: object) -> OmissionRecord:
         if not isinstance(value, dict):
             raise ValueError("omission record has an invalid structure")
         source_type = value.get("sourceType")
@@ -821,18 +821,18 @@ class OmissionRecordV1:
 
 
 @dataclass(frozen=True, slots=True)
-class FrozenMemoryContextV1:
+class FrozenMemoryContext:
     """Body-free Memory selection materialized independently for model input."""
 
-    memory: tuple[MemoryReferenceV1, ...]
-    omissions: tuple[OmissionRecordV1, ...]
+    memory: tuple[MemoryReference, ...]
+    omissions: tuple[OmissionRecord, ...]
     memory_characters: int
     context_data_characters: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "memory", tuple(self.memory))
         object.__setattr__(self, "omissions", tuple(self.omissions))
-        if len(self.memory) > MEMORY_SELECTION_MAX_ITEMS_V1:
+        if len(self.memory) > MEMORY_SELECTION_MAX_ITEMS:
             raise ValueError("Memory selection exceeds the item limit")
         selected_ids = tuple(reference.memory_id for reference in self.memory)
         if len(selected_ids) != len(set(selected_ids)):
@@ -844,11 +844,11 @@ class FrozenMemoryContextV1:
             raise ValueError("Memory omission IDs must be unique")
         if set(selected_ids).intersection(omitted_ids):
             raise ValueError("selected and omitted Memory IDs overlap")
-        if len(self.memory) + len(self.omissions) > MEMORY_RETRIEVAL_MAX_CANDIDATES_V1:
+        if len(self.memory) + len(self.omissions) > MEMORY_RETRIEVAL_MAX_CANDIDATES:
             raise ValueError("Memory selection exceeds the candidate limit")
         if (
             any(omission.reason == "omitted_by_limit" for omission in self.omissions)
-            and len(self.memory) != MEMORY_SELECTION_MAX_ITEMS_V1
+            and len(self.memory) != MEMORY_SELECTION_MAX_ITEMS
         ):
             raise ValueError("Memory limit omission requires a full selection")
         expected_characters = sum(reference.characters for reference in self.memory)
@@ -856,7 +856,7 @@ class FrozenMemoryContextV1:
             not isinstance(self.memory_characters, int)
             or isinstance(self.memory_characters, bool)
             or self.memory_characters != expected_characters
-            or self.memory_characters > MEMORY_SELECTION_MAX_CHARACTERS_V1
+            or self.memory_characters > MEMORY_SELECTION_MAX_CHARACTERS
         ):
             raise ValueError("Memory selection character count is invalid")
         if (
@@ -868,10 +868,10 @@ class FrozenMemoryContextV1:
             raise ValueError("Memory context-data character count is invalid")
 
     @classmethod
-    def from_revision(cls, snapshot: ContextRevision) -> FrozenMemoryContextV1:
+    def from_revision(cls, snapshot: ContextRevision) -> FrozenMemoryContext:
         """Extract independently stored Memory metadata from a context revision."""
 
-        memory_omissions: list[OmissionRecordV1] = []
+        memory_omissions: list[OmissionRecord] = []
         seen_memory_omission = False
         for omission in snapshot.omissions:
             if omission.source_type == "memory":
@@ -887,7 +887,7 @@ class FrozenMemoryContextV1:
         )
 
 
-EMPTY_FROZEN_MEMORY_CONTEXT_V1 = FrozenMemoryContextV1((), (), 0, 0)
+EMPTY_FROZEN_MEMORY_CONTEXT = FrozenMemoryContext((), (), 0, 0)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -895,12 +895,12 @@ class ContextRevision:
     """Append-only selected context; later compaction creates another revision."""
 
     revision: int = 1
-    history_groups: tuple[HistoryGroupReferenceV1, ...]
-    history_items: tuple[HistoryItemReferenceV1, ...]
-    memory: tuple[MemoryReferenceV1, ...]
+    history_groups: tuple[HistoryGroupReference, ...]
+    history_items: tuple[HistoryItemReference, ...]
+    memory: tuple[MemoryReference, ...]
     budget: InputBudgetRecord
-    omissions: tuple[OmissionRecordV1, ...]
-    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
+    omissions: tuple[OmissionRecord, ...]
+    history_status: FrozenHistoryStatus = EMPTY_HISTORY_STATUS
     memory_context_characters: int = 0
     compaction_summary: str = ""
     current_run_omitted_through_item_id: str = ""
@@ -911,7 +911,7 @@ class ContextRevision:
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if (
             not isinstance(self.compaction_summary, str)
-            or len(self.compaction_summary) > COMPACTION_SUMMARY_MAX_CHARACTERS_V1
+            or len(self.compaction_summary) > COMPACTION_SUMMARY_MAX_CHARACTERS
         ):
             raise ValueError("Context compaction summary is invalid")
         if not isinstance(self.current_run_omitted_through_item_id, str):
@@ -960,21 +960,21 @@ class ContextRevision:
         return cls(
             revision=_as_int(row["revision"]),
             history_groups=tuple(
-                HistoryGroupReferenceV1.from_wire(v)
+                HistoryGroupReference.from_wire(v)
                 for v in _array(row["historyGroups"], "history groups")
             ),
             history_items=tuple(
-                HistoryItemReferenceV1.from_wire(v)
+                HistoryItemReference.from_wire(v)
                 for v in _array(row["historyItems"], "history Items")
             ),
             memory=tuple(
-                MemoryReferenceV1.from_wire(v) for v in _array(row["memory"], "Memory references")
+                MemoryReference.from_wire(v) for v in _array(row["memory"], "Memory references")
             ),
             budget=InputBudgetRecord.from_wire(row["budget"]),
             omissions=tuple(
-                OmissionRecordV1.from_wire(v) for v in _array(row["omissions"], "omissions")
+                OmissionRecord.from_wire(v) for v in _array(row["omissions"], "omissions")
             ),
-            history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
+            history_status=FrozenHistoryStatus.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
             compaction_summary=_as_str(row["compactionSummary"], allow_empty=True),
             current_run_omitted_through_item_id=_as_str(
@@ -989,11 +989,11 @@ class StepInput:
 
     step_ordinal: int
     context_revision: int
-    history_items: tuple[HistoryItemReferenceV1, ...]
-    memory: tuple[MemoryReferenceV1, ...]
+    history_items: tuple[HistoryItemReference, ...]
+    memory: tuple[MemoryReference, ...]
     budget: InputBudgetRecord
-    omissions: tuple[OmissionRecordV1, ...]
-    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1
+    omissions: tuple[OmissionRecord, ...]
+    history_status: FrozenHistoryStatus = EMPTY_HISTORY_STATUS
     memory_context_characters: int = 0
     compaction_summary: str = ""
 
@@ -1002,7 +1002,7 @@ class StepInput:
         _positive("Context revision", self.context_revision)
         if (
             not isinstance(self.compaction_summary, str)
-            or len(self.compaction_summary) > COMPACTION_SUMMARY_MAX_CHARACTERS_V1
+            or len(self.compaction_summary) > COMPACTION_SUMMARY_MAX_CHARACTERS
         ):
             raise ValueError("Step input compaction summary is invalid")
         for name in ("history_items", "memory", "omissions"):
@@ -1040,17 +1040,17 @@ class StepInput:
             step_ordinal=_as_int(row["stepOrdinal"]),
             context_revision=_as_int(row["contextRevision"]),
             history_items=tuple(
-                HistoryItemReferenceV1.from_wire(v)
+                HistoryItemReference.from_wire(v)
                 for v in _array(row["historyItems"], "history Items")
             ),
             memory=tuple(
-                MemoryReferenceV1.from_wire(v) for v in _array(row["memory"], "Memory references")
+                MemoryReference.from_wire(v) for v in _array(row["memory"], "Memory references")
             ),
             budget=InputBudgetRecord.from_wire(row["budget"]),
             omissions=tuple(
-                OmissionRecordV1.from_wire(v) for v in _array(row["omissions"], "omissions")
+                OmissionRecord.from_wire(v) for v in _array(row["omissions"], "omissions")
             ),
-            history_status=FrozenHistoryStatusV1.from_wire(row["historyStatus"]),
+            history_status=FrozenHistoryStatus.from_wire(row["historyStatus"]),
             memory_context_characters=_as_int(row["memoryContextCharacters"]),
             compaction_summary=_as_str(row["compactionSummary"], allow_empty=True),
         )
@@ -1066,22 +1066,22 @@ class PreparedModelStep:
 
 
 @dataclass(frozen=True, slots=True)
-class CompletedProviderStepV1:
+class CompletedProviderStep:
     step_id: str | None
     tool_call_item_ids: tuple[str, ...]
     events: tuple[JournalEvent, ...]
 
 
 def build_context_revision(
-    records: Sequence[ContextItemRecordV1],
+    records: Sequence[ContextItemRecord],
     *,
     current_run_id: str,
     config: RunConfig,
     maximum_tokens: int,
     reserved_current_run_tokens: int,
-    omissions: Sequence[OmissionRecordV1],
-    memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
+    omissions: Sequence[OmissionRecord],
+    memory_context: FrozenMemoryContext = EMPTY_FROZEN_MEMORY_CONTEXT,
+    history_status: FrozenHistoryStatus = EMPTY_HISTORY_STATUS,
     compaction_summary: str = "",
     current_run_omitted_through_item_id: str = "",
 ) -> ContextRevision:
@@ -1093,18 +1093,18 @@ def build_context_revision(
     if any(omission.source_type != "history" for omission in omissions):
         raise ValueError("history selection contains a Memory omission")
     _validate_memory_scope_for_config(memory_context.memory, config)
-    references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
-    groups: list[HistoryGroupReferenceV1] = []
+    references = tuple(HistoryItemReference.from_record(record) for record in records)
+    groups: list[HistoryGroupReference] = []
     for reference in references:
         if groups and groups[-1].turn_id == reference.turn_id:
             previous = groups[-1]
-            groups[-1] = HistoryGroupReferenceV1(
+            groups[-1] = HistoryGroupReference(
                 turn_id=previous.turn_id,
                 item_ids=(*previous.item_ids, reference.item_id),
             )
         else:
             groups.append(
-                HistoryGroupReferenceV1(
+                HistoryGroupReference(
                     turn_id=reference.turn_id,
                     item_ids=(reference.item_id,),
                 )
@@ -1153,14 +1153,14 @@ def build_context_revision(
 
 def build_step_input(
     step_ordinal: int,
-    records: Sequence[ContextItemRecordV1],
+    records: Sequence[ContextItemRecord],
     snapshot: ContextRevision,
     *,
     current_run_id: str,
     config: RunConfig,
 ) -> StepInput:
     try:
-        references = tuple(HistoryItemReferenceV1.from_record(record) for record in records)
+        references = tuple(HistoryItemReference.from_record(record) for record in records)
         _validate_memory_scope_for_config(snapshot.memory, config)
     except (TypeError, ValueError):
         raise ModelInputUnavailableError("model_input_unavailable") from None
@@ -1221,12 +1221,12 @@ def build_step_input(
 
 
 def validate_tool_environment(
-    frozen: Sequence[ToolDefinitionSnapshotV1],
+    frozen: Sequence[ToolDefinitionSnapshot],
     current: Sequence[ToolDefinition],
 ) -> bool:
     frozen_by_name = {tool.name: tool.definition_sha256 for tool in frozen}
     current_by_name = {
-        tool.name: ToolDefinitionSnapshotV1.from_definition(tool).definition_sha256
+        tool.name: ToolDefinitionSnapshot.from_definition(tool).definition_sha256
         for tool in current
     }
     return frozen_by_name == current_by_name
@@ -1234,9 +1234,9 @@ def validate_tool_environment(
 
 def _validate_instruction_slots(
     *,
-    output_style: InstructionBlockV1,
-    identity_core: InstructionBlockV1 | None,
-    skill_catalog: InstructionBlockV1 | None,
+    output_style: InstructionBlock,
+    identity_core: InstructionBlock | None,
+    skill_catalog: InstructionBlock | None,
 ) -> None:
     _validate_instruction_slot(
         output_style,
@@ -1261,7 +1261,7 @@ def _validate_instruction_slots(
         )
         if (
             not identity_core.content.strip()
-            or len(identity_core.content) > IDENTITY_CORE_MAX_CHARACTERS_V1
+            or len(identity_core.content) > IDENTITY_CORE_MAX_CHARACTERS
         ):
             raise ValueError("identity core instruction content is invalid")
     if skill_catalog is not None:
@@ -1277,7 +1277,7 @@ def _validate_instruction_slots(
 
 
 def _validate_instruction_slot(
-    block: InstructionBlockV1,
+    block: InstructionBlock,
     *,
     label: str,
     expected_id: str,
@@ -1298,8 +1298,8 @@ def _validate_instruction_slot(
 
 
 def _validate_history_groups(
-    groups: Sequence[HistoryGroupReferenceV1],
-    items: Sequence[HistoryItemReferenceV1],
+    groups: Sequence[HistoryGroupReference],
+    items: Sequence[HistoryItemReference],
 ) -> None:
     if not groups or not items:
         raise ValueError("history selection must contain the current User Item")
@@ -1320,7 +1320,7 @@ def _validate_history_groups(
         raise ValueError("history groups omit history Items")
 
 
-def _validate_unique_history_items(items: Sequence[HistoryItemReferenceV1]) -> None:
+def _validate_unique_history_items(items: Sequence[HistoryItemReference]) -> None:
     if not items:
         raise ValueError("history selection must contain the current User Item")
     item_ids = tuple(item.item_id for item in items)
@@ -1329,7 +1329,7 @@ def _validate_unique_history_items(items: Sequence[HistoryItemReferenceV1]) -> N
 
 
 def _validate_budget_history_counts(
-    items: Sequence[HistoryItemReferenceV1],
+    items: Sequence[HistoryItemReference],
     budget: InputBudgetRecord,
 ) -> None:
     current_run_id = items[-1].run_id if items else None
@@ -1341,7 +1341,7 @@ def _validate_budget_history_counts(
 
 def _validate_skill_catalog_content(
     skills: Sequence[SkillDescriptor],
-    skill_catalog: InstructionBlockV1 | None,
+    skill_catalog: InstructionBlock | None,
 ) -> None:
     from .skills import build_skill_prompt
 
@@ -1353,19 +1353,19 @@ def _validate_skill_catalog_content(
 
 def _validate_context_snapshot_slots(
     *,
-    memory: Sequence[MemoryReferenceV1],
-    omissions: Sequence[OmissionRecordV1],
+    memory: Sequence[MemoryReference],
+    omissions: Sequence[OmissionRecord],
     budget: InputBudgetRecord,
     selected_turn_ids: Sequence[str],
-    history_status: FrozenHistoryStatusV1 = EMPTY_HISTORY_STATUS_V1,
-    history_items: Sequence[HistoryItemReferenceV1] = (),
+    history_status: FrozenHistoryStatus = EMPTY_HISTORY_STATUS,
+    history_items: Sequence[HistoryItemReference] = (),
     memory_context_characters: int = 0,
     compaction_summary: str = "",
 ) -> None:
     if budget.mode != "bounded":
         raise ValueError("history selection budget mode is invalid")
-    history_omissions: list[OmissionRecordV1] = []
-    memory_omissions: list[OmissionRecordV1] = []
+    history_omissions: list[OmissionRecord] = []
+    memory_omissions: list[OmissionRecord] = []
     seen_memory_omission = False
     for omission in omissions:
         if omission.source_type == "history":
@@ -1380,7 +1380,7 @@ def _validate_context_snapshot_slots(
     selected = set(selected_turn_ids)
     if history_omissions and history_omissions[0].source_id in selected:
         raise ValueError("history omission boundary is selected")
-    FrozenMemoryContextV1(
+    FrozenMemoryContext(
         memory=tuple(memory),
         omissions=tuple(memory_omissions),
         memory_characters=sum(reference.characters for reference in memory),
@@ -1419,7 +1419,7 @@ def _validate_context_snapshot_slots(
 
 
 def _validate_memory_scope_for_config(
-    memory: Sequence[MemoryReferenceV1],
+    memory: Sequence[MemoryReference],
     config: RunConfig,
 ) -> None:
     if config.workspace is None and any(reference.scope == "workspace" for reference in memory):
@@ -1432,7 +1432,7 @@ def estimate_tokens(content: str) -> int:
     return len(content.encode("utf-8"))
 
 
-def history_status_tokens(status: FrozenHistoryStatusV1) -> int:
+def history_status_tokens(status: FrozenHistoryStatus) -> int:
     return estimate_tokens(status.content) + 64 if status.runs else 0
 
 

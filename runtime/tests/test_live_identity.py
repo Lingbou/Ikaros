@@ -24,7 +24,7 @@ from ikaros_runtime.providers.base import ModelConfig, ProviderConfig
 from ikaros_runtime.providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from ikaros_runtime.providers.registry import DEEPSEEK_BASE_URL
 from ikaros_runtime.run_input import (
-    InstructionBlockV1,
+    InstructionBlock,
     ProviderExecutionSnapshot,
     RunConfigTemplate,
 )
@@ -176,7 +176,7 @@ def _prepare_turn(
     content: str,
     provider_id: str,
     model_id: str,
-    identity_core: InstructionBlockV1 | None,
+    identity_core: InstructionBlock | None,
     tools: ToolExecutor,
 ) -> PreparedTurn:
     return store.prepare_turn(
@@ -325,7 +325,7 @@ async def _run_turn(
     content: str,
     provider_id: str,
     model_id: str,
-    identity_core: InstructionBlockV1 | None,
+    identity_core: InstructionBlock | None,
     tools: ToolExecutor,
 ) -> _RunObservation:
     prepared = _prepare_turn(
@@ -352,7 +352,7 @@ async def _run_new_thread(
     title: str,
     content: str,
     workspace: WorkspaceSummary,
-    identity_core: InstructionBlockV1 | None,
+    identity_core: InstructionBlock | None,
     tools: ToolExecutor,
 ) -> _RunObservation:
     thread, _event = store.create_thread(title, workspace=workspace)
@@ -508,7 +508,7 @@ async def test_live_deepseek_identity_ab_and_tool_gate(tmp_path: Path) -> None:
 
     def make_loop(
         adapter: OpenAICompatibleAdapter,
-        identity: InstructionBlockV1 | None,
+        identity: InstructionBlock | None,
         tools: ToolExecutor,
         manager: ProcessManager,
     ) -> AgentLoop:

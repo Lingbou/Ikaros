@@ -14,14 +14,14 @@ from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome, JournalEvent
 from .identity import load_identity_core
-from .memory import MemoryRetrieverV1, SqliteMemoryStore
+from .memory import MemoryRetriever, SqliteMemoryStore
 from .paths import RuntimePaths
 from .protocol.router import RuntimeRouter
 from .providers.base import ProviderAdapter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
-from .run_input import InstructionBlockV1, ProviderExecutionSnapshot
+from .run_input import InstructionBlock, ProviderExecutionSnapshot
 from .security import RuntimeSecurity, contains_protected_value
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
@@ -68,7 +68,7 @@ class RuntimeApplication:
         memory_store: SqliteMemoryStore,
         config_store: ConfigStore | None = None,
         model_discovery: ModelDiscovery = discover_openai_compatible_models,
-        identity_core: InstructionBlockV1 | None = None,
+        identity_core: InstructionBlock | None = None,
         extra_providers: Mapping[str, ProviderAdapter] | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
     ) -> None:
@@ -169,7 +169,7 @@ class RuntimeApplication:
             protected_values=self.security.protected_values,
             provider_snapshot_resolver=provider_snapshot,
             identity_core=self.identity_core,
-            memory_retriever=MemoryRetrieverV1(memory_store),
+            memory_retriever=MemoryRetriever(memory_store),
         )
         self._scheduler = AgentScheduler(loop)
         self._publish = publish

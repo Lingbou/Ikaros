@@ -6,7 +6,7 @@ from ikaros_runtime.domain import PreparedTurn, SkillDescriptor, WorkspaceSummar
 from ikaros_runtime.run_input import (
     INPUT_BUDGET_MEASUREMENT_VERSION,
     InputBudgetRecord,
-    InstructionBlockV1,
+    InstructionBlock,
     ProviderExecutionSnapshot,
     RunConfig,
     RunConfigTemplate,
@@ -21,7 +21,7 @@ def run_config_template(
     *,
     tools: Sequence[ToolDefinition] = (),
     skills: Sequence[SkillDescriptor] = (),
-    identity_core: InstructionBlockV1 | None = None,
+    identity_core: InstructionBlock | None = None,
 ) -> RunConfigTemplate:
     return RunConfigTemplate.create(
         provider=ProviderExecutionSnapshot(
@@ -48,7 +48,7 @@ def prepare_turn(
     model_id: str,
     client_request_id: str | None = None,
     skills: Sequence[SkillDescriptor] = (),
-    identity_core: InstructionBlockV1 | None = None,
+    identity_core: InstructionBlock | None = None,
     tools: Sequence[ToolDefinition] = (),
 ) -> PreparedTurn:
     return store.prepare_turn(
@@ -72,7 +72,7 @@ def run_config(
     *,
     tools: Sequence[ToolDefinition] = (),
     skills: Sequence[SkillDescriptor] = (),
-    identity_core: InstructionBlockV1 | None = None,
+    identity_core: InstructionBlock | None = None,
     workspace: WorkspaceSummary | None = None,
 ) -> RunConfig:
     return RunConfig.from_template(

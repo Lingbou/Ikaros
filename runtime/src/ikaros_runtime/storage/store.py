@@ -22,16 +22,16 @@ from ..domain import (
 )
 from ..errors import ContextBudgetExceededError
 from ..file_changes import MAX_CHANGE_EVENT_BYTES, FileChangeCapture
-from ..history_status import FrozenHistoryStatusV1
+from ..history_status import FrozenHistoryStatus
 from ..json_codec import dumps as json_dumps
 from ..json_codec import loads as json_loads
 from ..run_input import (
-    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
-    CompletedProviderStepV1,
-    ContextItemRecordV1,
+    EMPTY_FROZEN_MEMORY_CONTEXT,
+    CompletedProviderStep,
+    ContextItemRecord,
     ContextRevision,
-    FrozenMemoryContextV1,
-    OmissionRecordV1,
+    FrozenMemoryContext,
+    OmissionRecord,
     PreparedModelStep,
     RunConfig,
     RunConfigTemplate,
@@ -78,7 +78,7 @@ from .projections import (
 )
 from .schema import initialize_schema, validate_existing_schema
 from .session_provenance import (
-    SessionItemProvenanceSnapshotV1,
+    SessionItemProvenanceSnapshot,
     capture_session_item_provenance,
     session_item_provenance_is_available,
 )
@@ -93,7 +93,7 @@ from .usage import local_activity_date, read_usage
 
 
 def _summarize_context_records(
-    records: Sequence[ContextItemRecordV1], *, max_characters: int = 20_000
+    records: Sequence[ContextItemRecord], *, max_characters: int = 20_000
 ) -> str:
     lines = ["Earlier context was compacted; verify current state."]
     for record in records:
@@ -114,8 +114,8 @@ class ContextCompactionRequired(RuntimeError):
     def __init__(
         self,
         *,
-        records: Sequence[ContextItemRecordV1],
-        omitted_records: Sequence[ContextItemRecordV1],
+        records: Sequence[ContextItemRecord],
+        omitted_records: Sequence[ContextItemRecord],
         existing_summary: str = "",
     ) -> None:
         super().__init__("semantic context compaction is required")
@@ -798,12 +798,12 @@ class SqliteRuntimeStore:
     def capture_session_item_provenance(
         self,
         item_id: str,
-    ) -> SessionItemProvenanceSnapshotV1:
+    ) -> SessionItemProvenanceSnapshot:
         return capture_session_item_provenance(self._connection, item_id)
 
     def session_item_provenance_is_available(
         self,
-        expected: SessionItemProvenanceSnapshotV1,
+        expected: SessionItemProvenanceSnapshot,
     ) -> bool:
         return session_item_provenance_is_available(self._connection, expected)
 
@@ -839,7 +839,7 @@ class SqliteRuntimeStore:
         run_id: str,
         *,
         step_ordinal: int,
-        memory_context: FrozenMemoryContextV1 = EMPTY_FROZEN_MEMORY_CONTEXT_V1,
+        memory_context: FrozenMemoryContext = EMPTY_FROZEN_MEMORY_CONTEXT,
         semantic_compaction: bool = False,
         compaction_summary: str | None = None,
         compaction_omitted_item_ids: Sequence[str] | None = None,
@@ -867,7 +867,7 @@ class SqliteRuntimeStore:
         run_id: str,
         *,
         step_ordinal: int,
-        memory_context: FrozenMemoryContextV1,
+        memory_context: FrozenMemoryContext,
         semantic_compaction: bool,
         compaction_summary: str | None,
         compaction_omitted_item_ids: Sequence[str] | None,
@@ -886,7 +886,7 @@ class SqliteRuntimeStore:
                 memory_context=memory_context,
             )
         else:
-            if FrozenMemoryContextV1.from_revision(snapshot) != memory_context:
+            if FrozenMemoryContext.from_revision(snapshot) != memory_context:
                 raise RuntimeError("model Step changes the frozen Memory context")
             records = load_context_for_revision(
                 self._connection,
@@ -1222,12 +1222,12 @@ class SqliteRuntimeStore:
         *,
         frame: RunConfig,
         snapshot: ContextRevision,
-        records: Sequence[ContextItemRecordV1],
+        records: Sequence[ContextItemRecord],
         target_tokens: int | None = None,
         compaction_summary: str | None = None,
         allowed_omitted_item_ids: Sequence[str] | None = None,
         allow_oversized_current_omission: bool = False,
-    ) -> tuple[ContextRevision, tuple[ContextItemRecordV1, ...], JournalEvent] | None:
+    ) -> tuple[ContextRevision, tuple[ContextItemRecord, ...], JournalEvent] | None:
         current_baseline = tuple(
             record
             for record in records
@@ -1242,7 +1242,7 @@ class SqliteRuntimeStore:
             )
         current_all = tuple(record for record in records if record.run_id == run_id)
         historical = [record for record in records if record.run_id != run_id]
-        groups: list[list[ContextItemRecordV1]] = []
+        groups: list[list[ContextItemRecord]] = []
         for record in historical:
             if groups and groups[-1][0].turn_id == record.turn_id:
                 groups[-1].append(record)
@@ -1251,8 +1251,8 @@ class SqliteRuntimeStore:
         dropped: list[str] = []
 
         def build_revision(
-            records_to_freeze: Sequence[ContextItemRecordV1],
-            history_status: FrozenHistoryStatusV1,
+            records_to_freeze: Sequence[ContextItemRecord],
+            history_status: FrozenHistoryStatus,
             summary: str,
             current_run_omitted_through_item_id: str,
         ) -> ContextRevision:
@@ -1264,7 +1264,7 @@ class SqliteRuntimeStore:
                     maximum_tokens=frame.maximum_input_tokens,
                     reserved_current_run_tokens=frame.reserved_current_run_tokens,
                     omissions=omissions,
-                    memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                    memory_context=FrozenMemoryContext.from_revision(snapshot),
                     history_status=history_status,
                     compaction_summary=summary,
                     current_run_omitted_through_item_id=current_run_omitted_through_item_id,
@@ -1287,7 +1287,7 @@ class SqliteRuntimeStore:
                     maximum_tokens=frame.maximum_input_tokens,
                     reserved_current_run_tokens=frame.reserved_current_run_tokens,
                     omissions=omissions,
-                    memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                    memory_context=FrozenMemoryContext.from_revision(snapshot),
                     history_status=history_status,
                     current_run_omitted_through_item_id=current_run_omitted_through_item_id,
                 )
@@ -1300,7 +1300,7 @@ class SqliteRuntimeStore:
                 omissions = (
                     *(
                         (
-                            OmissionRecordV1(
+                            OmissionRecord(
                                 source_type="history",
                                 source_id=dropped[-1],
                                 reason="omitted_by_budget",
@@ -1319,7 +1319,7 @@ class SqliteRuntimeStore:
                 # drop that status record as well; retaining an ``included``
                 # status would make the new revision fail validation because
                 # there is no selected Run to which it can refer.
-                retained_history_status = FrozenHistoryStatusV1(
+                retained_history_status = FrozenHistoryStatus(
                     tuple(
                         status
                         for status in snapshot.history_status.runs
@@ -1406,7 +1406,7 @@ class SqliteRuntimeStore:
                         maximum_tokens=frame.maximum_input_tokens,
                         reserved_current_run_tokens=frame.reserved_current_run_tokens,
                         omissions=omissions,
-                        memory_context=FrozenMemoryContextV1.from_revision(snapshot),
+                        memory_context=FrozenMemoryContext.from_revision(snapshot),
                         history_status=retained_history_status,
                         current_run_omitted_through_item_id=current_run_omitted_through_item_id,
                     )
@@ -1480,7 +1480,7 @@ class SqliteRuntimeStore:
         usage: ModelUsage | None,
         response_model_id: str | None,
         request_id: str | None,
-    ) -> CompletedProviderStepV1:
+    ) -> CompletedProviderStep:
         _validate_model_step_metadata(
             step_ordinal,
             usage=usage,
@@ -1524,7 +1524,7 @@ class SqliteRuntimeStore:
                     timestamp=utc_now(),
                 )
             )
-        return CompletedProviderStepV1(
+        return CompletedProviderStep(
             step_id=step_id,
             tool_call_item_ids=tuple(item_ids),
             events=tuple(events),

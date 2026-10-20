@@ -13,16 +13,16 @@ from ikaros_runtime.domain import ContextItem, SkillDescriptor
 from ikaros_runtime.errors import ModelInputUnavailableError
 from ikaros_runtime.identity import load_identity_core
 from ikaros_runtime.run_input import (
-    EMPTY_FROZEN_MEMORY_CONTEXT_V1,
+    EMPTY_FROZEN_MEMORY_CONTEXT,
     INPUT_BUDGET_MEASUREMENT_VERSION,
-    ContextItemRecordV1,
+    ContextItemRecord,
     ContextRevision,
-    FrozenMemoryContextV1,
-    HistoryItemReferenceV1,
+    FrozenMemoryContext,
+    HistoryItemReference,
     InputBudgetRecord,
-    MemoryReferenceV1,
+    MemoryReference,
     MemoryScope,
-    OmissionRecordV1,
+    OmissionRecord,
     StepInput,
     build_context_revision,
     build_step_input,
@@ -38,9 +38,9 @@ def _memory_reference(
     *,
     characters: int = 12,
     scope: str = "global",
-) -> MemoryReferenceV1:
+) -> MemoryReference:
     memory_id = f"memory_{ordinal:032x}"
-    return MemoryReferenceV1(
+    return MemoryReference(
         memory_id=memory_id,
         revision=ordinal,
         scope=cast(MemoryScope, scope),
@@ -209,7 +209,7 @@ def test_bounded_context_revision_accounts_for_all_actual_input_parts() -> None:
     )
     frame = run_config("provider", "model-1", tools=(tool,))
     records = (
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id="item_history",
             turn_id="turn_history",
             run_id="run_history",
@@ -218,7 +218,7 @@ def test_bounded_context_revision_accounts_for_all_actual_input_parts() -> None:
             content="past",
             data={},
         ),
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id="item_current",
             turn_id=frame.turn_id,
             run_id=frame.run_id,
@@ -260,7 +260,7 @@ def test_bounded_context_revision_accounts_for_all_actual_input_parts() -> None:
 
 
 def test_context_item_character_measurement_matches_provider_facing_parts() -> None:
-    message = ContextItemRecordV1(
+    message = ContextItemRecord(
         item_id="item_message",
         turn_id="turn_1",
         run_id="run_1",
@@ -270,7 +270,7 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
         data={},
     )
     arguments = {"command": "Write-Output 你好"}
-    tool_call = ContextItemRecordV1(
+    tool_call = ContextItemRecord(
         item_id="item_call",
         turn_id="turn_1",
         run_id="run_1",
@@ -294,7 +294,7 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
         "output": "done",
         "cancelled": False,
     }
-    tool_result = ContextItemRecordV1(
+    tool_result = ContextItemRecord(
         item_id="item_result",
         turn_id="turn_1",
         run_id="run_1",
@@ -320,7 +320,7 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
 @pytest.mark.parametrize(
     "record",
     (
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id="item_bad_message",
             turn_id="turn_1",
             run_id="run_1",
@@ -329,7 +329,7 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
             content="bad",
             data={},
         ),
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id="item_bad_call",
             turn_id="turn_1",
             run_id="run_1",
@@ -338,7 +338,7 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
             content="",
             data={"arguments": "not-an-object"},
         ),
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id="item_bad_result",
             turn_id="turn_1",
             run_id="run_1",
@@ -350,7 +350,7 @@ def test_context_item_character_measurement_matches_provider_facing_parts() -> N
     ),
 )
 def test_context_item_character_measurement_rejects_non_provider_shapes(
-    record: ContextItemRecordV1,
+    record: ContextItemRecord,
 ) -> None:
     with pytest.raises(ValueError, match="context Item|context Item data"):
         _ = record.estimated_tokens
@@ -395,7 +395,7 @@ def test_history_item_reference_rejects_invalid_kind_role_pairs(
     role: str | None,
 ) -> None:
     with pytest.raises(ValueError, match="kind and role"):
-        HistoryItemReferenceV1(
+        HistoryItemReference(
             item_id="item_1",
             turn_id="turn_1",
             run_id="run_1",
@@ -418,7 +418,7 @@ def test_history_item_reference_rejects_empty_ids_from_wire(field: str) -> None:
     value[field] = ""
 
     with pytest.raises(ValueError):
-        HistoryItemReferenceV1.from_wire(value)
+        HistoryItemReference.from_wire(value)
 
 
 @pytest.mark.parametrize(
@@ -475,7 +475,7 @@ def test_run_config_accepts_identity_but_keeps_memory_slot_empty() -> None:
 
 def test_memory_reference_wire_is_exact_and_omits_content_fingerprints() -> None:
     reference = _memory_reference(characters=9)
-    assert MemoryReferenceV1.from_wire(reference.to_wire()) == reference
+    assert MemoryReference.from_wire(reference.to_wire()) == reference
     assert set(reference.to_wire()) == {
         "memoryId",
         "revision",
@@ -486,7 +486,7 @@ def test_memory_reference_wire_is_exact_and_omits_content_fingerprints() -> None
     malformed = reference.to_wire()
     malformed["snapshotSha256"] = "a" * 64
     with pytest.raises(ValueError, match="structure"):
-        MemoryReferenceV1.from_wire(malformed)
+        MemoryReference.from_wire(malformed)
 
 
 @pytest.mark.parametrize(
@@ -508,12 +508,12 @@ def test_memory_reference_rejects_noncanonical_values(
     wire[field] = replacement
 
     with pytest.raises(ValueError):
-        MemoryReferenceV1.from_wire(wire)
+        MemoryReference.from_wire(wire)
 
 
 def test_frozen_memory_context_enforces_limits_and_disjoint_omissions() -> None:
     selected = _memory_reference(characters=11)
-    overlapping = OmissionRecordV1(
+    overlapping = OmissionRecord(
         source_type="memory",
         source_id=selected.memory_id,
         revision=selected.revision,
@@ -521,10 +521,10 @@ def test_frozen_memory_context_enforces_limits_and_disjoint_omissions() -> None:
         reason="omitted_by_limit",
     )
     with pytest.raises(ValueError, match="overlap"):
-        FrozenMemoryContextV1((selected,), (overlapping,), 11, 5)
+        FrozenMemoryContext((selected,), (overlapping,), 11, 5)
 
     with pytest.raises(ValueError, match="item limit"):
-        FrozenMemoryContextV1(
+        FrozenMemoryContext(
             tuple(_memory_reference(index, characters=1) for index in range(1, 10)),
             (),
             9,
@@ -532,7 +532,7 @@ def test_frozen_memory_context_enforces_limits_and_disjoint_omissions() -> None:
         )
 
     with pytest.raises(ValueError, match="character count"):
-        FrozenMemoryContextV1(
+        FrozenMemoryContext(
             tuple(_memory_reference(index, characters=2_048) for index in range(1, 4)),
             (),
             6_144,
@@ -540,22 +540,22 @@ def test_frozen_memory_context_enforces_limits_and_disjoint_omissions() -> None:
         )
 
     with pytest.raises(ValueError, match="context-data"):
-        FrozenMemoryContextV1((selected,), (), 11, 0)
+        FrozenMemoryContext((selected,), (), 11, 0)
 
-    assert FrozenMemoryContextV1((), (), 0, 0) == EMPTY_FROZEN_MEMORY_CONTEXT_V1
+    assert FrozenMemoryContext((), (), 0, 0) == EMPTY_FROZEN_MEMORY_CONTEXT
 
 
 def test_omission_wire_is_discriminated_and_history_precedes_memory() -> None:
-    history = OmissionRecordV1("history", "turn_boundary", "omitted_by_budget")
-    memory = OmissionRecordV1(
+    history = OmissionRecord("history", "turn_boundary", "omitted_by_budget")
+    memory = OmissionRecord(
         "memory",
         f"memory_{3:032x}",
         "omitted_by_limit",
         revision=2,
         characters=101,
     )
-    assert OmissionRecordV1.from_wire(history.to_wire()) == history
-    assert OmissionRecordV1.from_wire(memory.to_wire()) == memory
+    assert OmissionRecord.from_wire(history.to_wire()) == history
+    assert OmissionRecord.from_wire(memory.to_wire()) == memory
     assert set(history.to_wire()) == {"sourceType", "sourceId", "reason"}
     assert set(memory.to_wire()) == {
         "sourceType",
@@ -566,17 +566,17 @@ def test_omission_wire_is_discriminated_and_history_precedes_memory() -> None:
     }
 
     with pytest.raises(ValueError, match="history omission"):
-        FrozenMemoryContextV1((), (history,), 0, 0)
+        FrozenMemoryContext((), (history,), 0, 0)
 
 
 def _context_revision_fixture() -> tuple[
     run_input_module.RunConfig,
-    tuple[ContextItemRecordV1, ...],
+    tuple[ContextItemRecord, ...],
     ContextRevision,
 ]:
     frame = run_config("provider", "model-1")
     records = (
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id="item_old",
             turn_id="turn_old",
             run_id="run_old",
@@ -585,7 +585,7 @@ def _context_revision_fixture() -> tuple[
             content="old",
             data={},
         ),
-        ContextItemRecordV1(
+        ContextItemRecord(
             item_id=frame.user_item_id,
             turn_id=frame.turn_id,
             run_id=frame.run_id,
@@ -661,14 +661,14 @@ def test_context_revision_rejects_empty_history() -> None:
 def test_context_revision_accepts_frozen_memory_and_body_free_omissions() -> None:
     frame, records, _snapshot = _context_revision_fixture()
     selected = _memory_reference(characters=17)
-    omitted = OmissionRecordV1(
+    omitted = OmissionRecord(
         source_type="memory",
         source_id=f"memory_{2:032x}",
         revision=2,
         characters=19,
         reason="omitted_by_budget",
     )
-    frozen = FrozenMemoryContextV1(
+    frozen = FrozenMemoryContext(
         memory=(selected,),
         omissions=(omitted,),
         memory_characters=17,
@@ -690,7 +690,7 @@ def test_context_revision_accepts_frozen_memory_and_body_free_omissions() -> Non
     assert restored.omissions == (omitted,)
     assert restored.budget.memory_tokens == 17 * 4
     assert restored.budget.context_data_tokens == 41 * 4
-    assert FrozenMemoryContextV1.from_revision(restored) == frozen
+    assert FrozenMemoryContext.from_revision(restored) == frozen
 
 
 def test_context_revision_accepts_one_unselected_budget_boundary() -> None:
@@ -835,7 +835,7 @@ def test_step_input_rejects_budget_counts_that_disagree_with_items() -> None:
 def test_step_input_preserves_frozen_memory_and_omissions() -> None:
     frame, records, _snapshot = _context_revision_fixture()
     selected = _memory_reference(characters=23)
-    omitted = OmissionRecordV1(
+    omitted = OmissionRecord(
         source_type="memory",
         source_id=f"memory_{2:032x}",
         revision=1,
@@ -849,7 +849,7 @@ def test_step_input_preserves_frozen_memory_and_omissions() -> None:
         maximum_tokens=frame.maximum_input_tokens,
         reserved_current_run_tokens=frame.reserved_current_run_tokens,
         omissions=(),
-        memory_context=FrozenMemoryContextV1(
+        memory_context=FrozenMemoryContext(
             memory=(selected,),
             omissions=(omitted,),
             memory_characters=23,
@@ -931,7 +931,7 @@ def test_step_input_rejects_model_capacity_changed_after_revision(field: str) ->
 
 def test_memory_metadata_is_not_reconstructed_from_budget_estimates() -> None:
     config, records, _ = _context_revision_fixture()
-    memory = FrozenMemoryContextV1((_memory_reference(characters=7),), (), 7, 13)
+    memory = FrozenMemoryContext((_memory_reference(characters=7),), (), 7, 13)
     revision = build_context_revision(
         records,
         current_run_id=config.run_id,

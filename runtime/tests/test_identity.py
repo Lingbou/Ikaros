@@ -13,7 +13,7 @@ import pytest
 import ikaros_runtime.identity as identity_module
 from ikaros_runtime.identity import IdentityResourceError, load_identity_core
 from ikaros_runtime.run_input import (
-    IDENTITY_CORE_MAX_CHARACTERS_V1,
+    IDENTITY_CORE_MAX_CHARACTERS,
     IKAROS_IDENTITY_ID,
     IKAROS_IDENTITY_SOURCE,
     IKAROS_IDENTITY_VERSION,
@@ -111,7 +111,7 @@ def test_identity_loader_rejects_oversized_content(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    raw = ("x" * (IDENTITY_CORE_MAX_CHARACTERS_V1 + 1)).encode()
+    raw = ("x" * (IDENTITY_CORE_MAX_CHARACTERS + 1)).encode()
     _replace_resource(monkeypatch, tmp_path, raw)
 
     with pytest.raises(IdentityResourceError, match="exceeds its character limit"):

@@ -30,11 +30,11 @@ from ikaros_runtime.providers.registry import ConfigStore, ModelInput, ProviderC
 from ikaros_runtime.run_input import (
     INPUT_BUDGET_MEASUREMENT_VERSION,
     ContextRevision,
-    HistoryGroupReferenceV1,
-    HistoryItemReferenceV1,
+    HistoryGroupReference,
+    HistoryItemReference,
     InputBudgetRecord,
-    MemoryReferenceV1,
-    OmissionRecordV1,
+    MemoryReference,
+    OmissionRecord,
     StepInput,
 )
 from ikaros_runtime.security import response_values_contain_protected_value
@@ -100,19 +100,19 @@ def test_model_input_snapshot_runtime_provenance_is_not_treated_as_a_credential(
         memory_tokens=48,
         total_tokens=145,
     )
-    memory = (MemoryReferenceV1("memory_00000000000000000000000000000001", 1, "global", 12),)
+    memory = (MemoryReference("memory_00000000000000000000000000000001", 1, "global", 12),)
     omissions = (
-        OmissionRecordV1(
+        OmissionRecord(
             "memory", "memory_00000000000000000000000000000002", "omitted_by_budget", 1, 13
         ),
     )
     history_items = (
-        HistoryItemReferenceV1(
+        HistoryItemReference(
             config.user_item_id, config.turn_id, config.run_id, "message", "user", 1
         ),
     )
     revision = ContextRevision(
-        history_groups=(HistoryGroupReferenceV1(config.turn_id, (config.user_item_id,)),),
+        history_groups=(HistoryGroupReference(config.turn_id, (config.user_item_id,)),),
         history_items=history_items,
         memory=memory,
         budget=budget,
