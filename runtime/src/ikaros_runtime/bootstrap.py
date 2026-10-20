@@ -22,7 +22,7 @@ from .providers.openai_compatible.discovery import discover_openai_compatible_mo
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
 from .providers.scripted import ScriptedProvider
 from .run_input import InstructionBlockV1, ProviderExecutionSnapshot
-from .security import RuntimeSecurity
+from .security import RuntimeSecurity, contains_protected_value
 from .server.connection import handle_connection
 from .server.event_hub import EventHub
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
@@ -38,7 +38,10 @@ from .skills import SkillCatalog
 from .storage import SqliteRuntimeStore
 from .tools import (
     EditTool,
+    GlobTool,
+    GrepTool,
     HistoryReadTool,
+    ListTool,
     ProcessManager,
     ProcessReadTool,
     ProcessResizeTool,
@@ -49,6 +52,7 @@ from .tools import (
     ReadTool,
     WriteTool,
 )
+from .tools.artifacts import ToolArtifactStore
 from .tools.core import ToolExecutor, ToolRegistry
 from .tools.policy import FullAccessPolicy
 
@@ -127,9 +131,19 @@ class RuntimeApplication:
                     WriteTool(),
                     EditTool(),
                     HistoryReadTool(store.read_history_slice),
+                    GlobTool(),
+                    GrepTool(),
+                    ListTool(),
                 ]
             ),
             FullAccessPolicy(),
+            artifacts=ToolArtifactStore(
+                paths.artifacts,
+                is_safe=lambda text: not contains_protected_value(
+                    text,
+                    self.security.protected_values(),
+                ),
+            ),
         )
 
         def provider_execution_snapshot(

@@ -81,6 +81,9 @@ PROVIDER_TOOL_IDS: Final = (
     "read",
     "write",
     "edit",
+    "glob",
+    "grep",
+    "list",
 )
 def protocol_manifest() -> dict[str, object]:
     return {

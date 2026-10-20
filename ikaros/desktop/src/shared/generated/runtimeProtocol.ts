@@ -86,7 +86,10 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "history_read",
     "read",
     "write",
-    "edit"
+    "edit",
+    "glob",
+    "grep",
+    "list"
   ]
 } as const;
 
