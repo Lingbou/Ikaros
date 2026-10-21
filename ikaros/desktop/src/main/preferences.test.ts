@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({
-  app: { getPath: vi.fn(() => "C:\\Ikaros-test") },
+  app: {
+    getPath: vi.fn(() => "C:\\Ikaros-test"),
+    getLocale: vi.fn(() => "zh-CN"),
+  },
   nativeTheme: { themeSource: "dark" },
 }));
 
@@ -17,7 +20,7 @@ import {
   mergeUiPreferences,
   type UiPreferences,
 } from "../shared/platform";
-import { sanitizePreferencesPatch, sanitizeStoredPreferences } from "./preferences";
+import { defaultPreferences, sanitizePreferencesPatch, sanitizeStoredPreferences } from "./preferences";
 
 function storedPreferences(overrides: Partial<UiPreferences> = {}): UiPreferences {
   const base = cloneUiPreferences(DEFAULT_UI_PREFERENCES);
@@ -28,6 +31,18 @@ function storedPreferences(overrides: Partial<UiPreferences> = {}): UiPreference
     lightTheme: { ...(overrides.lightTheme ?? base.lightTheme) },
   };
 }
+
+describe("first-run defaults", () => {
+  it("uses the system locale for the default UI language", () => {
+    expect(defaultPreferences("zh-CN")).toMatchObject({
+      language: "zh-CN",
+      onboardingCompleted: false,
+    });
+    expect(defaultPreferences("zh-Hans-CN").language).toBe("zh-CN");
+    expect(defaultPreferences("en-US").language).toBe("en");
+    expect(defaultPreferences("").language).toBe("en");
+  });
+});
 
 describe("stored UI preferences", () => {
   it("accepts the complete current preference shape", () => {

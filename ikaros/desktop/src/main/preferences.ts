@@ -284,6 +284,22 @@ export function sanitizePreferencesPatch(value: unknown): UiPreferencesPatch {
   return patch;
 }
 
+export function defaultPreferences(locale: string): UiPreferences {
+  const defaults = cloneUiPreferences(DEFAULT_UI_PREFERENCES);
+  if (locale.toLowerCase().startsWith("zh")) {
+    defaults.language = "zh-CN";
+  }
+  return defaults;
+}
+
+function systemLocale(): string {
+  try {
+    return typeof app.getLocale === "function" ? app.getLocale() : "";
+  } catch {
+    return "";
+  }
+}
+
 async function readPreferences(): Promise<UiPreferences> {
   try {
     const serialized = await readFile(preferencesPath(), "utf8");
@@ -293,7 +309,7 @@ async function readPreferences(): Promise<UiPreferences> {
     if (code !== "ENOENT") {
       console.warn("Unable to read UI preferences; using defaults.", error);
     }
-    return cloneUiPreferences(DEFAULT_UI_PREFERENCES);
+    return defaultPreferences(systemLocale());
   }
 }
 
