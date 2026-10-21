@@ -244,9 +244,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `store.py` — `channels.db` schema 1：owner 绑定、update 游标与 outbox 投递队列。
 - `telegram/client.py` — 基于 httpx 的 Bot API 客户端（getMe / getUpdates /
   sendMessage / sendChatAction）。
-- `telegram/adapter.py` — Telegram long polling、命令处理、固定 `Telegram` Thread、
-  EventHub 订阅与 outbox 发送循环。
-- `telegram/format.py` — Telegram 文本规范化与 4,096 字符分片。
+- `telegram/adapter.py` — Telegram long polling、账号级 owner 绑定、命令处理、固定
+  `Telegram` Thread、EventHub 订阅与 outbox 发送循环。
+- `telegram/format.py` — Telegram 文本规范化与按 UTF-16 code unit 计算的 4,096 分片。
 - `telegram/service.py` — `channel.list/configure/test/resetBinding` 的 RPC 门面。
 
 `agent/`（Agent 执行）：

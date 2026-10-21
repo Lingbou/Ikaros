@@ -153,6 +153,31 @@ class ChannelStore:
             if (binding := _binding_from_row(row)) is not None
         )
 
+    def owner_of(
+        self,
+        channel_id: str,
+        account_id: str,
+    ) -> tuple[str, str | None] | None:
+        """Return the first owner bound to this channel account, if any.
+
+        The owner is claimed by the first private chat that reaches the bot; every
+        later chat from a different user must be ignored instead of silently
+        becoming a second owner of the same bot.
+        """
+
+        row = self._connection.execute(
+            """SELECT owner_user_id, owner_username FROM channel_bindings
+               WHERE channel_id = ? AND account_id = ? AND owner_user_id IS NOT NULL
+               ORDER BY created_at ASC, chat_id ASC LIMIT 1""",
+            (channel_id, account_id),
+        ).fetchone()
+        if row is None:
+            return None
+        owner_id = row["owner_user_id"]
+        if not isinstance(owner_id, str) or not owner_id:
+            return None
+        return owner_id, _optional_string(row["owner_username"])
+
     def get_binding_by_thread(
         self,
         channel_id: str,
