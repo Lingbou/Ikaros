@@ -253,11 +253,14 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — 导出 Memory 存储与召回。
 - `domain.py` — Memory 领域类型：kind/state/scope、来源、revision、内容上限。
+- `refinement.py` — 后台记忆精炼：Run 终态触发、Thread 去抖与小时预算、
+  游标增量抽取、严格 JSON 解析与追加写入（`auto_extracted`）。
 - `retrieval.py` — 确定性混合召回：FTS5(BM25) 池 + 关键词重叠池，RRF（k=60）
   融合；候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
-- `schema.py` — memory.db schema 2 的 DDL 与逐字节校验（含 FTS5 召回索引）。
+- `schema.py` — memory.db schema 3 的 DDL 与逐字节校验（含 FTS5 召回索引与
+  抽取游标表）。
 - `store.py` — memory.db SQLite 所有者：CRUD、revision、墓碑、操作回执、
-  FTS 索引维护与 BM25 排名。
+  FTS 索引维护、BM25 排名与精炼游标/去重查询。
 
 `protocol/`：
 
@@ -630,8 +633,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - 召回：FTS5(BM25) 池与关键词重叠池经 RRF（k=60）融合
   （`deterministic-hybrid-rrf-v2`），候选上限 2,000 条，选中上限 8 条 / 6,000
   字符；每个 Run 冻结精确 revision。
+- 自动精炼：Run 成功后后台追加的记忆带 `sourceKind=auto_extracted`，与其他
+  记忆一样可见、可纠正、可遗忘；界面按 Session 来源展示可用性。
 - 语义：Run 执行中的纠正只影响之后的新 Run；遗忘阻止继续发送已不可用版本；
-  没有自动写入或自动学习。
+  自动精炼只追加，不删除也不改写已有 Memory。
 
 ### 4.7 文件与命令界面
 
@@ -828,8 +833,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - `state.db`：SQLite，schema 14；Journal Event schema 10。保存 Threads/Branches/
   Turns/Runs/Items、事件 Journal、RunConfig、ContextRevision、StepInput 审计、
   usage、进程与文件操作事实；投影可从 Journal 重建。
-- `memory.db`：独立 schema 2；有自己的连接、事务、revision 与操作回执；与
-  `state.db` 无跨库事务/外键，只共享 Runtime-home 锁。
+- `memory.db`：独立 schema 3；有自己的连接、事务、revision、操作回执与后台
+  精炼抽取游标；与 `state.db` 无跨库事务/外键，只共享 Runtime-home 锁。
 - `config.yaml`：version 2，上限 256 KiB（读/写都校验），原子替换写入；保存
   Provider/model 配置和 `skills.disabled`。
 - `runtime.lock`：单进程独占；崩溃后可恢复；释放时保留文件（POSIX 不换 inode）。
@@ -838,7 +843,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
 - 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 /
-  protocol 9 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
+  protocol 9 / memory 3）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
   更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
   要求显式重置。
 
@@ -1013,13 +1018,16 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.11 Memory 子系统
 
-- 存储：`memory.db`（schema 2）。记录包含 id、kind、state、scope、正文、来源
-  引用、revision、内容完整性摘要（摘要私有，Forget 时清除）。
+- 存储：`memory.db`（schema 3）。记录包含 id、kind、state、scope、正文、来源
+  引用、revision、内容完整性摘要（摘要私有，Forget 时清除）；
+  `memory_extraction_cursors` 保存每个 Thread 的后台精炼进度（已处理 Item 的
+  排序键 + 尝试/成功时间）。
 - 操作：create / correct / forget / list / get；创建与纠正幂等；遗忘产生内容抹除
   的墓碑 revision；冲突返回有界 `reasonCode`（协议错误码 `-32020`
   `memory operation failed`）。
 - 溯源：可选的来源必须指向本 Session 已存在的 Item；Session 重置只会让软来源
-  退化，不删除 Memory。
+  退化，不删除 Memory。`source_kind` 区分用户显式（`user_explicit`）、会话内
+  显式引用（`session_item`）与后台自动抽取（`auto_extracted`）。
 - 召回（`MemoryRetriever`，`deterministic-hybrid-rrf-v2`）：FTS5(BM25) 池与
   关键词重叠池各自有界排名，再按 RRF（k=60）融合——同一条被两个池同时命中时
   分数相加，缺池不惩罚；候选 ≤2,000；每池深度 ≤200；选中 ≤8 条且 ≤6,000 字符；
@@ -1038,8 +1046,17 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   不能指定。search 复用 `MemoryRetriever`，只读、不改变每 Run 冻结的召回集合；
   limit 1–8（默认 5），正文总量 ≤6,000 字符并显式报告截断。没有 forget / delete：
   删除仍由用户控制。
-- 边界：没有自动 Memory 写入器（只有用户显式操作与模型显式调用的 `memory`
-  工具）、没有学习循环；Memory 不保存运行进度、命令日志或文件差异。
+- 后台精炼（`MemoryRefinementService`）：Run 进入 `completed` 终态后在后台
+  asyncio 任务里追加一次抽取；同一 Thread 同时只有一个任务，每个 Run 至多触发
+  一次，且每 Thread 每小时最多一次真实抽取。只读该 Thread 默认分支上已完成
+  的 user/assistant Item（游标之后、≤40 条且 ≤24KB 输入），用该 Run 的
+  provider/model 请求一次严格 JSON（≤4 条候选、每条 ≤512 字符、带 kind/scope/
+  sourceItemId）；解析防御式，任何失败只记日志，不影响 Run 结算。写入复用
+  `create_memory_once`（确定性 clientRequestId + 正文去重），provenance 指向
+  产生该事实的 Item；命中受保护值不写入。Runtime 关闭时任务被取消。
+- 边界：精炼只追加、不删除也不合并 Memory，不跨 Thread 学习，不读命令日志或
+  文件差异；删除仍由用户控制（模型侧没有 forget / delete 工具）；只有通过
+  长度、scope 与凭据校验的候选才会写入。
 
 ### 6.12 Skills 子系统
 
@@ -1138,6 +1155,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   会显式传递（可选 `runtimeHome`）。
 - `IKAROS_RUNTIME_PYTHON`：Desktop 指定 Runtime 的 Python 可执行文件；优先于内置
   payload（调试用）。
+- `IKAROS_MEMORY_REFINEMENT`：后台记忆精炼开关；显式设为 `0` 时关闭（默认开启）。
 - `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
 - `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 2，范围 1–8；值为 1
@@ -1653,7 +1671,7 @@ tool）；`status`；`content`；`created_at`；`updated_at`；`data_json`（默
 `file_changes`：`tool_call_item_id` PK → items（CASCADE）；`record_json`
 （不可变 before/after 捕获与 diff）。
 
-### 8.2 memory.db（schema 2）
+### 8.2 memory.db（schema 3）
 
 `memory_records`：
 
@@ -1672,16 +1690,24 @@ tool）；`status`；`content`；`created_at`；`updated_at`；`data_json`（默
 
 `memory_revisions`：`memory_id` → memory_records（RESTRICT）；`revision`（≥1）；
 `operation`（create / correct / forget）；`content?`；`content_digest?`；
-`content_redacted_at?`；`source_kind`（user_explicit / session_item）；
+`content_redacted_at?`；`source_kind`（user_explicit / session_item /
+auto_extracted）；
 `source_thread_id?` / `source_turn_id?` / `source_item_id?` / `source_item_digest?`；
 `created_at`；`PRIMARY KEY(memory_id, revision)`。约束保证：create/correct 要么
 有正文+摘要、要么是已抹除；forget 无正文；来源字段要么全空（用户显式），要么
-全齐（Session Item）。
+全齐（Session Item 或后台自动抽取）。
 
 `memory_operations`（幂等回执）：`client_request_id` PK；
 `method`（memory.create / correct / forget）；`non_content_fingerprint`；
 `memory_id`；`resulting_revision`（≥1）；`created_at`；
 `UNIQUE(memory_id, resulting_revision)`；外键指向对应 revision（RESTRICT）。
+
+`memory_extraction_cursors`（后台精炼游标）：`thread_id` PK；
+`last_turn_ordinal` / `last_run_created_at` / `last_run_id` /
+`last_item_ordinal` / `last_item_id` 是已处理 Item 的稳定排序键（五列同时为空或
+同时非空）；`attempted_at`（最近一次抽取尝试，用于每 Thread 每小时 ≤1 次的
+小时预算）；`extracted_at`（最近一次成功抽取）。只有抽取调用成功后才前进游标，
+失败保留原游标以便下一次重试。
 
 `memory_fts`（FTS5 虚表）：`memory_id`（UNINDEXED）+ `tokens`（Python 侧切好的
 词元流），`tokenize='unicode61 remove_diacritics 2'`。它是当前可读 revision 的
@@ -2137,6 +2163,9 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 单条正文 / 预览 | 2,048 字符 / 160 字符 |
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
 | Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
+| Memory | 精炼触发 | Run completed 后后台一次；每 Thread ≤1 次/小时、每个 Run 至多一次 |
+| Memory | 精炼输入 / 候选 | 游标后已完成消息 ≤40 条且 ≤24KB；候选 ≤4 条、每条 ≤512 字符 |
+| Memory | 精炼输出 | 1,024 tokens；响应 ≤16,384 字符；超时 120 秒 |
 | Memory | 列表分页 | 默认 50、最大 100 |
 | Memory | 模型工具 | `memory`（save / search）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
@@ -2164,7 +2193,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 9；32 方法；15 事件；16 工具 |
-| 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
+| 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |
@@ -2201,7 +2230,8 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
   `memory.db`、`config.yaml`、`skills/` 不受影响。
 - `memory database schema is incompatible; restore a compatible backup`：恢复
   与当前 Runtime 同版本的 `memory.db` 备份，或移走后重建（会丢失记忆）。
-  `memory.db` 现为 schema 2（schema 1 没有 FTS5 召回索引），开发期没有迁移路径。
+  `memory.db` 现为 schema 3（schema 2 没有后台精炼抽取游标表），开发期没有
+  迁移路径。
 - `no such module: fts5`：当前 Python 自带的 SQLite 未编译 FTS5（官方 Windows
   构建与主流发行版默认启用）；换用带 FTS5 的解释器后移走 `memory.db` 重建。
 - 同版本但结构漂移（表 / 索引变化）同样会被拒绝，不会被静默接受。

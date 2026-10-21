@@ -80,6 +80,7 @@ from .model_input import ModelInputPlanner
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
 ProtectedValues = Callable[[], Sequence[str]]
 ProviderSnapshotResolver = Callable[[str, str], ProviderExecutionSnapshot]
+RunTerminalObserver = Callable[[RunConfig, str], None]
 _LOGGER = logging.getLogger("ikaros_runtime.agent")
 _MAX_REASONING_CHARACTERS = 1_000_000
 _COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096
@@ -142,6 +143,7 @@ class AgentLoop:
         memory_retriever: MemoryRetriever | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
         identity_core: InstructionBlock | None = None,
+        on_run_terminal: RunTerminalObserver | None = None,
     ) -> None:
         self._store = store
         self._providers = providers
@@ -156,6 +158,7 @@ class AgentLoop:
         self._memory_retriever = memory_retriever
         self._provider_snapshot_resolver = provider_snapshot_resolver
         self._identity_core = identity_core
+        self._on_run_terminal = on_run_terminal
 
     def run_thread_id(self, run_id: str) -> str:
         """Return the scheduling scope that must serialize this Run."""
@@ -167,6 +170,7 @@ class AgentLoop:
         cancel_wait: asyncio.Task[None] | None = None
         status = "completed"
         reason: str | None = None
+        config: RunConfig | None = None
         try:
             cancellation.raise_if_cancelled()
             config = self._store.get_run_config(run_id)
@@ -216,6 +220,18 @@ class AgentLoop:
                     _finish_open_model_step=status != "completed",
                 )
             )
+            self._notify_run_terminal(config, status)
+
+    def _notify_run_terminal(self, config: RunConfig | None, status: str) -> None:
+        """Hand a settled Run to observers without affecting settlement."""
+
+        observer = self._on_run_terminal
+        if observer is None or config is None:
+            return
+        try:
+            observer(config, status)
+        except Exception:
+            _LOGGER.exception("Run %s terminal observer failed", config.run_id)
 
     async def steer(self, run_id: str, content: str, request_id: str) -> bool:
         """Queue an in-flight supplement for the next model input."""

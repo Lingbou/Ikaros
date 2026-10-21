@@ -85,6 +85,7 @@ def test_memory_schema_is_independent_complete_and_wal_backed(tmp_path: Path) ->
             "memory_records",
             "memory_revisions",
             "memory_operations",
+            "memory_extraction_cursors",
             "memory_records_state_order_idx",
             "memory_records_scope_order_idx",
             "memory_records_scope_kind_order_idx",

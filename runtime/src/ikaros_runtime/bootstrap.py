@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from collections.abc import Mapping, Sequence
 
@@ -14,7 +15,7 @@ from .agent.scheduler import AgentScheduler
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome, JournalEvent
 from .identity import load_identity_core
-from .memory import MemoryRetriever, SqliteMemoryStore
+from .memory import MemoryRefinementService, MemoryRetriever, SqliteMemoryStore
 from .paths import RuntimePaths
 from .protocol.router import RuntimeRouter
 from .providers.base import ProviderAdapter
@@ -180,6 +181,14 @@ class RuntimeApplication:
                     pass
             return self._config.execution_snapshot(provider_id, model_id)
 
+        self._refinement = MemoryRefinementService(
+            memory_store=memory_store,
+            runtime_store=store,
+            resolve_provider=self._provider_registry.resolve,
+            provider_snapshot=provider_snapshot,
+            protected_values=self.security.protected_values,
+            enabled=_memory_refinement_enabled(),
+        )
         loop = AgentLoop(
             store,
             self._provider_registry,
@@ -190,6 +199,7 @@ class RuntimeApplication:
             provider_snapshot_resolver=provider_snapshot,
             identity_core=self.identity_core,
             memory_retriever=memory_retriever,
+            on_run_terminal=self._refinement.notify_run_terminal,
         )
         self._scheduler = AgentScheduler(loop, max_workers=agent_workers)
         self._publish = publish
@@ -244,12 +254,19 @@ class RuntimeApplication:
     async def close(self) -> None:
         try:
             await self._scheduler.close()
+            await self._refinement.close()
             await self._process_manager.close()
             if self._process_events:
                 await asyncio.gather(*self._process_events)
             await self._provider_registry.close()
         finally:
             self._memory_store.close()
+
+
+def _memory_refinement_enabled() -> bool:
+    """Honor the ``IKAROS_MEMORY_REFINEMENT=0`` kill switch."""
+
+    return os.environ.get("IKAROS_MEMORY_REFINEMENT", "1").strip() != "0"
 
 
 async def run_runtime_server(

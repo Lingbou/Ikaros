@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from ..json_codec import dumps as json_dumps
@@ -20,6 +21,108 @@ from ..tools.history_read import (
     MIN_HISTORY_READ_CHARS,
     MIN_HISTORY_READ_ITEMS,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SettledThreadItemCursor:
+    """The ordering key of the last settled Item a reader already consumed."""
+
+    turn_ordinal: int
+    run_created_at: str
+    run_id: str
+    item_ordinal: int
+    item_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SettledThreadItem:
+    """One completed conversation Item with its stable ordering key."""
+
+    item_id: str
+    turn_id: str
+    run_id: str
+    role: str
+    content: str
+    turn_ordinal: int
+    run_created_at: str
+    item_ordinal: int
+
+    def to_cursor(self) -> SettledThreadItemCursor:
+        return SettledThreadItemCursor(
+            turn_ordinal=self.turn_ordinal,
+            run_created_at=self.run_created_at,
+            run_id=self.run_id,
+            item_ordinal=self.item_ordinal,
+            item_id=self.item_id,
+        )
+
+
+def read_settled_thread_items_after(
+    connection: sqlite3.Connection,
+    *,
+    thread_id: str,
+    after: SettledThreadItemCursor | None,
+    limit: int,
+) -> tuple[SettledThreadItem, ...]:
+    """Read settled conversation Items after *after* on the default branch.
+
+    Only completed user/assistant messages are returned: they are the Items
+    a durable Memory source may reference, and their ordering key (turn
+    ordinal, Run creation time, Run ID, Item ordinal, Item ID) is stable and
+    total, so a persisted cursor never skips or repeats a record.  The reader
+    is read-only and never appends Journal Events.
+    """
+
+    if isinstance(limit, bool) or limit < 1:
+        raise ValueError("settled Item limit is invalid")
+    parameters: list[object] = [thread_id]
+    cursor_clause = ""
+    if after is not None:
+        cursor_clause = (
+            "AND (t.ordinal, r.created_at, r.id, i.ordinal, i.id) > (?, ?, ?, ?, ?)"
+        )
+        parameters.extend(
+            (
+                after.turn_ordinal,
+                after.run_created_at,
+                after.run_id,
+                after.item_ordinal,
+                after.item_id,
+            )
+        )
+    parameters.append(limit)
+    rows = connection.execute(
+        f"""
+        SELECT i.id, i.turn_id, i.run_id, i.role, i.content,
+               i.ordinal AS item_ordinal, t.ordinal AS turn_ordinal,
+               r.created_at AS run_created_at
+        FROM items i
+        JOIN turns t ON t.id = i.turn_id
+        JOIN runs r ON r.id = i.run_id
+        JOIN threads th ON th.id = t.thread_id AND th.default_branch_id = t.branch_id
+        WHERE t.thread_id = ?
+          AND i.kind = 'message'
+          AND i.role IN ('user', 'assistant')
+          AND i.status = 'completed'
+          {cursor_clause}
+        ORDER BY t.ordinal ASC, r.created_at ASC, r.id ASC, i.ordinal ASC, i.id ASC
+        LIMIT ?
+        """,
+        parameters,
+    ).fetchall()
+    return tuple(
+        SettledThreadItem(
+            item_id=str(row["id"]),
+            turn_id=str(row["turn_id"]),
+            run_id=str(row["run_id"]),
+            role=str(row["role"]),
+            content=str(row["content"]),
+            turn_ordinal=int(row["turn_ordinal"]),
+            run_created_at=str(row["run_created_at"]),
+            item_ordinal=int(row["item_ordinal"]),
+        )
+        for row in rows
+    )
 
 
 def read_history_slice(
@@ -141,5 +244,8 @@ __all__ = [
     "MAX_HISTORY_READ_ITEMS",
     "MIN_HISTORY_READ_CHARS",
     "MIN_HISTORY_READ_ITEMS",
+    "SettledThreadItem",
+    "SettledThreadItemCursor",
     "read_history_slice",
+    "read_settled_thread_items_after",
 ]

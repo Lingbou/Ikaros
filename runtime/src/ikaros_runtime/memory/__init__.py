@@ -4,6 +4,7 @@ from .domain import (
     MEMORY_CONTENT_MAX_CHARACTERS,
     MEMORY_KINDS,
     MEMORY_STATES,
+    MemoryExtractionCursor,
     MemoryListPage,
     MemoryMutationReceipt,
     MemoryProvenance,
@@ -11,6 +12,15 @@ from .domain import (
     MemoryScope,
     MemorySourceSnapshot,
     MemorySummary,
+)
+from .refinement import (
+    MEMORY_REFINEMENT_INTERVAL_SECONDS,
+    MEMORY_REFINEMENT_MAX_CANDIDATES,
+    MEMORY_REFINEMENT_MAX_CONTENT_CHARACTERS,
+    MEMORY_REFINEMENT_MAX_INPUT_BYTES,
+    MEMORY_REFINEMENT_MAX_ITEMS,
+    MemoryCandidate,
+    MemoryRefinementService,
 )
 from .retrieval import (
     MEMORY_RETRIEVAL_CHARACTER_BUDGET,
@@ -27,6 +37,11 @@ from .store import SqliteMemoryStore
 __all__ = [
     "MEMORY_CONTENT_MAX_CHARACTERS",
     "MEMORY_KINDS",
+    "MEMORY_REFINEMENT_INTERVAL_SECONDS",
+    "MEMORY_REFINEMENT_MAX_CANDIDATES",
+    "MEMORY_REFINEMENT_MAX_CONTENT_CHARACTERS",
+    "MEMORY_REFINEMENT_MAX_INPUT_BYTES",
+    "MEMORY_REFINEMENT_MAX_ITEMS",
     "MEMORY_RETRIEVAL_CHARACTER_BUDGET",
     "MEMORY_RETRIEVAL_MAX_CANDIDATES",
     "MEMORY_RETRIEVAL_TOP_K",
@@ -36,6 +51,9 @@ __all__ = [
     "MemoryMutationReceipt",
     "MemoryProvenance",
     "MemoryRecord",
+    "MemoryCandidate",
+    "MemoryExtractionCursor",
+    "MemoryRefinementService",
     "MemoryRetrieval",
     "MemoryRetrievalOmission",
     "MemoryRetriever",

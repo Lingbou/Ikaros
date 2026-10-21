@@ -7,7 +7,7 @@ from functools import cache
 
 from ..errors import MemorySchemaIncompatibleError
 
-MEMORY_SCHEMA_VERSION = 2
+MEMORY_SCHEMA_VERSION = 3
 
 _CANONICAL_SCHEMA = """
 CREATE TABLE memory_records (
@@ -42,7 +42,9 @@ CREATE TABLE memory_revisions (
     content TEXT,
     content_digest TEXT,
     content_redacted_at TEXT,
-    source_kind TEXT NOT NULL CHECK (source_kind IN ('user_explicit', 'session_item')),
+    source_kind TEXT NOT NULL CHECK (
+        source_kind IN ('user_explicit', 'session_item', 'auto_extracted')
+    ),
     source_thread_id TEXT,
     source_turn_id TEXT,
     source_item_id TEXT,
@@ -68,7 +70,7 @@ CREATE TABLE memory_revisions (
          AND source_item_id IS NULL
          AND source_item_digest IS NULL)
         OR
-        (source_kind = 'session_item'
+        (source_kind IN ('session_item', 'auto_extracted')
          AND source_thread_id IS NOT NULL
          AND source_turn_id IS NOT NULL
          AND source_item_id IS NOT NULL
@@ -95,6 +97,36 @@ CREATE TABLE memory_operations (
     FOREIGN KEY(memory_id, resulting_revision)
         REFERENCES memory_revisions(memory_id, revision)
         ON DELETE RESTRICT
+);
+
+CREATE TABLE memory_extraction_cursors (
+    thread_id TEXT PRIMARY KEY,
+    last_turn_ordinal INTEGER CHECK (
+        last_turn_ordinal IS NULL OR last_turn_ordinal >= 1
+    ),
+    last_run_created_at TEXT,
+    last_run_id TEXT,
+    last_item_ordinal INTEGER CHECK (
+        last_item_ordinal IS NULL OR last_item_ordinal >= 1
+    ),
+    last_item_id TEXT,
+    attempted_at TEXT NOT NULL,
+    extracted_at TEXT,
+    CHECK (
+        (last_turn_ordinal IS NULL
+         AND last_run_created_at IS NULL
+         AND last_run_id IS NULL
+         AND last_item_ordinal IS NULL
+         AND last_item_id IS NULL
+         AND extracted_at IS NULL)
+        OR
+        (last_turn_ordinal IS NOT NULL
+         AND last_run_created_at IS NOT NULL
+         AND last_run_id IS NOT NULL
+         AND last_item_ordinal IS NOT NULL
+         AND last_item_id IS NOT NULL
+         AND extracted_at IS NOT NULL)
+    )
 );
 
 CREATE INDEX memory_records_state_order_idx

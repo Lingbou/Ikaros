@@ -21,6 +21,7 @@ from ..json_codec import loads as json_loads
 from .domain import (
     MEMORY_KINDS,
     MEMORY_STATES,
+    MemoryExtractionCursor,
     MemoryKind,
     MemoryListPage,
     MemoryMutationReceipt,
@@ -106,7 +107,12 @@ class SqliteMemoryStore:
         content: str,
         client_request_id: str,
         source: MemorySourceSnapshot | None = None,
+        source_kind: MemorySourceKind | None = None,
     ) -> MemoryMutationReceipt:
+        resolved_source_kind = _resolved_source_kind(
+            source=source,
+            source_kind=source_kind,
+        )
         fingerprint = _create_fingerprint(kind, scope, source.item_id if source else None)
         content_digest = _canonical_sha256(content)
         self._begin_immediate()
@@ -145,7 +151,7 @@ class SqliteMemoryStore:
                     memory_id,
                     content,
                     content_digest,
-                    "session_item" if source is not None else "user_explicit",
+                    resolved_source_kind,
                     source.thread_id if source is not None else None,
                     source.turn_id if source is not None else None,
                     source.item_id if source is not None else None,
@@ -351,7 +357,10 @@ class SqliteMemoryStore:
         ).fetchone()
         if row is None:
             raise MemoryOperationError("memory_not_found")
-        if row["source_kind"] != "session_item" or row["source_item_digest"] is None:
+        if (
+            row["source_kind"] not in {"session_item", "auto_extracted"}
+            or row["source_item_digest"] is None
+        ):
             return None
         return MemorySourceSnapshot(
             thread_id=str(row["source_thread_id"]),
@@ -637,6 +646,154 @@ class SqliteMemoryStore:
                         return True
         return False
 
+    def memory_extraction_cursor(self, thread_id: str) -> MemoryExtractionCursor | None:
+        """Return the last settled Item a refinement pass consumed, if any."""
+
+        row = self._connection.execute(
+            """
+            SELECT thread_id,
+                   last_turn_ordinal,
+                   last_run_created_at,
+                   last_run_id,
+                   last_item_ordinal,
+                   last_item_id,
+                   extracted_at,
+                   attempted_at
+            FROM memory_extraction_cursors
+            WHERE thread_id = ?
+            """,
+            (thread_id,),
+        ).fetchone()
+        if row is None or row["last_item_id"] is None:
+            return None
+        return MemoryExtractionCursor(
+            thread_id=str(row["thread_id"]),
+            turn_ordinal=int(row["last_turn_ordinal"]),
+            run_created_at=str(row["last_run_created_at"]),
+            run_id=str(row["last_run_id"]),
+            item_ordinal=int(row["last_item_ordinal"]),
+            item_id=str(row["last_item_id"]),
+            extracted_at=str(row["extracted_at"]),
+            attempted_at=str(row["attempted_at"]),
+        )
+
+    def memory_extraction_attempted_at(self, thread_id: str) -> str | None:
+        """Return when this Thread last attempted an extraction call."""
+
+        row = self._connection.execute(
+            "SELECT attempted_at FROM memory_extraction_cursors WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        return None if row is None else str(row["attempted_at"])
+
+    def record_memory_extraction_attempt(
+        self,
+        thread_id: str,
+        *,
+        attempted_at: str,
+    ) -> None:
+        """Remember an extraction attempt so the hourly budget survives restarts."""
+
+        self._begin_immediate()
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO memory_extraction_cursors(thread_id, attempted_at)
+                VALUES (?, ?)
+                ON CONFLICT(thread_id) DO UPDATE
+                SET attempted_at = excluded.attempted_at
+                """,
+                (thread_id, attempted_at),
+            )
+            self._connection.commit()
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def advance_memory_extraction_cursor(
+        self,
+        *,
+        thread_id: str,
+        turn_ordinal: int,
+        run_created_at: str,
+        run_id: str,
+        item_ordinal: int,
+        item_id: str,
+        extracted_at: str,
+        attempted_at: str,
+    ) -> None:
+        """Advance the Thread cursor to one Item this pass actually consumed."""
+
+        cursor = MemoryExtractionCursor(
+            thread_id=thread_id,
+            turn_ordinal=turn_ordinal,
+            run_created_at=run_created_at,
+            run_id=run_id,
+            item_ordinal=item_ordinal,
+            item_id=item_id,
+            extracted_at=extracted_at,
+            attempted_at=attempted_at,
+        )
+        self._begin_immediate()
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO memory_extraction_cursors(
+                    thread_id, last_turn_ordinal, last_run_created_at, last_run_id,
+                    last_item_ordinal, last_item_id, attempted_at, extracted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    last_turn_ordinal = excluded.last_turn_ordinal,
+                    last_run_created_at = excluded.last_run_created_at,
+                    last_run_id = excluded.last_run_id,
+                    last_item_ordinal = excluded.last_item_ordinal,
+                    last_item_id = excluded.last_item_id,
+                    attempted_at = excluded.attempted_at,
+                    extracted_at = excluded.extracted_at
+                """,
+                (
+                    cursor.thread_id,
+                    cursor.turn_ordinal,
+                    cursor.run_created_at,
+                    cursor.run_id,
+                    cursor.item_ordinal,
+                    cursor.item_id,
+                    cursor.attempted_at,
+                    cursor.extracted_at,
+                ),
+            )
+            self._connection.commit()
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def active_memory_content_exists(
+        self,
+        *,
+        kind: MemoryKind,
+        scope: MemoryScope,
+        content: str,
+    ) -> bool:
+        """Report whether an active Memory already holds exactly this content."""
+
+        row = self._connection.execute(
+            """
+            SELECT 1
+            FROM memory_records AS records
+            JOIN memory_revisions AS revisions
+              ON revisions.memory_id = records.id
+             AND revisions.revision = records.current_revision
+            WHERE records.state = 'active'
+              AND records.kind = ?
+              AND records.scope_type = ?
+              AND records.scope_key IS ?
+              AND revisions.content = ?
+            LIMIT 1
+            """,
+            (kind, scope.type, scope.key, content),
+        ).fetchone()
+        return row is not None
+
     def _idempotent_mutation_receipt(
         self,
         *,
@@ -831,6 +988,22 @@ def _require_active_expected_revision(
         raise MemoryOperationError("memory_forgotten")
     if int(current["current_revision"]) != expected_revision:
         raise MemoryOperationError("memory_revision_conflict")
+
+
+def _resolved_source_kind(
+    *,
+    source: MemorySourceSnapshot | None,
+    source_kind: MemorySourceKind | None,
+) -> MemorySourceKind:
+    if source is None:
+        if source_kind not in (None, "user_explicit"):
+            raise ValueError("explicit Memory must not declare a Session source kind")
+        return "user_explicit"
+    if source_kind is None:
+        return "session_item"
+    if source_kind not in {"session_item", "auto_extracted"}:
+        raise ValueError("Session Memory source kind is invalid")
+    return source_kind
 
 
 def _create_fingerprint(

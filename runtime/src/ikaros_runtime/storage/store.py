@@ -44,7 +44,13 @@ from ..tools.core import ToolCall
 from ..tools.thread_read import MAX_THREAD_READ_CHARS
 from .context_history import load_context_for_revision, select_context_revision
 from .file_changes import get_file_change, resolve_file_tool_path
-from .history_read import MAX_HISTORY_READ_CHARS, read_history_slice
+from .history_read import (
+    MAX_HISTORY_READ_CHARS,
+    SettledThreadItem,
+    SettledThreadItemCursor,
+    read_history_slice,
+    read_settled_thread_items_after,
+)
 from .journal import (
     append_event,
     event_from_row,
@@ -817,6 +823,20 @@ class SqliteRuntimeStore:
             max_chars=max_chars,
         )
 
+    def read_settled_thread_items_after(
+        self,
+        *,
+        thread_id: str,
+        after: SettledThreadItemCursor | None,
+        limit: int,
+    ) -> tuple[SettledThreadItem, ...]:
+        """Read settled conversation Items after a persisted cursor."""
+
+        return read_settled_thread_items_after(
+            self._connection,
+            thread_id=thread_id,
+            after=after,
+            limit=limit,
     def list_threads_for_model(self, *, archived: bool, limit: int) -> JsonObject:
         """List Threads in the compact shape exposed by the thread_list Tool."""
 
