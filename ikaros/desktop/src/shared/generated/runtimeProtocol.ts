@@ -48,7 +48,7 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "event"
   ],
   "journal": {
-    "schemaVersion": 10,
+    "schemaVersion": 11,
     "eventTypes": [
       "thread.created",
       "thread.renamed",

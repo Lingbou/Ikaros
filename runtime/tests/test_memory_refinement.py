@@ -191,10 +191,26 @@ def _active_memories(memory_store: SqliteMemoryStore) -> list[str]:
     return [memory.id for memory in page.memories]
 
 
-def _payload_records(request: ProviderRequest) -> list[dict[str, object]]:
+def _payload(request: ProviderRequest) -> dict[str, object]:
     content = request.messages[-1].content
-    start = content.index("[")
+    start = content.index("{")
     parsed = json.loads(content[start:])
+    assert isinstance(parsed, dict)
+    return cast(dict[str, object], parsed)
+
+
+def _payload_records(request: ProviderRequest) -> list[dict[str, object]]:
+    parsed = _payload(request)["records"]
+    assert isinstance(parsed, list)
+    records: list[dict[str, object]] = []
+    for entry in parsed:
+        assert isinstance(entry, dict)
+        records.append(cast(dict[str, object], entry))
+    return records
+
+
+def _payload_existing_memories(request: ProviderRequest) -> list[dict[str, object]]:
+    parsed = _payload(request)["existingMemories"]
     assert isinstance(parsed, list)
     records: list[dict[str, object]] = []
     for entry in parsed:
@@ -209,13 +225,17 @@ def _candidate(
     content: str = "Durable state lives in SQLite.",
     kind: str = "fact",
     scope: str = "global",
+    memory_id: str | None = None,
 ) -> dict[str, object]:
-    return {
+    candidate: dict[str, object] = {
         "kind": kind,
         "scope": scope,
         "content": content,
         "sourceItemId": item_id,
     }
+    if memory_id is not None:
+        candidate["memoryId"] = memory_id
+    return candidate
 
 
 def _response(*candidates: dict[str, object]) -> str:
@@ -513,7 +533,7 @@ async def test_refinement_input_budget_defers_oversized_items(tmp_path: Path) ->
 
         request = provider.requests[0]
         content = request.messages[-1].content
-        start = content.index("[")
+        start = content.index("{")
         assert len(content[start:].encode("utf-8")) <= MEMORY_REFINEMENT_MAX_INPUT_BYTES
         first_records = _payload_records(request)
         assert 1 <= len(first_records) < len(contents)
@@ -583,6 +603,261 @@ def test_auto_extracted_writes_are_idempotent_and_deduplicated(tmp_path: Path) -
             scope=MemoryScope("global", None),
             content="Durable state lives in SQLite.",
         )
+    finally:
+        memory_store.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_refinement_skips_canonical_duplicates_and_logs_counts(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO", logger="ikaros_runtime.memory.refinement")
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    try:
+        thread, branch_id, turns = _thread_with_turns(
+            store,
+            ["The user prefers dark mode."],
+        )
+        _turn_id, run_id, first_item = turns[0]
+        provider = _ExtractionProvider(
+            [_response(_candidate(first_item, content="The user prefers dark mode."))]
+        )
+        service = _service(
+            memory_store=memory_store,
+            runtime_store=store,
+            provider=provider,
+        )
+        service.notify_run_terminal(store.get_run_config(run_id), "completed")
+        await _drain(service)
+
+        memory_id = _active_memories(memory_store)[0]
+        assert "written=1" in caplog.records[-1].message
+
+        prepared = prepare_turn(
+            store,
+            thread_id=thread,
+            branch_id=branch_id,
+            content="Another turn restates the same preference.",
+            provider_id=_PROVIDER_ID,
+            model_id=_MODEL_ID,
+        )
+        second_item = prepared.initial_events[0].item_id
+        assert second_item is not None
+        provider.responses.append(
+            _response(
+                _candidate(
+                    second_item,
+                    content="  THE USER PREFERS DARK MODE!  ",
+                )
+            )
+        )
+        service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
+        await _drain(service)
+
+        assert _active_memories(memory_store) == [memory_id]
+        record = memory_store.get_memory(memory_id)
+        assert record.revision == 1
+        assert record.content == "The user prefers dark mode."
+        assert "skipped_duplicate=1" in caplog.records[-1].message
+    finally:
+        memory_store.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_refinement_merges_explicit_memory_id_as_new_revision(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    try:
+        thread, branch_id, turns = _thread_with_turns(
+            store,
+            ["The user prefers dark mode."],
+        )
+        _turn_id, run_id, first_item = turns[0]
+        provider = _ExtractionProvider(
+            [_response(_candidate(first_item, content="The user prefers dark mode."))]
+        )
+        service = _service(
+            memory_store=memory_store,
+            runtime_store=store,
+            provider=provider,
+        )
+        service.notify_run_terminal(store.get_run_config(run_id), "completed")
+        await _drain(service)
+        memory_id = _active_memories(memory_store)[0]
+
+        prepared = prepare_turn(
+            store,
+            thread_id=thread,
+            branch_id=branch_id,
+            content="The user corrects the theme preference.",
+            provider_id=_PROVIDER_ID,
+            model_id=_MODEL_ID,
+        )
+        second_item = prepared.initial_events[0].item_id
+        assert second_item is not None
+        provider.responses.append(
+            _response(
+                _candidate(
+                    second_item,
+                    content="Theme preference: light.",
+                    memory_id=memory_id,
+                )
+            )
+        )
+        service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
+        await _drain(service)
+
+        catalog = _payload_existing_memories(provider.requests[1])
+        assert [(entry["id"], entry["revision"]) for entry in catalog] == [
+            (memory_id, 1)
+        ]
+        record = memory_store.get_memory(memory_id)
+        assert _active_memories(memory_store) == [memory_id]
+        assert record.revision == 2
+        assert record.content == "Theme preference: light."
+        assert record.provenance.source_kind == "auto_extracted"
+        assert record.provenance.item_id == second_item
+        old_revision = memory_store._connection.execute(
+            """
+            SELECT content, source_kind
+            FROM memory_revisions
+            WHERE memory_id = ? AND revision = 1
+            """,
+            (memory_id,),
+        ).fetchone()
+        assert old_revision is not None
+        assert tuple(old_revision) == ("The user prefers dark mode.", "auto_extracted")
+    finally:
+        memory_store.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_refinement_auto_merges_a_supplement_without_memory_id(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    try:
+        thread, branch_id, turns = _thread_with_turns(
+            store,
+            ["The user prefers dark mode."],
+        )
+        _turn_id, run_id, first_item = turns[0]
+        provider = _ExtractionProvider(
+            [_response(_candidate(first_item, content="The user prefers dark mode."))]
+        )
+        service = _service(
+            memory_store=memory_store,
+            runtime_store=store,
+            provider=provider,
+        )
+        service.notify_run_terminal(store.get_run_config(run_id), "completed")
+        await _drain(service)
+        memory_id = _active_memories(memory_store)[0]
+
+        prepared = prepare_turn(
+            store,
+            thread_id=thread,
+            branch_id=branch_id,
+            content="The preference gains a detail.",
+            provider_id=_PROVIDER_ID,
+            model_id=_MODEL_ID,
+        )
+        second_item = prepared.initial_events[0].item_id
+        assert second_item is not None
+        provider.responses.append(
+            _response(
+                _candidate(
+                    second_item,
+                    content="The user prefers dark mode at night.",
+                )
+            )
+        )
+        service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
+        await _drain(service)
+
+        record = memory_store.get_memory(memory_id)
+        assert record.revision == 2
+        assert record.content == "The user prefers dark mode at night."
+        assert _active_memories(memory_store) == [memory_id]
+        old_content = memory_store._connection.execute(
+            "SELECT content FROM memory_revisions WHERE memory_id = ? AND revision = 1",
+            (memory_id,),
+        ).fetchone()
+        assert old_content is not None
+        assert old_content["content"] == "The user prefers dark mode."
+    finally:
+        memory_store.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_refinement_rejects_explicit_target_with_changed_kind(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    try:
+        thread, branch_id, turns = _thread_with_turns(
+            store,
+            ["The user prefers dark mode."],
+        )
+        _turn_id, run_id, first_item = turns[0]
+        provider = _ExtractionProvider(
+            [
+                _response(
+                    _candidate(
+                        first_item,
+                        kind="preference",
+                        content="The user prefers dark mode.",
+                    )
+                )
+            ]
+        )
+        service = _service(
+            memory_store=memory_store,
+            runtime_store=store,
+            provider=provider,
+        )
+        service.notify_run_terminal(store.get_run_config(run_id), "completed")
+        await _drain(service)
+        memory_id = _active_memories(memory_store)[0]
+
+        prepared = prepare_turn(
+            store,
+            thread_id=thread,
+            branch_id=branch_id,
+            content="A different kind must not retarget the same Memory.",
+            provider_id=_PROVIDER_ID,
+            model_id=_MODEL_ID,
+        )
+        second_item = prepared.initial_events[0].item_id
+        assert second_item is not None
+        provider.responses.append(
+            _response(
+                _candidate(
+                    second_item,
+                    kind="fact",
+                    content="The user prefers light mode.",
+                    memory_id=memory_id,
+                )
+            )
+        )
+        service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
+        await _drain(service)
+
+        record = memory_store.get_memory(memory_id)
+        assert record.kind == "preference"
+        assert record.revision == 1
+        assert record.content == "The user prefers dark mode."
+        assert _active_memories(memory_store) == [memory_id]
     finally:
         memory_store.close()
         store.close()
@@ -714,7 +989,7 @@ async def test_refinement_never_writes_protected_values(tmp_path: Path) -> None:
                     source_item_id=item_id,
                 ),
             )
-            is False
+            == "dropped"
         )
         assert _active_memories(memory_store) == []
     finally:

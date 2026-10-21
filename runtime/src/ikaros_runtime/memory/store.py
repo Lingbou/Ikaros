@@ -202,9 +202,15 @@ class SqliteMemoryStore:
         expected_revision: int,
         content: str,
         client_request_id: str,
+        source: MemorySourceSnapshot | None = None,
+        source_kind: MemorySourceKind | None = None,
     ) -> MemoryMutationReceipt:
         fingerprint = _mutation_fingerprint(memory_id, expected_revision)
         content_digest = _canonical_sha256(content)
+        resolved_source_kind = _resolved_source_kind(
+            source=source,
+            source_kind=source_kind,
+        )
         self._begin_immediate()
         try:
             existing = self._idempotent_mutation_receipt(
@@ -217,42 +223,65 @@ class SqliteMemoryStore:
                 self._connection.commit()
                 return existing
             current = self._current_state(memory_id)
-            _require_active_expected_revision(current, expected_revision)
-            resulting_revision = expected_revision + 1
-            timestamp = utc_now()
-            self._connection.execute(
-                """
-                INSERT INTO memory_revisions(
-                    memory_id, revision, operation, content, content_digest,
-                    content_redacted_at,
-                    source_kind, source_thread_id, source_turn_id, source_item_id,
-                    source_item_digest, created_at
-                ) VALUES (?, ?, 'correct', ?, ?, NULL,
-                          'user_explicit', NULL, NULL, NULL, NULL, ?)
-                """,
-                (memory_id, resulting_revision, content, content_digest, timestamp),
+            receipt = self._append_correction(
+                current,
+                memory_id=memory_id,
+                expected_revision=expected_revision,
+                content=content,
+                content_digest=content_digest,
+                client_request_id=client_request_id,
+                fingerprint=fingerprint,
+                source=source,
+                source_kind=resolved_source_kind,
             )
-            updated = self._connection.execute(
-                """
-                UPDATE memory_records
-                SET current_revision = ?, updated_at = ?
-                WHERE id = ? AND state = 'active' AND current_revision = ?
-                """,
-                (resulting_revision, timestamp, memory_id, expected_revision),
-            )
-            if updated.rowcount != 1:
-                raise MemoryOperationError("memory_revision_conflict")
-            self._write_memory_index(memory_id=memory_id, content=content)
-            self._insert_operation(
+            self._connection.commit()
+            return receipt
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def correct_memory_latest_once(
+        self,
+        *,
+        memory_id: str,
+        content: str,
+        client_request_id: str,
+        source: MemorySourceSnapshot | None = None,
+        source_kind: MemorySourceKind | None = None,
+    ) -> MemoryMutationReceipt:
+        """Append a correction without requiring the caller to know the revision."""
+
+        fingerprint = _latest_mutation_fingerprint(memory_id)
+        content_digest = _canonical_sha256(content)
+        resolved_source_kind = _resolved_source_kind(
+            source=source,
+            source_kind=source_kind,
+        )
+        self._begin_immediate()
+        try:
+            existing = self._idempotent_mutation_receipt(
                 client_request_id=client_request_id,
                 method="memory.correct",
                 fingerprint=fingerprint,
+                content_digest=content_digest,
+            )
+            if existing is not None:
+                self._connection.commit()
+                return existing
+            current = self._current_state(memory_id)
+            receipt = self._append_correction(
+                current,
                 memory_id=memory_id,
-                resulting_revision=resulting_revision,
-                timestamp=timestamp,
+                expected_revision=int(current["current_revision"]),
+                content=content,
+                content_digest=content_digest,
+                client_request_id=client_request_id,
+                fingerprint=fingerprint,
+                source=source,
+                source_kind=resolved_source_kind,
             )
             self._connection.commit()
-            return MemoryMutationReceipt(memory_id, resulting_revision, True)
+            return receipt
         except BaseException:
             self._connection.rollback()
             raise
@@ -263,7 +292,11 @@ class SqliteMemoryStore:
         memory_id: str,
         expected_revision: int,
         client_request_id: str,
+        source: MemorySourceSnapshot | None = None,
+        source_kind: MemorySourceKind | None = None,
     ) -> MemoryMutationReceipt:
+        if source is None and source_kind is not None:
+            raise ValueError("forget source kind requires a source snapshot")
         fingerprint = _mutation_fingerprint(memory_id, expected_revision)
         self._begin_immediate()
         try:
@@ -277,69 +310,203 @@ class SqliteMemoryStore:
                 self._connection.commit()
                 return existing
             current = self._current_state(memory_id)
-            _require_active_expected_revision(current, expected_revision)
-            resulting_revision = expected_revision + 1
-            timestamp = utc_now()
-            self._connection.execute(
-                """
-                INSERT INTO memory_revisions(
-                    memory_id, revision, operation, content, content_digest,
-                    content_redacted_at,
-                    source_kind, source_thread_id, source_turn_id, source_item_id,
-                    source_item_digest, created_at
-                ) VALUES (?, ?, 'forget', NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?)
-                """,
-                (
-                    memory_id,
-                    resulting_revision,
-                    current["source_kind"],
-                    current["source_thread_id"],
-                    current["source_turn_id"],
-                    current["source_item_id"],
-                    timestamp,
-                ),
-            )
-            self._connection.execute(
-                """
-                UPDATE memory_revisions
-                SET content = NULL,
-                    content_digest = NULL,
-                    source_item_digest = NULL,
-                    content_redacted_at = ?
-                WHERE memory_id = ? AND revision < ?
-                """,
-                (timestamp, memory_id, resulting_revision),
-            )
-            updated = self._connection.execute(
-                """
-                UPDATE memory_records
-                SET current_revision = ?, state = 'forgotten', updated_at = ?, forgotten_at = ?
-                WHERE id = ? AND state = 'active' AND current_revision = ?
-                """,
-                (
-                    resulting_revision,
-                    timestamp,
-                    timestamp,
-                    memory_id,
-                    expected_revision,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise MemoryOperationError("memory_revision_conflict")
-            self._write_memory_index(memory_id=memory_id, content=None)
-            self._insert_operation(
-                client_request_id=client_request_id,
-                method="memory.forget",
-                fingerprint=fingerprint,
+            receipt = self._append_forget(
+                current,
                 memory_id=memory_id,
-                resulting_revision=resulting_revision,
-                timestamp=timestamp,
+                expected_revision=expected_revision,
+                client_request_id=client_request_id,
+                fingerprint=fingerprint,
+                source=source,
+                source_kind=source_kind,
             )
             self._connection.commit()
-            return MemoryMutationReceipt(memory_id, resulting_revision, True)
+            return receipt
         except BaseException:
             self._connection.rollback()
             raise
+
+    def forget_memory_latest_once(
+        self,
+        *,
+        memory_id: str,
+        client_request_id: str,
+        source: MemorySourceSnapshot | None = None,
+        source_kind: MemorySourceKind | None = None,
+    ) -> MemoryMutationReceipt:
+        """Append a forget tombstone without requiring the caller to know the revision."""
+
+        if source is None and source_kind is not None:
+            raise ValueError("forget source kind requires a source snapshot")
+        fingerprint = _latest_mutation_fingerprint(memory_id)
+        self._begin_immediate()
+        try:
+            existing = self._idempotent_mutation_receipt(
+                client_request_id=client_request_id,
+                method="memory.forget",
+                fingerprint=fingerprint,
+                content_digest=None,
+            )
+            if existing is not None:
+                self._connection.commit()
+                return existing
+            current = self._current_state(memory_id)
+            receipt = self._append_forget(
+                current,
+                memory_id=memory_id,
+                expected_revision=int(current["current_revision"]),
+                client_request_id=client_request_id,
+                fingerprint=fingerprint,
+                source=source,
+                source_kind=source_kind,
+            )
+            self._connection.commit()
+            return receipt
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def _append_correction(
+        self,
+        current: sqlite3.Row,
+        *,
+        memory_id: str,
+        expected_revision: int,
+        content: str,
+        content_digest: str,
+        client_request_id: str,
+        fingerprint: str,
+        source: MemorySourceSnapshot | None,
+        source_kind: MemorySourceKind,
+    ) -> MemoryMutationReceipt:
+        _require_active_expected_revision(current, expected_revision)
+        resulting_revision = expected_revision + 1
+        timestamp = utc_now()
+        self._connection.execute(
+            """
+            INSERT INTO memory_revisions(
+                memory_id, revision, operation, content, content_digest,
+                content_redacted_at,
+                source_kind, source_thread_id, source_turn_id, source_item_id,
+                source_item_digest, created_at
+            ) VALUES (?, ?, 'correct', ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                memory_id,
+                resulting_revision,
+                content,
+                content_digest,
+                source_kind,
+                source.thread_id if source is not None else None,
+                source.turn_id if source is not None else None,
+                source.item_id if source is not None else None,
+                source.item_digest if source is not None else None,
+                timestamp,
+            ),
+        )
+        updated = self._connection.execute(
+            """
+            UPDATE memory_records
+            SET current_revision = ?, updated_at = ?
+            WHERE id = ? AND state = 'active' AND current_revision = ?
+            """,
+            (resulting_revision, timestamp, memory_id, expected_revision),
+        )
+        if updated.rowcount != 1:
+            raise MemoryOperationError("memory_revision_conflict")
+        self._write_memory_index(memory_id=memory_id, content=content)
+        self._insert_operation(
+            client_request_id=client_request_id,
+            method="memory.correct",
+            fingerprint=fingerprint,
+            memory_id=memory_id,
+            resulting_revision=resulting_revision,
+            timestamp=timestamp,
+        )
+        return MemoryMutationReceipt(memory_id, resulting_revision, True)
+
+    def _append_forget(
+        self,
+        current: sqlite3.Row,
+        *,
+        memory_id: str,
+        expected_revision: int,
+        client_request_id: str,
+        fingerprint: str,
+        source: MemorySourceSnapshot | None,
+        source_kind: MemorySourceKind | None,
+    ) -> MemoryMutationReceipt:
+        _require_active_expected_revision(current, expected_revision)
+        if source is None:
+            resolved_source_kind = str(current["source_kind"])
+            source_thread_id = current["source_thread_id"]
+            source_turn_id = current["source_turn_id"]
+            source_item_id = current["source_item_id"]
+        else:
+            resolved_source_kind = _resolved_source_kind(
+                source=source,
+                source_kind=source_kind,
+            )
+            source_thread_id = source.thread_id
+            source_turn_id = source.turn_id
+            source_item_id = source.item_id
+        resulting_revision = expected_revision + 1
+        timestamp = utc_now()
+        self._connection.execute(
+            """
+            INSERT INTO memory_revisions(
+                memory_id, revision, operation, content, content_digest,
+                content_redacted_at,
+                source_kind, source_thread_id, source_turn_id, source_item_id,
+                source_item_digest, created_at
+            ) VALUES (?, ?, 'forget', NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?)
+            """,
+            (
+                memory_id,
+                resulting_revision,
+                resolved_source_kind,
+                source_thread_id,
+                source_turn_id,
+                source_item_id,
+                timestamp,
+            ),
+        )
+        self._connection.execute(
+            """
+            UPDATE memory_revisions
+            SET content = NULL,
+                content_digest = NULL,
+                source_item_digest = NULL,
+                content_redacted_at = ?
+            WHERE memory_id = ? AND revision < ?
+            """,
+            (timestamp, memory_id, resulting_revision),
+        )
+        updated = self._connection.execute(
+            """
+            UPDATE memory_records
+            SET current_revision = ?, state = 'forgotten', updated_at = ?, forgotten_at = ?
+            WHERE id = ? AND state = 'active' AND current_revision = ?
+            """,
+            (
+                resulting_revision,
+                timestamp,
+                timestamp,
+                memory_id,
+                expected_revision,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise MemoryOperationError("memory_revision_conflict")
+        self._write_memory_index(memory_id=memory_id, content=None)
+        self._insert_operation(
+            client_request_id=client_request_id,
+            method="memory.forget",
+            fingerprint=fingerprint,
+            memory_id=memory_id,
+            resulting_revision=resulting_revision,
+            timestamp=timestamp,
+        )
+        return MemoryMutationReceipt(memory_id, resulting_revision, True)
 
     def get_memory(self, memory_id: str) -> MemoryRecord:
         row = self._connection.execute(
@@ -1032,6 +1199,14 @@ def _mutation_fingerprint(memory_id: str, expected_revision: int) -> str:
         {
             "memoryId": memory_id,
             "expectedRevision": expected_revision,
+        }
+    )
+
+def _latest_mutation_fingerprint(memory_id: str) -> str:
+    return _canonical_sha256(
+        {
+            "memoryId": memory_id,
+            "target": "latest-revision",
         }
     )
 

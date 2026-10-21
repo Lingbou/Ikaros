@@ -205,11 +205,7 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
     assert PROTOCOL_VERSION == 12
-    assert JOURNAL_EVENT_SCHEMA_VERSION == 10
-    assert protocol_manifest()["attachments"] == {
-        "kinds": list(ATTACHMENT_KINDS),
-        "imageMimeTypes": list(ATTACHMENT_IMAGE_MIME_TYPES),
-        "maxPerMessage": ATTACHMENT_MAX_COUNT,
+    assert JOURNAL_EVENT_SCHEMA_VERSION == 11
         "maxBytes": ATTACHMENT_MAX_BYTES,
     }
     assert protocol_manifest()["errors"] == {
