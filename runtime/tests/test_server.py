@@ -1031,6 +1031,7 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "enabled": True,
                 "contextWindow": 32768,
                 "reasoningEffort": None,
+                "reasoningEfforts": [],
             },
             {
                 "providerId": "local",
@@ -1039,6 +1040,7 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "enabled": False,
                 "contextWindow": 32768,
                 "reasoningEffort": None,
+                "reasoningEfforts": [],
             },
         ]
         assert replay["result"]["events"] == []
@@ -1080,6 +1082,7 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "displayName": "Local Model",
                 "enabled": False,
                 "reasoningEffort": None,
+                "reasoningEfforts": [],
                 "contextWindow": 32768,
             }
         ]

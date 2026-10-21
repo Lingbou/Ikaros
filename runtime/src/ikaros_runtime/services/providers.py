@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from ..errors import ConfigError, InvalidParamsError
-from ..providers.base import REASONING_EFFORT_LEVELS
+from ..providers.base import REASONING_EFFORT_LEVELS, REASONING_EFFORT_ORDER
 from ..providers.registry import (
     ConfigStore,
     ModelInput,
@@ -183,7 +183,8 @@ class ProviderService:
         return {"model": summary.to_wire()}
 
     def set_model_limits(self, params: dict[str, Any]) -> dict[str, Any]:
-        if set(params) - {"providerId", "modelId", "contextWindow", "reasoningEffort"}:
+        allowed = {"providerId", "modelId", "contextWindow", "reasoningEffort", "reasoningEfforts"}
+        if set(params) - allowed:
             raise InvalidParamsError("model.set_limits received unsupported parameters")
         if not {"providerId", "modelId", "contextWindow"} <= set(params):
             raise InvalidParamsError(
@@ -192,6 +193,12 @@ class ProviderService:
         provider_id, model_id = params["providerId"], params["modelId"]
         if not isinstance(provider_id, str) or not isinstance(model_id, str):
             raise InvalidParamsError("providerId and modelId must be strings")
+        provider = self._config.get_provider(provider_id)
+        existing_model = (
+            next((item for item in provider.models if item.id == model_id), None)
+            if provider is not None
+            else None
+        )
         reasoning_effort: str | None = None
         if "reasoningEffort" in params:
             raw_effort = params["reasoningEffort"]
@@ -199,23 +206,40 @@ class ProviderService:
                 not isinstance(raw_effort, str) or raw_effort not in REASONING_EFFORT_LEVELS
             ):
                 raise InvalidParamsError(
-                    "reasoningEffort must be null or one of "
-                    + ", ".join(sorted(REASONING_EFFORT_LEVELS))
+                    "reasoningEffort must be null or one of " + ", ".join(REASONING_EFFORT_ORDER)
                 )
             reasoning_effort = raw_effort
-        else:
-            provider = self._config.get_provider(provider_id)
-            existing_model = (
-                next((item for item in provider.models if item.id == model_id), None)
-                if provider is not None
-                else None
+        elif existing_model is not None:
+            reasoning_effort = existing_model.reasoning_effort
+        reasoning_efforts: tuple[str, ...] = ()
+        if "reasoningEfforts" in params:
+            raw_efforts = params["reasoningEfforts"]
+            if not isinstance(raw_efforts, list):
+                raise InvalidParamsError("reasoningEfforts must be an array of level strings")
+            selected: set[str] = set()
+            for level in raw_efforts:
+                if not isinstance(level, str) or level not in REASONING_EFFORT_LEVELS:
+                    raise InvalidParamsError(
+                        "reasoningEfforts entries must be one of "
+                        + ", ".join(REASONING_EFFORT_ORDER)
+                    )
+                selected.add(level)
+            reasoning_efforts = tuple(
+                level for level in REASONING_EFFORT_ORDER if level in selected
             )
-            reasoning_effort = (
-                existing_model.reasoning_effort if existing_model is not None else None
-            )
+            if reasoning_effort is not None and reasoning_effort not in reasoning_efforts:
+                raise InvalidParamsError(
+                    "reasoningEffort must be one of the selected reasoningEfforts"
+                )
+        elif existing_model is not None:
+            reasoning_efforts = existing_model.reasoning_efforts
         try:
             model = self._config.set_model_limits(
-                provider_id, model_id, params["contextWindow"], reasoning_effort
+                provider_id,
+                model_id,
+                params["contextWindow"],
+                reasoning_effort,
+                reasoning_efforts,
             )
         except ConfigError as error:
             raise InvalidParamsError(str(error)) from None

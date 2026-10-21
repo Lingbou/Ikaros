@@ -50,6 +50,7 @@ export interface ModelsSettingsProps {
     providerId: string,
     modelId: string,
     contextWindow: number,
+    reasoningEfforts: string[],
     reasoningEffort: string | null
   ): Promise<void>;
 }
@@ -256,6 +257,10 @@ const REASONING_EFFORT_LEVELS = [
   "max",
   "ultra",
 ] as const;
+
+function canonicalEfforts(levels: readonly string[]): string[] {
+  return REASONING_EFFORT_LEVELS.filter((level) => levels.includes(level));
+}
 
 function Field({
   label,
@@ -1049,6 +1054,7 @@ interface ModelGroup {
   onSetLimits(
     modelId: string,
     contextWindow: number,
+    reasoningEfforts: string[],
     reasoningEffort: string | null
   ): Promise<void>;
 }
@@ -1058,23 +1064,28 @@ function ModelLimitsEditor({ model, onSave }: {
   onSave(
     modelId: string,
     contextWindow: number,
+    reasoningEfforts: string[],
     reasoningEffort: string | null
   ): Promise<void>;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [context, setContext] = useState(String(model.contextWindow));
+  const [efforts, setEfforts] = useState<string[]>(() => canonicalEfforts(model.reasoningEfforts));
   const [effort, setEffort] = useState(model.reasoningEffort ?? "");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const contextWindow = Number(context);
   const valid = Number.isSafeInteger(contextWindow) && contextWindow > 1;
   const changed =
-    contextWindow !== model.contextWindow || effort !== (model.reasoningEffort ?? "");
+    contextWindow !== model.contextWindow ||
+    effort !== (model.reasoningEffort ?? "") ||
+    efforts.join(",") !== canonicalEfforts(model.reasoningEfforts).join(",");
   const updateOpen = (nextOpen: boolean) => {
     if (saving) return;
     if (nextOpen) {
       setContext(String(model.contextWindow));
+      setEfforts(canonicalEfforts(model.reasoningEfforts));
       setEffort(model.reasoningEffort ?? "");
       setFailed(false);
     }
@@ -1086,7 +1097,7 @@ function ModelLimitsEditor({ model, onSave }: {
     setSaving(true);
     setFailed(false);
     try {
-      await onSave(model.id, contextWindow, effort === "" ? null : effort);
+      await onSave(model.id, contextWindow, canonicalEfforts(efforts), effort === "" ? null : effort);
       setOpen(false);
     } catch {
       setFailed(true);
@@ -1141,18 +1152,59 @@ function ModelLimitsEditor({ model, onSave }: {
               </div>
               <div className="mt-4">
                 <Field
-                  label={t("settings.models.reasoningEffort")}
+                  label={t("settings.models.reasoningLevels")}
+                  hint={t("settings.models.reasoningLevelsHint")}
+                >
+                  <div
+                    role="group"
+                    aria-label={t("settings.models.reasoningLevels")}
+                    className="flex flex-wrap gap-1.5"
+                  >
+                    {REASONING_EFFORT_LEVELS.map((level) => {
+                      const active = efforts.includes(level);
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          role="checkbox"
+                          aria-checked={active}
+                          disabled={saving}
+                          onClick={() => {
+                            if (active && effort === level) setEffort("");
+                            setEfforts((current) =>
+                              current.includes(level)
+                                ? current.filter((candidate) => candidate !== level)
+                                : canonicalEfforts([...current, level])
+                            );
+                          }}
+                          className={cx(
+                            "h-7 rounded-lg border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50",
+                            active
+                              ? "border-[var(--muted-strong)] bg-[var(--surface-hover)] text-[var(--text)]"
+                              : "border-[var(--border)] text-[var(--muted-strong)] hover:text-[var(--text)]",
+                          )}
+                        >
+                          {level}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Field>
+              </div>
+              <div className="mt-4">
+                <Field
+                  label={t("settings.models.reasoningDefault")}
                   hint={t("settings.models.reasoningHint")}
                 >
                   <select
-                    aria-label={t("settings.models.reasoningEffort")}
+                    aria-label={t("settings.models.reasoningDefault")}
                     value={effort}
-                    disabled={saving}
+                    disabled={saving || efforts.length === 0}
                     onChange={(event) => setEffort(event.currentTarget.value)}
                     className={cx(inputClassName, "disabled:opacity-60")}
                   >
                     <option value="">{t("settings.models.reasoningAuto")}</option>
-                    {REASONING_EFFORT_LEVELS.map((level) => (
+                    {efforts.map((level) => (
                       <option key={level} value={level}>
                         {level}
                       </option>
@@ -1246,9 +1298,12 @@ function ModelsGroup({
                   {t("settings.models.capacitySummary", {
                     context: model.contextWindow.toLocaleString()
                   })}
-                  {model.reasoningEffort
-                    ? ` · ${t("settings.models.reasoningSummary", { effort: model.reasoningEffort })}`
+                  {model.reasoningEfforts.length
+                    ? ` · ${t("settings.models.reasoningSummary", {
+                        efforts: model.reasoningEfforts.join(", "),
+                      })}`
                     : null}
+                  {model.reasoningEffort ? ` (${model.reasoningEffort})` : null}
                 </p>
               </div>
               <ModelLimitsEditor model={model} onSave={group.onSetLimits} />
@@ -1291,8 +1346,16 @@ export function ModelsSettings({
           onSetLimits: (
             modelId: string,
             contextWindow: number,
+            reasoningEfforts: string[],
             reasoningEffort: string | null
-          ) => onSetModelLimits(provider.id, modelId, contextWindow, reasoningEffort),
+          ) =>
+            onSetModelLimits(
+              provider.id,
+              modelId,
+              contextWindow,
+              reasoningEfforts,
+              reasoningEffort
+            ),
           onToggle: (modelId: string, enabled: boolean) => {
             setMutationFailed(false);
             void onSetModelEnabled(provider.id, modelId, enabled).catch(() =>

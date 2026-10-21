@@ -463,8 +463,20 @@ export function SettingsPage() {
             <ModelsSettings
               providers={providers}
               models={models}
-              onSetModelLimits={(providerId, modelId, contextWindow, reasoningEffort) =>
-                setModelLimits({ providerId, modelId, contextWindow, reasoningEffort })
+              onSetModelLimits={(
+                providerId,
+                modelId,
+                contextWindow,
+                reasoningEfforts,
+                reasoningEffort
+              ) =>
+                setModelLimits({
+                  providerId,
+                  modelId,
+                  contextWindow,
+                  reasoningEfforts,
+                  reasoningEffort,
+                })
               }
               onSetModelEnabled={(providerId, modelId, enabled) =>
                 setModelEnabled({ providerId, modelId, enabled })

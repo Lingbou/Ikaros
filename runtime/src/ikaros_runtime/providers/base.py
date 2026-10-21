@@ -34,9 +34,17 @@ class ModelInput:
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
 
 
-REASONING_EFFORT_LEVELS: Final = frozenset(
-    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+REASONING_EFFORT_ORDER: Final = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
 )
+REASONING_EFFORT_LEVELS: Final = frozenset(REASONING_EFFORT_ORDER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +55,7 @@ class ModelConfig:
     supports_tools: bool
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
     reasoning_effort: str | None = None
+    reasoning_efforts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)

@@ -382,7 +382,8 @@ describe("SettingsPage", () => {
           displayName: model.displayName,
           contextWindow: 32768,
           enabled: true,
-          reasoningEffort: null
+          reasoningEffort: null,
+          reasoningEfforts: [],
         }))
       });
     });
@@ -504,7 +505,8 @@ describe("SettingsPage", () => {
           displayName: "DeepSeek Chat",
           contextWindow: 32768,
           enabled: true,
-          reasoningEffort: null
+          reasoningEffort: null,
+          reasoningEfforts: [],
         }
       ],
       disconnectProvider
@@ -684,7 +686,8 @@ describe("SettingsPage", () => {
           displayName: model.displayName,
           contextWindow: 32768,
           enabled: true,
-          reasoningEffort: null
+          reasoningEffort: null,
+          reasoningEfforts: [],
         }))
       });
     });
@@ -882,7 +885,8 @@ describe("SettingsPage", () => {
           displayName: "Persisted Model",
           contextWindow: 32768,
           enabled: false,
-          reasoningEffort: null
+          reasoningEffort: null,
+          reasoningEfforts: [],
         }
       ]
     });
@@ -1135,6 +1139,7 @@ describe("model capacity settings", () => {
           enabled: true,
           contextWindow: 32768,
           reasoningEffort: null,
+          reasoningEfforts: [],
         },
       ],
       setModelLimits,
@@ -1158,22 +1163,52 @@ describe("model capacity settings", () => {
     expect(within(dialog).getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
   });
 
-  it("saves the reasoning effort together with the context window", async () => {
+  it("saves multiple reasoning levels with a supported default", async () => {
     const setModelLimits = openModels();
     fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Reasoning effort" }), {
+    for (const level of ["low", "high", "max"]) {
+      fireEvent.click(within(dialog).getByRole("checkbox", { name: level }));
+    }
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Default level" }), {
       target: { value: "high" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(setModelLimits).toHaveBeenCalledWith({
         providerId: "deepseek",
         modelId: "model",
         contextWindow: 32768,
+        reasoningEfforts: ["low", "high", "max"],
         reasoningEffort: "high",
       }),
+    );
+  });
+
+  it("clears the default level when its level is unchecked", () => {
+    openModels();
+    fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
+
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "high" }));
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Default level" }), {
+      target: { value: "high" },
+    });
+    expect(within(dialog).getByRole("combobox", { name: "Default level" })).toHaveProperty(
+      "value",
+      "high",
+    );
+
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "high" }));
+
+    expect(
+      within(dialog).getByRole("checkbox", { name: "high" }).getAttribute("aria-checked"),
+    ).toBe("false");
+    expect(within(dialog).getByRole("combobox", { name: "Default level" })).toHaveProperty(
+      "value",
+      "",
     );
   });
 
@@ -1191,6 +1226,7 @@ describe("model capacity settings", () => {
         modelId: "model",
         contextWindow: 65536,
         reasoningEffort: null,
+        reasoningEfforts: [],
       })
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());

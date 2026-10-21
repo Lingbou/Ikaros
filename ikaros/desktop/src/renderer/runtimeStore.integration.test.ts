@@ -79,6 +79,7 @@ function installRuntimeBridge(api: unknown): void {
         contextWindow: 32768,
         enabled: true,
         reasoningEffort: null,
+        reasoningEfforts: [],
       },
     ],
   };
@@ -324,6 +325,7 @@ function modelSelectionFixture() {
     displayName: model.id,
     contextWindow: 32768,
     reasoningEffort: null,
+    reasoningEfforts: [],
   }));
   const history = threads.map((thread, index) => {
     const page = singleTurnHistoryPage(thread, [], "completed", 0);
@@ -915,6 +917,7 @@ describe("Runtime-backed renderer store", () => {
               contextWindow: 32768,
               enabled: true,
               reasoningEffort: null,
+              reasoningEfforts: [],
             },
           ],
         })),
@@ -985,6 +988,7 @@ describe("Runtime-backed renderer store", () => {
               contextWindow: 32768,
               enabled: true,
               reasoningEffort: null,
+              reasoningEfforts: [],
             },
             {
               providerId: "test-provider",
@@ -993,6 +997,7 @@ describe("Runtime-backed renderer store", () => {
               contextWindow: 32768,
               enabled: true,
               reasoningEffort: null,
+              reasoningEfforts: [],
             },
           ],
         })),
@@ -1054,6 +1059,7 @@ describe("Runtime-backed renderer store", () => {
         contextWindow: 32768,
         enabled: true,
         reasoningEffort: null,
+        reasoningEfforts: [],
       },
       {
         providerId: "custom-provider",
@@ -1062,6 +1068,7 @@ describe("Runtime-backed renderer store", () => {
         contextWindow: 32768,
         enabled: true,
         reasoningEffort: null,
+        reasoningEfforts: [],
       },
     ];
     const setModelEnabled = vi.fn(async ({
@@ -1172,6 +1179,7 @@ describe("Runtime-backed renderer store", () => {
         contextWindow: 32768,
         enabled: true,
         reasoningEffort: null,
+        reasoningEfforts: [],
       },
     ];
     const candidates = [
@@ -1255,6 +1263,7 @@ describe("Runtime-backed renderer store", () => {
       contextWindow: 32768,
       enabled: true,
       reasoningEffort: null,
+      reasoningEfforts: [],
     };
     const freshModel: RuntimeModelSummary = {
       providerId: "fresh-provider",
@@ -1263,6 +1272,7 @@ describe("Runtime-backed renderer store", () => {
       contextWindow: 32768,
       enabled: true,
       reasoningEffort: null,
+      reasoningEfforts: [],
     };
     const listProviders = vi
       .fn()
@@ -4481,6 +4491,7 @@ describe("Runtime-backed renderer store", () => {
       contextWindow: 32768,
       enabled: true,
       reasoningEffort: null,
+      reasoningEfforts: [],
     });
     let resolveStaleProviders!: (value: { providers: RuntimeProviderSummary[] }) => void;
     let resolveStaleModels!: (value: { models: RuntimeModelSummary[] }) => void;
