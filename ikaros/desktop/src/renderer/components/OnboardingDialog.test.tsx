@@ -127,9 +127,25 @@ describe("first-run onboarding", () => {
       target: { value: "sk-test" },
     });
     fireEvent.change(screen.getByLabelText("Model ID"), { target: { value: "deepseek-chat" } });
+    fireEvent.click(screen.getByText("Advanced"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "high" }));
+    fireEvent.change(screen.getByLabelText("Default level"), { target: { value: "high" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     await waitFor(() => expect(configureProvider).toHaveBeenCalledOnce());
+    expect(configureProvider).toHaveBeenCalledWith({
+      kind: "deepseek",
+      apiKey: "sk-test",
+      models: [
+        {
+          id: "deepseek-chat",
+          displayName: "deepseek-chat",
+          contextWindow: 32768,
+          reasoningEfforts: ["high"],
+          reasoningEffort: "high"
+        }
+      ]
+    });
     expect(await screen.findByText("You are all set")).toBeVisible();
     expect(screen.getByText("Step 3 of 3")).toBeVisible();
     expect(screen.getByText("DeepSeek")).toBeVisible();

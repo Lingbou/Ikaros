@@ -635,7 +635,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   `https://api.deepseek.com/v1`。
 - 思考等级：每个模型可多选支持的等级（none/minimal/low/medium/high/xhigh/max/ultra），
   并单独指定默认等级；默认等级会作为 `reasoning_effort` 随请求下发，自动则不下发。
-  配置入口：设置 → 模型 → 单个模型的设置弹窗。
+  配置入口：设置 → 模型 → 单个模型的设置弹窗，以及 Provider 接入表单（含初始化向导第 2 步）的模型「高级」区。
 - Custom Provider：任意 OpenAI Chat Completions 兼容端点（Base URL、可选 API key、
   可选自定义 header、手动录入 model）。
 - 首次运行（没有已连接的 Provider 且未完成初始化）时显示三步初始化向导：① 昵称 /

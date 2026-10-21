@@ -564,6 +564,15 @@ def _models(
         seen.add(model_id)
         previous = existing_by_id.get(model_id)
         context_window = _context_window(item.context_window)
+        reasoning_efforts = _reasoning_effort_list(list(item.reasoning_efforts))
+        reasoning_effort = _reasoning_effort_value(item.reasoning_effort)
+        if (
+            reasoning_effort is not None
+            and reasoning_effort not in reasoning_efforts
+        ):
+            raise ConfigError(
+                "default reasoning effort must be one of the selected levels"
+            )
         models.append(
             ModelConfig(
                 id=model_id,
@@ -571,8 +580,8 @@ def _models(
                 enabled=previous.enabled if previous is not None else True,
                 supports_tools=previous.supports_tools if previous is not None else True,
                 context_window=context_window,
-                reasoning_effort=previous.reasoning_effort if previous is not None else None,
-                reasoning_efforts=previous.reasoning_efforts if previous is not None else (),
+                reasoning_effort=reasoning_effort,
+                reasoning_efforts=reasoning_efforts,
             )
         )
     return tuple(models)

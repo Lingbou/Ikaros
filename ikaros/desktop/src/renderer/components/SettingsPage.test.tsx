@@ -1281,7 +1281,7 @@ describe("model capacity settings", () => {
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Providers" }));
     fireEvent.click(screen.getByRole("button", { name: "Connect Custom provider" }));
-    const advanced = screen.getByText("Advanced · Context window").closest("details");
+    const advanced = screen.getByText("Advanced").closest("details");
     expect(advanced).toHaveProperty("open", false);
     expect(advanced?.querySelector('input[type="number"]')).toHaveProperty("value", "32768");
   });

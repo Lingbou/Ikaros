@@ -494,6 +494,8 @@ export interface RuntimeModelInput {
   contextWindow: number;
   id: string;
   displayName: string;
+  reasoningEfforts?: string[];
+  reasoningEffort?: string | null;
 }
 
 export type RuntimeDiscoveredModel = RuntimeModelInput;

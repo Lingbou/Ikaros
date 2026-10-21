@@ -82,6 +82,40 @@ def test_deepseek_write_is_explicit_atomic_and_redacted(tmp_path: Path) -> None:
         assert (home / "config.yaml").stat().st_mode & 0o777 == 0o600
 
 
+def test_configure_models_accept_reasoning_levels(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path / ".ikaros")
+
+    store.configure_deepseek(
+        api_key="sk-test",
+        models=[
+            ModelInput(
+                "deepseek-chat",
+                "DeepSeek Chat",
+                32768,
+                ("high", "low"),
+                "high",
+            )
+        ],
+    )
+
+    summary = store.model_summaries()[0]
+    assert summary.reasoning_efforts == ("low", "high")
+    assert summary.reasoning_effort == "high"
+
+    with pytest.raises(ConfigError):
+        store.configure_deepseek(
+            api_key="sk-test",
+            models=[
+                ModelInput(
+                    "deepseek-chat",
+                    "DeepSeek Chat",
+                    32768,
+                    ("low",),
+                    "high",
+                )
+            ],
+        )
+
 def test_deepseek_disconnect_removes_models_and_is_idempotent(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path)
     store.configure_deepseek(api_key="sk-private", models=[model()])

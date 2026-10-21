@@ -48,6 +48,8 @@ class ModelInput:
     id: str
     display_name: str
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
+    reasoning_efforts: tuple[str, ...] = ()
+    reasoning_effort: str | None = None
 
 
 REASONING_EFFORT_ORDER: Final = (
