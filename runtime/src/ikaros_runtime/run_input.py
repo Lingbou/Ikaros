@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from .domain import ContextItem, JournalEvent, JsonObject, SkillDescriptor, WorkspaceSummary
@@ -149,12 +149,15 @@ class ContextDataBlock:
 
 @dataclass(frozen=True, slots=True)
 class ProviderExecutionSnapshot:
+    # Public provider details derive the fingerprint and need not participate in
+    # equality once that fingerprint is frozen.
     provider_id: str
-    origin: str
-    base_url: str | None
+    origin: str = field(compare=False)
+    base_url: str | None = field(compare=False)
     model_id: str
-    supports_tools: bool
+    supports_tools: bool = field(compare=False)
     context_window: int = 32768
+    _fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         _nonempty("provider ID", self.provider_id)
@@ -165,6 +168,34 @@ class ProviderExecutionSnapshot:
         if not isinstance(self.supports_tools, bool):
             raise ValueError("model Tool capability is invalid")
         _validate_context_window(self.context_window)
+        object.__setattr__(self, "_fingerprint", canonical_sha256(self.public_wire()))
+
+    @classmethod
+    def _from_persisted(
+        cls,
+        *,
+        provider_id: str,
+        model_id: str,
+        context_window: int,
+        fingerprint: str,
+    ) -> ProviderExecutionSnapshot:
+        # A persisted RunConfig keeps only the public fingerprint, not the
+        # private provider configuration that produced it.
+        snapshot = cls(
+            provider_id=provider_id,
+            origin="persisted",
+            base_url=None,
+            model_id=model_id,
+            supports_tools=False,
+            context_window=context_window,
+        )
+        _sha256("public Provider configuration fingerprint", fingerprint)
+        object.__setattr__(snapshot, "_fingerprint", fingerprint)
+        return snapshot
+
+    @property
+    def fingerprint(self) -> str:
+        return self._fingerprint
 
     def public_wire(self) -> JsonObject:
         return {
@@ -175,10 +206,6 @@ class ProviderExecutionSnapshot:
             "supportsTools": self.supports_tools,
             "contextWindow": self.context_window,
         }
-
-    @property
-    def fingerprint(self) -> str:
-        return canonical_sha256(self.public_wire())
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,23 +386,55 @@ class RunConfigTemplate:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunConfig:
+    """A Run scope paired with the one immutable template that owns its shared facts."""
+
     user_item_id: str
     thread_id: str
     branch_id: str
     turn_id: str
     run_id: str
     workspace: WorkspaceSummary | None
-    provider_id: str
-    model_id: str
-    public_provider_config_fingerprint: str
-    execution_policy: str
-    skills: tuple[SkillDescriptor, ...]
-    tools: tuple[ToolDefinitionSnapshot, ...]
-    output_style: InstructionBlock
-    identity_core: InstructionBlock | None
-    skill_catalog: InstructionBlock | None
+    template: RunConfigTemplate
 
-    context_window: int = 32768
+    @property
+    def provider_id(self) -> str:
+        return self.template.provider.provider_id
+
+    @property
+    def model_id(self) -> str:
+        return self.template.provider.model_id
+
+    @property
+    def public_provider_config_fingerprint(self) -> str:
+        return self.template.provider.fingerprint
+
+    @property
+    def context_window(self) -> int:
+        return self.template.provider.context_window
+
+    @property
+    def execution_policy(self) -> str:
+        return self.template.execution_policy
+
+    @property
+    def skills(self) -> tuple[SkillDescriptor, ...]:
+        return self.template.skills
+
+    @property
+    def tools(self) -> tuple[ToolDefinitionSnapshot, ...]:
+        return self.template.tools
+
+    @property
+    def output_style(self) -> InstructionBlock:
+        return self.template.output_style
+
+    @property
+    def identity_core(self) -> InstructionBlock | None:
+        return self.template.identity_core
+
+    @property
+    def skill_catalog(self) -> InstructionBlock | None:
+        return self.template.skill_catalog
 
     @property
     def maximum_input_tokens(self) -> int:
@@ -390,36 +449,14 @@ class RunConfig:
         return max(1, self.maximum_input_tokens // 4)
 
     def __post_init__(self) -> None:
-        _validate_context_window(self.context_window)
         for label, value in (
             ("User Item ID", self.user_item_id),
             ("Thread ID", self.thread_id),
             ("Branch ID", self.branch_id),
             ("Turn ID", self.turn_id),
             ("Run ID", self.run_id),
-            ("Provider ID", self.provider_id),
-            ("Model ID", self.model_id),
-            ("execution policy", self.execution_policy),
         ):
             _nonempty(label, value)
-        _sha256(
-            "public Provider configuration fingerprint",
-            self.public_provider_config_fingerprint,
-        )
-        object.__setattr__(self, "skills", _skill_snapshot(self.skills))
-        object.__setattr__(self, "tools", tuple(self.tools))
-        _unique_names("Tool", (tool.name for tool in self.tools))
-        _unique_names("Skill", (skill.name for skill in self.skills))
-        if self.skills != tuple(sorted(self.skills, key=lambda skill: skill.name)):
-            raise ValueError("Skill snapshot must be sorted")
-        if (self.skill_catalog is None) != (not self.skills):
-            raise ValueError("Skill catalog does not match the Skill snapshot")
-        _validate_instruction_slots(
-            output_style=self.output_style,
-            identity_core=self.identity_core,
-            skill_catalog=self.skill_catalog,
-        )
-        _validate_skill_catalog_content(self.skills, self.skill_catalog)
 
     @classmethod
     def from_template(
@@ -440,16 +477,7 @@ class RunConfig:
             turn_id=turn_id,
             run_id=run_id,
             workspace=workspace,
-            provider_id=template.provider.provider_id,
-            model_id=template.provider.model_id,
-            public_provider_config_fingerprint=template.provider.fingerprint,
-            execution_policy=template.execution_policy,
-            skills=template.skills,
-            tools=template.tools,
-            output_style=template.output_style,
-            identity_core=template.identity_core,
-            skill_catalog=template.skill_catalog,
-            context_window=template.provider.context_window,
+            template=template,
         )
 
     @property
@@ -465,6 +493,8 @@ class RunConfig:
         return tuple(tool.to_definition() for tool in self.tools)
 
     def to_wire(self) -> JsonObject:
+        template = self.template
+        provider = template.provider
         return {
             "userItemId": self.user_item_id,
             "threadId": self.thread_id,
@@ -472,59 +502,78 @@ class RunConfig:
             "turnId": self.turn_id,
             "runId": self.run_id,
             "workspace": self.workspace.to_wire() if self.workspace is not None else None,
-            "providerId": self.provider_id,
-            "modelId": self.model_id,
-            "publicProviderConfigFingerprint": self.public_provider_config_fingerprint,
-            "executionPolicy": self.execution_policy,
-            "skills": [skill.to_wire() for skill in self.skills],
-            "tools": [tool.to_wire() for tool in self.tools],
+            "providerId": provider.provider_id,
+            "modelId": provider.model_id,
+            "publicProviderConfigFingerprint": provider.fingerprint,
+            "executionPolicy": template.execution_policy,
+            "skills": [skill.to_wire() for skill in template.skills],
+            "tools": [tool.to_wire() for tool in template.tools],
             "instructions": {
-                "outputStyle": self.output_style.to_wire(),
+                "outputStyle": template.output_style.to_wire(),
                 "identityCore": (
-                    self.identity_core.to_wire() if self.identity_core is not None else None
+                    template.identity_core.to_wire() if template.identity_core is not None else None
                 ),
                 "skillCatalog": (
-                    self.skill_catalog.to_wire() if self.skill_catalog is not None else None
+                    template.skill_catalog.to_wire() if template.skill_catalog is not None else None
                 ),
             },
-            "contextWindow": self.context_window,
+            "contextWindow": provider.context_window,
         }
 
     @classmethod
     def from_wire(cls, value: object) -> RunConfig:
         row = _object(value, "Run configuration", _RUN_CONFIG_KEYS)
-        workspace_value = row["workspace"]
-        workspace = _workspace_from_wire(workspace_value)
+        workspace = _workspace_from_wire(row["workspace"])
         skills_value = row["skills"]
         tools_value = row["tools"]
         instructions = _object(row["instructions"], "instruction slots", _INSTRUCTION_SLOT_KEYS)
         if not isinstance(skills_value, list) or not isinstance(tools_value, list):
             raise ValueError("Run configuration snapshots are invalid")
+        user_item_id = _as_str(row["userItemId"])
+        thread_id = _as_str(row["threadId"])
+        branch_id = _as_str(row["branchId"])
+        turn_id = _as_str(row["turnId"])
+        run_id = _as_str(row["runId"])
+        provider_id = _as_str(row["providerId"])
+        model_id = _as_str(row["modelId"])
+        fingerprint = _as_str(row["publicProviderConfigFingerprint"])
+        execution_policy = _as_str(row["executionPolicy"])
+        skills = tuple(SkillDescriptor.from_wire(skill) for skill in skills_value)
+        tools = tuple(ToolDefinitionSnapshot.from_wire(tool) for tool in tools_value)
+        output_style = InstructionBlock.from_wire(instructions["outputStyle"])
+        identity_core = (
+            InstructionBlock.from_wire(instructions["identityCore"])
+            if instructions["identityCore"] is not None
+            else None
+        )
+        skill_catalog = (
+            InstructionBlock.from_wire(instructions["skillCatalog"])
+            if instructions["skillCatalog"] is not None
+            else None
+        )
+        context_window = _as_int(row["contextWindow"])
+        template = RunConfigTemplate(
+            provider=ProviderExecutionSnapshot._from_persisted(
+                provider_id=provider_id,
+                model_id=model_id,
+                context_window=context_window,
+                fingerprint=fingerprint,
+            ),
+            execution_policy=execution_policy,
+            skills=skills,
+            tools=tools,
+            output_style=output_style,
+            identity_core=identity_core,
+            skill_catalog=skill_catalog,
+        )
         return cls(
-            user_item_id=_as_str(row["userItemId"]),
-            thread_id=_as_str(row["threadId"]),
-            branch_id=_as_str(row["branchId"]),
-            turn_id=_as_str(row["turnId"]),
-            run_id=_as_str(row["runId"]),
+            user_item_id=user_item_id,
+            thread_id=thread_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            run_id=run_id,
             workspace=workspace,
-            provider_id=_as_str(row["providerId"]),
-            model_id=_as_str(row["modelId"]),
-            public_provider_config_fingerprint=_as_str(row["publicProviderConfigFingerprint"]),
-            execution_policy=_as_str(row["executionPolicy"]),
-            skills=tuple(SkillDescriptor.from_wire(skill) for skill in skills_value),
-            tools=tuple(ToolDefinitionSnapshot.from_wire(tool) for tool in tools_value),
-            output_style=InstructionBlock.from_wire(instructions["outputStyle"]),
-            identity_core=(
-                InstructionBlock.from_wire(instructions["identityCore"])
-                if instructions["identityCore"] is not None
-                else None
-            ),
-            skill_catalog=(
-                InstructionBlock.from_wire(instructions["skillCatalog"])
-                if instructions["skillCatalog"] is not None
-                else None
-            ),
-            context_window=_as_int(row["contextWindow"]),
+            template=template,
         )
 
 

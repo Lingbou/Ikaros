@@ -241,7 +241,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `compaction.py` — 确定性裁剪（保留工具单元、700 字节记录截断）与压缩源构建。
 - `context.py` — 上下文构建：指令、历史、Memory 包装、状态块到消息的装配。
 - `history.py` — 历史选择：32 Turn/页、连续后缀、工具成对、省略边界。
-- `loop.py` — Agent 主循环（1,219 行）：执行 Run、流式处理、工具调度、压缩、
+- `loop.py` — Agent 主循环：执行 Run、流式处理、工具调度、压缩、
   完成检查与终结。
 - `model_input.py` — 单步模型输入计划（ModelInputPlan）与校验。
 - `scheduler.py` — 单 worker 调度：预留/激活/取消/steer 与关闭顺序。
@@ -253,7 +253,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `retrieval.py` — 确定性混合召回：FTS5(BM25) 池 + 关键词重叠池，RRF（k=60）
   融合；候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
 - `schema.py` — memory.db schema 2 的 DDL 与逐字节校验（含 FTS5 召回索引）。
-- `store.py` — memory.db SQLite 所有者（943 行）：CRUD、revision、墓碑、操作回执、
+- `store.py` — memory.db SQLite 所有者：CRUD、revision、墓碑、操作回执、
   FTS 索引维护与 BM25 排名。
 
 `protocol/`：
@@ -270,10 +270,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `base.py` — ProviderAdapter 协议、ProviderRequest 与内部事件词汇。
 - `model_defaults.py` — 默认上下文窗口：DeepSeek V4 三个模型 1,000,000；未知 32,768。
 - `registry.py` — Provider/model 配置解析、注册表、DeepSeek 发现、密钥保护
-  （752 行）。
+  。
 - `openai_compatible/__init__.py` — 适配器导出。
 - `openai_compatible/adapter.py` — 流式请求、重试（4/5）、超时（10/30/300 秒）、
-  错误归一化（581 行）。
+  错误归一化。
 - `openai_compatible/discovery.py` — `/models` 发现：响应 ≤1 MB、≤1,000 个模型。
 - `openai_compatible/streaming.py` — SSE 解析、工具参数分片、usage 装配。
 
@@ -320,10 +320,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `journal.py` — Journal 追加与读取、事件 schema 版本校验。
 - `maintenance.py` — check / backup / repair 的完整实现与校验流程。
 - `processes.py` — 进程事实读取；重启恢复只回放观察，永不启动命令。
-- `projections.py` — 投影重建与一致性校验（1,894 行）。
+- `projections.py` — 投影重建与一致性校验。
 - `schema.py` — state.db schema 14 的规范 DDL。
 - `session_provenance.py` — Memory 来源 Item 的只读校验（schema 1）。
-- `store.py` — 主 SQLite 存储（2,750 行）：Threads/Turns/Runs/Items/Journal/
+- `store.py` — 主 SQLite 存储：Threads/Turns/Runs/Items/Journal/
   进程/文件/usage 的全部查询与事务。
 - `thread_catalog.py` — 目录 keyset 分页（默认 50、最大 100、作用域绑定游标）。
 - `thread_history.py` — 回合分页与子记录装配（默认 50、最大 100）。
@@ -419,20 +419,20 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 `src/main/`（Electron 主进程）：
 
 - `index.ts` — 主进程入口：装配窗口、IPC、RuntimeHost 与应用生命周期。
-- `ipc.ts` — 类型化 IPC 注册与转发（`registerDesktopIpc`，579 行），并接线后台
+- `ipc.ts` — 类型化 IPC 注册与转发（`registerDesktopIpc`），并接线后台
   命令终态通知。
 - `backgroundProcessNotifications.ts` — 后台命令终态检测与 Electron Notification
-  触发/去重/点击聚焦（135 行）。
+  触发/去重/点击聚焦。
 - `lifecycle.ts` — 退出前等待 Runtime 干净关闭。
-- `preferences.ts` — `ui-preferences.json` 读写、校验、原生主题同步（340 行）。
+- `preferences.ts` — `ui-preferences.json` 读写、校验、原生主题同步。
 - `runtime/wire.ts` — JSON-RPC 信封与版本校验：方法 / 事件白名单、initialize
-  manifest、Memory 错误码映射与 process.recorded 字段校验（522 行）。
+  manifest、Memory 错误码映射与 process.recorded 字段校验。
 - `runtimeHost.ts` — Runtime 子进程监督：启动/认证/WS 重连/进程重启/状态通知
-  （1,164 行）。
+  。
 - `runtimePaths.ts` — 路径解析：Runtime home（`IKAROS_HOME` / `~/.ikaros`）、开发态
-  checkout Runtime 根与 venv 解释器（25 行）。
+  checkout Runtime 根与 venv 解释器。
 - `runtimeProvision.ts` — 内置 Runtime payload：读清单、校验归档 SHA-256、解压到
-  `~/.ikaros/runtime/<payload version>/` 并写就绪标记（307 行）。
+  `~/.ikaros/runtime/<payload version>/` 并写就绪标记。
 - `security.ts` — 渲染信任策略与窗口安全设置。
 - `window.ts` — 创建主窗口、标题栏选项、开发/生产渲染地址。
 
@@ -449,7 +449,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `platform.ts` — 偏好类型与默认值：语言、字体、侧边栏 220–520、用户名 ≤32、主题
   结构与桌面 API 接口。
 - `runtime.ts` — 全部 Runtime DTO 类型：Thread/Turn/Run/Item、进程、文件、Memory、
-  Provider/Model、usage（739 行）。
+  Provider/Model、usage。
 - `theme.ts` — 颜色工具：十六进制规范化、混色、可读文字色。
 
 `src/renderer/`（React 渲染层）：
@@ -457,7 +457,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `index.html` / `main.tsx` — 渲染入口 HTML 与 React 挂载。
 - `App.tsx` — 根组件：Runtime 初始化与重试、全局快捷键（Ctrl/Cmd+K 搜索、
   Ctrl/Cmd+N 新对话）、设置页与对话页切换。
-- `store.ts` — 全局状态与动作（3,653 行）：Thread/详情缓存、Run 活动投影、草稿、
+- `store.ts` — 全局状态与动作：Thread/详情缓存、Run 活动投影、草稿、
   设置导航、文件面板等。
 - `runtimeClient.ts` — WebSocket JSON-RPC 客户端封装与错误类型。
 - `runtimeProjection.ts` — 事件 → UI 投影：目录、Thread、历史、Projects。
@@ -465,35 +465,35 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `runtimeStore.liveEvidence.ts` — live 证据校验（工具配对完整性）。
 - `domain.ts` — 渲染领域类型与查找辅助（threads/projects/事件文本）。
 - `eventCopy.ts` — 事件文案的本地化解析。
-- `i18n.ts` — en / zh-CN 双语文案表与 `useTranslation`（1,041 行）。
+- `i18n.ts` — en / zh-CN 双语文案表与 `useTranslation`。
 - `platformPreferences.ts` — 偏好读取 hook。
 - `applyUiPreferences.ts` — 把偏好应用到文档（主题、字体、动效、颜色变量）。
 - `profileUsage.ts` — Profile 图表数据：周/日网格、月份标签、紧凑数字格式。
 - `localProfile.ts` — 本地用户名默认值与首字母。
-- `styles.css` — Tailwind 入口与全局样式（695 行）。
+- `styles.css` — Tailwind 入口与全局样式。
 
 `src/renderer/components/`（界面组件）：
 
 - `AppearanceSettings.tsx` — 外观设置：主题、颜色、字体、侧边栏、动效。
 - `ArchivedThreadsDialog.tsx` — 归档对话管理对话框（取消归档、空态、错误态）。
-- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、模型选择与运行状态提示（311 行）。
+- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、模型选择与运行状态提示。
 - `ConversationHeader.tsx` — 会话标题栏：重命名/归档菜单、Model 标识。
 - `CreateProjectDialog.tsx` — 新建项目（选择工作区文件夹）。
-- `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口（526 行）。
-- `EventFeed.tsx` — 对话事件流：虚拟滚动、占位、回合导航快捷键（539 行）。
+- `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口。
+- `EventFeed.tsx` — 对话事件流：虚拟滚动、占位、回合导航快捷键。
 - `FilePanel.tsx` — 右侧文件查看器：当前内容/操作 diff、分页与刷新。
-- `MemorySettings.tsx` — Memory 管理页：筛选、分页、创建/纠正/遗忘（928 行）。
+- `MemorySettings.tsx` — Memory 管理页：筛选、分页、创建/纠正/遗忘。
 - `ProcessSessionCard.tsx` — 进程会话卡片：状态、日志、停止。
-- `ProfileSettings.tsx` — Profile 页：Token 活动图与统计（440 行）。
+- `ProfileSettings.tsx` — Profile 页：Token 活动图与统计。
 - `ProviderModelSettings.tsx` — Provider/Model 设置：配置、发现、启用、容量
-  （1,327 行）。
+  。
 - `RuntimeRunProgress.tsx` — Run 进度：调用次数、耗时、压缩/补充状态。
 - `RuntimeStatusBanner.tsx` — 连接/重连/离线状态横幅。
 - `RuntimeTurnOutcome.tsx` — 回合结果：失败/取消说明与原因码。
 - `SearchDialog.tsx` — 对话搜索对话框（标题过滤、键盘打开）。
 - `SettingsPage.tsx` — 设置页容器与导航（Provider/Model/Skills/Memory/Profile/
   外观/通用）。
-- `Sidebar.tsx` — 侧边栏：对话列表、Projects、归档入口、搜索按钮（539 行）。
+- `Sidebar.tsx` — 侧边栏：对话列表、Projects、归档入口、搜索按钮。
 - `SkillsSettings.tsx` — Skills 设置：列表、诊断、启用开关。
 - `ThemePreview.tsx` — 主题预览卡与代码 diff 预览。
 - `TitleBar.tsx` — 自定义标题栏与窗口控制（最小化/最大化/关闭）。
@@ -506,9 +506,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   IPC、生命周期与窗口单元测试。
 - `main/linuxPackaging.test.ts` — Linux 打包配置断言。
 - `main/preferences.test.ts` — 偏好校验与持久化测试。
-- `main/protocolContract.test.ts` — 协议契约与 golden trace 校验（277 行）。
+- `main/protocolContract.test.ts` — 协议契约与 golden trace 校验。
 - `main/runtime/runOutcome.test.ts` — 回合结果解析测试。
-- `main/runtimeHost.test.ts` — Runtime 监督、重连与重启测试（1,251 行）。
+- `main/runtimeHost.test.ts` — Runtime 监督、重连与重启测试。
 - `preload/index.test.ts` — preload API 转发测试。
 - `renderer/App.test.tsx` / `renderer/store.test.ts` — 根组件与状态 store 测试。
 - `renderer/applyUiPreferences.test.ts` / `platformPreferences.test.tsx` —
@@ -517,7 +517,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `renderer/profileUsage.test.ts` — usage 图表数据测试。
 - `renderer/runtimeClient.test.ts` / `runtimeHistory.test.ts` /
   `runtimeProjection.test.ts` — RPC 客户端、历史加载与投影测试。
-- `renderer/runtimeStore.integration.test.ts` — 端到端集成测试（4,538 行）。
+- `renderer/runtimeStore.integration.test.ts` — 端到端集成测试。
 - `renderer/runtimeStore.live.test.ts` / `runtimeStore.liveEvidence.test.ts` —
   真实 DeepSeek live smoke 与证据校验。
 - `shared/theme.test.ts` — 颜色工具测试。
@@ -1984,7 +1984,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
 
-离线基线对应 2026-10-21 代码状态（重构批次 PR #45–#58 集成后的结果）。Windows 上
+离线基线对应 2026-10-21 代码状态（重构批次 PR #45–#62 集成后的结果）。Windows 上
 `test_file_preview.py`、golden trace 回放与 `test_file_changes.py` 存在 CRLF /
 路径分隔符 / 环境上限等平台差异，基线以 Linux 为准。
 

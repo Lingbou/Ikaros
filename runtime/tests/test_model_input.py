@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,7 +30,7 @@ from ikaros_runtime.run_input import (
 )
 from ikaros_runtime.tools.core import ToolDefinition
 
-from .helpers import bounded_budget, run_config
+from .helpers import bounded_budget, run_config, run_config_template
 
 
 def _memory_reference(
@@ -473,6 +473,45 @@ def test_run_config_accepts_identity_but_keeps_memory_slot_empty() -> None:
     assert "contextData" not in restored.to_wire()
 
 
+def test_run_config_composes_its_template_without_duplicating_contract_fields() -> None:
+    template = run_config_template("provider", "model-1")
+    config = run_input_module.RunConfig.from_template(
+        template,
+        user_item_id="item_test",
+        thread_id="thread_test",
+        branch_id="branch_test",
+        turn_id="turn_test",
+        run_id="run_test",
+        workspace=None,
+    )
+
+    assert tuple(field.name for field in fields(run_input_module.RunConfig)) == (
+        "user_item_id",
+        "thread_id",
+        "branch_id",
+        "turn_id",
+        "run_id",
+        "workspace",
+        "template",
+    )
+    assert config.template is template
+    assert config.provider_id == template.provider.provider_id
+    assert config.model_id == template.provider.model_id
+    assert config.public_provider_config_fingerprint == template.provider.fingerprint
+    assert config.context_window == template.provider.context_window
+    assert config.execution_policy == template.execution_policy
+    assert config.skills is template.skills
+    assert config.tools is template.tools
+    assert config.output_style is template.output_style
+    assert config.identity_core is template.identity_core
+    assert config.skill_catalog is template.skill_catalog
+
+    wire = config.to_wire()
+    restored = run_input_module.RunConfig.from_wire(deepcopy(wire))
+    assert restored == config
+    assert canonical_json(restored.to_wire()) == canonical_json(wire)
+
+
 def test_memory_reference_wire_is_exact_and_omits_content_fingerprints() -> None:
     reference = _memory_reference(characters=9)
     assert MemoryReference.from_wire(reference.to_wire()) == reference
@@ -872,12 +911,16 @@ def test_step_input_preserves_frozen_memory_and_omissions() -> None:
     assert restored.budget.context_data_tokens == 47 * 4
 
 
+def _config_with_context_window(
+    config: run_input_module.RunConfig, window: int
+) -> run_input_module.RunConfig:
+    provider = replace(config.template.provider, context_window=window)
+    return replace(config, template=replace(config.template, provider=provider))
+
+
 @pytest.mark.parametrize("window", [32768, 131072])
 def test_run_config_freezes_model_capacity(window: int) -> None:
-    config = replace(
-        run_config("provider", "model"),
-        context_window=window,
-    )
+    config = _config_with_context_window(run_config("provider", "model"), window)
     restored = run_input_module.RunConfig.from_wire(config.to_wire())
     assert restored == config
     assert restored.maximum_input_tokens == window * 95 // 100
@@ -885,16 +928,10 @@ def test_run_config_freezes_model_capacity(window: int) -> None:
     assert restored.reserved_current_run_tokens == (window * 95 // 100) // 4
 
 
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"context_window": 0},
-        {"context_window": -1},
-    ],
-)
-def test_run_config_rejects_invalid_model_capacity(changes: dict[str, object]) -> None:
+@pytest.mark.parametrize("window", [0, -1])
+def test_run_config_rejects_invalid_model_capacity(window: int) -> None:
     with pytest.raises(ValueError):
-        replace(run_config("provider", "model"), **cast(Any, changes))
+        replace(run_config("provider", "model").template.provider, context_window=window)
 
 
 def test_new_context_revision_is_append_only_and_step_binds_its_revision() -> None:
@@ -924,7 +961,7 @@ def test_current_input_formats_reject_obsolete_fields() -> None:
 @pytest.mark.parametrize("field", ["context_window"])
 def test_step_input_rejects_model_capacity_changed_after_revision(field: str) -> None:
     config, records, revision = _context_revision_fixture()
-    changed = replace(config, **{field: getattr(config, field) + 1})
+    changed = _config_with_context_window(config, getattr(config, field) + 1)
     with pytest.raises(ModelInputUnavailableError):
         build_step_input(1, records, revision, current_run_id=config.run_id, config=changed)
 
