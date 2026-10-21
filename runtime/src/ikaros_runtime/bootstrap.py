@@ -6,13 +6,18 @@ import asyncio
 import logging
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from websockets.asyncio.server import ServerConnection
 
 from .agent.loop import AgentLoop, EventPublisher, ProviderSnapshotResolver
 from .agent.scheduler import AgentScheduler
 from .cancellation import CancellationToken
+from .channels.config import TelegramConfig, TelegramConfigStore
+from .channels.store import ChannelStore
+from .channels.telegram.adapter import TelegramChannel
+from .channels.telegram.client import TelegramBotApi
+from .channels.telegram.service import ChannelService
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome, JournalEvent
 from .identity import load_identity_core
@@ -26,7 +31,7 @@ from .providers.registry import ConfigStore, RuntimeProviderRegistry
 from .run_input import InstructionBlock, ProviderExecutionSnapshot
 from .security import RuntimeSecurity, contains_protected_value
 from .server.connection import handle_connection
-from .server.event_hub import EventHub
+from .server.event_hub import EventHub, EventSink
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
 from .services.files import FileService
 from .services.memories import MemoryService, MemoryToolService
@@ -80,13 +85,22 @@ class RuntimeApplication:
         extra_providers: Mapping[str, ProviderAdapter] | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
         agent_workers: int | None = None,
+        channel_config_store: TelegramConfigStore | None = None,
+        channel_store: ChannelStore | None = None,
+        event_subscribe: Callable[[EventSink], Callable[[], None]] | None = None,
+        channel_api_factory: Callable[[TelegramConfig], TelegramBotApi] | None = None,
     ) -> None:
         self._store = store
         self._memory_store = memory_store
         paths = RuntimePaths.from_home(store.database_path.parent)
         self._config = config_store or ConfigStore(ConfigDocumentStore(paths.home))
+        channel_protected_values = (
+            channel_config_store.protected_values
+            if channel_config_store is not None
+            else lambda: ()
+        )
         self.security = RuntimeSecurity(
-            self._config.protected_values,
+            lambda: (*self._config.protected_values(), *channel_protected_values()),
             lambda values: (
                 self._store.journal_contains_protected_values(values)
                 or self._memory_store.contains_protected_values(tuple(values))
@@ -239,6 +253,28 @@ class RuntimeApplication:
         )
         self.usage = UsageService(store)
         self.files = FileService(store, self.security, paths)
+        self._channel_service: ChannelService | None = None
+        self._channel_subscription: Callable[[], None] | None = None
+        if channel_config_store is not None and channel_store is not None:
+            channel = TelegramChannel(
+                config_store=channel_config_store,
+                channel_store=channel_store,
+                runtime_store=store,
+                provider_store=self._config,
+                threads=self.threads,
+                turns=self.turns,
+                finish_command=self.finish_command,
+                api_factory=channel_api_factory,
+            )
+            self._channel_service = ChannelService(
+                channel=channel,
+                config_store=channel_config_store,
+                channel_store=channel_store,
+                provider_store=self._config,
+                api_factory=channel_api_factory,
+            )
+            if event_subscribe is not None:
+                self._channel_subscription = event_subscribe(channel.handle_event)
         self.router = RuntimeRouter(
             self.threads,
             self.turns,
@@ -248,10 +284,15 @@ class RuntimeApplication:
             self.memories,
             self.files,
             ProcessService(self._process_manager, store),
+            self._channel_service,
         )
 
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
         self._scheduler.start(recovered_run_ids)
+
+    async def start_channels(self) -> None:
+        if self._channel_service is not None:
+            await self._channel_service.start()
 
     async def finish_command(self, outcome: CommandOutcome) -> None:
         for event in outcome.events_after_ack:
@@ -270,6 +311,16 @@ class RuntimeApplication:
 
     async def close(self) -> None:
         try:
+            if self._channel_subscription is not None:
+                self._channel_subscription()
+                self._channel_subscription = None
+            if self._channel_service is not None:
+                try:
+                    await self._channel_service.close()
+                except Exception:
+                    logging.getLogger("ikaros_runtime").exception(
+                        "telegram channel shutdown failed"
+                    )
             await self._scheduler.close()
             await self._refinement.close()
             await self._process_manager.close()
@@ -298,6 +349,7 @@ async def run_runtime_server(
     runtime_lock = await RuntimeHomeLock.acquire(settings.runtime_home)
     store: SqliteRuntimeStore | None = None
     memory_store: SqliteMemoryStore | None = None
+    channel_store: ChannelStore | None = None
     application: RuntimeApplication | None = None
     try:
         logging.basicConfig(level=logging.INFO, stream=sys.stderr)
@@ -305,12 +357,17 @@ async def run_runtime_server(
         identity_core = load_identity_core()
         config_document_store = ConfigDocumentStore(paths.home)
         config_store = ConfigStore(config_document_store)
+        channel_config_store = TelegramConfigStore(paths.home)
+        channel_store = ChannelStore(paths.channels_db)
         store = SqliteRuntimeStore(paths.state_db)
         opened_memory_store = SqliteMemoryStore(paths.memory_db)
         memory_store = opened_memory_store
 
         pre_recovery_security = RuntimeSecurity(
-            config_store.protected_values,
+            lambda: (
+                *config_store.protected_values(),
+                *channel_config_store.protected_values(),
+            ),
             lambda values: (
                 store.journal_contains_protected_values(values)
                 or opened_memory_store.contains_protected_values(tuple(values))
@@ -328,9 +385,13 @@ async def run_runtime_server(
             identity_core=identity_core,
             extra_providers=extra_providers,
             provider_snapshot_resolver=provider_snapshot_resolver,
+            channel_config_store=channel_config_store,
+            channel_store=channel_store,
+            event_subscribe=event_hub.subscribe,
         )
         memory_store = None
         application.start(recovery.queued_run_ids)
+        await application.start_channels()
 
         async def connection_handler(
             connection: ServerConnection,
@@ -353,6 +414,8 @@ async def run_runtime_server(
             memory_store.close()
         if store is not None:
             store.close()
+        if channel_store is not None:
+            channel_store.close()
         runtime_lock.release()
 
 

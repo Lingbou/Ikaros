@@ -37,6 +37,13 @@ import type {
   RuntimeProcessStopParams,
   RuntimeProcessStopResult,
   RuntimeCancelRunResult,
+  RuntimeChannelConfigureParams,
+  RuntimeChannelConfigureResult,
+  RuntimeChannelListResult,
+  RuntimeChannelResetParams,
+  RuntimeChannelResetResult,
+  RuntimeChannelTestParams,
+  RuntimeChannelTestResult,
   RuntimeSteerRunParams,
   RuntimeSteerRunResult,
   RuntimeReplayResult,
@@ -197,6 +204,25 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.usageRead) as Promise<
         RuntimeInvocationResult<RuntimeUsageReadResult>
       >,
+    listChannels: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.runtime.channelList) as Promise<
+        RuntimeInvocationResult<RuntimeChannelListResult>
+      >,
+    configureChannel: (params: RuntimeChannelConfigureParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.channelConfigure,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeChannelConfigureResult>>,
+    testChannel: (params: RuntimeChannelTestParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.channelTest,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeChannelTestResult>>,
+    resetChannelBinding: (params: RuntimeChannelResetParams) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.channelResetBinding,
+        params
+      ) as Promise<RuntimeInvocationResult<RuntimeChannelResetResult>>,
     previewFile: (params: RuntimeFilePreviewParams) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.filePreview,

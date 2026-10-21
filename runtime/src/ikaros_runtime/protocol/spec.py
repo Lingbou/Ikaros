@@ -4,7 +4,7 @@ from typing import Final
 
 from ..errors import MEMORY_OPERATION_REASON_CODES
 
-PROTOCOL_VERSION: Final = 10
+PROTOCOL_VERSION: Final = 11
 JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
@@ -46,6 +46,10 @@ RPC_METHODS: Final = (
     "run.steer",
     "event.replay",
     "usage.read",
+    "channel.list",
+    "channel.configure",
+    "channel.test",
+    "channel.resetBinding",
 )
 RPC_METHOD_SET: Final = frozenset(RPC_METHODS)
 

@@ -18,6 +18,10 @@ import type {
   RuntimeFilePreviewResult,
   IkarosRuntimeBridgeApi,
   RuntimeCancelRunResult,
+  RuntimeChannelConfigureResult,
+  RuntimeChannelListResult,
+  RuntimeChannelResetResult,
+  RuntimeChannelTestResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeMemoryCreateResult,
@@ -215,6 +219,20 @@ function runtimeBridge(
       ),
     readUsage: () =>
       bridgeInvocation(() => host.request<RuntimeUsageReadResult>("usage.read")),
+    listChannels: () =>
+      bridgeInvocation(() => host.request<RuntimeChannelListResult>("channel.list")),
+    configureChannel: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeChannelConfigureResult>("channel.configure", { ...params })
+      ),
+    testChannel: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeChannelTestResult>("channel.test", { ...params })
+      ),
+    resetChannelBinding: (params) =>
+      bridgeInvocation(() =>
+        host.request<RuntimeChannelResetResult>("channel.resetBinding", { ...params })
+      ),
     previewFile: (params) =>
       bridgeInvocation(() => host.request<RuntimeFilePreviewResult>("file.preview", { ...params })),
     getFileChange: (params) =>

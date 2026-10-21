@@ -554,6 +554,25 @@ describe("desktop window controls", () => {
       { memoryId: `memory_${"1".repeat(32)}` }
     ],
     ["ikaros:runtime:usage-read", [], "usage.read", undefined],
+    ["ikaros:runtime:channel-list", [], "channel.list", undefined],
+    [
+      "ikaros:runtime:channel-configure",
+      [{ channelId: "telegram", enabled: false }],
+      "channel.configure",
+      { channelId: "telegram", enabled: false }
+    ],
+    [
+      "ikaros:runtime:channel-test",
+      [{ channelId: "telegram", token: "123:test" }],
+      "channel.test",
+      { channelId: "telegram", token: "123:test" }
+    ],
+    [
+      "ikaros:runtime:channel-reset-binding",
+      [{ channelId: "telegram" }],
+      "channel.resetBinding",
+      { channelId: "telegram" }
+    ],
     [
       "ikaros:runtime:model-set-enabled",
       [{ providerId: "local", modelId: "model", enabled: false, contextWindow: 32768 }],

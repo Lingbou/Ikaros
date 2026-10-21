@@ -297,6 +297,20 @@ class SqliteRuntimeStore:
             raise RuntimeError("completion check candidate is unavailable")
         return str(row["content"])
 
+    def final_assistant_message_for_run(self, run_id: str) -> str | None:
+        """Return the newest completed assistant message of one Run."""
+
+        row = self._connection.execute(
+            """SELECT content FROM items
+               WHERE run_id = ? AND kind = 'message' AND role = 'assistant'
+                 AND status = 'completed'
+               ORDER BY ordinal DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        if row is None or not isinstance(row["content"], str):
+            return None
+        return str(row["content"])
+
     def final_assistant_message(self, thread_id: str) -> str | None:
         """Return the newest completed assistant message of a Thread."""
 

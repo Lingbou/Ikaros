@@ -10,6 +10,13 @@ import type {
   IkarosRuntimeApi,
   IkarosRuntimeBridgeApi,
   RuntimeCancelRunResult,
+  RuntimeChannelConfigureParams,
+  RuntimeChannelConfigureResult,
+  RuntimeChannelListResult,
+  RuntimeChannelResetParams,
+  RuntimeChannelResetResult,
+  RuntimeChannelTestParams,
+  RuntimeChannelTestResult,
   RuntimeSteerRunParams,
   RuntimeSteerRunResult,
   RuntimeInvocationResult,
@@ -303,6 +310,26 @@ export class RuntimeClient implements IkarosRuntimeApi {
 
   readUsage(): Promise<RuntimeUsageReadResult> {
     return unwrapRuntimeInvocation(this.api.readUsage());
+  }
+
+  listChannels(): Promise<RuntimeChannelListResult> {
+    return unwrapRuntimeInvocation(this.api.listChannels());
+  }
+
+  configureChannel(
+    params: RuntimeChannelConfigureParams
+  ): Promise<RuntimeChannelConfigureResult> {
+    return unwrapRuntimeInvocation(this.api.configureChannel(params));
+  }
+
+  testChannel(params: RuntimeChannelTestParams): Promise<RuntimeChannelTestResult> {
+    return unwrapRuntimeInvocation(this.api.testChannel(params));
+  }
+
+  resetChannelBinding(
+    params: RuntimeChannelResetParams
+  ): Promise<RuntimeChannelResetResult> {
+    return unwrapRuntimeInvocation(this.api.resetChannelBinding(params));
   }
 
   previewFile(params: RuntimeFilePreviewParams): Promise<RuntimeFilePreviewResult> {

@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import pytest
 
+from ikaros_runtime.channels.telegram.service import ChannelService
 from ikaros_runtime.errors import (
     InvalidParamsError,
     MemoryOperationError,
@@ -25,6 +26,27 @@ from ikaros_runtime.services.turns import TurnService
 from ikaros_runtime.services.usage import UsageService
 
 
+class _ChannelServiceStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def list_channels(self, params: dict[str, Any]) -> dict[str, object]:
+        self.calls.append(("list", params))
+        return {"channels": []}
+
+    async def configure(self, params: dict[str, Any]) -> dict[str, object]:
+        self.calls.append(("configure", params))
+        return {"channel": {"id": "telegram"}}
+
+    async def test(self, params: dict[str, Any]) -> dict[str, object]:
+        self.calls.append(("test", params))
+        return {"ok": True, "reasonCode": None, "bot": None}
+
+    async def reset_binding(self, params: dict[str, Any]) -> dict[str, object]:
+        self.calls.append(("reset", params))
+        return {"channel": {"id": "telegram"}}
+
+
 class _MemoryServiceStub:
     def __init__(self, failure: Exception | None = None) -> None:
         self.failure = failure
@@ -43,7 +65,10 @@ class _MemoryServiceStub:
         return {"memoryId": "memory_00000000000000000000000000000000"}
 
 
-def _router(memories: _MemoryServiceStub) -> RuntimeRouter:
+def _router(
+    memories: _MemoryServiceStub,
+    channels: _ChannelServiceStub | None = None,
+) -> RuntimeRouter:
     return RuntimeRouter(
         cast(ThreadService, object()),
         cast(TurnService, object()),
@@ -52,6 +77,7 @@ def _router(memories: _MemoryServiceStub) -> RuntimeRouter:
         cast(SkillService, object()),
         cast(MemoryService, memories),
         cast(FileService, object()),
+        channels=cast(ChannelService, channels),
     )
 
 
@@ -128,4 +154,42 @@ async def test_memory_invalid_params_remain_standard_invalid_params(method: str)
         "jsonrpc": "2.0",
         "id": 8,
         "error": {"code": -32602, "message": "invalid memory parameters"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_channel_methods_dispatch_to_the_channel_service() -> None:
+    memories = _MemoryServiceStub()
+    channels = _ChannelServiceStub()
+    router = _router(memories, channels)
+
+    listed = await router.dispatch(9, "channel.list", {})
+    configured = await router.dispatch(
+        10,
+        "channel.configure",
+        {"channelId": "telegram", "enabled": False},
+    )
+    tested = await router.dispatch(11, "channel.test", {"channelId": "telegram"})
+    reset = await router.dispatch(12, "channel.resetBinding", {"channelId": "telegram"})
+
+    assert listed.response["result"] == {"channels": []}
+    assert configured.response["result"] == {"channel": {"id": "telegram"}}
+    assert tested.response["result"] == {"ok": True, "reasonCode": None, "bot": None}
+    assert reset.response["result"] == {"channel": {"id": "telegram"}}
+    assert [name for name, _params in channels.calls] == [
+        "list",
+        "configure",
+        "test",
+        "reset",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_channel_methods_fail_when_channel_gateway_is_unavailable() -> None:
+    routed = await _router(_MemoryServiceStub()).dispatch(13, "channel.list", {})
+
+    assert routed.response == {
+        "jsonrpc": "2.0",
+        "id": 13,
+        "error": {"code": -32602, "message": "channel support is unavailable"},
     }

@@ -331,6 +331,69 @@ export interface RuntimeSteerRunResult {
   status: "received" | "processed" | "unprocessed";
 }
 
+export type RuntimeChannelStatus = "disabled" | "connecting" | "connected" | "error";
+
+export interface RuntimeChannelBot {
+  id: string;
+  username: string;
+  name: string;
+}
+
+export interface RuntimeChannelOwner {
+  userId: string | null;
+  username: string | null;
+}
+
+export interface RuntimeChannelSummary {
+  id: string;
+  status: RuntimeChannelStatus;
+  enabled: boolean;
+  configured: boolean;
+  proxyConfigured: boolean;
+  defaultProviderId: string | null;
+  defaultModelId: string | null;
+  bot: RuntimeChannelBot | null;
+  owner: RuntimeChannelOwner | null;
+  lastErrorCode: string | null;
+}
+
+export interface RuntimeChannelListResult {
+  channels: RuntimeChannelSummary[];
+}
+
+export interface RuntimeChannelConfigureParams {
+  channelId: "telegram";
+  enabled?: boolean;
+  token?: string | null;
+  proxy?: string | null;
+  defaultProviderId?: string | null;
+  defaultModelId?: string | null;
+}
+
+export interface RuntimeChannelConfigureResult {
+  channel: RuntimeChannelSummary;
+}
+
+export interface RuntimeChannelTestParams {
+  channelId: "telegram";
+  token?: string | null;
+  proxy?: string | null;
+}
+
+export interface RuntimeChannelTestResult {
+  ok: boolean;
+  reasonCode: string | null;
+  bot: RuntimeChannelBot | null;
+}
+
+export interface RuntimeChannelResetParams {
+  channelId: "telegram";
+}
+
+export interface RuntimeChannelResetResult {
+  channel: RuntimeChannelSummary;
+}
+
 export interface RuntimeProcessRecord {
   processId: string;
   threadId: string;
@@ -632,6 +695,14 @@ export interface IkarosRuntimeApi {
   listMemories(params?: RuntimeMemoryListParams): Promise<RuntimeMemoryListPage>;
   getMemory(memoryId: string): Promise<RuntimeMemoryGetResult>;
   readUsage(): Promise<RuntimeUsageReadResult>;
+  listChannels(): Promise<RuntimeChannelListResult>;
+  configureChannel(
+    params: RuntimeChannelConfigureParams
+  ): Promise<RuntimeChannelConfigureResult>;
+  testChannel(params: RuntimeChannelTestParams): Promise<RuntimeChannelTestResult>;
+  resetChannelBinding(
+    params: RuntimeChannelResetParams
+  ): Promise<RuntimeChannelResetResult>;
   previewFile(params: RuntimeFilePreviewParams): Promise<RuntimeFilePreviewResult>;
   getFileChange(params: RuntimeFileChangeGetParams): Promise<RuntimeFileChangeResult>;
   onEvent(listener: (event: RuntimeJournalEvent) => void): () => void;
@@ -709,6 +780,16 @@ export interface IkarosRuntimeBridgeApi {
     memoryId: string
   ): Promise<RuntimeInvocationResult<RuntimeMemoryGetResult>>;
   readUsage(): Promise<RuntimeInvocationResult<RuntimeUsageReadResult>>;
+  listChannels(): Promise<RuntimeInvocationResult<RuntimeChannelListResult>>;
+  configureChannel(
+    params: RuntimeChannelConfigureParams
+  ): Promise<RuntimeInvocationResult<RuntimeChannelConfigureResult>>;
+  testChannel(
+    params: RuntimeChannelTestParams
+  ): Promise<RuntimeInvocationResult<RuntimeChannelTestResult>>;
+  resetChannelBinding(
+    params: RuntimeChannelResetParams
+  ): Promise<RuntimeInvocationResult<RuntimeChannelResetResult>>;
   previewFile(
     params: RuntimeFilePreviewParams
   ): Promise<RuntimeInvocationResult<RuntimeFilePreviewResult>>;

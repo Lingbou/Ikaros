@@ -151,6 +151,16 @@ function desktopApiWithPreferences(
         getFileChange: async () => {
           throw new Error("not used in preference settings tests");
         },
+        listChannels: async () => ({ ok: true, value: { channels: [] } }),
+        configureChannel: async () => {
+          throw new Error("not used in settings tests");
+        },
+        testChannel: async () => {
+          throw new Error("not used in settings tests");
+        },
+        resetChannelBinding: async () => {
+          throw new Error("not used in settings tests");
+        },
         readUsage: async () => ({
           ok: true,
           value: {

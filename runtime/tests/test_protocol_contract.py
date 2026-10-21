@@ -124,7 +124,7 @@ def test_golden_trace_envelopes_match_the_python_protocol_spec() -> None:
     }
     assert observed_event_types <= JOURNAL_EVENT_TYPE_SET
     assert {"thread.created", "run.settled", "run.steered"} <= observed_event_types
-    assert len(RPC_METHODS) == 32
+    assert len(RPC_METHODS) == 36
 
 
 @pytest.mark.asyncio
@@ -200,7 +200,7 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
-    assert PROTOCOL_VERSION == 10
+    assert PROTOCOL_VERSION == 11
     assert JOURNAL_EVENT_SCHEMA_VERSION == 10
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {

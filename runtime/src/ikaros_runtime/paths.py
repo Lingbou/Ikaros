@@ -27,6 +27,8 @@ class RuntimePaths:
     memory_db: Path
     skills: Path
     artifacts: Path
+    channels_config: Path
+    channels_db: Path
 
     @classmethod
     def from_home(cls, runtime_home: Path) -> RuntimePaths:
@@ -38,6 +40,8 @@ class RuntimePaths:
             memory_db=home / "memory.db",
             skills=home / "skills",
             artifacts=home / "artifacts",
+            channels_config=home / "channels.yaml",
+            channels_db=home / "channels.db",
         )
 
 
