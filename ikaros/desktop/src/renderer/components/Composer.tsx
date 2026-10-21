@@ -191,10 +191,10 @@ export function Composer({
         {newThreadWorkspace && selectedThreadId === null && pendingNewThread === null ? (
           <div
             data-composer-project
-            className="mx-2.5 mb-1.5 flex h-10 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel-raised)] px-3 text-[13px] leading-5 text-[var(--text)]"
+            className="mx-2.5 mb-1 flex h-10 items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--panel-raised)] px-3.5 text-[14px] leading-5 text-[var(--text)]"
           >
             <Folder
-              size={14}
+              size={15}
               className="shrink-0 text-[var(--muted-strong)]"
               aria-hidden="true"
             />
@@ -210,7 +210,7 @@ export function Composer({
         <div
           ref={surfaceRef}
           data-composer-surface
-          className="composer-shadow rounded-[22px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
+          className="composer-shadow rounded-[16px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
         >
           {composerAttachments.length ? (
             <div data-composer-attachments className="mb-2 flex flex-wrap gap-1.5 px-1">
@@ -263,9 +263,9 @@ export function Composer({
                 <button
                   type="button"
                   aria-label={t("composer.addContext")}
-                  className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--panel)] text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)]"
+                  className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)]"
                 >
-                  <Plus size={13} />
+                  <Plus size={15} />
                 </button>
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
@@ -309,7 +309,7 @@ export function Composer({
                   <button
                     type="button"
                     data-model-settings-trigger
-                    className="hidden h-7 min-w-0 max-w-[200px] items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 text-[11px] leading-4 text-[var(--muted-strong)] transition-colors hover:border-[var(--border)] hover:text-[var(--text)] data-[state=open]:border-[var(--border)] data-[state=open]:text-[var(--text)] sm:flex"
+                    className="hidden h-7 min-w-0 max-w-[200px] items-center gap-1.5 rounded-lg px-2 text-[12px] leading-4 text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)] sm:flex"
                   >
                     <span className="min-w-0 max-w-[140px] truncate">
                       {selectedRuntimeModel?.label ?? t("composer.selectModel")}
