@@ -106,8 +106,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - 每个应用生命周期只有 1 个 Python Runtime 进程；通过 `runtime.lock` 独占
   `~/.ikaros`，启动第二个实例会失败而不共享状态。
-- Runtime 内部是单事件循环（asyncio）；调度器只有 1 个 worker，同一时刻只运行
-  1 个 Run；同一 Run 内工具串行执行；每个 Branch 拥有串行队列。
+- Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
+  2 个 Run（`IKAROS_AGENT_WORKERS`，范围 1–8）；并发只发生在不同 Thread 之间，
+  同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具串行执行；每个 Branch 拥有
+  串行队列。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
   独立数据库，只共享 Runtime-home 锁。
 - Desktop 与 Runtime 的生命周期绑定：关闭应用会先请求 Runtime 干净关闭。
@@ -244,7 +246,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `loop.py` — Agent 主循环：执行 Run、流式处理、工具调度、压缩、
   完成检查与终结。
 - `model_input.py` — 单步模型输入计划（ModelInputPlan）与校验。
-- `scheduler.py` — 单 worker 调度：预留/激活/取消/steer 与关闭顺序。
+- `scheduler.py` — worker 池调度：FIFO、同 Thread 串行、预留/激活/取消/steer
+  与关闭顺序。
 
 `memory/`（长期记忆）：
 
@@ -836,7 +839,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 ### 6.4 崩溃恢复语义
 
 - 干净关闭：Scheduler 停止接收新工作 → 协作取消活动 Run → 排队/预留 Run 标记
-  `cancelled` → 等待 worker → 关闭数据库。
+  `cancelled` → 等待全部 worker → 关闭数据库。
 - 异常退出后启动：`running` Run → `failed`（原因码 `runtime_interrupted`，保留
   部分 assistant 文本）；`queued` Run 按原 Journal 顺序重新调度；终态 Run 永不
   重跑。
@@ -851,8 +854,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   + 其工具调用与结果）。
 - 提交时冻结 RunConfig：Provider/Model、workspace、工具定义（含 schema 哈希）、
   身份（IKAROS.md）、已启用 Skill 描述符、模型上下文窗口。
-- 调度：全局 1 个 scheduler worker（同时只跑一个 Run）；同一 Run 内工具串行
-  执行；每个 Branch 有串行队列。
+- 调度：全局 worker 池（`IKAROS_AGENT_WORKERS`，默认 2、范围 1–8）；FIFO
+  拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
+  Run 内工具串行执行；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
+  下一个可运行 Thread。
 - 无总模型调用次数/时长上限；可手动取消；单次 Provider 请求有超时；资源清理
   有界。
 - 失败/取消的 Run 向后续对话提供：已持久化的工具结果 + 独立的 Runtime 状态块
@@ -1119,6 +1124,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   payload（调试用）。
 - `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
+- `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 2，范围 1–8；值为 1
+  时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
 - `config.yaml`（version 2）结构概要：
@@ -2067,7 +2074,7 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
 - 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
   主窗口时不发送；
-- 多个 Run 并发、Multi-Agent 与子 Agent；
+- Multi-Agent 与子 Agent（不同 Thread 的多个 Run 已可并发）；
 - cron 与主动唤醒任务；
 - 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
@@ -2101,6 +2108,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 
 | 类别 | 参数 | 值 |
 | --- | --- | --- |
+| 调度 | Run 并发上限 | `IKAROS_AGENT_WORKERS` 默认 2，范围 1–8；同一 Thread 至多 1 个活动 Run |
 | 上下文 | 输入预算 | 模型窗口 95% |
 | 上下文 | 自动压缩阈值 | 模型窗口 90% |
 | 上下文 | 历史选择分页 | 32 Turns/页 |
