@@ -24,12 +24,32 @@ describe("RuntimeRunProgress", () => {
     view.rerender(<RuntimeRunProgress turn={{ ...turn, status: "running", runProgress: { ...turn.runProgress!, startedAt: "2026-09-07T00:02:00Z", modelCalls: 3 } }} />);
     act(() => { vi.advanceTimersByTime(12000); });
     expect(screen.getByLabelText("Task execution")).toHaveTextContent("Processed 12s");
-    expect(screen.queryByText("Model calls 3")).toBeNull();
+    expect(screen.queryByText(/Model calls/)).toBeNull();
     view.rerender(<RuntimeRunProgress turn={{ ...turn, status: "failed", runProgress: { ...turn.runProgress!, startedAt: "2026-09-07T00:02:00Z", settledAt: "2026-09-07T00:02:12Z", modelCalls: 3 } }} />);
     act(() => { vi.advanceTimersByTime(60000); });
     expect(screen.getByLabelText("Task execution")).toHaveTextContent("Failed · Took 12s");
-    fireEvent.click(screen.getByRole("button"));
-    expect(screen.getByLabelText("Task execution")).toHaveTextContent("Model calls 3");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText(/Model calls/)).toBeNull();
+  });
+
+  it("shows milliseconds below one second", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-07T00:00:00Z"));
+    render(
+      <RuntimeRunProgress
+        turn={{
+          ...turn,
+          status: "completed",
+          runProgress: {
+            ...turn.runProgress!,
+            startedAt: "2026-09-07T00:00:00Z",
+            settledAt: "2026-09-07T00:00:00.420Z",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Task execution")).toHaveTextContent("Took 420ms");
   });
 
   it("surfaces context compaction state", () => {
@@ -50,7 +70,7 @@ describe("RuntimeRunProgress", () => {
       />,
     );
     expect(screen.getByLabelText("Task execution")).toHaveTextContent(
-      "Processed 0s · Organizing context…",
+      "Processed 0ms · Organizing context…",
     );
     view.rerender(
       <RuntimeRunProgress

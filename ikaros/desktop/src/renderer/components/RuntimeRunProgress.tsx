@@ -29,7 +29,11 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
   const elapsed = start === null ? 0 : (finish - start) / 1000;
   const status = t(STATUS_KEYS[turn.status] ?? "runtime.progress.running");
   const formatDuration = (seconds: number): string => {
-    const total = Math.max(0, Math.floor(seconds));
+    const milliseconds = Math.max(0, Math.round(seconds * 1000));
+    if (milliseconds < 1000) {
+      return t("runtime.progress.milliseconds", { milliseconds });
+    }
+    const total = Math.floor(milliseconds / 1000);
     if (total < 60) return t("runtime.progress.seconds", { seconds: total });
     return t("runtime.progress.minutesSeconds", {
       minutes: Math.floor(total / 60),
@@ -52,6 +56,7 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
     turn.status === "completed"
       ? elapsedLabel
       : `${status} · ${elapsedLabel}`;
+  const hasDetails = Boolean(progress.compacting) || Boolean(progress.compactions);
 
   if (active) {
     return (
@@ -71,27 +76,32 @@ export function RuntimeRunProgress({ turn }: { turn: Turn }) {
   return (
     <div aria-label={t("runtime.progress.label")} className="py-0.5 text-[11px] leading-4 text-[var(--muted)]">
       <div className="border-b border-[var(--border)] pb-2">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-          className="group inline-flex h-6 items-center gap-1.5 rounded-md text-left outline-none transition-colors hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
-        >
-          <ChevronRight
-            size={11}
-            aria-hidden="true"
-            className={`shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
-          />
-          <span className="font-medium text-[var(--muted-strong)] group-hover:text-[var(--text)]">
+        {hasDetails ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            className="group inline-flex h-6 items-center gap-1.5 rounded-md text-left outline-none transition-colors hover:text-[var(--text)] focus-visible:ring-1 focus-visible:ring-[var(--muted-strong)]"
+          >
+            <ChevronRight
+              size={11}
+              aria-hidden="true"
+              className={`shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+            />
+            <span className="font-medium text-[var(--muted-strong)] group-hover:text-[var(--text)]">
+              {settledLabel}
+            </span>
+          </button>
+        ) : (
+          <span className="inline-flex h-6 items-center font-medium text-[var(--muted-strong)]">
             {settledLabel}
           </span>
-        </button>
+        )}
       </div>
-      {expanded ? (
+      {hasDetails && expanded ? (
         <div className="ml-[17px] mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span>{t("runtime.progress.calls", { used: progress.modelCalls })}</span>
           {progress.compacting ? <span>{t("runtime.progress.compacting")}</span> : null}
-          {!progress.compacting && progress.compactions ? (
+          {progress.compactions ? (
             <span>{t("runtime.progress.compactions", { used: progress.compactions })}</span>
           ) : null}
         </div>
