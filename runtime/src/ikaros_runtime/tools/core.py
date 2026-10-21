@@ -31,6 +31,9 @@ class ToolDefinition:
     name: str
     description: str
     input_schema: JsonObject
+    # A mutating Tool may change durable state (files, processes, memory, Threads).
+    # The Agent loop runs mutating calls exclusively and lets read-only calls share.
+    mutating: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +146,14 @@ class ToolExecutor:
     @property
     def policy_name(self) -> str:
         return self._policy.name
+
+    def is_mutating(self, name: str) -> bool:
+        """Whether a Tool call must hold the exclusive side of the execution gate."""
+
+        tool = self._registry.resolve(name)
+        if tool is None:
+            return True
+        return tool.definition.mutating
 
     async def execute(
         self,

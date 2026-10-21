@@ -49,6 +49,7 @@ class WriteTool:
             "required": ["filePath", "content"],
             "additionalProperties": False,
         },
+        mutating=True,
     )
 
     async def execute(

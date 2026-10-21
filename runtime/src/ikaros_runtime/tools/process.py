@@ -65,6 +65,7 @@ class ProcessStartTool:
             "required": ["command"],
             "additionalProperties": False,
         },
+        mutating=True,
     )
 
     def __init__(self, manager: ProcessManager) -> None:
@@ -125,7 +126,13 @@ class ProcessStartTool:
         return _result(call, fact)
 
 
-def _definition(name: str, description: str, *, wait: bool = False) -> ToolDefinition:
+def _definition(
+    name: str,
+    description: str,
+    *,
+    wait: bool = False,
+    mutating: bool = False,
+) -> ToolDefinition:
     properties: JsonObject = {
         "processId": {"type": "string", "minLength": 1},
         "cursor": {"type": "integer", "minimum": 0},
@@ -141,6 +148,7 @@ def _definition(name: str, description: str, *, wait: bool = False) -> ToolDefin
             "required": ["processId"],
             "additionalProperties": False,
         },
+        mutating=mutating,
     )
 
 
@@ -219,6 +227,7 @@ class ProcessStopTool:
         "process_stop",
         "Stop a command and its descendant processes, and return the final status and output. "
         "Stopping an already finished command is harmless and never starts a new process.",
+        mutating=True,
     )
 
     def __init__(self, manager: ProcessManager) -> None:
@@ -291,6 +300,7 @@ class ProcessWriteTool:
             "required": ["processId", "data"],
             "additionalProperties": False,
         },
+        mutating=True,
     )
 
     def __init__(self, manager: ProcessManager) -> None:
@@ -348,6 +358,7 @@ class ProcessResizeTool:
             "required": ["processId", "columns", "rows"],
             "additionalProperties": False,
         },
+        mutating=True,
     )
 
     def __init__(self, manager: ProcessManager) -> None:
