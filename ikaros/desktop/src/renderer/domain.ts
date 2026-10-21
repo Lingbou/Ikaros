@@ -31,6 +31,8 @@ export type AppEventTextKind =
   | "tool.globFiles"
   | "tool.searchFiles"
   | "tool.listDirectory"
+  | "tool.listThreads"
+  | "tool.readThread"
   | "result.processCompleted"
   | "result.processRunning"
   | "result.processStopped"
@@ -55,6 +57,12 @@ export type AppEventTextKind =
   | "result.listCompleted"
   | "result.listFailed"
   | "result.listInterrupted"
+  | "result.threadListCompleted"
+  | "result.threadListFailed"
+  | "result.threadListInterrupted"
+  | "result.threadReadCompleted"
+  | "result.threadReadFailed"
+  | "result.threadReadInterrupted"
   | "result.entryCount"
   | "result.matchCount";
 

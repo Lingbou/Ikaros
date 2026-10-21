@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：13 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：15 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -262,7 +262,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 8、32 方法、15 事件、13 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 9、32 方法、15 事件、15 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -317,6 +317,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `context_history.py` — 模型可见历史的分页 SQLite 读取与装配。
 - `file_changes.py` — 按 Tool Call 查询不可变文件变更捕获。
 - `history_read.py` — `history_read` 的存储实现（41 条 / 24,000 字符边界）。
+- `thread_read.py` — 跨 Thread 只读切片：复用 `history_read` 的切片与截断，追加 Thread 存在性与锚点解析。
 - `journal.py` — Journal 追加与读取、事件 schema 版本校验。
 - `maintenance.py` — check / backup / repair 的完整实现与校验流程。
 - `processes.py` — 进程事实读取；重启恢复只回放观察，永不启动命令。
@@ -352,11 +353,12 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `process.py` — 6 个进程工具（start/read/wait/stop/write/resize）的模型侧定义与
   参数校验。
 - `read.py` — `read`：≤2,000 行 / 50 KiB、行截断 2,000 字符、nextOffset 翻页。
+- `thread_read.py` — `thread_list` / `thread_read` 工具：会话目录与跨 Thread 有界切片（默认 4,000 字符）。
 - `traversal.py` — 检索工具共享遍历：广度优先、确定性排序、不跟随目录符号链接、
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 42 个 Python 文件）：
+`tests/`（Runtime 测试，共 43 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -396,6 +398,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_storage.py` — 存储、Journal 与投影测试。
 - `test_thread_catalog.py` — 目录分页与游标测试。
 - `test_thread_history.py` — 回合历史分页测试。
+- `test_thread_read.py` — 跨 Thread 目录与切片测试（分页 / 锚点 / 截断 / 越界 / 不存在 / 隔离）。
 - `test_tools.py` — 文件工具（read/write/edit）测试。
 
 ### 3.3 ikaros/desktop/（Electron 桌面客户端）
@@ -782,9 +785,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.2 协议与 RPC
 
-- 协议版本 8，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
+- 协议版本 9，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、13 个 provider
+- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、15 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -825,7 +828,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
 - 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 /
-  protocol 8 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
+  protocol 9 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
   更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
   要求显式重置。
 
@@ -910,7 +913,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（13 个）
+### 6.9 内建工具（15 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
@@ -921,6 +924,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `process_write` | `processId`、`data`（≤32,768 字符）、可选 `cursor` | 仅 PTY：写 UTF-8 输入，返回该游标起的输出页 |
 | `process_resize` | `processId`、`columns`/`rows`（1–4,096）、可选 `cursor` | 仅 PTY：调整终端尺寸，返回该游标起的输出页 |
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
+| `thread_list` | 可选 `archived`（布尔，默认 `false`）、可选 `limit`（1–50，默认 20） | 返回 `id`/`title`/`updatedAt`/`archived` 的稳定目录（`updatedAt` 降序、`id` 升序），供模型发现会话 id；只读、无副作用 |
+| `thread_read` | `threadId`、可选 `itemId`（锚点）、`before`/`after`（0–41）、`maxChars`（256–24,000，默认 4,000） | 跨 Thread 只读已结算 Item 的有界切片（含 Thread 元数据与时间）；缺省锚点为默认分支最新已结算 Item；`thread_not_found` / `item_not_found` / `item_not_settled` 为显式错误码；不改变每 Run 冻结上下文 |
 | `read` | `filePath`、`offset`、`limit`（1–2,000，默认 2,000） | UTF-8；每次 ≤50 KiB；单行超 2,000 字符截断；拒绝目录/二进制/非法编码；`nextOffset` 翻页 |
 | `write` | `filePath`、`content` | 建父目录；同目录临时文件 + SHA-256 校验 + fsync + 原子替换；保留 BOM/换行/文件模式 |
 | `edit` | `filePath`、`oldString`、`newString`、`replaceAll` | 精确匹配；默认要求唯一匹配；CRLF/孤立 CR 规范化为 LF；变更前检测 `stale_content` |
@@ -1236,7 +1241,7 @@ Process              running ──▶ exited / terminated
   （Provider 可能先完成）。
 - 历史 Tool 调用永不自动重放；`unknown` 进程必须在新 Turn 中重新检查。
 
-## 7. RPC 接口参考（协议 8，共 32 个方法）
+## 7. RPC 接口参考（协议 9，共 32 个方法）
 
 通用约定：
 
@@ -2118,6 +2123,8 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 文件 | preview | ≤50 KiB、2,000 行/页；扫描 ≤8 MiB |
 | 文件 | write/edit 捕获 | 各 ≤256 KiB / 5,000 行；事件 ≤256 KiB |
 | 文件 | history_read | before/after ≤41；maxChars 256–24,000 |
+| 文件 | thread_list | archived 默认 false；limit 1–50（默认 20）；updatedAt 降序、id 升序 |
+| 文件 | thread_read | before/after ≤41；maxChars 256–24,000（默认 4,000）；缺省锚点=默认分支最新已结算 Item |
 | 文件 | 路径长度 | ≤4,096 字符 |
 | 进程 | 并发上限 | 64/ Thread（命令跨 Run 存活） |
 | 进程 | 后台执行 | `background` 默认 `false`；`true` 不阻塞 Run 收尾；终态系统通知每个进程至多 1 条 |
@@ -2132,7 +2139,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 8；32 方法；15 事件；13 工具 |
+| 协议 | 版本/规模 | protocol 9；32 方法；15 事件；15 工具 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |

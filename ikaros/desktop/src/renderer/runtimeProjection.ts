@@ -330,6 +330,41 @@ function projectSearchResultDetails(
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
+const THREAD_TOOL_LABELS = {
+  thread_list: "tool.listThreads",
+  thread_read: "tool.readThread",
+} as const satisfies Record<string, AppEventTextKind>;
+
+type ThreadToolName = keyof typeof THREAD_TOOL_LABELS;
+
+function isThreadTool(name: string): name is ThreadToolName {
+  return Object.hasOwn(THREAD_TOOL_LABELS, name);
+}
+
+const THREAD_TOOL_RESULTS: Record<
+  ThreadToolName,
+  Record<ToolResultEvent["status"], AppEventTextKind>
+> = {
+  thread_list: {
+    success: "result.threadListCompleted",
+    error: "result.threadListFailed",
+    interrupted: "result.threadListInterrupted",
+  },
+  thread_read: {
+    success: "result.threadReadCompleted",
+    error: "result.threadReadFailed",
+    interrupted: "result.threadReadInterrupted",
+  },
+};
+
+function projectThreadResultDetails(
+  result: Record<string, unknown>,
+): ToolResultEvent["details"] | undefined {
+  const details: NonNullable<ToolResultEvent["details"]> = {};
+  if (typeof result.truncated === "boolean") details.truncated = result.truncated;
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
 type FileToolName = "read" | "write" | "edit";
 
 function isFileToolName(name: string): name is FileToolName {
@@ -562,7 +597,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
             ? appEventText(PROCESS_TOOL_LABELS[toolName])
             : isSearchTool(toolName)
               ? appEventText(SEARCH_TOOL_LABELS[toolName])
-              : externalEventText(toolName),
+              : isThreadTool(toolName)
+                ? appEventText(THREAD_TOOL_LABELS[toolName])
+                : externalEventText(toolName),
         status: toolStatus(item.status),
         arguments: projectToolArguments(toolName, item.data.arguments),
         durationMs:
@@ -585,13 +622,16 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
           : "tool";
       const fileTool = isFileToolName(toolName);
       const searchTool = isSearchTool(toolName);
+      const threadTool = isThreadTool(toolName);
       const resultDetails = fileTool
         ? projectFileResultDetails(item.data.result)
         : isProcessTool(toolName)
           ? processDetails(item.data.result)
           : searchTool
             ? projectSearchResultDetails(item.data.result)
-            : undefined;
+            : threadTool
+              ? projectThreadResultDetails(item.data.result)
+              : undefined;
       const path =
         fileTool && typeof item.data.result.path === "string"
           ? item.data.result.path
@@ -614,7 +654,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
             ? appEventText(processSummary(item.data.result, resultStatus))
             : searchTool
               ? appEventText(SEARCH_TOOL_RESULTS[toolName][resultStatus])
-              : externalEventText(toolName),
+              : threadTool
+                ? appEventText(THREAD_TOOL_RESULTS[toolName][resultStatus])
+                : externalEventText(toolName),
         output: fileTool
           ? safeFileResultOutput(item.data.result.output, resultStatus)
           : typeof item.data.result.output === "string"

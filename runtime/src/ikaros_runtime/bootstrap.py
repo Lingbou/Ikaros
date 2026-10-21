@@ -50,6 +50,8 @@ from .tools import (
     ProcessWaitTool,
     ProcessWriteTool,
     ReadTool,
+    ThreadListTool,
+    ThreadReadTool,
     WriteTool,
 )
 from .tools.artifacts import ToolArtifactStore
@@ -135,6 +137,8 @@ class RuntimeApplication:
                     WriteTool(),
                     EditTool(),
                     HistoryReadTool(store.read_history_slice),
+                    ThreadListTool(store.list_threads_for_model),
+                    ThreadReadTool(store.read_thread_slice),
                     GlobTool(),
                     GrepTool(),
                     ListTool(),
