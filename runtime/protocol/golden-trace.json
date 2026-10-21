@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 11,
+        "protocolVersion": 12,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 11,
+          "protocolVersion": 12,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
@@ -1047,7 +1047,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -1091,7 +1091,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -1498,7 +1498,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -1791,7 +1791,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -2314,7 +2314,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -2399,7 +2399,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -2955,7 +2955,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,
@@ -3064,7 +3064,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,
@@ -3308,7 +3308,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,
@@ -3409,7 +3409,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,

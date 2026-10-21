@@ -7,6 +7,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
 
+from ..attachments import (
+    AttachmentRef,
+    attachment_refs_to_wire,
+    message_attachment_refs,
+)
 from ..domain import (
     THREAD_TITLE_RENAME_SOURCES,
     ContextItem,
@@ -650,6 +655,7 @@ class SqliteRuntimeStore:
         provider_id: str,
         model_id: str,
         client_request_id: str,
+        attachments: Sequence[AttachmentRef] = (),
     ) -> PreparedTurn | None:
         return find_turn_by_client_request_id(
             self._connection,
@@ -657,6 +663,7 @@ class SqliteRuntimeStore:
             branch_id=branch_id,
             content=content,
             provider_id=provider_id,
+            attachments=attachments,
             model_id=model_id,
             client_request_id=client_request_id,
         )
@@ -669,6 +676,7 @@ class SqliteRuntimeStore:
         content: str,
         run_config_template: RunConfigTemplate,
         client_request_id: str | None = None,
+        attachments: Sequence[AttachmentRef] = (),
     ) -> PreparedTurn:
         provider_id = run_config_template.provider.provider_id
         model_id = run_config_template.provider.model_id
@@ -680,6 +688,7 @@ class SqliteRuntimeStore:
                 provider_id=provider_id,
                 model_id=model_id,
                 client_request_id=client_request_id,
+                attachments=attachments,
             )
             if existing is not None:
                 return existing
@@ -740,6 +749,9 @@ class SqliteRuntimeStore:
         }
         if client_request_id is not None:
             run_payload["clientRequestId"] = client_request_id
+        item_data: JsonObject = (
+            {"attachments": attachment_refs_to_wire(attachments)} if attachments else {}
+        )
         item_payload = self._item_payload(
             item_id=user_item_id,
             turn_id=turn_id,
@@ -749,7 +761,7 @@ class SqliteRuntimeStore:
             role="user",
             status="completed",
             content=content,
-            data={},
+            data=item_data,
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -783,10 +795,18 @@ class SqliteRuntimeStore:
                 """
                 INSERT INTO items(
                     id, turn_id, run_id, ordinal, kind, role, status, content,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, 1, 'message', 'user', 'completed', ?, ?, ?)
+                    created_at, updated_at, data_json
+                ) VALUES (?, ?, ?, 1, 'message', 'user', 'completed', ?, ?, ?, ?)
                 """,
-                (user_item_id, turn_id, run_id, content, timestamp, timestamp),
+                (
+                    user_item_id,
+                    turn_id,
+                    run_id,
+                    content,
+                    timestamp,
+                    timestamp,
+                    json_dumps(item_data, separators=(",", ":"), ensure_ascii=False),
+                ),
             )
             self._connection.execute(
                 """
@@ -2051,7 +2071,11 @@ class SqliteRuntimeStore:
         return None
 
     def append_steer_item_idempotent(
-        self, run_id: str, content: str, request_id: str
+        self,
+        run_id: str,
+        content: str,
+        request_id: str,
+        attachments: Sequence[AttachmentRef] = (),
     ) -> tuple[JournalEvent, bool]:
         """Persist an in-flight user supplement; consumed by the next model step."""
 
@@ -2065,7 +2089,9 @@ class SqliteRuntimeStore:
                 raise LookupError("run is no longer active")
             existing = self.find_steer_item(run_id, request_id)
             if existing is not None:
-                if existing["content"] != content:
+                if existing["content"] != content or (
+                    message_attachment_refs(existing.get("data", {})) != tuple(attachments)
+                ):
                     raise LookupError(
                         "clientRequestId was already used with different steer content"
                     )
@@ -2080,7 +2106,13 @@ class SqliteRuntimeStore:
                 return event_from_row(prior), False
             item_id = f"item_{uuid.uuid4().hex}"
             ordinal = next_item_ordinal(self._connection, run_id)
-            data = {"steer": True, "clientRequestId": request_id, "status": "received"}
+            data: JsonObject = {
+                "steer": True,
+                "clientRequestId": request_id,
+                "status": "received",
+            }
+            if attachments:
+                data["attachments"] = attachment_refs_to_wire(attachments)
             item = self._item_payload(
                 item_id=item_id,
                 turn_id=run.turn_id,

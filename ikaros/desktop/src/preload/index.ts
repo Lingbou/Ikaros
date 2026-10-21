@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
 import {
   DESKTOP_IPC_CHANNELS,
+  type DesktopAttachmentDescriptor,
   type IkarosDesktopApi,
   type UiPreferences,
   type UiPreferencesPatch
@@ -247,6 +248,23 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.workspace.chooseEntries) as Promise<
         import("../shared/platform").WorkspaceEntrySelection | null
       >
+  }),
+  attachments: Object.freeze({
+    describe: (paths: string[]) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.attachments.describe, paths) as Promise<
+        DesktopAttachmentDescriptor[]
+      >,
+    thumbnail: (path: string) =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.attachments.thumbnail, path) as Promise<
+        string | null
+      >,
+    saveImage: (bytes: ArrayBuffer, mimeType: string) =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.attachments.saveImage,
+        bytes,
+        mimeType
+      ) as Promise<DesktopAttachmentDescriptor>,
+    pathForFile: (file: File) => webUtils.getPathForFile(file)
   }),
   preferences: Object.freeze({
     get: () => ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.preferences.get) as Promise<UiPreferences>,

@@ -47,11 +47,26 @@ export interface WorkspaceEntrySelection {
   files: string[];
 }
 
+export type DesktopAttachmentKind = "image" | "text";
+
+export interface DesktopAttachmentDescriptor {
+  path: string;
+  kind: DesktopAttachmentKind;
+  mimeType: string;
+  size: number;
+}
+
 export interface IkarosDesktopApi {
   readonly runtime: IkarosRuntimeBridgeApi;
   readonly workspace: {
     chooseDirectory(): Promise<RuntimeWorkspaceSummary | null>;
     chooseEntries(): Promise<WorkspaceEntrySelection | null>;
+  };
+  readonly attachments: {
+    describe(paths: string[]): Promise<DesktopAttachmentDescriptor[]>;
+    thumbnail(path: string): Promise<string | null>;
+    saveImage(bytes: ArrayBuffer, mimeType: string): Promise<DesktopAttachmentDescriptor>;
+    pathForFile(file: File): string;
   };
   readonly preferences: {
     get(): Promise<UiPreferences>;
@@ -161,6 +176,11 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
   workspace: {
     chooseDirectory: "ikaros:workspace:choose-directory",
     chooseEntries: "ikaros:workspace:choose-entries"
+  },
+  attachments: {
+    describe: "ikaros:attachments:describe",
+    thumbnail: "ikaros:attachments:thumbnail",
+    saveImage: "ikaros:attachments:save-image"
   },
   preferences: {
     changed: "ikaros:preferences:changed",

@@ -119,7 +119,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 1. **提交**：Composer → 渲染 store → preload → Electron IPC → RuntimeHost →
    回环 WS `turn.start`（携带 threadId / branchId / content / providerId /
-   modelId / clientRequestId）。
+   modelId / clientRequestId 与可选 attachments）。
 2. **受理**：`protocol.router` 派发到 `services.turns`；在一个 SQLite 事务里追加
    用户 Item + Turn + `queued` Run + 不可变 RunConfig；先回 ACK，再发布初始事件并
    激活 Run（ACK 优先边界，见 6.2）。
@@ -507,8 +507,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `AppearanceSettings.tsx` — 外观设置：主题、颜色、字体、侧边栏、动效。
 - `ArchivedThreadsDialog.tsx` — 归档对话管理对话框（取消归档、空态、错误态）。
-- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、附件路径、“文件和
-  文件夹”菜单、模型选择与运行状态提示。
+- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、图片/文件附件
+  （缩略图、删除、拖入与粘贴）、“文件和文件夹”菜单、模型选择与运行状态提示。
 - `ConversationHeader.tsx` — 会话标题栏：重命名/归档菜单、Model 标识。
 - `CreateProjectDialog.tsx` — 新建项目（选择工作区文件夹）。
 - `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口。
@@ -572,9 +572,12 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   是否停止由用户决定。
 - 运行中补充（steering）：Run 执行期间可继续输入（`run.steer`），补充内容进入
   当前 Run 的后续模型调用。
-- 添加上下文：Composer 加号菜单目前只有“文件和文件夹”一项；选择文件夹绑定项目
-  工作区，选择文件生成可移除的附件条目，发送时把绝对路径追加到消息正文（内容
-  仍由 Agent 通过文件工具读取）。
+- 添加上下文与多模态附件：Composer 加号菜单目前只有“文件和文件夹”一项；选择
+  文件夹绑定项目工作区；图片可拖入或直接粘贴（粘贴内容写入系统临时目录），其余
+  文件生成可移除的附件条目。附件随 `turn.start` / `run.steer` 以结构化
+  `attachments` 下发：图片在支持 vision 的模型上作为内容块内联（`data:` URL，
+  绝不外链），非图片与不支持图片的模型保留路径引用，由 Agent 通过文件工具读取；
+  单个附件上限 8 MiB、每条消息最多 8 个（见 6.2 / 6.8）。
 - 新会话项目标识：从项目发起新会话时，输入框上方显示独立项目卡片；第一条消息发出
   后立即隐藏（发送失败回退草稿时恢复显示）。
 - 思考等级：模型选择器内，已配置思考等级的模型条目可展开子菜单直接切换默认等级
@@ -634,6 +637,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   - `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp`：
     1,000,000 tokens
   - 其他未知 model：32,768 tokens
+- 图片输入（vision）：模型 id 含 `vision` / `vl` / `multimodal` 词元（如
+  `deepseek-v4-flash-vision-exp`）时，附件图片作为内容块随请求发送；其他模型按
+  “文本说明 + 路径”降级，不会静默丢弃。附件单文件 ≤ 8 MiB、单条消息 ≤ 8 个。
 - Ikaros 不发送用户配置的输出 token 上限（不设置 `max_tokens`）。
 - 凭据：API key 明文存于 `~/.ikaros/config.yaml`；只在写配置命令中跨桥；界面、
   日志、事件、SQLite 与投影只出现脱敏状态。
@@ -828,7 +834,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.2 协议与 RPC
 
-- 协议版本 11，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
+- 协议版本 12，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
 - 规模：36 个 post-initialize RPC 方法、15 种持久化事件类型、17 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
@@ -850,7 +856,11 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - 事件模型：全局单调递增 `seq`；客户端从游标调用 `event.replay` 追赶，重复序列
   忽略、缺口不跨过；目录/历史页返回 `snapshotSeq` 水位线用于对齐。
 - 幂等：`thread.create` 与 `turn.start` 使用稳定 `clientRequestId`（唯一索引），
-  传输失败后重试不会产生重复 Thread/Turn。
+  传输失败后重试不会产生重复 Thread/Turn；重试必须携带相同的 `attachments`。
+- 附件：`turn.start` / `run.steer` 接受可选 `attachments`（`kind` = `image` /
+  `text`，`path`、`mimeType`）；Runtime 校验绝对路径、存在性、大小（≤ 8 MiB、
+  最多 8 个）、MIME 与图片魔数，并把 `kind` / `path` / `mimeType` / `size` /
+  `sha256` 记录在 User Item 的 `data.attachments`。
 - 文本增量：第一个安全 delta 立即持久化发布；之后合并到 256 字符或 50 ms，并在
   Provider 完成、工具调用边界、取消、失败时同步刷出。
 - 数值规则：严格 JSON；拒绝非有限数、超出 ±(2^53−1) 的整数和过深嵌套；
@@ -918,8 +928,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - 输入预算：模型窗口的 95%（`USABLE_CONTEXT_WINDOW_PERCENT = 95`）。
 - 自动压缩触发阈值：模型窗口的 90%（`AUTO_COMPACT_TOKEN_LIMIT_PERCENT = 90`）。
-- token 估算方式：保守 UTF-8 上界（`conservative-utf8-upper-bound`），只用于
-  输入安全，不用于计费；计费只信 Provider 上报 usage。
+- token 估算方式：保守 UTF-8 上界（`conservative-utf8-upper-bound-v2`）；v2 起
+  User Item 的附件计入估算（每张图片固定 2,048 tokens，文本附件按路径长度），
+  只用于输入安全，不用于计费；计费只信 Provider 上报 usage。
 - 历史选择（`HistorySelector`）：每页 32 个 Turn，从新到旧取连续后缀；工具调用
   与结果必须成对；第一个放不下的 Turn 成为省略边界；选择结果对 Run 冻结。
 - 压缩流程：
@@ -963,6 +974,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - 错误分类：authentication、rate limit、context overflow、invalid request、
   timeout、network、server、cancelled、protocol、unknown；附带安全可选的
   status / request ID / retryable / retry-after。
+- 内容块：user 消息可携带 `image_url` 内容块，图片以 `data:` URL 内联（绝不外链）；
+  其余角色仍是纯文本，违规的内容块按协议错误拒绝。
+- 附件降级：模型不支持图片时改为文本说明 + 路径；文件在 Run 期间被删除或改写
+  （`sha256` 不一致）时同样降级并说明，不静默丢弃。
 - 凭据保护：任何已配置凭据的精确值（或 ≥8 字符嵌入）会被拦截，不进入 Journal、
   事件、日志、列表响应、异常与 UI 投影；轮换/删除后仍对公开字段做校验。
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
@@ -1162,6 +1177,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - Turn / Run：`queued`、`running`、`completed`、`failed`、`cancelled`；
   - Item：`streaming`、`running`、`completed`、`failed`、`cancelled`；
   - Item 类型：`message`、`tool_call`、`tool_result`。
+- User Item `data.attachments`（可选）：`kind`（`image` / `text`）、`path`、
+  `mimeType`、`size`、`sha256`；steer Item 使用相同结构，历史回放据此重建
+  模型输入（图片重新编码为 data URL）。
 - 稳定 ID 格式：`thread_` / `turn_` / `item_` / `memory_` + 32 位十六进制；
   Desktop 线上校验的通用标识符上限 200 字符。
 - Run 失败原因码（`reasonCode`）：`cancelled`、`context_budget_exceeded`、

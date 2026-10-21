@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any, cast
 
+from ..attachments import AttachmentRef, message_attachment_refs
 from ..domain import (
     JOURNAL_EVENT_SCHEMA_VERSION,
     THREAD_TITLE_RENAME_SOURCES,
@@ -182,11 +183,12 @@ def find_turn_by_client_request_id(
     provider_id: str,
     model_id: str,
     client_request_id: str,
+    attachments: Sequence[AttachmentRef] = (),
 ) -> PreparedTurn | None:
     existing = connection.execute(
         """
         SELECT r.id AS run_id, r.turn_id, r.provider_id, r.model_id,
-               t.thread_id, t.branch_id, i.content
+               t.thread_id, t.branch_id, i.content, i.data_json
         FROM runs r
         JOIN turns t ON t.id = r.turn_id
         JOIN items i ON i.run_id = r.id AND i.ordinal = 1
@@ -201,7 +203,11 @@ def find_turn_by_client_request_id(
         str(existing[name])
         for name in ("thread_id", "branch_id", "provider_id", "model_id", "content")
     )
-    if actual != expected:
+    stored_data = json_loads(str(existing["data_json"]))
+    stored_attachments = (
+        message_attachment_refs(stored_data) if isinstance(stored_data, dict) else ()
+    )
+    if actual != expected or stored_attachments != tuple(attachments):
         raise LookupError("clientRequestId was already used with different turn.start parameters")
     return PreparedTurn(
         turn_id=str(existing["turn_id"]),
@@ -1625,6 +1631,10 @@ def _validate_item(item: dict[str, Any]) -> None:
     _require_choice("Item kind", item["kind"], {"message", "tool_call", "tool_result"})
     if not isinstance(item["data"], dict):
         raise RuntimeError("journal event Item data is not an object")
+    try:
+        message_attachment_refs(item["data"])
+    except (TypeError, ValueError):
+        raise RuntimeError("journal event Item attachments are invalid") from None
 
 
 def _validate_model_usage(step_ordinal: object, usage: dict[str, Any]) -> None:

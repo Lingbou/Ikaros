@@ -9,6 +9,10 @@ from typing import Any, cast
 import pytest
 
 from ikaros_runtime.protocol.spec import (
+    ATTACHMENT_IMAGE_MIME_TYPES,
+    ATTACHMENT_KINDS,
+    ATTACHMENT_MAX_BYTES,
+    ATTACHMENT_MAX_COUNT,
     EVENT_NOTIFICATION_METHOD,
     INITIALIZE_METHOD,
     JOURNAL_EVENT_SCHEMA_VERSION,
@@ -200,8 +204,10 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
-    assert PROTOCOL_VERSION == 11
+    assert PROTOCOL_VERSION == 12
     assert JOURNAL_EVENT_SCHEMA_VERSION == 11
+        "maxBytes": ATTACHMENT_MAX_BYTES,
+    }
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {
             "code": MEMORY_OPERATION_ERROR_CODE,
