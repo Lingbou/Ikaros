@@ -476,7 +476,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `AppearanceSettings.tsx` — 外观设置：主题、颜色、字体、侧边栏、动效。
 - `ArchivedThreadsDialog.tsx` — 归档对话管理对话框（取消归档、空态、错误态）。
-- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、模型选择与运行状态提示。
+- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、附件路径、“文件和
+  文件夹”菜单、模型选择与运行状态提示。
 - `ConversationHeader.tsx` — 会话标题栏：重命名/归档菜单、Model 标识。
 - `CreateProjectDialog.tsx` — 新建项目（选择工作区文件夹）。
 - `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口。
@@ -493,7 +494,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `SearchDialog.tsx` — 对话搜索对话框（标题过滤、键盘打开）。
 - `SettingsPage.tsx` — 设置页容器与导航（Provider/Model/Skills/Memory/Profile/
   外观/通用）。
-- `Sidebar.tsx` — 侧边栏：对话列表、Projects、归档入口、搜索按钮。
+- `Sidebar.tsx` — 侧边栏：对话列表、Projects、运行中指示、归档入口、搜索按钮。
 - `SkillsSettings.tsx` — Skills 设置：列表、诊断、启用开关。
 - `ThemePreview.tsx` — 主题预览卡与代码 diff 预览。
 - `TitleBar.tsx` — 自定义标题栏与窗口控制（最小化/最大化/关闭）。
@@ -540,6 +541,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   是否停止由用户决定。
 - 运行中补充（steering）：Run 执行期间可继续输入（`run.steer`），补充内容进入
   当前 Run 的后续模型调用。
+- 添加上下文：Composer 加号菜单目前只有“文件和文件夹”一项；选择文件夹绑定项目
+  工作区，选择文件生成可移除的附件条目，发送时把绝对路径追加到消息正文（内容
+  仍由 Agent 通过文件工具读取）。
 - 失败后继续：失败/取消的 Run 保留已结算的工具结果，并给出本地化说明和有界的
   原因码；新一轮对话不会重放旧命令，也不会回滚可能已生效的文件或命令操作。
 - 草稿保护：没有可用 Model 时，Composer 直接打开 Provider/Model 设置，并保留
@@ -1993,7 +1997,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 | 项目 | 状态 |
 | --- | --- |
 | Runtime 离线基线 | pytest 831 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 496 passed / 1 skipped |
+| Desktop 离线基线 | Vitest 502 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2065,7 +2069,7 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   主窗口时不发送；
 - 多个 Run 并发、Multi-Agent 与子 Agent；
 - cron 与主动唤醒任务；
-- 附件、Web/浏览器/桌面操作工具；
+- 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
 - 自动 Memory 提取与 Skill 学习；
 - Linux 安装包内置 Runtime、自动更新、代码签名与正式发布渠道；
