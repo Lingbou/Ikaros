@@ -73,6 +73,7 @@ class ThreadMessagingService:
         title: str | None,
         workspace: str | None,
         request_id: str,
+        parent_run_id: str,
     ) -> JsonObject:
         params: dict[str, Any] = {
             "clientRequestId": f"{THREAD_CREATE_REQUEST_PREFIX}:{request_id}",
@@ -81,6 +82,16 @@ class ThreadMessagingService:
             params["title"] = title
         if workspace is not None:
             params["workspace"] = project_workspace_from_directory(workspace)
+        else:
+            # New sessions belong to the caller's project unless the caller has no
+            # workspace of its own; only then does the Thread fall back to a managed
+            # workspace (Recents).
+            try:
+                caller = self._store.get_run_config(parent_run_id)
+            except (LookupError, RuntimeError):
+                caller = None
+            if caller is not None and caller.workspace is not None:
+                params["workspace"] = caller.workspace.to_wire()
         outcome = self._threads.create(params)
         await self._publish_outcome(outcome)
         thread = _object(outcome.result["thread"])
