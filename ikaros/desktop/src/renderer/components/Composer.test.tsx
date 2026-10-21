@@ -324,6 +324,59 @@ describe("Composer input and clearance", () => {
     );
   });
 
+  it("clears the level when the active entry is picked again and hides Auto", async () => {
+    const setModelLimits = vi.fn(async () => undefined);
+    useAppStore.setState({
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: true,
+          credentialConfigured: true,
+          health: "ready",
+        },
+      ],
+      models: [
+        {
+          contextWindow: 32768,
+          providerId: "deepseek",
+          id: "deepseek-flash",
+          displayName: "DeepSeek Flash",
+          enabled: true,
+          reasoningEffort: "max",
+          reasoningEfforts: ["low", "high", "max"],
+        },
+      ],
+      selectedModel: { providerId: "deepseek", modelId: "deepseek-flash" },
+      runtimeConnectionStatus: "connected",
+      providerCatalogStatus: "ready",
+      setModelLimits,
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: /DeepSeek Flash/ }));
+    const subTrigger = await screen.findByRole("menuitem", { name: /DeepSeek Flash/ });
+    fireEvent.keyDown(subTrigger, { key: "ArrowRight" });
+
+    expect(screen.queryByRole("menuitem", { name: "Auto" })).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "max" }));
+
+    await waitFor(() =>
+      expect(setModelLimits).toHaveBeenCalledWith({
+        providerId: "deepseek",
+        modelId: "deepseek-flash",
+        contextWindow: 32768,
+        reasoningEfforts: ["low", "high", "max"],
+        reasoningEffort: null,
+      }),
+    );
+  });
+
   it("does not offer a reasoning submenu when the model has no levels", async () => {
     useAppStore.setState({
       providers: [
