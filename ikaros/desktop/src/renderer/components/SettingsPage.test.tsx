@@ -223,7 +223,12 @@ describe("SettingsPage", () => {
     ["providers", "Providers"],
     ["models", "Models"],
   ] as const)("opens the requested %s section and returns with the conversation intact", (section, heading) => {
-    const workspace = { id: "workspace-setup", name: "Setup", rootUri: "/work/setup" };
+    const workspace = {
+      id: "workspace-setup",
+      name: "Setup",
+      kind: "project" as const,
+      rootUri: "/work/setup",
+    };
     useAppStore.setState({
       draft: "Continue this task",
       selectedThreadId: "thread-setup",
@@ -253,7 +258,7 @@ describe("SettingsPage", () => {
           id: "thread-archived",
           title: "Archived research",
           defaultBranchId: "branch-archived",
-          workspace: { id: "workspace-research", name: "Research", rootUri: null },
+          workspace: { id: "workspace-research", name: "Research", kind: "project", rootUri: null },
           createdAt: "2026-08-14T00:00:00.000Z",
           updatedAt: "2026-08-14T01:00:00.000Z",
           archivedAt: "2026-08-14T01:00:00.000Z",
@@ -323,6 +328,7 @@ describe("SettingsPage", () => {
       newThreadWorkspace: {
         id: "workspace-stable-id",
         name: "Ikaros",
+        kind: "project",
         rootUri: "C:/Workspace/github/Ikaros"
       }
     });

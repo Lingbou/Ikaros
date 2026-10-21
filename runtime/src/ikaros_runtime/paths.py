@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+MANAGED_WORKSPACES_DIRECTORY = "Ikaros"
+MANAGED_WORKSPACES_ROOT_ENV = "IKAROS_WORKSPACES_ROOT"
+
+
+def managed_workspaces_root() -> Path:
+    """Root that owns the per-thread workspaces provisioned outside the home."""
+
+    configured = os.environ.get(MANAGED_WORKSPACES_ROOT_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / "Documents" / MANAGED_WORKSPACES_DIRECTORY).resolve()
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,4 +41,9 @@ class RuntimePaths:
         )
 
 
-__all__ = ["RuntimePaths"]
+__all__ = [
+    "MANAGED_WORKSPACES_DIRECTORY",
+    "MANAGED_WORKSPACES_ROOT_ENV",
+    "RuntimePaths",
+    "managed_workspaces_root",
+]

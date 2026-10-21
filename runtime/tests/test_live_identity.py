@@ -488,6 +488,7 @@ async def test_live_deepseek_identity_ab_and_tool_gate(tmp_path: Path) -> None:
     workspace = WorkspaceSummary(
         id="live-identity-workspace",
         name="Live identity workspace",
+        kind="project",
         root_uri=str(workspace_path),
     )
     store = SqliteRuntimeStore(state_path)

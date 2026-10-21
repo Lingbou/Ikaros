@@ -2,23 +2,38 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from ..domain import CommandOutcome, JournalEvent, JsonObject, WorkspaceSummary
+from ..domain import (
+    WORKSPACE_KINDS,
+    CommandOutcome,
+    JournalEvent,
+    JsonObject,
+    WorkspaceKind,
+    WorkspaceSummary,
+)
 from ..errors import InvalidParamsError
 from ..storage import SqliteRuntimeStore
 from ..storage.thread_catalog import THREAD_CATALOG_DEFAULT_LIMIT, THREAD_CATALOG_MAX_LIMIT
 
 RequestSafetyCheck = Callable[[object], None]
+ManagedWorkspaceFactory = Callable[[str, str], WorkspaceSummary]
 _MAX_WORKSPACE_ID_LENGTH = 200
 _MAX_WORKSPACE_NAME_LENGTH = 200
 _MAX_WORKSPACE_ROOT_LENGTH = 4096
 
 
 class ThreadService:
-    def __init__(self, store: SqliteRuntimeStore, assert_request_safe: RequestSafetyCheck) -> None:
+    def __init__(
+        self,
+        store: SqliteRuntimeStore,
+        assert_request_safe: RequestSafetyCheck,
+        *,
+        managed_workspace_factory: ManagedWorkspaceFactory | None = None,
+    ) -> None:
         self._store = store
         self._assert_request_safe = assert_request_safe
+        self._managed_workspace_factory = managed_workspace_factory
 
     def create(self, params: dict[str, Any]) -> CommandOutcome:
         unknown = set(params) - {"title", "workspace", "clientRequestId"}
@@ -27,11 +42,18 @@ class ThreadService:
         title = title_from(params.get("title"))
         client_request_id = client_request_id_from(params)
         workspace = workspace_from_wire(params.get("workspace"))
+        managed_workspace = (
+            self._managed_workspace_factory if workspace is None else None
+        )
         self._assert_request_safe(
             (title, workspace.to_wire() if workspace else None, client_request_id)
         )
         if client_request_id is None:
-            thread, event = self._store.create_thread(title, workspace=workspace)
+            thread, event = self._store.create_thread(
+                title,
+                workspace=workspace,
+                managed_workspace=managed_workspace,
+            )
             created = True
         else:
             try:
@@ -39,6 +61,7 @@ class ThreadService:
                     title,
                     client_request_id,
                     workspace=workspace,
+                    managed_workspace=managed_workspace,
                 )
             except LookupError as error:
                 raise InvalidParamsError(str(error)) from error
@@ -180,11 +203,14 @@ def record_id_from(value: object, *, name: str) -> str:
 def workspace_from_wire(value: object) -> WorkspaceSummary | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {"id", "name", "rootUri"}:
-        raise InvalidParamsError("workspace requires exactly id, name, and rootUri")
+    if not isinstance(value, dict) or set(value) != {"id", "name", "kind", "rootUri"}:
+        raise InvalidParamsError("workspace requires exactly id, name, kind, and rootUri")
     workspace_id = value["id"]
     name = value["name"]
+    kind = value["kind"]
     root_uri = value["rootUri"]
+    if not isinstance(kind, str) or kind not in WORKSPACE_KINDS:
+        raise InvalidParamsError("workspace kind must be project or managed")
     if not isinstance(workspace_id, str) or not isinstance(name, str):
         raise InvalidParamsError("workspace id and name must be strings")
     workspace_id = workspace_id.strip()
@@ -197,8 +223,9 @@ def workspace_from_wire(value: object) -> WorkspaceSummary | None:
         raise InvalidParamsError(
             f"workspace name must be non-empty and at most {_MAX_WORKSPACE_NAME_LENGTH} characters"
         )
+    workspace_kind = cast(WorkspaceKind, kind)
     if root_uri is None:
-        return WorkspaceSummary(workspace_id, name, None)
+        return WorkspaceSummary(workspace_id, name, workspace_kind, None)
     if not isinstance(root_uri, str) or not root_uri or len(root_uri) > _MAX_WORKSPACE_ROOT_LENGTH:
         raise InvalidParamsError(
             "workspace rootUri must be null or a non-empty string of at most "
@@ -215,4 +242,4 @@ def workspace_from_wire(value: object) -> WorkspaceSummary | None:
         ) from None
     if not resolved_root.is_dir():
         raise InvalidParamsError("workspace rootUri must be an existing absolute directory")
-    return WorkspaceSummary(workspace_id, name, str(resolved_root))
+    return WorkspaceSummary(workspace_id, name, workspace_kind, str(resolved_root))

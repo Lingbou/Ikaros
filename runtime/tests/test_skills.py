@@ -278,7 +278,7 @@ def test_run_skill_snapshot_is_journaled_rebuilt_and_reopened(tmp_path: Path) ->
         ordinary, _ = store.create_thread("Ordinary")
         workspace, _ = store.create_thread(
             "Workspace",
-            workspace=WorkspaceSummary("workspace", "Workspace", str(tmp_path)),
+            workspace=WorkspaceSummary("workspace", "Workspace", "project", str(tmp_path)),
         )
         prepared = prepare_turn(
             store,

@@ -12,12 +12,14 @@ export const TEST_RUNTIME_AT = "2026-08-05T06:00:00.000Z";
 export const TEST_RESEARCH_WORKSPACE: RuntimeWorkspaceSummary = {
   id: "project-research",
   name: "Research",
+  kind: "project",
   rootUri: "C:\\Workspace\\research",
 };
 
 const PERSONAL_WORKSPACE: RuntimeWorkspaceSummary = {
   id: "project-personal",
   name: "Personal operations",
+  kind: "project",
   rootUri: "C:\\Users\\demo\\Documents",
 };
 

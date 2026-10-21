@@ -206,7 +206,8 @@ async def test_agent_persists_captured_change_atomically_and_rebuilds_without_re
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread(
-            "File history", workspace=WorkspaceSummary("workspace_test", "Test", str(tmp_path))
+            "File history",
+            workspace=WorkspaceSummary("workspace_test", "Test", "project", str(tmp_path)),
         )
         prepared = prepare_turn(
             store,
@@ -508,7 +509,8 @@ async def test_redacted_tool_output_keeps_safe_capture_path_for_rebuild(tmp_path
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread(
-            "Safe path", workspace=WorkspaceSummary("workspace_test", "Test", str(workspace))
+            "Safe path",
+            workspace=WorkspaceSummary("workspace_test", "Test", "project", str(workspace)),
         )
         prepared = prepare_turn(
             store,

@@ -45,6 +45,7 @@ export function runtimeThreadSummaryFromEvent(
       (!isRecord(workspace) ||
         typeof workspace.id !== "string" ||
         typeof workspace.name !== "string" ||
+        (workspace.kind !== "project" && workspace.kind !== "managed") ||
         (workspace.rootUri !== null && typeof workspace.rootUri !== "string"))) ||
     typeof value.createdAt !== "string" ||
     typeof value.updatedAt !== "string" ||
@@ -57,9 +58,10 @@ export function runtimeThreadSummaryFromEvent(
 
 export function projectRuntimeThread(summary: RuntimeThreadSummary): Thread {
   const workspace = summary.workspace ?? null;
+  const projectId = workspace !== null && workspace.kind === "project" ? workspace.id : null;
   return {
     id: summary.id,
-    projectId: workspace?.id ?? null,
+    projectId,
     title: summary.title ?? "",
     activeBranchId: summary.defaultBranchId,
     updatedAt: summary.updatedAt,
@@ -144,7 +146,7 @@ export function projectRuntimeProjects(
   const workspaces = new Map<string, RuntimeWorkspaceSummary>();
   for (const summary of summaries) {
     const workspace = summary.workspace ?? null;
-    if (workspace && !workspaces.has(workspace.id)) {
+    if (workspace && workspace.kind === "project" && !workspaces.has(workspace.id)) {
       workspaces.set(workspace.id, workspace);
     }
   }
@@ -167,6 +169,7 @@ export function runtimeThreadWorkspaceFromEvent(
     !isRecord(workspace) ||
     typeof workspace.id !== "string" ||
     typeof workspace.name !== "string" ||
+    (workspace.kind !== "project" && workspace.kind !== "managed") ||
     (workspace.rootUri !== null && typeof workspace.rootUri !== "string")
   ) {
     return undefined;

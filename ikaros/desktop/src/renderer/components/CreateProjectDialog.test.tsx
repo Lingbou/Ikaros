@@ -11,6 +11,7 @@ const initialState = useAppStore.getState();
 const workspace: RuntimeWorkspaceSummary = {
   id: "workspace-123",
   name: "Ikaros",
+  kind: "project",
   rootUri: "C:\\Workspace\\github\\Ikaros"
 };
 
@@ -63,6 +64,7 @@ describe("CreateProjectDialog", () => {
     expect(stageProjectWorkspace).toHaveBeenCalledWith({
       id: workspace.id,
       name: "Named project",
+      kind: "project",
       rootUri: workspace.rootUri
     });
     expect(onOpenChange).toHaveBeenCalledWith(false);

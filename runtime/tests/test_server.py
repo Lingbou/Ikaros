@@ -2550,6 +2550,7 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
                 "workspace": {
                     "id": "file-tools-workspace",
                     "name": "File Tools Workspace",
+                    "kind": "project",
                     "rootUri": str(workspace),
                 },
             },
@@ -4202,7 +4203,12 @@ async def test_thread_and_event_journal_survive_runtime_restart(tmp_path: Path) 
         thread = created["result"]["thread"]
         event = created["result"]["event"]
         assert thread["title"] == "Persistent thread"
-        assert thread["workspace"] is None
+        workspace = thread["workspace"]
+        assert workspace["kind"] == "managed"
+        assert workspace["rootUri"] is not None
+        managed_root = Path(os.environ["IKAROS_WORKSPACES_ROOT"])
+        assert Path(workspace["rootUri"]).is_relative_to(managed_root)
+        assert _is_directory(Path(workspace["rootUri"]))
         assert thread["defaultBranchId"].startswith("branch_")
         assert event["seq"] == 1
         assert event["type"] == "thread.created"
@@ -4262,6 +4268,7 @@ async def test_thread_workspace_rpc_survives_list_replay_and_restart(tmp_path: P
     workspace = {
         "id": "workspace-research",
         "name": "Research",
+        "kind": "project",
         "rootUri": str(workspace_root.resolve()),
     }
     first_token = secrets.token_urlsafe(32)
@@ -4301,7 +4308,12 @@ async def test_thread_workspace_rpc_survives_list_replay_and_restart(tmp_path: P
             "thread.create",
             {
                 "title": "Workspace thread",
-                "workspace": {"id": "workspace-other", "name": "Other", "rootUri": None},
+                "workspace": {
+                    "id": "workspace-other",
+                    "name": "Other",
+                    "kind": "project",
+                    "rootUri": None,
+                },
                 "clientRequestId": "workspace-thread-create",
             },
         )
@@ -4333,13 +4345,15 @@ async def test_thread_workspace_rpc_survives_list_replay_and_restart(tmp_path: P
         "workspace",
         {},
         {"id": "id", "name": "name"},
-        {"id": "id", "name": "name", "rootUri": None, "extra": True},
-        {"id": 1, "name": "name", "rootUri": None},
-        {"id": "id", "name": "", "rootUri": None},
-        {"id": "x" * 201, "name": "name", "rootUri": None},
-        {"id": "id", "name": "x" * 201, "rootUri": None},
-        {"id": "id", "name": "name", "rootUri": 1},
-        {"id": "id", "name": "name", "rootUri": "relative/workspace"},
+        {"id": "id", "name": "name", "kind": "project", "rootUri": None, "extra": True},
+        {"id": 1, "name": "name", "kind": "project", "rootUri": None},
+        {"id": "id", "name": "", "kind": "project", "rootUri": None},
+        {"id": "x" * 201, "name": "name", "kind": "project", "rootUri": None},
+        {"id": "id", "name": "x" * 201, "kind": "project", "rootUri": None},
+        {"id": "id", "name": "name", "kind": "project", "rootUri": 1},
+        {"id": "id", "name": "name", "kind": "project", "rootUri": "relative/workspace"},
+        {"id": "id", "name": "name", "kind": "team", "rootUri": None},
+        {"id": "id", "name": "name", "kind": 1, "rootUri": None},
     ],
 )
 async def test_thread_create_rejects_invalid_workspace(
@@ -4542,6 +4556,7 @@ async def test_thread_workspace_cannot_contain_configured_credentials(tmp_path: 
                     "workspace": {
                         "id": "workspace-id",
                         "name": protected,
+                        "kind": "project",
                         "rootUri": None,
                     },
                 }
@@ -4572,6 +4587,7 @@ async def test_thread_create_normalizes_workspace_root_and_list_survives_deletio
                 "workspace": {
                     "id": " workspace-id ",
                     "name": " Workspace Name ",
+                    "kind": "project",
                     "rootUri": str(root / ".." / "nested"),
                 },
             }
@@ -4579,6 +4595,7 @@ async def test_thread_create_normalizes_workspace_root_and_list_survives_deletio
         assert created.result["thread"]["workspace"] == {
             "id": "workspace-id",
             "name": "Workspace Name",
+            "kind": "project",
             "rootUri": str(root.resolve()),
         }
 
@@ -5884,3 +5901,121 @@ async def test_overlapping_runtime_waits_for_home_owner_without_recovering_its_r
         await _stop_failed_process(first_process)
         if second_process is not None:
             await _stop_failed_process(second_process)
+
+
+@pytest.mark.asyncio
+async def test_thread_create_provisions_date_bucketed_managed_workspace(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
+    managed_root = Path(os.environ["IKAROS_WORKSPACES_ROOT"])
+    try:
+        first = kernel.threads.create({"title": "First managed"})
+        second = kernel.threads.create({"title": "Second managed"})
+
+        first_workspace = first.result["thread"]["workspace"]
+        second_workspace = second.result["thread"]["workspace"]
+        assert first_workspace["kind"] == "managed"
+        assert second_workspace["kind"] == "managed"
+        assert first_workspace["id"] != second_workspace["id"]
+
+        first_root = Path(first_workspace["rootUri"])
+        second_root = Path(second_workspace["rootUri"])
+        assert first_root != second_root
+        assert first_root.is_relative_to(managed_root)
+        assert second_root.is_relative_to(managed_root)
+        assert first_root.parent.parent == managed_root
+        assert len(first_root.parent.name) == len("YYYY-MM-DD")
+        assert _is_directory(first_root)
+        assert _is_directory(second_root)
+        assert first.result["event"]["payload"]["thread"]["workspace"] == first_workspace
+
+        listed = kernel.threads.list({})
+        assert {thread["workspace"]["id"]: thread["workspace"] for thread in listed["threads"]} == {
+            first_workspace["id"]: first_workspace,
+            second_workspace["id"]: second_workspace,
+        }
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_create_managed_workspace_is_idempotent(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
+    try:
+        first = kernel.threads.create(
+            {"title": "Idempotent managed", "clientRequestId": "managed-create"}
+        )
+        repeated = kernel.threads.create(
+            {"title": "Idempotent managed", "clientRequestId": "managed-create"}
+        )
+
+        assert repeated.result == first.result
+        assert repeated.events_after_ack == ()
+        workspace = first.result["thread"]["workspace"]
+        assert _is_directory(Path(workspace["rootUri"]))
+        assert _child_count(Path(workspace["rootUri"]).parent) == 1
+    finally:
+        await kernel.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_project_workspace_skips_managed_provisioning(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    kernel = RuntimeApplication(
+        store,
+        _discard_event,
+        memory_store=SqliteMemoryStore(tmp_path / "memory.db"),
+    )
+    managed_root = Path(os.environ["IKAROS_WORKSPACES_ROOT"])
+    try:
+        created = kernel.threads.create(
+            {
+                "title": "Project thread",
+                "workspace": {
+                    "id": "project-id",
+                    "name": "Project",
+                    "kind": "project",
+                    "rootUri": str(project_root),
+                },
+            }
+        )
+
+        assert created.result["thread"]["workspace"] == {
+            "id": "project-id",
+            "name": "Project",
+            "kind": "project",
+            "rootUri": str(project_root.resolve()),
+        }
+        assert not _path_exists(managed_root)
+    finally:
+        await kernel.close()
+        store.close()
+
+
+def _path_exists(path: Path) -> bool:
+    return path.exists()
+
+
+def _is_directory(path: Path) -> bool:
+    return path.is_dir()
+
+
+def _child_count(path: Path) -> int:
+    return len(list(path.iterdir()))

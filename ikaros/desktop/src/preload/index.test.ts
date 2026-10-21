@@ -129,6 +129,7 @@ describe("preload Runtime bridge", () => {
       workspace: {
         id: "workspace-ikaros",
         name: "Ikaros",
+        kind: "project" as const,
         rootUri: "C:\\Workspace\\github\\Ikaros",
       },
       clientRequestId: "thread-request-1",
@@ -254,6 +255,7 @@ describe("preload Runtime bridge", () => {
     const workspace = {
       id: "workspace-ikaros",
       name: "Ikaros",
+      kind: "project",
       rootUri: "C:\\Workspace\\github\\Ikaros",
     };
     electron.ipcRenderer.invoke.mockResolvedValueOnce(workspace);

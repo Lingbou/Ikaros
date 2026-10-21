@@ -10,6 +10,7 @@ import {
 import {
   applyRuntimeCatalogEvent,
   projectRuntimeProjects,
+  projectRuntimeThread,
   projectRuntimeThreadHistory,
   projectRuntimeThreads,
   replayRuntimeEvents,
@@ -94,6 +95,7 @@ describe("Runtime workspace projection", () => {
     const workspace = {
       id: "workspace-ikaros",
       name: "Ikaros",
+      kind: "project" as const,
       rootUri: "C:\\Workspace\\github\\Ikaros",
     };
     const summaries = [
@@ -115,6 +117,22 @@ describe("Runtime workspace projection", () => {
         rootUri: workspace.rootUri,
       },
     ]);
+  });
+
+  it("keeps managed Thread workspaces out of the project list", () => {
+    const managed = {
+      id: "workspace-managed",
+      name: "2026-10-21 15:30",
+      kind: "managed" as const,
+      rootUri: "/home/demo/Documents/Ikaros/2026-10-21/153045-abcd1234",
+    };
+    const summaries = [
+      { ...summary, id: "managed-thread", workspace: managed },
+      { ...summary, id: "ordinary-thread", workspace: null },
+    ];
+
+    expect(projectRuntimeThread(summaries[0]).projectId).toBeNull();
+    expect(projectRuntimeProjects(summaries)).toEqual([]);
   });
 
   it("projects a materialized Thread history without requiring Journal replay", () => {

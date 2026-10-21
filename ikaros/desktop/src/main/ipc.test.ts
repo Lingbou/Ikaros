@@ -251,6 +251,7 @@ describe("desktop window controls", () => {
     expect(first).toMatchObject({
       id: expect.stringMatching(/^workspace-[0-9a-f]{24}$/),
       name: "Ikaros",
+      kind: "project",
       rootUri: directory,
     });
     expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(electron.targetWindow, {
@@ -542,6 +543,7 @@ describe("desktop window controls", () => {
       workspace: {
         id: "workspace-ikaros",
         name: "Ikaros",
+        kind: "project",
         rootUri: "C:\\Workspace\\github\\Ikaros",
       },
       clientRequestId: "thread-request-123",

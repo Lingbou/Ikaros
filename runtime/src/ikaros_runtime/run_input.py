@@ -12,7 +12,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
-from .domain import ContextItem, JournalEvent, JsonObject, SkillDescriptor, WorkspaceSummary
+from .domain import (
+    WORKSPACE_KINDS,
+    ContextItem,
+    JournalEvent,
+    JsonObject,
+    SkillDescriptor,
+    WorkspaceSummary,
+)
 from .errors import ContextBudgetExceededError, ModelInputUnavailableError
 from .history_status import EMPTY_HISTORY_STATUS, FrozenHistoryStatus
 from .json_codec import dumps as json_dumps
@@ -1522,13 +1529,17 @@ def _skill_snapshot(skills: Sequence[SkillDescriptor]) -> tuple[SkillDescriptor,
 def _workspace_from_wire(value: object) -> WorkspaceSummary | None:
     if value is None:
         return None
-    row = _object(value, "workspace", {"id", "name", "rootUri"})
+    row = _object(value, "workspace", {"id", "name", "kind", "rootUri"})
+    kind = row["kind"]
+    if kind not in WORKSPACE_KINDS:
+        raise ValueError("workspace kind is invalid")
     root_uri = row["rootUri"]
     if root_uri is not None and not isinstance(root_uri, str):
         raise ValueError("workspace root URI is invalid")
     return WorkspaceSummary(
         id=_as_str(row["id"]),
         name=_as_str(row["name"]),
+        kind=kind,
         root_uri=root_uri,
     )
 

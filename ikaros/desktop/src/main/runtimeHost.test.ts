@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
@@ -157,6 +157,18 @@ function historyTurn(ordinal: number): RuntimeTurnHistory {
 }
 
 describe("RuntimeHost integration", () => {
+  let managedWorkspacesRoot: string;
+
+  beforeAll(async () => {
+    managedWorkspacesRoot = await mkdtemp(join(tmpdir(), "ikaros-managed-workspaces-"));
+    process.env.IKAROS_WORKSPACES_ROOT = managedWorkspacesRoot;
+  });
+
+  afterAll(async () => {
+    delete process.env.IKAROS_WORKSPACES_ROOT;
+    await rm(managedWorkspacesRoot, { recursive: true, force: true });
+  });
+
   it("does not let a stale or stop-superseded start failure overwrite host status", async () => {
     const host = new RuntimeHost({ runtimeRoot, runtimeModule: testRuntimeModule });
     const internals = host as unknown as RuntimeHostInternals;
@@ -596,7 +608,7 @@ describe("RuntimeHost integration", () => {
             id: created.thread.id,
             title: created.thread.title,
             defaultBranchId: created.thread.defaultBranchId,
-            workspace: null,
+            workspace: expect.objectContaining({ kind: "managed" }),
             createdAt: created.thread.createdAt
           })
         );

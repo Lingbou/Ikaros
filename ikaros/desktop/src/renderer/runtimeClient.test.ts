@@ -184,7 +184,12 @@ describe("RuntimeClient", () => {
     const client = new RuntimeClient(bridge);
     const params = {
       title: "Workspace chat",
-      workspace: { id: "workspace-1", name: "Ikaros", rootUri: "C:\\Ikaros" },
+      workspace: {
+        id: "workspace-1",
+        name: "Ikaros",
+        kind: "project" as const,
+        rootUri: "C:\\Ikaros",
+      },
       clientRequestId: "create-1",
     };
 

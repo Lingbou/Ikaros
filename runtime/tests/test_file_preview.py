@@ -144,7 +144,7 @@ async def test_service_uses_saved_workspace_and_has_no_journal_side_effect(tmp_p
         target.write_text("one\ntwo\n")
         thread, _ = store.create_thread(
             "Inspect",
-            workspace=WorkspaceSummary("project", "Project", str(workspace)),
+            workspace=WorkspaceSummary("project", "Project", "project", str(workspace)),
         )
         security = RuntimeSecurity(lambda: (), store.journal_contains_protected_values)
         service = FileService(store, security, paths)
@@ -174,7 +174,7 @@ async def test_runtime_internal_files_and_symlink_escape_are_not_previewed(tmp_p
         paths.config.write_text("sensitive configuration")
         thread, _ = store.create_thread(
             "Inspect",
-            workspace=WorkspaceSummary("all", "All", str(tmp_path)),
+            workspace=WorkspaceSummary("all", "All", "project", str(tmp_path)),
         )
         service = FileService(
             store,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
@@ -122,6 +122,9 @@ class ContextCompactionRequired(RuntimeError):
         self.records = tuple(records)
         self.omitted_records = tuple(omitted_records)
         self.existing_summary = existing_summary
+
+
+WorkspaceFactory = Callable[[str, str], WorkspaceSummary]
 
 
 class SqliteRuntimeStore:
@@ -291,10 +294,12 @@ class SqliteRuntimeStore:
         title: str | None,
         *,
         workspace: WorkspaceSummary | None = None,
+        managed_workspace: WorkspaceFactory | None = None,
     ) -> tuple[ThreadSummary, JournalEvent]:
         thread, event, _created = self._create_thread(
             title,
             workspace=workspace,
+            managed_workspace=managed_workspace,
             client_request_id=None,
         )
         return thread, event
@@ -305,10 +310,12 @@ class SqliteRuntimeStore:
         client_request_id: str,
         *,
         workspace: WorkspaceSummary | None = None,
+        managed_workspace: WorkspaceFactory | None = None,
     ) -> tuple[ThreadSummary, JournalEvent, bool]:
         return self._create_thread(
             title,
             workspace=workspace,
+            managed_workspace=managed_workspace,
             client_request_id=client_request_id,
         )
 
@@ -317,6 +324,7 @@ class SqliteRuntimeStore:
         title: str | None,
         *,
         workspace: WorkspaceSummary | None,
+        managed_workspace: WorkspaceFactory | None,
         client_request_id: str | None,
     ) -> tuple[ThreadSummary, JournalEvent, bool]:
         if client_request_id is not None:
@@ -330,7 +338,12 @@ class SqliteRuntimeStore:
             ).fetchone()
             if existing is not None:
                 existing_workspace = workspace_from_json(existing["workspace_json"])
-                if existing["title"] != title or existing_workspace != workspace:
+                expected_workspace = workspace
+                if managed_workspace is not None:
+                    expected_workspace = managed_workspace(
+                        str(existing["id"]), str(existing["created_at"])
+                    )
+                if existing["title"] != title or existing_workspace != expected_workspace:
                     raise LookupError(
                         "clientRequestId was already used with different thread.create parameters"
                     )
@@ -365,6 +378,8 @@ class SqliteRuntimeStore:
         thread_id = f"thread_{uuid.uuid4().hex}"
         branch_id = f"branch_{uuid.uuid4().hex}"
         timestamp = utc_now()
+        if managed_workspace is not None:
+            workspace = managed_workspace(thread_id, timestamp)
         thread = ThreadSummary(
             id=thread_id,
             title=title,
