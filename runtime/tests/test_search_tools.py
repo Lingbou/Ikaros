@@ -17,7 +17,7 @@ from ikaros_runtime.tools.glob import GlobTool
 from ikaros_runtime.tools.grep import GrepTool
 from ikaros_runtime.tools.list import ListTool
 from ikaros_runtime.tools.policy import FullAccessPolicy
-from ikaros_runtime.tools.traversal import MAX_SCAN_DEPTH, format_timestamp
+from ikaros_runtime.tools.traversal import format_timestamp
 
 
 def _context(*, default_cwd: str | None = None) -> ToolExecutionContext:
@@ -357,17 +357,16 @@ async def test_search_tools_do_not_follow_directory_symlinks(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_search_tools_stop_descending_below_the_scan_depth(tmp_path: Path) -> None:
+async def test_search_tools_descend_arbitrarily_deep_trees(tmp_path: Path) -> None:
     workspace = tmp_path / "deep"
     current = workspace
-    for index in range(MAX_SCAN_DEPTH + 2):
-        current = current / f"level{index}"
+    for _ in range(40):
+        current = current / "d"
     current.mkdir(parents=True)
-    (current / "buried.py").write_text("x = 1\n", encoding="utf-8")
-    shallow = workspace / "level0" / "shallow.py"
-    shallow.write_text("x = 1\n", encoding="utf-8")
+    buried = current / "buried.py"
+    buried.write_text("x = 1\n", encoding="utf-8")
 
     result = await _call("glob", {"pattern": "**/*.py", "path": str(workspace)})
 
     assert result.ok is True
-    assert _glob_paths(result.output) == [str(shallow)]
+    assert _glob_paths(result.output) == [str(buried)]

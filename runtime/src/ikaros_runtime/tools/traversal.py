@@ -15,7 +15,7 @@ from ..cancellation import CancellationToken
 from .file_common import FileToolError
 
 DEFAULT_IGNORED_DIRECTORIES: frozenset[str] = frozenset({".git", "node_modules"})
-MAX_SCAN_DEPTH = 12
+
 MAX_PATTERN_LENGTH = 1_024
 _CANCELLATION_CHECK_INTERVAL = 64
 
@@ -118,19 +118,19 @@ def walk_files(
     root: Path,
     *,
     cancellation: CancellationToken,
-    max_depth: int = MAX_SCAN_DEPTH,
     ignored_directories: frozenset[str] = DEFAULT_IGNORED_DIRECTORIES,
 ) -> Iterator[WalkedFile]:
     """Yield regular files below ``root`` breadth-first without following directory links.
 
-    Directory links are never followed, unreadable entries are skipped, and descent stops
-    at ``max_depth`` levels below the root so that a deep tree cannot stall one Tool call.
+    Directory links are never followed and unreadable entries are skipped. There is no
+    depth cap: deep trees must stay searchable, and the caller's result limit plus the
+    periodic cancellation check bound the work.
     """
 
-    pending: deque[tuple[Path, int]] = deque([(root, 1)])
+    pending: deque[Path] = deque([root])
     scanned = 0
     while pending:
-        directory, depth = pending.popleft()
+        directory = pending.popleft()
         try:
             with os.scandir(directory) as iterator:
                 entries = sorted(iterator, key=lambda entry: entry.name)
@@ -145,8 +145,8 @@ def walk_files(
                     if entry.is_dir(follow_symlinks=True):
                         continue
                 elif entry.is_dir(follow_symlinks=False):
-                    if depth < max_depth and entry.name not in ignored_directories:
-                        pending.append((Path(entry.path), depth + 1))
+                    if entry.name not in ignored_directories:
+                        pending.append(Path(entry.path))
                     continue
                 metadata = entry.stat(follow_symlinks=True)
             except OSError:
