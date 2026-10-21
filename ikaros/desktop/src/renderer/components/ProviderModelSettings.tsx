@@ -46,7 +46,12 @@ export interface ModelsSettingsProps {
   providers: readonly RuntimeProviderSummary[];
   models: readonly RuntimeModelSummary[];
   onSetModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<void>;
-  onSetModelLimits(providerId: string, modelId: string, contextWindow: number): Promise<void>;
+  onSetModelLimits(
+    providerId: string,
+    modelId: string,
+    contextWindow: number,
+    reasoningEffort: string | null
+  ): Promise<void>;
 }
 
 interface DraftModel {
@@ -240,6 +245,17 @@ function ProviderRow({
     </div>
   );
 }
+
+const REASONING_EFFORT_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
 
 function Field({
   label,
@@ -1030,25 +1046,36 @@ interface ModelGroup {
   custom: boolean;
   models: readonly RuntimeModelSummary[];
   onToggle(modelId: string, enabled: boolean): void;
-  onSetLimits(modelId: string, contextWindow: number): Promise<void>;
+  onSetLimits(
+    modelId: string,
+    contextWindow: number,
+    reasoningEffort: string | null
+  ): Promise<void>;
 }
 
 function ModelLimitsEditor({ model, onSave }: {
   model: RuntimeModelSummary;
-  onSave(modelId: string, contextWindow: number): Promise<void>;
+  onSave(
+    modelId: string,
+    contextWindow: number,
+    reasoningEffort: string | null
+  ): Promise<void>;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [context, setContext] = useState(String(model.contextWindow));
+  const [effort, setEffort] = useState(model.reasoningEffort ?? "");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const contextWindow = Number(context);
   const valid = Number.isSafeInteger(contextWindow) && contextWindow > 1;
-  const changed = contextWindow !== model.contextWindow;
+  const changed =
+    contextWindow !== model.contextWindow || effort !== (model.reasoningEffort ?? "");
   const updateOpen = (nextOpen: boolean) => {
     if (saving) return;
     if (nextOpen) {
       setContext(String(model.contextWindow));
+      setEffort(model.reasoningEffort ?? "");
       setFailed(false);
     }
     setOpen(nextOpen);
@@ -1059,7 +1086,7 @@ function ModelLimitsEditor({ model, onSave }: {
     setSaving(true);
     setFailed(false);
     try {
-      await onSave(model.id, contextWindow);
+      await onSave(model.id, contextWindow, effort === "" ? null : effort);
       setOpen(false);
     } catch {
       setFailed(true);
@@ -1110,6 +1137,27 @@ function ModelLimitsEditor({ model, onSave }: {
                   <input type="number" min={2} step={1} value={context} disabled={saving}
                     onChange={(event) => setContext(event.currentTarget.value)}
                     className={cx(inputClassName, "tabular-nums disabled:opacity-60")} />
+                </Field>
+              </div>
+              <div className="mt-4">
+                <Field
+                  label={t("settings.models.reasoningEffort")}
+                  hint={t("settings.models.reasoningHint")}
+                >
+                  <select
+                    aria-label={t("settings.models.reasoningEffort")}
+                    value={effort}
+                    disabled={saving}
+                    onChange={(event) => setEffort(event.currentTarget.value)}
+                    className={cx(inputClassName, "disabled:opacity-60")}
+                  >
+                    <option value="">{t("settings.models.reasoningAuto")}</option>
+                    {REASONING_EFFORT_LEVELS.map((level) => (
+                      <option key={level} value={level}>
+                        {level}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
               </div>
               <p className="mt-3 text-[11px] leading-[18px] text-[var(--muted)]">
@@ -1198,6 +1246,9 @@ function ModelsGroup({
                   {t("settings.models.capacitySummary", {
                     context: model.contextWindow.toLocaleString()
                   })}
+                  {model.reasoningEffort
+                    ? ` · ${t("settings.models.reasoningSummary", { effort: model.reasoningEffort })}`
+                    : null}
                 </p>
               </div>
               <ModelLimitsEditor model={model} onSave={group.onSetLimits} />
@@ -1237,8 +1288,11 @@ export function ModelsSettings({
           name: provider.displayName,
           custom: provider.origin === "custom",
           models: providerModels,
-          onSetLimits: (modelId: string, contextWindow: number) =>
-            onSetModelLimits(provider.id, modelId, contextWindow),
+          onSetLimits: (
+            modelId: string,
+            contextWindow: number,
+            reasoningEffort: string | null
+          ) => onSetModelLimits(provider.id, modelId, contextWindow, reasoningEffort),
           onToggle: (modelId: string, enabled: boolean) => {
             setMutationFailed(false);
             void onSetModelEnabled(provider.id, modelId, enabled).catch(() =>

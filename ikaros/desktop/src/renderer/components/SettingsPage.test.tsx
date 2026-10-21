@@ -381,7 +381,8 @@ describe("SettingsPage", () => {
           id: model.id,
           displayName: model.displayName,
           contextWindow: 32768,
-          enabled: true
+          enabled: true,
+          reasoningEffort: null
         }))
       });
     });
@@ -502,7 +503,8 @@ describe("SettingsPage", () => {
           id: "deepseek-chat",
           displayName: "DeepSeek Chat",
           contextWindow: 32768,
-          enabled: true
+          enabled: true,
+          reasoningEffort: null
         }
       ],
       disconnectProvider
@@ -681,7 +683,8 @@ describe("SettingsPage", () => {
           id: model.id,
           displayName: model.displayName,
           contextWindow: 32768,
-          enabled: true
+          enabled: true,
+          reasoningEffort: null
         }))
       });
     });
@@ -878,7 +881,8 @@ describe("SettingsPage", () => {
           id: "persisted-model",
           displayName: "Persisted Model",
           contextWindow: 32768,
-          enabled: false
+          enabled: false,
+          reasoningEffort: null
         }
       ]
     });
@@ -1123,7 +1127,16 @@ describe("model capacity settings", () => {
   function openModels(setModelLimits = vi.fn(async () => undefined)) {
     useAppStore.setState({
       providers: [{ id: "deepseek", displayName: "DeepSeek", origin: "builtin", configured: true, credentialConfigured: true, health: "unknown" }],
-      models: [{ providerId: "deepseek", id: "model", displayName: "Model", enabled: true, contextWindow: 32768 }],
+      models: [
+        {
+          providerId: "deepseek",
+          id: "model",
+          displayName: "Model",
+          enabled: true,
+          contextWindow: 32768,
+          reasoningEffort: null,
+        },
+      ],
       setModelLimits,
     });
     render(<SettingsPage />);
@@ -1145,6 +1158,25 @@ describe("model capacity settings", () => {
     expect(within(dialog).getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
   });
 
+  it("saves the reasoning effort together with the context window", async () => {
+    const setModelLimits = openModels();
+    fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Reasoning effort" }), {
+      target: { value: "high" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(setModelLimits).toHaveBeenCalledWith({
+        providerId: "deepseek",
+        modelId: "model",
+        contextWindow: 32768,
+        reasoningEffort: "high",
+      }),
+    );
+  });
+
   it("validates the context window and saves it without requesting credentials", async () => {
     const setModelLimits = openModels();
     fireEvent.click(screen.getByRole("button", { name: "Configure Model" }));
@@ -1153,7 +1185,14 @@ describe("model capacity settings", () => {
     expect(screen.getByRole("alert").textContent).toContain("greater than 1");
     fireEvent.change(screen.getByRole("spinbutton", { name: "Context window (tokens)" }), { target: { value: "65536" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(setModelLimits).toHaveBeenCalledWith({ providerId: "deepseek", modelId: "model", contextWindow: 65536 }));
+    await waitFor(() =>
+      expect(setModelLimits).toHaveBeenCalledWith({
+        providerId: "deepseek",
+        modelId: "model",
+        contextWindow: 65536,
+        reasoningEffort: null,
+      })
+    );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByLabelText("DeepSeek API key")).toBeNull();
   });

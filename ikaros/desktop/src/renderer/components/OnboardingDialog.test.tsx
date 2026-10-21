@@ -108,6 +108,7 @@ describe("first-run onboarding", () => {
             displayName: "deepseek-chat",
             enabled: true,
             contextWindow: 32768,
+            reasoningEffort: null,
           },
         ],
       });

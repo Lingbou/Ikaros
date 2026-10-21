@@ -391,6 +391,8 @@ class OpenAICompatibleAdapter:
         }
         if request.max_output_tokens is not None:
             body["max_tokens"] = request.max_output_tokens
+        if model.reasoning_effort is not None:
+            body["reasoning_effort"] = model.reasoning_effort
         body["stream_options"] = {"include_usage": True}
         if model.supports_tools and request.tools:
             body["tools"] = [_tool_to_openai(tool) for tool in request.tools]

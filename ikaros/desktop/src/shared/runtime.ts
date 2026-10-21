@@ -467,6 +467,7 @@ export interface RuntimeModelSummary {
   id: string;
   displayName: string;
   enabled: boolean;
+  reasoningEffort: string | null;
 }
 
 export interface RuntimeModelInput {
@@ -521,6 +522,7 @@ export interface RuntimeModelSetLimitsParams {
   providerId: string;
   modelId: string;
   contextWindow: number;
+  reasoningEffort?: string | null;
 }
 
 export interface RuntimeModelSetEnabledResult {

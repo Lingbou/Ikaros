@@ -74,6 +74,7 @@ describe("Composer input and clearance", () => {
           id: "deepseek-chat",
           displayName: "DeepSeek Chat",
           enabled: true,
+          reasoningEffort: null,
         },
       ],
       selectedModel: { providerId: "deepseek", modelId: "deepseek-chat" },
@@ -195,6 +196,7 @@ describe("Composer input and clearance", () => {
           id: "deepseek-flash",
           displayName: "DeepSeek Flash",
           enabled: true,
+          reasoningEffort: null,
         },
         {
           contextWindow: 32768,
@@ -202,6 +204,7 @@ describe("Composer input and clearance", () => {
           id: "deepseek-v4",
           displayName: "DeepSeek V4.1 Flash",
           enabled: true,
+          reasoningEffort: null,
         },
       ],
       selectedModel: { providerId: "deepseek", modelId: "deepseek-flash" },
@@ -268,7 +271,16 @@ describe("Composer input and clearance", () => {
   it("opens Models settings when configured models are disabled", () => {
     useAppStore.setState({
             providers: [{ id: "custom", displayName: "Custom", origin: "custom", configured: true, credentialConfigured: true, health: "unknown" }],
-      models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: false, contextWindow: 32768 }],
+      models: [
+        {
+          providerId: "custom",
+          id: "model",
+          displayName: "Model",
+          enabled: false,
+          contextWindow: 32768,
+          reasoningEffort: null,
+        },
+      ],
       selectedModel: null,
       draft: "saved draft",
     });
@@ -348,7 +360,16 @@ describe("Composer input and clearance", () => {
           credentialConfigured: true,
           health: "unknown",
         }],
-        models: [{ providerId: "custom", id: "model", displayName: "Model", enabled: true, contextWindow: 32768 }],
+        models: [
+          {
+            providerId: "custom",
+            id: "model",
+            displayName: "Model",
+            enabled: true,
+            contextWindow: 32768,
+            reasoningEffort: null,
+          },
+        ],
         selectedModel: { providerId: "custom", modelId: "model" },
       });
       useAppStore.getState().setSettingsOpen(false);
@@ -379,6 +400,7 @@ describe("Composer input and clearance", () => {
           displayName: "Model A",
           contextWindow: 32768,
           enabled: true,
+          reasoningEffort: null,
         },
         {
           providerId: "test-provider",
@@ -386,6 +408,7 @@ describe("Composer input and clearance", () => {
           displayName: "Model B",
           contextWindow: 32768,
           enabled: true,
+          reasoningEffort: null,
         },
       ],
       selectedModel: { providerId: "test-provider", modelId: "model-a" },

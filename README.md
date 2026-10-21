@@ -608,6 +608,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - 内置 DeepSeek profile：provider ID `deepseek`，默认 Base URL
   `https://api.deepseek.com/v1`。
+- 思考强度：每个模型可配置可选 `reasoning_effort`（none/minimal/low/medium/high/
+  xhigh/max/ultra），设置后请求体携带同名参数；留空（自动）则不下发，使用供应商
+  默认值。配置入口：设置 → 模型 → 单个模型的设置弹窗。
 - Custom Provider：任意 OpenAI Chat Completions 兼容端点（Base URL、可选 API key、
   可选自定义 header、手动录入 model）。
 - 首次运行（没有已连接的 Provider 且未完成初始化）时显示三步初始化向导：① 昵称 /
@@ -1212,6 +1215,7 @@ providers:
         enabled: true
         supports_tools: true
         context_window: 32768
+        reasoning_effort: high   # 可选：none/minimal/low/medium/high/xhigh/max/ultra
 skills:
   disabled:
     - <skill-name>
@@ -1360,7 +1364,7 @@ Process              running ──▶ exited / terminated
 | `provider.remove` | `{providerId}`（Custom） | `{ removed, providerId }` |
 | `model.list` | 无 | `{ models: [{contextWindow, providerId, id, displayName, enabled}] }` |
 | `model.set_enabled` | `providerId`；`modelId`；`enabled` | `{ model }` |
-| `model.set_limits` | `providerId`；`modelId`；`contextWindow`（1–9,007,199,254,740,991） | `{ model }` |
+| `model.set_limits` | `providerId`；`modelId`；`contextWindow`（1–9,007,199,254,740,991）；`reasoningEffort?`（null = 自动/清空，或 none/minimal/low/medium/high/xhigh/max/ultra） | `{ model }` |
 
 ### 7.4 Skills、Memory、文件与进程
 
@@ -1537,16 +1541,17 @@ Provider、Model 与 Skills：
 // model.list
 {}
 → {"models":[{"providerId":"deepseek","id":"deepseek-v4-flash","displayName":"DeepSeek V4 Flash",
-              "enabled":true,"contextWindow":1000000}]}
+              "enabled":true,"contextWindow":1000000,"reasoningEffort":null}]}
 
 // model.set_enabled
 {"providerId":"deepseek","modelId":"deepseek-v4-pro","enabled":false}
 → {"model":{"providerId":"deepseek","id":"deepseek-v4-pro","displayName":"DeepSeek V4 Pro",
-            "enabled":false,"contextWindow":1000000}}
+            "enabled":false,"contextWindow":1000000,"reasoningEffort":null}}
 
 // model.set_limits
-{"providerId":"deepseek","modelId":"deepseek-v4-flash","contextWindow":500000}
-→ {"model":{"providerId":"deepseek","id":"deepseek-v4-flash","enabled":true,"contextWindow":500000}}
+{"providerId":"deepseek","modelId":"deepseek-v4-flash","contextWindow":500000,"reasoningEffort":"high"}
+→ {"model":{"providerId":"deepseek","id":"deepseek-v4-flash","enabled":true,"contextWindow":500000,
+            "reasoningEffort":"high"}}
 
 // skill.list
 {}
@@ -2100,8 +2105,8 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线基线 | pytest 889 passed / 2 skipped（WSL Linux）；Windows 本机 877 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 504 passed / 1 skipped |
+| Runtime 离线基线 | pytest 924 passed / 2 skipped（WSL Linux）；Windows 本机 877 passed，失败均为已知平台差异 |
+| Desktop 离线基线 | Vitest 516 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2254,6 +2259,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2；channel 1 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
+| 模型 | 思考强度 | `reasoning_effort`：none / minimal / low / medium / high / xhigh / max / ultra；未设置=自动，不下发 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |
 | 服务 | 锁超时 / 轮询 | 10 秒 / 50 ms |

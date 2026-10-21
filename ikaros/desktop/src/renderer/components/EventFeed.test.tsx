@@ -157,6 +157,7 @@ describe("EventFeed dynamic row measurement", () => {
         startedAt: "2026-08-06T06:00:00.000Z",
         settledAt: "2026-08-06T06:00:12.000Z",
         modelCalls: 1,
+        compactions: 1,
       },
     });
     useAppStore.setState({
