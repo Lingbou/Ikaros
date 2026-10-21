@@ -575,8 +575,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   `https://api.deepseek.com/v1`。
 - Custom Provider：任意 OpenAI Chat Completions 兼容端点（Base URL、可选 API key、
   可选自定义 header、手动录入 model）。
-- 首次运行（没有已连接的 Provider 且未完成初始化）时显示初始化弹窗：选择 DeepSeek
-  或自定义 Provider 完成接入，可"稍后设置"；完成后不再自动出现，设置页随时可改。
+- 首次运行（没有已连接的 Provider 且未完成初始化）时显示三步初始化向导：① 昵称 /
+  界面语言 / 主题（语言与主题切换立即生效）；② 接入 DeepSeek 或自定义 Provider；
+  ③ 完成摘要（昵称 / 语言 / 主题 / Provider / 已启用模型数）。任意步骤可"稍后设置"；
+  完成后不再自动出现，设置页随时可改。
 - Model 发现：DeepSeek 支持在线发现（请求上游 `/models`，响应体上限 1 MB，
   最多解析 1,000 个 model）；Custom Provider 手动录入。
 - Model 启用/禁用；新对话选择第一个启用 Model；打开旧对话优先恢复其最近使用的
@@ -672,7 +674,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 ### 4.12 界面语言与 i18n
 
-- 界面语言：`en`、`zh-CN`（偏好字段 `language`）。
+- 界面语言：`en`、`zh-CN`（偏好字段 `language`）；首次运行（无偏好文件）默认
+  跟随系统 locale（`zh*` → `zh-CN`，否则 `en`）。
 - 主题：`system` / `light` / `dark` 三种色彩模式，深浅两套主题各含
   accent/background/foreground 颜色、UI 字体（system / inter / sego-ui）、
   代码字体（system-mono / cascadia-code / consolas）、半透明侧边栏与对比度。
