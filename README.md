@@ -950,7 +950,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–10）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 200 字符；单文件 ≤4 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
 | `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
-| `subagent` | `prompt`（≤32,768 字符）、可选 `title`（≤120 字符） | 创建子 Thread + 子 Run 并等待结束，返回最终回答（≤4,000 字符，超限截断）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；子会话不能再 spawn（深度 1）；超时 900 秒，父取消会传播；同一工具调用重放幂等 |
+| `subagent` | `prompt`（非空字符串）、可选 `title`（≤200 字符，与 Thread 标题同限） | 创建子 Thread + 子 Run 并等待结束，返回最终回答原文（不截断）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；子会话不能再 spawn（深度 1）；不设墙钟超时（父取消会传播，长任务由取消而非计时终止）；同一工具调用重放幂等 |
 
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
@@ -2194,7 +2194,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 10；32 方法；15 事件；17 工具 |
-| 工具 | subagent | 子会话超时 900 秒；摘要 ≤4,000 字符；允许深度 1 |
+| 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |
