@@ -29,7 +29,11 @@ from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
 from .run_input import InstructionBlock, ProviderExecutionSnapshot
-from .security import RuntimeSecurity, contains_protected_value
+from .security import (
+    RuntimeSecurity,
+    contains_protected_value,
+    install_protected_value_redaction,
+)
 from .server.connection import handle_connection
 from .server.event_hub import EventHub, EventSink
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
@@ -390,6 +394,11 @@ async def run_runtime_server(
             event_subscribe=event_hub.subscribe,
         )
         memory_store = None
+        install_protected_value_redaction(
+            application.security.protected_values,
+            handlers=tuple(logging.getLogger().handlers),
+            loggers=(logging.getLogger("httpx"),),
+        )
         application.start(recovery.queued_run_ids)
         await application.start_channels()
 
