@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 
 from .errors import ConfigError, InvalidParamsError
@@ -11,6 +12,58 @@ from .run_input import (
 
 type ProtectedValuesSource = Callable[[], Sequence[str]]
 type JournalSecretProbe = Callable[[Sequence[str]], bool]
+
+
+_SECRET_REDACTION_FILTER_NAME = "ikaros-redact-protected-values"
+_REDACTED_VALUE = "***"
+
+
+class ProtectedValueRedactionFilter(logging.Filter):
+    """Rewrite log records so configured credentials never reach a log sink.
+
+    Transport libraries log request URLs, and a channel token lives in the Bot
+    API path, so an unfiltered ``httpx`` INFO line would publish the credential
+    to stderr and to every captured log.
+    """
+
+    def __init__(self, values: ProtectedValuesSource) -> None:
+        super().__init__(_SECRET_REDACTION_FILTER_NAME)
+        self._values = values
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        protected = tuple(value for value in self._values() if value)
+        if not protected:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        redacted = message
+        for value in protected:
+            if value in redacted:
+                redacted = redacted.replace(value, _REDACTED_VALUE)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+def install_protected_value_redaction(
+    values: ProtectedValuesSource,
+    *,
+    handlers: Sequence[logging.Handler] = (),
+    loggers: Sequence[logging.Logger] = (),
+) -> None:
+    """Attach the redaction filter to log sinks, at most once per sink."""
+
+    targets: list[logging.Filterer] = [*handlers, *loggers]
+    for target in targets:
+        if any(
+            getattr(existing, "name", None) == _SECRET_REDACTION_FILTER_NAME
+            for existing in target.filters
+        ):
+            continue
+        target.addFilter(ProtectedValueRedactionFilter(values))
 
 
 class RuntimeSecurity:

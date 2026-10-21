@@ -1,5 +1,5 @@
 import { CheckCircle2, LoaderCircle, RefreshCw, Send, XCircle } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RuntimeChannelSummary } from "../../shared/runtime";
 import { useTranslation } from "../i18n";
@@ -38,6 +38,7 @@ export function TelegramSettings() {
   const [proxyDirty, setProxyDirty] = useState(false);
   const [providerId, setProviderId] = useState("");
   const [modelId, setModelId] = useState("");
+  const [modelDirty, setModelDirty] = useState(false);
 
   const enabledModels = useMemo(() => models.filter((model) => model.enabled), [models]);
   const providerNames = useMemo(
@@ -51,14 +52,16 @@ export function TelegramSettings() {
     setEnabled(next.enabled);
     if (!tokenDirty) setToken("");
     if (!proxyDirty) setProxy("");
-    if (next.defaultProviderId && next.defaultModelId) {
-      setProviderId(next.defaultProviderId);
-      setModelId(next.defaultModelId);
-    } else if (enabledModels[0]) {
-      setProviderId(enabledModels[0].providerId);
-      setModelId(enabledModels[0].id);
+    if (!modelDirty) {
+      if (next.defaultProviderId && next.defaultModelId) {
+        setProviderId(next.defaultProviderId);
+        setModelId(next.defaultModelId);
+      } else if (enabledModels[0]) {
+        setProviderId(enabledModels[0].providerId);
+        setModelId(enabledModels[0].id);
+      }
     }
-  }, [enabledModels, proxyDirty, tokenDirty]);
+  }, [enabledModels, modelDirty, proxyDirty, tokenDirty]);
 
   const refresh = useCallback(async () => {
     if (!runtime) {
@@ -79,10 +82,17 @@ export function TelegramSettings() {
     }
   }, [applyChannel, runtime, t]);
 
+  // Load once per mount. `refresh` changes identity whenever the provider
+  // catalog is replaced, so depending on it here would re-run the effect on
+  // every catalog update and spin the whole renderer.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const loadProviderCatalogRef = useRef(loadProviderCatalog);
+  loadProviderCatalogRef.current = loadProviderCatalog;
   useEffect(() => {
-    void loadProviderCatalog().catch(() => undefined);
-    void refresh();
-  }, [loadProviderCatalog, refresh]);
+    void loadProviderCatalogRef.current().catch(() => undefined);
+    void refreshRef.current();
+  }, []);
 
   const save = async () => {
     if (!runtime) return;
@@ -102,6 +112,7 @@ export function TelegramSettings() {
       applyChannel(result.channel);
       setTokenDirty(false);
       setProxyDirty(false);
+      setModelDirty(false);
       setToken("");
       setProxy("");
       setNotice(t("settings.telegram.saved"));
@@ -304,6 +315,7 @@ export function TelegramSettings() {
                 const [nextProvider, nextModel] = event.currentTarget.value.split("\u0000");
                 setProviderId(nextProvider ?? "");
                 setModelId(nextModel ?? "");
+                setModelDirty(true);
               }}
               className="mt-1.5 h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--panel-raised)] px-2 text-[12px] text-[var(--text)]"
             >

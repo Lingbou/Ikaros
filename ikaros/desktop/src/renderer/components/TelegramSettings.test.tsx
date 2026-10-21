@@ -6,6 +6,31 @@ import type { IkarosRuntimeBridgeApi, RuntimeChannelSummary } from "../../shared
 import { setUiLanguage } from "../i18n";
 import { TelegramSettings } from "./TelegramSettings";
 
+// The renderer store builds its Runtime client when the module loads, which is
+// before a test can install `window.ikarosDesktop`. Route every bridge call
+// through a stable proxy that resolves to the current test's mock, so the store
+// and the component observe the same Runtime.
+const bridge = vi.hoisted(() => {
+  const state: { current: Record<string, unknown> } = { current: {} };
+  const runtime = new Proxy(
+    {},
+    {
+      get: (_target, property: string) =>
+        (...args: unknown[]) => {
+          const method = state.current[property];
+          return typeof method === "function"
+            ? (method as (...methodArgs: unknown[]) => unknown)(...args)
+            : undefined;
+        }
+    }
+  );
+  Object.defineProperty(window, "ikarosDesktop", {
+    configurable: true,
+    value: { runtime }
+  });
+  return { state, runtime };
+});
+
 const disabledChannel: RuntimeChannelSummary = {
   id: "telegram",
   status: "disabled",
@@ -47,9 +72,10 @@ function installRuntime(overrides: Partial<IkarosRuntimeBridgeApi> = {}) {
     listModels: vi.fn(() => ok({ models: [] })),
     ...overrides
   } as unknown as IkarosRuntimeBridgeApi;
+  bridge.state.current = runtime as unknown as Record<string, unknown>;
   Object.defineProperty(window, "ikarosDesktop", {
     configurable: true,
-    value: { runtime }
+    value: { runtime: bridge.runtime }
   });
   return runtime;
 }
@@ -63,6 +89,19 @@ afterEach(() => {
 });
 
 describe("TelegramSettings", () => {
+  it("loads the channel once per mount instead of hammering the runtime", async () => {
+    const runtime = installRuntime();
+    render(<TelegramSettings />);
+
+    await screen.findByText(
+      "All Telegram messages use the fixed Telegram thread in Recents. /new archives the old thread and starts another one called Telegram."
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(runtime.listChannels).toHaveBeenCalledTimes(1);
+    expect(runtime.listProviders).toHaveBeenCalledTimes(1);
+    expect(runtime.listModels).toHaveBeenCalledTimes(1);
+  });
   it("loads the fixed Telegram conversation and saves a token", async () => {
     const runtime = installRuntime();
     render(<TelegramSettings />);
