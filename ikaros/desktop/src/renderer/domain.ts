@@ -34,6 +34,7 @@ export type AppEventTextKind =
   | "tool.listThreads"
   | "tool.readThread"
   | "tool.memory"
+  | "tool.subagent"
   | "result.processCompleted"
   | "result.processRunning"
   | "result.processStopped"
@@ -71,6 +72,7 @@ export type AppEventTextKind =
   | "result.memorySaveInterrupted"
   | "result.memoryFound"
   | "result.memorySearchFailed"
+  | "result.subagentCompleted"
   | "result.memorySearchInterrupted"
   | "result.memoryCount";
 

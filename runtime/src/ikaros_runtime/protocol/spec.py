@@ -4,7 +4,7 @@ from typing import Final
 
 from ..errors import MEMORY_OPERATION_REASON_CODES
 
-PROTOCOL_VERSION: Final = 9
+PROTOCOL_VERSION: Final = 10
 JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
@@ -87,6 +87,7 @@ PROVIDER_TOOL_IDS: Final = (
     "grep",
     "list",
     "memory",
+    "subagent",
 )
 def protocol_manifest() -> dict[str, object]:
     from ..history_status import HISTORY_STATUS_PREAMBLE

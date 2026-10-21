@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 9,
+  "protocolVersion": 10,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -89,7 +89,8 @@
     "glob",
     "grep",
     "list",
-    "memory"
+    "memory",
+    "subagent"
   ],
   "inputBudgetMeasurementVersion": "conservative-utf8-upper-bound",
   "outputStyleContent": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets.",
