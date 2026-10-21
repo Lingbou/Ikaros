@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from ..channels.telegram.service import ChannelService
 from ..domain import CommandOutcome
 from ..errors import InvalidParamsError, MemoryOperationError, ProviderFailure
 from ..services.files import FileService
@@ -51,6 +52,7 @@ class RuntimeRouter:
         memories: MemoryService,
         files: FileService,
         processes: ProcessService | None = None,
+        channels: ChannelService | None = None,
     ) -> None:
         self._threads = threads
         self._turns = turns
@@ -60,6 +62,12 @@ class RuntimeRouter:
         self._memories = memories
         self._files = files
         self._processes = processes
+        self._channels = channels
+
+    def _require_channels(self) -> ChannelService:
+        if self._channels is None:
+            raise InvalidParamsError("channel support is unavailable")
+        return self._channels
 
     async def dispatch(
         self,
@@ -147,6 +155,14 @@ class RuntimeRouter:
                 result = self._turns.replay_events(params)
             elif method == "usage.read":
                 result = self._usage.read(params)
+            elif method == "channel.list":
+                result = self._require_channels().list_channels(params)
+            elif method == "channel.configure":
+                result = await self._require_channels().configure(params)
+            elif method == "channel.test":
+                result = await self._require_channels().test(params)
+            elif method == "channel.resetBinding":
+                result = await self._require_channels().reset_binding(params)
             else:  # pragma: no cover - guarded by the exhaustive protocol registry above
                 raise AssertionError(f"registered Runtime method is not dispatched: {method}")
         except InvalidParamsError as error:

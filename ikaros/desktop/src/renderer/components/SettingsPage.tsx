@@ -10,6 +10,7 @@ import {
   CircleUserRound,
   Palette,
   Search,
+  Send,
   Sparkles,
   Settings
 } from "lucide-react";
@@ -44,6 +45,7 @@ import {
   ProvidersSettings
 } from "./ProviderModelSettings";
 import { SkillsSettings } from "./SkillsSettings";
+import { TelegramSettings } from "./TelegramSettings";
 import { cx } from "./ui";
 
 const LANGUAGE_OPTIONS: readonly UiLanguagePreference[] = ["en", "zh-CN"];
@@ -54,7 +56,8 @@ type SettingsSection =
   | "providers"
   | "models"
   | "skills"
-  | "memory";
+  | "memory"
+  | "telegram";
 
 function GeneralSettings({
   preferences,
@@ -338,7 +341,8 @@ export function SettingsPage() {
       { id: "providers" as const, label: t("settings.providers.title"), Icon: Cable },
       { id: "models" as const, label: t("settings.models.title"), Icon: Sparkles },
       { id: "skills" as const, label: t("settings.skills.title"), Icon: BookOpen },
-      { id: "memory" as const, label: t("settings.memory.title"), Icon: Brain }
+      { id: "memory" as const, label: t("settings.memory.title"), Icon: Brain },
+      { id: "telegram" as const, label: t("settings.telegram.title"), Icon: Send }
     ],
     [t]
   );
@@ -475,6 +479,8 @@ export function SettingsPage() {
               onRefresh={loadSkillCatalog}
               onSetEnabled={(name, enabled) => setSkillEnabled({ name, enabled })}
             />
+          ) : activeSection === "telegram" ? (
+            <TelegramSettings />
           ) : (
             <MemorySettings
               workspaces={memoryWorkspaces}

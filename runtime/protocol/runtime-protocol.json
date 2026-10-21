@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 10,
+  "protocolVersion": 11,
   "jsonrpcVersion": "2.0",
   "serverName": "ikaros-runtime",
   "initializeMethod": "initialize",
@@ -35,7 +35,11 @@
     "process.stop",
     "run.steer",
     "event.replay",
-    "usage.read"
+    "usage.read",
+    "channel.list",
+    "channel.configure",
+    "channel.test",
+    "channel.resetBinding"
   ],
   "notificationMethods": [
     "event"

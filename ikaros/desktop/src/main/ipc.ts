@@ -11,6 +11,13 @@ import type {
   RuntimeFilePreviewParams,
   RuntimeFilePreviewResult,
   RuntimeCancelRunResult,
+  RuntimeChannelConfigureParams,
+  RuntimeChannelConfigureResult,
+  RuntimeChannelListResult,
+  RuntimeChannelResetParams,
+  RuntimeChannelResetResult,
+  RuntimeChannelTestParams,
+  RuntimeChannelTestResult,
   RuntimeSteerRunParams,
   RuntimeSteerRunResult,
   RuntimeHostStatus,
@@ -192,6 +199,10 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.memoryList,
     DESKTOP_IPC_CHANNELS.runtime.memoryGet,
     DESKTOP_IPC_CHANNELS.runtime.usageRead,
+    DESKTOP_IPC_CHANNELS.runtime.channelList,
+    DESKTOP_IPC_CHANNELS.runtime.channelConfigure,
+    DESKTOP_IPC_CHANNELS.runtime.channelTest,
+    DESKTOP_IPC_CHANNELS.runtime.channelResetBinding,
     DESKTOP_IPC_CHANNELS.runtime.filePreview,
     DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
@@ -454,6 +465,45 @@ export function registerDesktopIpc(
       trustPolicy.assertTrustedIpc(event);
       return invokeRuntime(() =>
         runtimeHost.request<RuntimeMemoryGetResult>("memory.get", { memoryId })
+      );
+    }
+  );
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.runtime.channelList, async (event) => {
+    trustPolicy.assertTrustedIpc(event);
+    return invokeRuntime(() => runtimeHost.request<RuntimeChannelListResult>("channel.list"));
+  });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.channelConfigure,
+    async (event, params: RuntimeChannelConfigureParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeChannelConfigureResult>("channel.configure", {
+          ...params
+        })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.channelTest,
+    async (event, params: RuntimeChannelTestParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeChannelTestResult>("channel.test", { ...params })
+      );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.channelResetBinding,
+    async (event, params: RuntimeChannelResetParams) => {
+      trustPolicy.assertTrustedIpc(event);
+      return invokeRuntime(() =>
+        runtimeHost.request<RuntimeChannelResetResult>("channel.resetBinding", {
+          ...params
+        })
       );
     }
   );

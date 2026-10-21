@@ -99,6 +99,42 @@ describe("preload Runtime bridge", () => {
     expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith("ikaros:runtime:usage-read");
   });
 
+  it("exposes Telegram channel management through narrow IPC channels", async () => {
+    const listed = { ok: true as const, value: { channels: [] } };
+    const configured = { ok: true as const, value: { channel: { id: "telegram" } } };
+    const tested = { ok: true as const, value: { ok: true, reasonCode: null, bot: null } };
+    const reset = { ok: true as const, value: { channel: { id: "telegram" } } };
+    electron.ipcRenderer.invoke
+      .mockResolvedValueOnce(listed)
+      .mockResolvedValueOnce(configured)
+      .mockResolvedValueOnce(tested)
+      .mockResolvedValueOnce(reset);
+    await import("./index");
+
+    const api = electron.exposedApi();
+    const configureParams = { channelId: "telegram" as const, enabled: false };
+    const testParams = { channelId: "telegram" as const, token: "123:test" };
+    const resetParams = { channelId: "telegram" as const };
+
+    await expect(api?.runtime.listChannels()).resolves.toEqual(listed);
+    await expect(api?.runtime.configureChannel(configureParams)).resolves.toEqual(configured);
+    await expect(api?.runtime.testChannel(testParams)).resolves.toEqual(tested);
+    await expect(api?.runtime.resetChannelBinding(resetParams)).resolves.toEqual(reset);
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith("ikaros:runtime:channel-list");
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:channel-configure",
+      configureParams
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:channel-test",
+      testParams
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:runtime:channel-reset-binding",
+      resetParams
+    );
+  });
+
   it("exposes DeepSeek model discovery through its narrow IPC channel", async () => {
     const expected = {
       ok: true as const,

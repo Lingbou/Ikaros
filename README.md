@@ -20,7 +20,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - [4. 桌面客户端](#4-桌面客户端)
 - [5. 界面交互细节](#5-界面交互细节)
 - [6. Runtime](#6-runtime)
-- [7. RPC 接口参考](#7-rpc-接口参考协议-7共-32-个方法)
+- [7. RPC 接口参考](#7-rpc-接口参考协议-11共-36-个方法)
 - [8. 数据库表结构（列级）](#8-数据库表结构列级)
 - [9. 数据目录](#9-数据目录)
 - [10. 验证与测试现状](#10-验证与测试现状)
@@ -97,7 +97,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 │  Python Runtime（单进程，asyncio）                                  │
 │  server ── protocol.router ── services（threads/turns/provider/…）  │
 │  agent.loop + scheduler ── providers（OpenAI 兼容适配器）           │
-│  tools（8 个）+ ProcessManager ── storage（SQLite/Journal/投影）    │
+│  tools（17 个）+ ProcessManager ── storage（SQLite/Journal/投影）   │
 │  memory（memory.db）· skills（目录扫描）· config（config.yaml）     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -230,12 +230,24 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `json_codec.py` — 严格 JSON 编解码：拒绝非有限数、超 JS 安全整数、过深嵌套。
 - `maintenance.py` — 维护命令应用边界：与 server 共用 Runtime-home 锁执行
   check/backup/repair。
-- `paths.py` — Runtime home 的规范路径集合（config/state/memory/lock/backups/
-  skills/logs）。
+- `paths.py` — Runtime home 的规范路径集合（config/channels/state/memory/lock/
+  backups/skills/logs）。
 - `run_input.py` — 输入快照与预算核心：RunConfig / ContextRevision / StepInput /
   ModelInputPlan、95% 预算、90% 压缩阈值、Memory 选择上限等常量。
 - `security.py` — 凭据保护：精确值匹配与 ≥8 字符嵌入检测，覆盖请求、Journal、
   日志与输出。
+
+`channels/`（消息通道）：
+
+- `config.py` — `channels.yaml` 单一所有者：version 1、64 KiB 上限、原子替换、
+  Telegram token/proxy 校验与受保护值导出。
+- `store.py` — `channels.db` schema 1：owner 绑定、update 游标与 outbox 投递队列。
+- `telegram/client.py` — 基于 httpx 的 Bot API 客户端（getMe / getUpdates /
+  sendMessage / sendChatAction）。
+- `telegram/adapter.py` — Telegram long polling、命令处理、固定 `Telegram` Thread、
+  EventHub 订阅与 outbox 发送循环。
+- `telegram/format.py` — Telegram 文本规范化与 4,096 字符分片。
+- `telegram/service.py` — `channel.list/configure/test/resetBinding` 的 RPC 门面。
 
 `agent/`（Agent 执行）：
 
@@ -267,8 +279,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `__init__.py` — 包标记。
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
-- `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 10、32 方法、15 事件、17 工具 ID（手工维护唯一来源）。
+- `router.py` — 方法派发：36 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
+- `spec.py` — 协议注册表：版本 11、36 方法、15 事件、17 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -712,14 +724,15 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 `window.ikaros`（runtime / workspace / preferences / windowControls 四组 API），
 Electron main 在 `ipc.ts` 中注册全部通道：
 
-- `runtime.*`（invoke，共 31 条）：thread-create / thread-rename / thread-archive /
+- `runtime.*`（invoke，共 35 条）：thread-create / thread-rename / thread-archive /
   thread-unarchive / thread-get / thread-list / turn-list / turn-start /
   run-cancel / run-steer / event-replay / process-read / process-stop /
   provider-list / provider-configure / provider-discover-models /
   provider-disconnect / provider-remove / model-list / model-set-enabled /
   model-set-limits / skill-list / skill-set-enabled / memory-create /
   memory-correct / memory-forget / memory-list / memory-get / file-preview /
-  file-change-get / usage-read。
+  file-change-get / usage-read / channel-list / channel-configure / channel-test /
+  channel-reset-binding。
 - `runtime.event` / `runtime.status`（push）：Runtime 事件通知与连接状态。
 - `workspace.choose-directory`：系统目录选择器，返回 workspace 快照。
 - `preferences.get` / `preferences.update` / `preferences.changed`：UI 偏好
@@ -800,9 +813,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.2 协议与 RPC
 
-- 协议版本 9，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
+- 协议版本 11，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、17 个 provider
+- 规模：36 个 post-initialize RPC 方法、15 种持久化事件类型、17 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -835,6 +848,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   usage、进程与文件操作事实；投影可从 Journal 重建。
 - `memory.db`：独立 schema 3；有自己的连接、事务、revision、操作回执与后台
   精炼抽取游标；与 `state.db` 无跨库事务/外键，只共享 Runtime-home 锁。
+- `channels.yaml`：Telegram 通道配置（version 1，≤64 KiB），与 `config.yaml` 分离；
+  只保存 enabled/token/proxy/default provider/model。
+- `channels.db`：通道绑定、入站 update 游标与出站投递队列（schema 1）；与
+  `state.db` 无跨库外键，只共享 Runtime-home 锁。
 - `config.yaml`：version 2，上限 256 KiB（读/写都校验），原子替换写入；保存
   Provider/model 配置和 `skills.disabled`。
 - `runtime.lock`：单进程独占；崩溃后可恢复；释放时保留文件（POSIX 不换 inode）。
@@ -842,7 +859,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage check`：校验 schema、Journal 顺序、投影可重建性；
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
-- 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 /
+- 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 / channel 1 /
   protocol 9 / memory 3）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
   更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
   要求显式重置。
@@ -1164,6 +1181,18 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
+- `channels.yaml`（version 1）结构概要：
+
+```yaml
+version: 1
+telegram:
+  enabled: true
+  token: <BotFather token>
+  proxy: http://127.0.0.1:7890   # 可选
+  defaultProviderId: deepseek
+  defaultModelId: deepseek-v4-flash
+```
+
 - `config.yaml`（version 2）结构概要：
 
 ```yaml
@@ -1283,7 +1312,7 @@ Process              running ──▶ exited / terminated
   （Provider 可能先完成）。
 - 历史 Tool 调用永不自动重放；`unknown` 进程必须在新 Turn 中重新检查。
 
-## 7. RPC 接口参考（协议 9，共 32 个方法）
+## 7. RPC 接口参考（协议 11，共 36 个方法）
 
 通用约定：
 
@@ -1352,8 +1381,12 @@ Process              running ──▶ exited / terminated
 | 方法 | 参数 | 返回 |
 | --- | --- | --- |
 | `usage.read` | 无 | `{ summary: {lifetimeTokens, peakDailyTokens, longestRunningTurnSec, currentStreakDays, longestStreakDays}, dailyUsageBuckets: [{startDate, tokens}] }` |
+| `channel.list` | 无 | `{ channels: [{id, status, enabled, configured, proxyConfigured, defaultProviderId, defaultModelId, bot, owner, lastErrorCode}] }` |
+| `channel.configure` | `channelId:"telegram"`；可选 `enabled` / `token` / `proxy` / `defaultProviderId` / `defaultModelId`（省略表示保留，`null` 表示清除） | `{ channel }` |
+| `channel.test` | `channelId:"telegram"`；可选临时 `token` / `proxy` | `{ ok, reasonCode, bot\|null }`；不持久化临时凭据 |
+| `channel.resetBinding` | `channelId:"telegram"` | `{ channel }`（清除 owner、游标与待发送队列，保留 token） |
 | `runtime.shutdown` | 无 | `{ accepted: true }`（ACK 后干净关闭） |
-| `initialize`（连接首帧） | 无参数 | `{ protocolVersion: 7, server: {name:"ikaros-runtime", version:"0.1.0"} }` |
+| `initialize`（连接首帧） | 无参数 | `{ protocolVersion: 11, server: {name:"ikaros-runtime", version:"0.1.0"} }` |
 
 补充说明：
 
@@ -1718,15 +1751,31 @@ auto_extracted）；
 `_docsize` / `_idx`）由 SQLite 生成，漂移校验因此比对对象名与虚表自身 DDL，不比对
 影子表 SQL 文本。
 
-### 8.3 打开参数与数值上限
+### 8.3 channels.db（schema 1）
 
-- `state.db` 与 `memory.db` 均使用：`journal_mode=WAL`、`synchronous=NORMAL`、
-  `foreign_keys=ON`；`memory.db` 额外 `secure_delete=ON`。
+`channel_bindings`：`(channel_id, account_id, chat_id)` PK；`thread_id` / `branch_id`；
+`owner_user_id?` / `owner_username?`；`created_at` / `updated_at`。唯一索引
+`channel_bindings_thread_idx(channel_id, thread_id)`。
+
+`channel_cursors`：`(channel_id, account_id)` PK；`next_update_id`（≥0）；
+`updated_at`。用于 Telegram `getUpdates` 的确认游标。
+
+`channel_outbox`：自增 `id` PK；`channel_id` / `account_id` / `chat_id`；`run_id?`；
+`text`；`status`（pending / sending / sent / failed）；`attempts`；`next_attempt_at?`；
+`telegram_message_id?`；`last_error_code?`；`created_at` / `updated_at`。唯一部分索引
+`channel_outbox_run_idx(channel_id, account_id, run_id) WHERE run_id IS NOT NULL`
+保证每个 Run 的最终回复只入队一次。
+
+### 8.4 打开参数与数值上限
+
+- `state.db`、`memory.db` 与 `channels.db` 均使用：`journal_mode=WAL`、
+  `synchronous=NORMAL`；前两者 `foreign_keys=ON`，`memory.db` 额外
+  `secure_delete=ON`。`channels.db` 不使用跨库外键。
 - SQLite 整数上限 2^63−1；跨协议 JSON 安全整数 ±(2^53−1)。
 - 未知表/索引或结构漂移会被拒绝：state.db 报“需要重置”，memory.db 报
   “schema 不兼容，请恢复兼容备份”。
 
-### 8.4 完整 DDL
+### 8.5 完整 DDL
 
 `state.db`（schema 14）的完整建表语句（含 `file_changes`）：
 
@@ -2026,7 +2075,9 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 ~/.ikaros/
   config.yaml          provider/model 配置、Skill 禁用列表（version 2，≤256 KiB）
   state.db             权威会话与执行记录（SQLite，schema 14）
-  memory.db            独立长期 Memory（schema 2，含 FTS5 召回索引）
+  memory.db            独立长期 Memory（schema 3，含 FTS5 召回索引）
+  channels.yaml        Telegram 通道配置（version 1，≤64 KiB）
+  channels.db          通道绑定与投递状态（SQLite，schema 1）
   runtime.lock         单进程独占锁
   backups/             离线备份（按需创建，永不覆盖）
   artifacts/           大工具结果落盘（>64 KiB，按 <threadId>/<itemId>.txt 存放）
@@ -2118,6 +2169,8 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
 - 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
   主窗口时不发送；
+- Telegram 通道：单用户私聊、固定 `Telegram` Thread、long polling、文本消息；
+  暂不支持群组、附件、webhook 与 headless 常驻；
 - Multi-Agent 与更深的子 Agent 树（当前支持单层 `subagent`，子会话不可再 spawn；不同 Thread 的多个 Run 已可并发）；
 - cron 与主动唤醒任务；
 - 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
@@ -2194,9 +2247,9 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 10；32 方法；15 事件；17 工具 |
+| 协议 | 版本/规模 | protocol 11；36 方法；15 事件；17 工具 |
 | 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
-| 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2 |
+| 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2；channel 1 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |
