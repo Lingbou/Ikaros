@@ -208,7 +208,7 @@ async def test_grep_honors_ignore_case_and_include_paths(tmp_path: Path) -> None
 async def test_grep_truncates_long_lines_and_respects_max_matches(tmp_path: Path) -> None:
     workspace = tmp_path / "long"
     workspace.mkdir()
-    long_line = "needle " + "x" * 400
+    long_line = "needle " + "x" * 4_000
     (workspace / "a.txt").write_text(
         "\n".join(["needle one", "needle two", long_line]),
         encoding="utf-8",
@@ -228,7 +228,7 @@ async def test_grep_truncates_long_lines_and_respects_max_matches(tmp_path: Path
     assert complete.ok is True
     assert complete.details["matchCount"] == 3
     assert complete.details["lineTruncations"] == 1
-    assert "... (line truncated to 200 chars)" in complete.output
+    assert "... (line truncated to 2000 chars)" in complete.output
 
 
 @pytest.mark.asyncio
@@ -247,7 +247,7 @@ async def test_grep_skips_binary_files_and_invalid_patterns(tmp_path: Path) -> N
 
     bad_context = await _call(
         "grep",
-        {"pattern": "needle", "path": str(workspace), "contextLines": 99},
+        {"pattern": "needle", "path": str(workspace), "contextLines": 201},
     )
     assert bad_context.ok is False
     assert bad_context.details["errorCode"] == "invalid_arguments"

@@ -181,6 +181,41 @@ async def test_thread_read_returns_the_newest_settled_slice_with_metadata(
 
 
 @pytest.mark.asyncio
+async def test_thread_read_default_budget_returns_a_full_page(tmp_path: Path) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        caller, _ = store.create_thread("Caller")
+        target, _ = store.create_thread("Target")
+        long_answer = "a" * 6_000
+        _complete_turn(
+            store,
+            thread_id=target.id,
+            branch_id=target.default_branch_id,
+            content="long question",
+            answer=long_answer,
+        )
+
+        tool = ThreadReadTool(store.read_thread_slice)
+        result = await tool.execute(
+            ToolCall("read", "thread_read", {"threadId": target.id}),
+            cancellation=CancellationToken(),
+            context=_context(caller.id),
+        )
+
+        assert result.ok is True
+        payload = json.loads(result.output)
+        assert payload["truncated"] is False
+        answers = [
+            item["content"]
+            for item in payload["items"]
+            if item["role"] == "assistant"
+        ]
+        assert answers == [long_answer]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_thread_read_pages_around_an_explicit_anchor(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:

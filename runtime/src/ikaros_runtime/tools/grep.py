@@ -34,9 +34,9 @@ from .traversal import (
 
 _DEFAULT_MAX_MATCHES = 100
 _MAX_MATCHES = 1_000
-_MAX_CONTEXT_LINES = 10
-_MAX_LINE_LENGTH = 200
-_MAX_FILE_BYTES = 4 * 1024 * 1024
+_MAX_CONTEXT_LINES = 200
+_MAX_LINE_LENGTH = 2_000
+_MAX_FILE_BYTES = 32 * 1024 * 1024
 _SAMPLE_BYTES = 4_096
 _LINE_TRUNCATION_SUFFIX = f"... (line truncated to {_MAX_LINE_LENGTH} chars)"
 
@@ -61,7 +61,7 @@ class GrepTool:
         description=(
             "Search file contents with a regular expression. Match lines are rendered as "
             "'<path>:<line>:<text>' and context lines as '<path>-<line>-<text>'. Each rendered "
-            "line is truncated to 200 characters. Binary files and files above the size limit "
+            "line is truncated to 2000 characters. Binary files and files above the size limit "
             "are skipped."
         ),
         input_schema={

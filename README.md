@@ -347,7 +347,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   原子写；`resolve_tool_path` / `validate_directory_path` 供检索工具复用。
 - `glob.py` — `glob`：模式匹配文件（结果上限默认 1,000、忽略 .git/node_modules/
   二进制、深度 ≤12）。
-- `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 200 字符。
+- `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 2,000 字符。
 - `history_read.py` — `history_read` 工具：itemId 周边的有界切片。
 - `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
 - `memory.py` — `memory` 工具：模型侧 save / search；save 复用 `memory.create`
@@ -361,7 +361,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `process.py` — 6 个进程工具（start/read/wait/stop/write/resize）的模型侧定义与
   参数校验。
 - `read.py` — `read`：≤2,000 行 / 50 KiB、行截断 2,000 字符、nextOffset 翻页。
-- `thread_read.py` — `thread_list` / `thread_read` 工具：会话目录与跨 Thread 有界切片（默认 4,000 字符）。
+- `thread_read.py` — `thread_list` / `thread_read` 工具：会话目录与跨 Thread 有界切片（默认 24,000 字符）。
 - `traversal.py` — 检索工具共享遍历：广度优先、确定性排序、不跟随目录符号链接、
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
@@ -942,12 +942,12 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `process_resize` | `processId`、`columns`/`rows`（1–4,096）、可选 `cursor` | 仅 PTY：调整终端尺寸，返回该游标起的输出页 |
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
 | `thread_list` | 可选 `archived`（布尔，默认 `false`）、可选 `limit`（1–50，默认 20） | 返回 `id`/`title`/`updatedAt`/`archived` 的稳定目录（`updatedAt` 降序、`id` 升序），供模型发现会话 id；只读、无副作用 |
-| `thread_read` | `threadId`、可选 `itemId`（锚点）、`before`/`after`（0–41）、`maxChars`（256–24,000，默认 4,000） | 跨 Thread 只读已结算 Item 的有界切片（含 Thread 元数据与时间）；缺省锚点为默认分支最新已结算 Item；`thread_not_found` / `item_not_found` / `item_not_settled` 为显式错误码；不改变每 Run 冻结上下文 |
+| `thread_read` | `threadId`、可选 `itemId`（锚点）、`before`/`after`（0–41）、`maxChars`（256–24,000，默认 24,000） | 跨 Thread 只读已结算 Item 的有界切片（含 Thread 元数据与时间）；缺省锚点为默认分支最新已结算 Item；`thread_not_found` / `item_not_found` / `item_not_settled` 为显式错误码；不改变每 Run 冻结上下文 |
 | `read` | `filePath`、`offset`、`limit`（1–2,000，默认 2,000） | UTF-8；每次 ≤50 KiB；单行超 2,000 字符截断；拒绝目录/二进制/非法编码；`nextOffset` 翻页 |
 | `write` | `filePath`、`content` | 建父目录；同目录临时文件 + SHA-256 校验 + fsync + 原子替换；保留 BOM/换行/文件模式 |
 | `edit` | `filePath`、`oldString`、`newString`、`replaceAll` | 精确匹配；默认要求唯一匹配；CRLF/孤立 CR 规范化为 LF；变更前检测 `stale_content` |
 | `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules`、已知二进制扩展名与深度 >12 的目录；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
-| `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–10）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 200 字符；单文件 ≤4 MiB，跳过二进制与非 UTF-8 |
+| `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–200）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 2,000 字符；单文件 ≤32 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
 | `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
 | `subagent` | `prompt`（非空字符串）、可选 `title`（≤200 字符，与 Thread 标题同限） | 创建子 Thread + 子 Run 并等待结束，返回最终回答原文（不截断）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；子会话不能再 spawn（深度 1）；不设墙钟超时（父取消会传播，长任务由取消而非计时终止）；同一工具调用重放幂等 |
@@ -2171,14 +2171,14 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 模型工具 | `memory`（save / search）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
 | 文件 | glob | 结果上限默认 1,000、最大 5,000；扫描深度 ≤12；忽略 .git/node_modules/二进制 |
-| 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤10 行；单行 200 字符；单文件 ≤4 MiB |
+| 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤200 行；单行 2,000 字符；单文件 ≤32 MiB |
 | 文件 | list | 单层目录；条目上限 5,000 |
 | 工具结果 | 落盘阈值 | >64 KiB → `~/.ikaros/artifacts/<threadId>/<itemId>.txt`；预览约 200 行 / ≤32 KiB |
 | 文件 | preview | ≤50 KiB、2,000 行/页；扫描 ≤8 MiB |
 | 文件 | write/edit 捕获 | 各 ≤256 KiB / 5,000 行；事件 ≤256 KiB |
 | 文件 | history_read | before/after ≤41；maxChars 256–24,000 |
 | 文件 | thread_list | archived 默认 false；limit 1–50（默认 20）；updatedAt 降序、id 升序 |
-| 文件 | thread_read | before/after ≤41；maxChars 256–24,000（默认 4,000）；缺省锚点=默认分支最新已结算 Item |
+| 文件 | thread_read | before/after ≤41；maxChars 256–24,000（默认 24,000）；缺省锚点=默认分支最新已结算 Item |
 | 文件 | 路径长度 | ≤4,096 字符 |
 | 进程 | 并发上限 | 64/ Thread（命令跨 Run 存活） |
 | 进程 | 后台执行 | `background` 默认 `false`；`true` 不阻塞 Run 收尾；终态系统通知每个进程至多 1 条 |
