@@ -73,7 +73,7 @@ export type RuntimeMemoryScope =
   | { type: "workspace"; key: string };
 
 export interface RuntimeMemoryProvenance {
-  sourceKind: "user_explicit" | "session_item";
+  sourceKind: "user_explicit" | "session_item" | "auto_extracted";
   threadId: string | null;
   turnId: string | null;
   itemId: string | null;

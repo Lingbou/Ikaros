@@ -304,10 +304,26 @@ class ControlledAckConnection:
         del code, reason
 
 
-async def _start_runtime(token: str, runtime_home: Path) -> tuple[Process, dict[str, Any]]:
+async def _start_runtime(
+    token: str,
+    runtime_home: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[Process, dict[str, Any]]:
     python_path = os.pathsep.join([str(_RUNTIME_SRC_ROOT), str(_RUNTIME_ROOT)])
     if existing_pp := os.environ.get("PYTHONPATH"):
         python_path = f"{python_path}{os.pathsep}{existing_pp}"
+    # Background Memory refinement is exercised end to end by
+    # test_completed_run_refines_memory_through_the_protocol; the other
+    # server tests keep provider request accounting deterministic.
+    child_env = {
+        **os.environ,
+        "IKAROS_HOME": str(runtime_home),
+        "PYTHONPATH": python_path,
+        "IKAROS_MEMORY_REFINEMENT": "0",
+    }
+    if env is not None:
+        child_env.update(env)
 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -323,7 +339,7 @@ async def _start_runtime(token: str, runtime_home: Path) -> tuple[Process, dict[
         str(os.getpid()),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "IKAROS_HOME": str(runtime_home), "PYTHONPATH": python_path},
+        env=child_env,
         creationflags=_HIDDEN_PROCESS_FLAGS,
     )
     try:
@@ -577,6 +593,35 @@ class FakeOpenAIEndpoint:
         if len(user_messages) == 1:
             return _fake_sse_text("First fake response.")
         return _fake_sse_text("Second fake response with context.")
+
+
+class RefiningOpenAIEndpoint(FakeOpenAIEndpoint):
+    """Answer a Memory refinement extraction call with strict JSON."""
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        messages = cast(list[dict[str, Any]], request["messages"])
+        if any(
+            message["role"] == "system"
+            and "durable long-term Memory" in message["content"]
+            for message in messages
+        ):
+            prompt = str(messages[-1]["content"])
+            records = json.loads(prompt[prompt.index("["):])
+            return _fake_sse_text(
+                json.dumps(
+                    {
+                        "memories": [
+                            {
+                                "kind": "fact",
+                                "scope": "global",
+                                "content": "The fake provider remembered this fact.",
+                                "sourceItemId": records[0]["itemId"],
+                            }
+                        ]
+                    }
+                )
+            )
+        return await super()._response_body(request)
 
 
 class UsageOpenAIEndpoint(FakeOpenAIEndpoint):
@@ -2289,6 +2334,104 @@ async def test_credential_rotation_cannot_commit_an_old_secret_as_public_data(
         assert protected not in serialized
         assert protected not in stderr
         assert all(protected.encode() not in content for content in _database_contents(tmp_path))
+
+
+@pytest.mark.asyncio
+async def _wait_for_memories(
+    connection: ClientConnection,
+    request_id: int,
+    *,
+    budget_seconds: float = 15.0,
+) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + budget_seconds
+    while True:
+        page = await _rpc(connection, request_id, "memory.list", {})
+        memories = cast(list[dict[str, Any]], page["result"]["memories"])
+        if memories:
+            return page
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("Memory refinement produced no Memory in time")
+        await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_completed_run_refines_memory_through_the_protocol(
+    tmp_path: Path,
+) -> None:
+    endpoint = RefiningOpenAIEndpoint()
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(
+        token,
+        tmp_path,
+        env={"IKAROS_MEMORY_REFINEMENT": "1"},
+    )
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "fake",
+                "displayName": "Fake Provider",
+                "baseUrl": base_url,
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                    }
+                ],
+            },
+        )
+        assert configured["result"]["provider"]["configured"] is True
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Refined Memory E2E", "clientRequestId": "refine-thread"},
+        )
+        thread = created["result"]["thread"]
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "remember that the fake provider is deterministic",
+                "providerId": "fake",
+                "modelId": "fake-model",
+                "clientRequestId": "refine-turn",
+            },
+        )
+        events = await _collect_run_events(connection, started["result"]["runId"])
+        assert events[-1]["payload"]["status"] == "completed"
+
+        page = await _wait_for_memories(connection, 5)
+        memories = cast(list[dict[str, Any]], page["result"]["memories"])
+        assert len(memories) == 1
+        assert memories[0]["kind"] == "fact"
+        detail = await _rpc(
+            connection,
+            6,
+            "memory.get",
+            {"memoryId": memories[0]["id"]},
+        )
+        memory = cast(dict[str, Any], detail["result"]["memory"])
+        assert memory["content"] == "The fake provider remembered this fact."
+        assert memory["provenance"]["sourceKind"] == "auto_extracted"
+        assert memory["provenance"]["status"] == "available"
+        assert memory["provenance"]["threadId"] == thread["id"]
+
+        await _shutdown(connection, process, 7)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
 
 
 @pytest.mark.asyncio

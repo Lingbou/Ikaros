@@ -11,7 +11,7 @@ from ..run_input import MEMORY_CONTENT_MAX_CHARACTERS
 type MemoryKind = Literal["fact", "preference", "relationship", "project"]
 type MemoryState = Literal["active", "forgotten"]
 type MemoryScopeType = Literal["global", "workspace"]
-type MemorySourceKind = Literal["user_explicit", "session_item"]
+type MemorySourceKind = Literal["user_explicit", "session_item", "auto_extracted"]
 type ProvenanceStatus = Literal["not_applicable", "available", "unavailable"]
 
 MEMORY_KINDS = frozenset({"fact", "preference", "relationship", "project"})
@@ -63,7 +63,7 @@ class MemoryProvenance:
             if self.status != "not_applicable":
                 raise ValueError("Explicit-user Memory provenance status is invalid")
             return
-        if self.source_kind != "session_item":
+        if self.source_kind not in {"session_item", "auto_extracted"}:
             raise ValueError("Memory provenance source kind is invalid")
         if any(value is None for value in references):
             raise ValueError("Session Memory provenance must be complete")
@@ -200,6 +200,38 @@ class MemorySourceSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryExtractionCursor:
+    """The last settled Item one background refinement pass consumed."""
+
+    thread_id: str
+    turn_ordinal: int
+    run_created_at: str
+    run_id: str
+    item_ordinal: int
+    item_id: str
+    extracted_at: str
+    attempted_at: str
+
+    def __post_init__(self) -> None:
+        _validate_prefixed_id(self.thread_id, "thread_")
+        _validate_prefixed_id(self.run_id, "run_")
+        _validate_prefixed_id(self.item_id, "item_")
+        for label, ordinal in (
+            ("turn ordinal", self.turn_ordinal),
+            ("item ordinal", self.item_ordinal),
+        ):
+            if isinstance(ordinal, bool) or ordinal < 1:
+                raise ValueError(f"Memory extraction cursor {label} is invalid")
+        for label, timestamp in (
+            ("run creation timestamp", self.run_created_at),
+            ("extraction timestamp", self.extracted_at),
+            ("attempt timestamp", self.attempted_at),
+        ):
+            if not timestamp:
+                raise ValueError(f"Memory extraction cursor {label} is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryListPage:
     memories: tuple[MemorySummary, ...]
     next_cursor: str | None
@@ -266,6 +298,7 @@ __all__ = [
     "MEMORY_SCOPE_TYPES",
     "MEMORY_STATES",
     "MemoryMutationReceipt",
+    "MemoryExtractionCursor",
     "MemoryKind",
     "MemoryListPage",
     "MemoryProvenance",
