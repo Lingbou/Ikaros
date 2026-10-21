@@ -6,7 +6,6 @@ import logging
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from typing import cast
 
 from ..cancellation import CancellationToken
@@ -46,7 +45,6 @@ MEMORY_REFINEMENT_MAX_CANDIDATES = 4
 MEMORY_REFINEMENT_MAX_CONTENT_CHARACTERS = 512
 MEMORY_REFINEMENT_MAX_OUTPUT_TOKENS = 1_024
 MEMORY_REFINEMENT_MAX_RESPONSE_CHARACTERS = 16_384
-MEMORY_REFINEMENT_INTERVAL_SECONDS = 3_600.0
 MEMORY_REFINEMENT_TIMEOUT_SECONDS = 120.0
 MEMORY_REFINEMENT_CLIENT_REQUEST_PREFIX = "refine_"
 
@@ -99,8 +97,6 @@ class MemoryRefinementService:
         provider_snapshot: ProviderSnapshotResolver,
         protected_values: ProtectedValues,
         enabled: bool = True,
-        interval_seconds: float = MEMORY_REFINEMENT_INTERVAL_SECONDS,
-        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._memory_store = memory_store
         self._runtime_store = runtime_store
@@ -108,9 +104,8 @@ class MemoryRefinementService:
         self._provider_snapshot = provider_snapshot
         self._protected_values = protected_values
         self._enabled = enabled
-        self._interval_seconds = interval_seconds
-        self._clock = clock or _utc_now_datetime
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._queued: dict[str, RunConfig] = {}
         self._closed = False
 
     @property
@@ -118,26 +113,44 @@ class MemoryRefinementService:
         return self._enabled
 
     def notify_run_terminal(self, config: RunConfig, status: str) -> None:
-        """Schedule one background refinement for a completed Run, if budget allows.
+        """Schedule one background refinement for a completed Run.
 
         The call is synchronous and must never raise: it runs on the Agent loop's
         terminal path, after the Run has already been settled and published.
+
+        Every completed Run is a trigger; there is no interval budget. A Thread
+        refines one pass at a time because the extraction cursor is ordered, so a
+        notification that lands during an in-flight pass is remembered and runs
+        another pass as soon as the current one finishes instead of being dropped.
         """
 
         if not self._enabled or self._closed or status != "completed":
             return
         thread_id = config.thread_id
         if thread_id in self._tasks:
+            self._queued[thread_id] = config
             return
         try:
             task = asyncio.create_task(
-                self._refine(config),
+                self._refine_until_idle(config),
                 name=f"ikaros-memory-refinement-{thread_id}",
             )
         except RuntimeError:
             return
         self._tasks[thread_id] = task
         task.add_done_callback(lambda _task: self._tasks.pop(thread_id, None))
+
+    async def _refine_until_idle(self, config: RunConfig) -> None:
+        """Refine the Thread, then repeat for every notification that arrived meanwhile."""
+
+        thread_id = config.thread_id
+        current = config
+        while True:
+            await self._refine(current)
+            queued = self._queued.pop(thread_id, None)
+            if queued is None:
+                return
+            current = queued
 
     async def close(self) -> None:
         """Cancel in-flight refinements and wait until they have stopped."""
@@ -149,12 +162,11 @@ class MemoryRefinementService:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        self._queued.clear()
 
     async def _refine(self, config: RunConfig) -> None:
         thread_id = config.thread_id
         try:
-            if not self._within_budget(thread_id):
-                return
             cursor = self._memory_store.memory_extraction_cursor(thread_id)
             items, source = self._build_source(thread_id=thread_id, cursor=cursor)
             if not items:
@@ -213,18 +225,6 @@ class MemoryRefinementService:
                 _safe_reason(error),
             )
 
-    def _within_budget(self, thread_id: str) -> bool:
-        attempted_at = self._memory_store.memory_extraction_attempted_at(thread_id)
-        if attempted_at is None:
-            return True
-        try:
-            previous = datetime.fromisoformat(attempted_at.replace("Z", "+00:00"))
-        except ValueError:
-            return True
-        # A clock that stepped backwards must not stall a Thread longer than
-        # one interval, so a negative delta is treated as a fresh attempt.
-        delta = max(0.0, (self._clock() - previous).total_seconds())
-        return delta >= self._interval_seconds
 
     def _build_source(
         self,
@@ -474,12 +474,8 @@ def _safe_reason(error: Exception) -> str:
     return type(error).__name__
 
 
-def _utc_now_datetime() -> datetime:
-    return datetime.now(UTC)
-
 
 __all__ = [
-    "MEMORY_REFINEMENT_INTERVAL_SECONDS",
     "MEMORY_REFINEMENT_MAX_CANDIDATES",
     "MEMORY_REFINEMENT_MAX_CONTENT_CHARACTERS",
     "MEMORY_REFINEMENT_MAX_INPUT_BYTES",

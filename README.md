@@ -107,7 +107,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - 每个应用生命周期只有 1 个 Python Runtime 进程；通过 `runtime.lock` 独占
   `~/.ikaros`，启动第二个实例会失败而不共享状态。
 - Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
-  2 个 Run（`IKAROS_AGENT_WORKERS`，范围 1–8）；并发只发生在不同 Thread 之间，
+  6 个 Run（`IKAROS_AGENT_WORKERS`，默认 6、范围 1–8）；并发只发生在不同 Thread 之间，
   同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具串行执行；每个 Branch 拥有
   串行队列。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
@@ -253,7 +253,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — 导出 Memory 存储与召回。
 - `domain.py` — Memory 领域类型：kind/state/scope、来源、revision、内容上限。
-- `refinement.py` — 后台记忆精炼：Run 终态触发、Thread 去抖与小时预算、
+- `refinement.py` — 后台记忆精炼：Run 终态触发、Thread 串行与通知排队、
   游标增量抽取、严格 JSON 解析与追加写入（`auto_extracted`）。
 - `retrieval.py` — 确定性混合召回：FTS5(BM25) 池 + 关键词重叠池，RRF（k=60）
   融合；候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
@@ -865,7 +865,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   + 其工具调用与结果）。
 - 提交时冻结 RunConfig：Provider/Model、workspace、工具定义（含 schema 哈希）、
   身份（IKAROS.md）、已启用 Skill 描述符、模型上下文窗口。
-- 调度：全局 worker 池（`IKAROS_AGENT_WORKERS`，默认 2、范围 1–8）；FIFO
+- 调度：全局 worker 池（`IKAROS_AGENT_WORKERS`，默认 6、范围 1–8）；FIFO
   拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
   Run 内工具串行执行；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
   下一个可运行 Thread。
@@ -1048,8 +1048,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   limit 1–8（默认 5），正文总量 ≤6,000 字符并显式报告截断。没有 forget / delete：
   删除仍由用户控制。
 - 后台精炼（`MemoryRefinementService`）：Run 进入 `completed` 终态后在后台
-  asyncio 任务里追加一次抽取；同一 Thread 同时只有一个任务，每个 Run 至多触发
-  一次，且每 Thread 每小时最多一次真实抽取。只读该 Thread 默认分支上已完成
+  asyncio 任务里追加一次抽取；每个完成 Run 都触发，不设间隔预算（只受额度之外
+  的输入/候选上限约束）。同一 Thread 同时只有一个任务（游标必须有序），期间
+  到达的通知会排队，在当前抽取结束后再跑一轮。只读该 Thread 默认分支上已完成
   的 user/assistant Item（游标之后、≤40 条且 ≤24KB 输入），用该 Run 的
   provider/model 请求一次严格 JSON（≤4 条候选、每条 ≤512 字符、带 kind/scope/
   sourceItemId）；解析防御式，任何失败只记日志，不影响 Run 结算。写入复用
@@ -1159,7 +1160,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - `IKAROS_MEMORY_REFINEMENT`：后台记忆精炼开关；显式设为 `0` 时关闭（默认开启）。
 - `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
-- `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 2，范围 1–8；值为 1
+- `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 6，范围 1–8；值为 1
   时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
@@ -1706,8 +1707,8 @@ auto_extracted）；
 `memory_extraction_cursors`（后台精炼游标）：`thread_id` PK；
 `last_turn_ordinal` / `last_run_created_at` / `last_run_id` /
 `last_item_ordinal` / `last_item_id` 是已处理 Item 的稳定排序键（五列同时为空或
-同时非空）；`attempted_at`（最近一次抽取尝试，用于每 Thread 每小时 ≤1 次的
-小时预算）；`extracted_at`（最近一次成功抽取）。只有抽取调用成功后才前进游标，
+同时非空）；`attempted_at`（最近一次抽取尝试，仅作观测，不再参与节流）；
+`extracted_at`（最近一次成功抽取）。只有抽取调用成功后才前进游标，
 失败保留原游标以便下一次重试。
 
 `memory_fts`（FTS5 虚表）：`memory_id`（UNINDEXED）+ `tokens`（Python 侧切好的
@@ -2151,7 +2152,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 
 | 类别 | 参数 | 值 |
 | --- | --- | --- |
-| 调度 | Run 并发上限 | `IKAROS_AGENT_WORKERS` 默认 2，范围 1–8；同一 Thread 至多 1 个活动 Run |
+| 调度 | Run 并发上限 | `IKAROS_AGENT_WORKERS` 默认 6，范围 1–8；同一 Thread 至多 1 个活动 Run |
 | 上下文 | 输入预算 | 模型窗口 95% |
 | 上下文 | 自动压缩阈值 | 模型窗口 90% |
 | 上下文 | 历史选择分页 | 32 Turns/页 |
@@ -2164,7 +2165,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 单条正文 / 预览 | 2,048 字符 / 160 字符 |
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
 | Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
-| Memory | 精炼触发 | Run completed 后后台一次；每 Thread ≤1 次/小时、每个 Run 至多一次 |
+| Memory | 精炼触发 | Run completed 后后台一次（无间隔预算）；同 Thread 串行，期间通知排队再跑 |
 | Memory | 精炼输入 / 候选 | 游标后已完成消息 ≤40 条且 ≤24KB；候选 ≤4 条、每条 ≤512 字符 |
 | Memory | 精炼输出 | 1,024 tokens；响应 ≤16,384 字符；超时 120 秒 |
 | Memory | 列表分页 | 默认 50、最大 100 |
