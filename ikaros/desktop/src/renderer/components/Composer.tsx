@@ -282,12 +282,12 @@ export function Composer({
                   <button
                     type="button"
                     data-model-settings-trigger
-                    className="hidden h-7 min-w-0 max-w-[180px] items-center gap-1 rounded-lg px-2 text-[11px] leading-4 text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] sm:flex"
+                    className="hidden h-7 min-w-0 max-w-[200px] items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 text-[11px] leading-4 text-[var(--muted-strong)] transition-colors hover:border-[var(--border)] hover:text-[var(--text)] data-[state=open]:border-[var(--border)] data-[state=open]:text-[var(--text)] sm:flex"
                   >
-                    <span className="min-w-0 max-w-[148px] truncate">
+                    <span className="min-w-0 max-w-[156px] truncate">
                       {selectedRuntimeModel?.label ?? t("composer.selectModel")}
                     </span>
-                    <ChevronDown size={11} />
+                    <ChevronDown size={11} className="shrink-0" />
                   </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Portal>
@@ -295,29 +295,33 @@ export function Composer({
                     side="top"
                     align="end"
                     sideOffset={8}
-                    className="glass-menu z-[90] min-w-48 max-w-[280px] rounded-xl p-1"
+                    className="glass-menu app-scrollbar z-[90] max-h-[320px] min-w-[200px] max-w-[280px] overflow-y-auto rounded-xl p-1.5"
                   >
-                    {runtimeModelOptions.map((candidate) => (
-                          <DropdownMenu.Item
-                            key={`${candidate.providerId}/${candidate.modelId}`}
-                            onSelect={() =>
-                              selectModel({
-                                providerId: candidate.providerId,
-                                modelId: candidate.modelId,
-                              })
-                            }
-                            className="flex h-8 cursor-default items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                          >
-                            <span className="flex size-4 items-center justify-center text-[var(--accent)]">
-                              {selectedRuntimeModel?.providerId === candidate.providerId &&
-                              selectedRuntimeModel.modelId === candidate.modelId ? (
-                                <Check size={12} />
-                              ) : null}
-                            </span>
-                            <span className="min-w-0 truncate">{candidate.label}</span>
-                          </DropdownMenu.Item>
-                        ))
-}
+                    <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
+                      {t("composer.selectModel")}
+                    </DropdownMenu.Label>
+                    {runtimeModelOptions.map((candidate) => {
+                      const selected =
+                        selectedRuntimeModel?.providerId === candidate.providerId &&
+                        selectedRuntimeModel.modelId === candidate.modelId;
+                      return (
+                        <DropdownMenu.Item
+                          key={`${candidate.providerId}/${candidate.modelId}`}
+                          onSelect={() =>
+                            selectModel({
+                              providerId: candidate.providerId,
+                              modelId: candidate.modelId,
+                            })
+                          }
+                          className="flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                        >
+                          <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
+                          {selected ? (
+                            <Check size={14} className="shrink-0 text-[var(--accent)]" />
+                          ) : null}
+                        </DropdownMenu.Item>
+                      );
+                    })}
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
               </DropdownMenu.Root>

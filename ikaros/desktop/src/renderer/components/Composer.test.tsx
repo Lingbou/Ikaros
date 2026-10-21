@@ -176,6 +176,53 @@ describe("Composer input and clearance", () => {
     expect(stopRun).toHaveBeenCalledTimes(1);
   });
 
+  it("lists models under a header with a trailing check for the selected one", async () => {
+    useAppStore.setState({
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: true,
+          credentialConfigured: true,
+          health: "ready",
+        },
+      ],
+      models: [
+        {
+          contextWindow: 32768,
+          providerId: "deepseek",
+          id: "deepseek-flash",
+          displayName: "DeepSeek Flash",
+          enabled: true,
+        },
+        {
+          contextWindow: 32768,
+          providerId: "deepseek",
+          id: "deepseek-v4",
+          displayName: "DeepSeek V4.1 Flash",
+          enabled: true,
+        },
+      ],
+      selectedModel: { providerId: "deepseek", modelId: "deepseek-flash" },
+      runtimeConnectionStatus: "connected",
+      providerCatalogStatus: "ready",
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "DeepSeek Flash" }));
+
+    expect(await screen.findByText("Select a model")).toBeInTheDocument();
+    const selectedItem = await screen.findByRole("menuitem", { name: "DeepSeek Flash" });
+    const otherItem = await screen.findByRole("menuitem", { name: "DeepSeek V4.1 Flash" });
+    expect(selectedItem.querySelector("svg")).not.toBeNull();
+    expect(otherItem.querySelector("svg")).toBeNull();
+  });
+
   it("stays quiet without a configured provider and keeps the draft, thread, and workspace", () => {
     const sendDraft = vi.fn(async () => undefined);
     const workspace = {
