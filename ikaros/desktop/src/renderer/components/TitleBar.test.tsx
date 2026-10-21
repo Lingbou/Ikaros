@@ -47,6 +47,30 @@ describe("Linux title-bar controls", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("renders no placeholder application menus or history controls", () => {
+    Object.defineProperty(window, "ikarosDesktop", {
+      configurable: true,
+      value: {
+        windowControls: {
+          usesCustomTitleBar: true,
+          close: vi.fn(),
+          minimize: vi.fn(),
+          toggleMaximize: vi.fn(),
+        },
+      },
+    });
+
+    render(
+      <Tooltip.Provider>
+        <TitleBar />
+      </Tooltip.Provider>,
+    );
+
+    for (const label of ["File", "Edit", "View", "Help", "Back", "Forward"]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+
   it("toggles maximize when the empty title bar is double-clicked", () => {
     const toggleMaximize = vi.fn();
     Object.defineProperty(window, "ikarosDesktop", {
