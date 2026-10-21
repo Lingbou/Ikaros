@@ -30,6 +30,7 @@ from .process import (
 )
 from .process_manager import ProcessManager
 from .read import ReadTool
+from .subagent import SubagentTool
 from .thread_read import ThreadListTool, ThreadReadTool
 from .write import WriteTool
 
@@ -51,6 +52,7 @@ __all__ = [
     "ProcessWaitTool",
     "ProcessWriteTool",
     "ReadTool",
+    "SubagentTool",
     "ThreadListTool",
     "ThreadReadTool",
     "Tool",

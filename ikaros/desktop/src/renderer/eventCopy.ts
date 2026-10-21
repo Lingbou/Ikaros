@@ -21,6 +21,7 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "tool.listThreads": "events.tool.listThreads",
   "tool.readThread": "events.tool.readThread",
   "tool.memory": "events.tool.memory",
+  "tool.subagent": "events.tool.subagent",
   "result.processRunning": "events.result.processRunning",
   "result.processStopped": "events.result.processStopped",
   "result.processUnknown": "events.result.processUnknown",
@@ -58,6 +59,7 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "result.memorySaveInterrupted": "events.result.memorySaveInterrupted",
   "result.memoryFound": "events.result.memoryFound",
   "result.memorySearchFailed": "events.result.memorySearchFailed",
+  "result.subagentCompleted": "events.result.subagentCompleted",
   "result.memorySearchInterrupted": "events.result.memorySearchInterrupted",
   "result.memoryCount": "events.result.memoryCount"
 };

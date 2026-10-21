@@ -12,6 +12,7 @@ from websockets.asyncio.server import ServerConnection
 
 from .agent.loop import AgentLoop, EventPublisher, ProviderSnapshotResolver
 from .agent.scheduler import AgentScheduler
+from .cancellation import CancellationToken
 from .config import ConfigDocumentStore
 from .domain import CommandOutcome, JournalEvent
 from .identity import load_identity_core
@@ -32,6 +33,7 @@ from .services.memories import MemoryService, MemoryToolService
 from .services.processes import ProcessService
 from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
+from .services.subagents import SubagentService
 from .services.threads import ThreadService
 from .services.turns import TurnService
 from .services.usage import UsageService
@@ -52,6 +54,7 @@ from .tools import (
     ProcessWaitTool,
     ProcessWriteTool,
     ReadTool,
+    SubagentTool,
     ThreadListTool,
     ThreadReadTool,
     WriteTool,
@@ -133,6 +136,11 @@ class RuntimeApplication:
             store,
         )
         memory_retriever = MemoryRetriever(memory_store)
+        self._subagents = SubagentService(
+            store=store,
+            run_child=self._run_subagent,
+            publish=publish,
+        )
         tool_executor = ToolExecutor(
             ToolRegistry(
                 [
@@ -158,6 +166,7 @@ class RuntimeApplication:
                             store.memory_tool_run_scope,
                         )
                     ),
+                    SubagentTool(self._subagents),
                 ]
             ),
             FullAccessPolicy(),
@@ -202,6 +211,7 @@ class RuntimeApplication:
             on_run_terminal=self._refinement.notify_run_terminal,
         )
         self._scheduler = AgentScheduler(loop, max_workers=agent_workers)
+        self._agent_loop = loop
         self._publish = publish
 
         self.threads = ThreadService(
@@ -250,6 +260,13 @@ class RuntimeApplication:
             await self._scheduler.activate(outcome.run_after_ack)
         if outcome.cancel_after_ack is not None:
             await self._scheduler.cancel(outcome.cancel_after_ack)
+
+    async def _run_subagent(
+        self,
+        run_id: str,
+        cancellation: CancellationToken,
+    ) -> None:
+        await self._agent_loop.run(run_id, cancellation)
 
     async def close(self) -> None:
         try:

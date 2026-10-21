@@ -113,6 +113,7 @@ describe("Runtime protocol Golden Trace", () => {
       "grep",
       "list",
       "memory",
+      "subagent",
     ]);
   });
 

@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：16 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：17 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -268,7 +268,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 9、32 方法、15 事件、16 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 10、32 方法、15 事件、17 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -366,7 +366,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 51 个 Python 文件）：
+`tests/`（Runtime 测试，共 52 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -802,7 +802,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - 协议版本 9，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、16 个 provider
+- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、17 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -930,7 +930,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（16 个）
+### 6.9 内建工具（17 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
@@ -950,6 +950,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–10）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 200 字符；单文件 ≤4 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
 | `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
+| `subagent` | `prompt`（≤32,768 字符）、可选 `title`（≤120 字符） | 创建子 Thread + 子 Run 并等待结束，返回最终回答（≤4,000 字符，超限截断）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；子会话不能再 spawn（深度 1）；超时 900 秒，父取消会传播；同一工具调用重放幂等 |
 
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
@@ -2045,8 +2046,8 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线基线 | pytest 831 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 502 passed / 1 skipped |
+| Runtime 离线基线 | pytest 889 passed / 2 skipped（WSL Linux）；Windows 本机 877 passed，失败均为已知平台差异 |
+| Desktop 离线基线 | Vitest 504 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2057,7 +2058,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 ### 10.1 测试布局
 
-- Runtime：`runtime/tests/` 共 51 个测试文件，覆盖 agent 循环、上下文与压缩、
+- Runtime：`runtime/tests/` 共 52 个测试文件，覆盖 agent 循环、上下文与压缩、
   存储与 schema、协议契约与路由、Provider 适配、进程管理、工具、Memory 召回、
   Skills、服务器与运行时锁；测试使用隔离的临时 Runtime home。
 - Desktop：Vitest（`ikaros/desktop/src` 内 `*.test.ts(x)`），包含协议解析、
@@ -2116,7 +2117,7 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
 - 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
   主窗口时不发送；
-- Multi-Agent 与子 Agent（不同 Thread 的多个 Run 已可并发）；
+- Multi-Agent 与更深的子 Agent 树（当前支持单层 `subagent`，子会话不可再 spawn；不同 Thread 的多个 Run 已可并发）；
 - cron 与主动唤醒任务；
 - 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
@@ -2192,7 +2193,8 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 9；32 方法；15 事件；16 工具 |
+| 协议 | 版本/规模 | protocol 10；32 方法；15 事件；17 工具 |
+| 工具 | subagent | 子会话超时 900 秒；摘要 ≤4,000 字符；允许深度 1 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |

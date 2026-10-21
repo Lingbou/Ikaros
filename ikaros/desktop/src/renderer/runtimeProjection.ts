@@ -317,6 +317,7 @@ const SEARCH_TOOL_RESULTS: Record<
 };
 
 const MEMORY_TOOL_NAME = "memory";
+const SUBAGENT_TOOL_NAME = "subagent";
 
 type MemoryAction = "save" | "search";
 
@@ -637,7 +638,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
                 ? appEventText(THREAD_TOOL_LABELS[toolName])
                 : toolName === MEMORY_TOOL_NAME
                   ? appEventText("tool.memory")
-                : externalEventText(toolName),
+                  : toolName === SUBAGENT_TOOL_NAME
+                    ? appEventText("tool.subagent")
+                    : externalEventText(toolName),
         status: toolStatus(item.status),
         arguments: projectToolArguments(toolName, item.data.arguments),
         durationMs:
@@ -698,9 +701,11 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
               ? appEventText(SEARCH_TOOL_RESULTS[toolName][resultStatus])
               : threadTool
                 ? appEventText(THREAD_TOOL_RESULTS[toolName][resultStatus])
-                : memoryAction === undefined
-                  ? externalEventText(toolName)
-                  : appEventText(MEMORY_TOOL_RESULTS[memoryAction][resultStatus]),
+                : toolName === SUBAGENT_TOOL_NAME
+                  ? appEventText("result.subagentCompleted")
+                  : memoryAction === undefined
+                    ? externalEventText(toolName)
+                    : appEventText(MEMORY_TOOL_RESULTS[memoryAction][resultStatus]),
         output: fileTool
           ? safeFileResultOutput(item.data.result.output, resultStatus)
           : typeof item.data.result.output === "string"
