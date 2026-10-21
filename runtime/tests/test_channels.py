@@ -145,11 +145,12 @@ def _message(
     text: str = "hello",
     sender_id: str = "user-1",
     username: str | None = "alice",
+    chat_id: str = "chat-1",
 ) -> TelegramMessage:
     return TelegramMessage(
         message_id=message_id,
         chat=TelegramChat(
-            id="chat-1",
+            id=chat_id,
             type="private",
             title=None,
             username=username,
@@ -243,6 +244,54 @@ async def test_non_owner_private_message_is_ignored(tmp_path: Path) -> None:
 
     assert threads.created == []
     assert turns.started == []
+
+
+@pytest.mark.asyncio
+async def test_second_chat_from_a_stranger_is_ignored(tmp_path: Path) -> None:
+    channel, _api, threads, turns, channel_store, _config = _channel(tmp_path)
+    await channel._handle_update(TelegramUpdate(update_id=1, message=_message()))  # noqa: SLF001
+
+    await channel._handle_update(  # noqa: SLF001
+        TelegramUpdate(
+            update_id=2,
+            message=_message(
+                message_id=2,
+                sender_id="user-2",
+                username="bob",
+                chat_id="chat-2",
+            ),
+        )
+    )
+
+    assert len(threads.created) == 1
+    assert len(turns.started) == 1
+    assert channel_store.get_binding("telegram", "bot-1", "chat-2") is None
+    assert channel_store.pending_outbox_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_stranger_start_command_never_binds_an_owner(tmp_path: Path) -> None:
+    channel, _api, threads, _turns, channel_store, _config = _channel(tmp_path)
+    await channel._handle_update(TelegramUpdate(update_id=1, message=_message()))  # noqa: SLF001
+
+    await channel._handle_update(  # noqa: SLF001
+        TelegramUpdate(
+            update_id=2,
+            message=_message(
+                message_id=2,
+                text="/start",
+                sender_id="user-2",
+                username="bob",
+                chat_id="chat-2",
+            ),
+        )
+    )
+
+    assert len(threads.created) == 1
+    assert [binding.chat_id for binding in channel_store.list_bindings("telegram")] == [
+        "chat-1"
+    ]
+    assert channel_store.pending_outbox_count() == 0
 
 
 @pytest.mark.asyncio

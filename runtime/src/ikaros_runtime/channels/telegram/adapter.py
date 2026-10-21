@@ -332,6 +332,13 @@ class TelegramChannel:
         if message.sender.id == identity.id:
             return
 
+        # The bot belongs to exactly one owner: the first private chat that reached
+        # it. Every later chat from a different user is ignored instead of becoming
+        # a second owner with full access to this Runtime.
+        owner = self._channel_store.owner_of(CHANNEL_ID, identity.id)
+        if owner is not None and owner[0] != message.sender.id:
+            _LOGGER.info("telegram message from a non-owner chat was ignored")
+            return
         binding = self._channel_store.get_binding(
             CHANNEL_ID,
             identity.id,
