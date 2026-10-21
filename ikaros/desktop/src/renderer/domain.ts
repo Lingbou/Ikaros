@@ -147,6 +147,9 @@ export interface ToolResultEvent extends EventBase {
     cursor?: number;
     nextCursor?: number;
     hasMore?: boolean;
+    threadId?: string;
+    runId?: string;
+    childStatus?: "queued" | "running" | "completed" | "failed" | "cancelled";
   };
 }
 

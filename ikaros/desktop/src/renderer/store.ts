@@ -169,6 +169,7 @@ interface AppState {
   draft: string;
   composerAttachments: ComposerAttachment[];
   fileSelection: RuntimeFileSelection | null;
+  panelThreadId: string | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
   searchOpen: boolean;
@@ -208,6 +209,8 @@ interface AppState {
   setModelLimits: (params: RuntimeModelSetLimitsParams) => Promise<void>;
   openFile: (selection: RuntimeFileSelection) => void;
   closeFile: () => void;
+  openThreadPanel: (threadId: string) => void;
+  closeThreadPanel: () => void;
   setSidebarOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSearchOpen: (open: boolean) => void;
@@ -2951,6 +2954,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   draft: "",
   composerAttachments: [],
   fileSelection: null,
+  panelThreadId: null,
   sidebarOpen: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   searchOpen: false,
@@ -3042,8 +3046,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({ models: state.models.map((model) =>
       model.providerId === result.model.providerId && model.id === result.model.id ? result.model : model) }));
   },
-  openFile: (fileSelection) => set({ fileSelection }),
+  openFile: (fileSelection) => set({ fileSelection, panelThreadId: null }),
   closeFile: () => set({ fileSelection: null }),
+  openThreadPanel: (threadId) => {
+    set({ panelThreadId: threadId, fileSelection: null });
+    void loadRuntimeThreadIntoStore(set, get, threadId).catch(() => undefined);
+  },
+  closeThreadPanel: () => set({ panelThreadId: null }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
   setSearchOpen: (searchOpen) => set({ searchOpen }),
@@ -3262,3 +3271,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
 export const selectCurrentThread = (state: AppState) =>
   findThread(state.threads, state.selectedThreadId);
+
+export const selectThreadById = (threadId: string | null) => (state: AppState) =>
+  threadId ? findThread(state.threads, threadId) : null;

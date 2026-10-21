@@ -475,3 +475,56 @@ describe("managed process results", () => {
     expect(screen.getByText("Background finished")).toBeVisible();
   });
 });
+
+
+describe("session tool affordances", () => {
+  it("opens the child conversation from a subagent call", () => {
+    const openThreadPanel = vi.fn();
+    useAppStore.setState({ openThreadPanel });
+    const toolCall: ToolCallEvent = {
+      id: "subagent-call",
+      turnId: "subagent-turn",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      type: "tool_call",
+      toolName: "subagent",
+      label: appEventText("tool.subagent"),
+      status: "success",
+      arguments: { prompt: "do the thing" },
+    };
+
+    render(
+      <Tooltip.Provider>
+        <EventCard event={toolCall} sessionThreadId="thread_child" />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open conversation" }));
+    expect(openThreadPanel).toHaveBeenCalledWith("thread_child");
+  });
+
+  it("opens the created conversation from a thread tool result", () => {
+    const openThreadPanel = vi.fn();
+    useAppStore.setState({ openThreadPanel });
+    const result: ToolResultEvent = {
+      id: "thread-result",
+      turnId: "thread-turn",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      type: "tool_result",
+      toolCallId: "thread-call",
+      toolName: "thread_create",
+      status: "success",
+      summary: externalEventText("created"),
+      output: "{}",
+      details: { threadId: "thread_created" },
+    };
+
+    render(
+      <Tooltip.Provider>
+        <EventCard event={result} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open conversation" }));
+    expect(openThreadPanel).toHaveBeenCalledWith("thread_created");
+  });
+});
