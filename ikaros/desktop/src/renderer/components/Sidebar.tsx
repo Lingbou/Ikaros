@@ -161,6 +161,7 @@ export function Sidebar() {
   );
   const loadMoreThreads = useAppStore((state) => state.loadMoreThreads);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [recentsExpanded, setRecentsExpanded] = useState(true);
   const [resizing, setResizing] = useState(false);
@@ -350,7 +351,7 @@ export function Sidebar() {
           className="app-scrollbar h-full w-full px-2 pb-5"
         >
           <section aria-labelledby="project-chats-label">
-            <div className="group flex h-7 items-center px-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
+            <div className="group flex h-7 items-center px-1.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
               <button
                 id="project-chats-label"
                 type="button"
@@ -380,7 +381,12 @@ export function Sidebar() {
               );
               return (
                 <section key={project.id} aria-labelledby={`${project.id}-label`}>
-                  <div className="group/project flex h-[30px] w-full items-center rounded-[10px] pl-2 pr-0.5 transition-colors hover:bg-[var(--surface-hover)]">
+                  <div
+                    className={cx(
+                      "group/project flex h-[30px] w-full items-center rounded-[10px] pl-2 pr-0.5 transition-colors hover:bg-[var(--surface-hover)]",
+                      openProjectMenu === project.id && "bg-[var(--surface-hover)]",
+                    )}
+                  >
                     <button
                       id={`${project.id}-label`}
                       type="button"
@@ -401,21 +407,23 @@ export function Sidebar() {
                         </span>
                       ) : null}
                     </button>
-                    <IconButton
-                      label={t("sidebar.newProjectChat")}
-                      tooltipSide="bottom"
-                      className="size-6 shrink-0 rounded-md opacity-0 transition-opacity group-hover/project:opacity-100 focus-visible:opacity-100"
-                      onClick={() => newProjectChat(project.id)}
+                    <DropdownMenu.Root
+                      open={openProjectMenu === project.id}
+                      onOpenChange={(open) =>
+                        setOpenProjectMenu(open ? project.id : null)
+                      }
                     >
-                      <SquarePen size={13} />
-                    </IconButton>
-                    <DropdownMenu.Root>
                       <DropdownMenu.Trigger asChild>
                         <button
                           type="button"
                           aria-label={t("sidebar.projectActions")}
                           title={t("sidebar.projectActions")}
-                          className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-strong)] opacity-0 transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover/project:opacity-100 data-[state=open]:opacity-100"
+                          className={cx(
+                            "flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-strong)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:opacity-100",
+                            openProjectMenu === project.id
+                              ? "opacity-100"
+                              : "opacity-0 group-hover/project:opacity-100",
+                          )}
                         >
                           <MoreHorizontal size={14} />
                         </button>
@@ -442,6 +450,19 @@ export function Sidebar() {
                         </DropdownMenu.Content>
                       </DropdownMenu.Portal>
                     </DropdownMenu.Root>
+                    <IconButton
+                      label={t("sidebar.newProjectChat")}
+                      tooltipSide="bottom"
+                      className={cx(
+                        "size-6 shrink-0 rounded-md transition-opacity focus-visible:opacity-100",
+                        openProjectMenu === project.id
+                          ? "opacity-100"
+                          : "opacity-0 group-hover/project:opacity-100",
+                      )}
+                      onClick={() => newProjectChat(project.id)}
+                    >
+                      <SquarePen size={13} />
+                    </IconButton>
                   </div>
                   {expanded ? (
                     <div className="mt-0.5 space-y-px">
@@ -453,7 +474,7 @@ export function Sidebar() {
                               "group/thread flex h-[30px] w-full items-center rounded-[10px] pl-[31px] pr-0.5 transition-colors",
                               selectedThreadId === thread.id
                                 ? "bg-[var(--panel-selected)] font-medium text-[var(--text)]"
-                                : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
+                                : "text-[var(--text)] hover:bg-[var(--surface-hover)]",
                             )}
                           >
                             <button
@@ -500,7 +521,7 @@ export function Sidebar() {
           </section>
 
           <section aria-labelledby="recent-chats-label" className="mt-1">
-            <div className="group flex h-7 items-center px-1.5 text-[12px] font-semibold leading-4 text-[var(--muted)]">
+            <div className="group flex h-7 items-center px-1.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
               <button
                 id="recent-chats-label"
                 type="button"
@@ -530,7 +551,7 @@ export function Sidebar() {
                     "group/thread flex h-[30px] w-full items-center rounded-[10px] pl-2 pr-0.5 transition-colors",
                     selectedThreadId === thread.id
                       ? "bg-[var(--panel-selected)] font-medium text-[var(--text)]"
-                      : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
+                      : "text-[var(--text)] hover:bg-[var(--surface-hover)]",
                   )}
                 >
                   <button

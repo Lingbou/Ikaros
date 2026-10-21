@@ -146,6 +146,33 @@ describe("Sidebar project actions", () => {
   });
 });
 
+describe("Sidebar project row actions", () => {
+  it("orders the actions like Codex and keeps both visible while the menu is open", async () => {
+    render(
+      <Tooltip.Provider>
+        <Sidebar />
+      </Tooltip.Provider>,
+    );
+
+    const row = screen.getByRole("button", { name: "Research" }).parentElement as HTMLElement;
+    const actions = within(row).getByRole("button", { name: "Project actions" });
+    const compose = within(row).getByRole("button", { name: "New chat in project" });
+
+    const buttons = [...row.querySelectorAll("button")] as HTMLElement[];
+    expect(buttons.indexOf(actions as HTMLElement)).toBeLessThan(
+      buttons.indexOf(compose as HTMLElement),
+    );
+    expect(actions.className).toContain("opacity-0");
+    expect(compose.className).toContain("opacity-0");
+
+    fireEvent.pointerDown(actions);
+    await screen.findByRole("menuitem", { name: "Archive chats" });
+
+    expect(actions.className).toContain("opacity-100");
+    expect(compose.className).toContain("opacity-100");
+  });
+});
+
 describe("Sidebar Thread actions", () => {
   it("archives a Thread from its row action without selecting it", () => {
     const archiveThread = vi.fn(async () => undefined);
@@ -438,16 +465,19 @@ describe("Sidebar conversation ownership", () => {
     expect(researchButton.className).toContain("font-medium");
     expect(projectThread.parentElement?.className).toContain("pl-[31px]");
     expect(projectThread.parentElement?.className).toContain("font-medium");
+    expect(projectThread.parentElement?.className).toContain("text-[var(--text)]");
     expect(projectThread.className).toContain("text-[13px]");
     expect(recentThread.querySelector("svg")).toBeNull();
     expect(recentThread.className).toContain("text-[13px]");
     expect(recentThread.className).not.toContain("font-medium");
+    expect(recentThread.parentElement?.className).toContain("text-[var(--text)]");
     expect(newChat.className).toContain("text-[13px]");
     expect(newChat.className).not.toContain("font-medium");
-    expect(screen.getByText("Projects").closest("div")?.className).toContain("text-[12px]");
-    expect(screen.getByText("Projects").closest("div")?.className).toContain("font-semibold");
+    expect(screen.getByText("Projects").closest("div")?.className).toContain("text-[11px]");
+    expect(screen.getByText("Projects").closest("div")?.className).toContain("font-medium");
+    expect(screen.getByText("Projects").closest("div")?.className).toContain("text-[var(--muted)]");
     expect(screen.getByText("Recents").closest("section")?.className).toContain("mt-1");
-    expect(screen.getByText("Recents").closest("div")?.className).toContain("text-[12px]");
+    expect(screen.getByText("Recents").closest("div")?.className).toContain("text-[11px]");
     expect(screen.getByText(LOCAL_PROFILE.initials).className).toContain("text-[10px]");
     expect(screen.getByText(LOCAL_PROFILE.name).className).toContain("text-[12px]");
     expect(screen.getByText(LOCAL_PROFILE.name).className).toContain("leading-[18px]");
