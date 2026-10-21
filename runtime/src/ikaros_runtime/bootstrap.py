@@ -43,6 +43,7 @@ from .services.processes import ProcessService
 from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
 from .services.subagents import SubagentService
+from .services.thread_messaging import ThreadMessagingService
 from .services.threads import ThreadService
 from .services.turns import TurnService
 from .services.usage import UsageService
@@ -65,8 +66,12 @@ from .tools import (
     ProcessWriteTool,
     ReadTool,
     SubagentTool,
+    ThreadArchiveTool,
+    ThreadCreateTool,
     ThreadListTool,
     ThreadReadTool,
+    ThreadRenameTool,
+    ThreadSendTool,
     WriteTool,
 )
 from .tools.artifacts import ToolArtifactStore
@@ -155,6 +160,19 @@ class RuntimeApplication:
             store,
         )
         memory_retriever = MemoryRetriever(memory_store)
+        self.threads = ThreadService(
+            store,
+            self.security.assert_request_safe,
+            managed_workspace_factory=provision_managed_workspace,
+        )
+        self._thread_messaging = ThreadMessagingService(
+            store=store,
+            threads=self.threads,
+            assert_request_safe=self.security.assert_request_safe,
+            publish=publish,
+            enqueue_run=self._enqueue_thread_run,
+            run_inline=self._run_thread_message,
+        )
         self._subagents = SubagentService(
             store=store,
             run_child=self._run_subagent,
@@ -177,6 +195,10 @@ class RuntimeApplication:
                     HistoryReadTool(store.read_history_slice),
                     ThreadListTool(store.list_threads_for_model),
                     ThreadReadTool(self._subagents.read_thread),
+                    ThreadCreateTool(self._thread_messaging),
+                    ThreadRenameTool(self._thread_messaging),
+                    ThreadArchiveTool(self._thread_messaging),
+                    ThreadSendTool(self._thread_messaging),
                     GlobTool(),
                     GrepTool(),
                     ListTool(),
@@ -243,11 +265,6 @@ class RuntimeApplication:
         self._agent_loop = loop
         self._publish = publish
 
-        self.threads = ThreadService(
-            store,
-            self.security.assert_request_safe,
-            managed_workspace_factory=provision_managed_workspace,
-        )
         self.turns = TurnService(
             store,
             self._scheduler,
@@ -302,12 +319,6 @@ class RuntimeApplication:
             self._channel_service,
         )
 
-    def _notify_run_terminal(self, config: RunConfig, status: str) -> None:
-        """Fan a settled Run out to observers that must never block it."""
-
-        self._refinement.notify_run_terminal(config, status)
-        self._titles.notify_run_terminal(config, status)
-
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
         self._scheduler.start(recovered_run_ids)
 
@@ -324,8 +335,11 @@ class RuntimeApplication:
             await self._scheduler.cancel(outcome.cancel_after_ack)
 
     def _notify_run_terminal(self, config: RunConfig, status: str) -> None:
+        """Fan a settled Run out to observers that must never block it."""
+
         self._subagents.notify_run_terminal(config.run_id)
         self._refinement.notify_run_terminal(config, status)
+        self._titles.notify_run_terminal(config, status)
 
     async def _enqueue_subagent_run(self, run_id: str) -> None:
         await self._scheduler.enqueue(run_id)
@@ -338,6 +352,20 @@ class RuntimeApplication:
         run_id: str,
         cancellation: CancellationToken,
     ) -> None:
+        await self._agent_loop.run(run_id, cancellation)
+
+    async def _enqueue_thread_run(self, run_id: str) -> None:
+        """Hand a delivered Turn to the scheduler for independent execution."""
+
+        await self._scheduler.enqueue(run_id)
+
+    async def _run_thread_message(
+        self,
+        run_id: str,
+        cancellation: CancellationToken,
+    ) -> None:
+        """Run a delivered Turn inline on the worker that is waiting for it."""
+
         await self._agent_loop.run(run_id, cancellation)
 
     async def close(self) -> None:

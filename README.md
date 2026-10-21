@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：17 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：21 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -97,7 +97,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 │  Python Runtime（单进程，asyncio）                                  │
 │  server ── protocol.router ── services（threads/turns/provider/…）  │
 │  agent.loop + scheduler ── providers（OpenAI 兼容适配器）           │
-│  tools（17 个）+ ProcessManager ── storage（SQLite/Journal/投影）   │
+│  tools（21 个）+ ProcessManager ── storage（SQLite/Journal/投影）   │
 │  memory（memory.db）· skills（目录扫描）· config（config.yaml）     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -285,7 +285,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：36 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 11、36 方法、15 事件、17 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 12、36 方法、15 事件、21 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -323,6 +323,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `processes.py` — `process.read` / `process.stop`：在线进程查询与重启后的历史回退。
 - `providers.py` — `provider.*` / `model.*`：配置、发现、断开、移除、启用与容量设置。
 - `skills.py` — `skill.list` / `skill.set_enabled`：全局技能发现与启用状态。
+- `thread_messaging.py` — 模型侧会话管理：复用 `ThreadService` 完成创建/改名/归档，
+  投递消息并驱动目标 Turn（默认异步、`wait` 内联等待、hop 防环）。
 - `threads.py` — `thread.*`：创建（幂等）、改名、归档/取消归档、目录分页、详情。
 - `turns.py` — `turn.start/list`、`run.cancel`、`run.steer`、`event.replay`。
 - `usage.py` — `usage.read`：只读 usage 聚合。
@@ -340,6 +342,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `context_history.py` — 模型可见历史的分页 SQLite 读取与装配。
 - `file_changes.py` — 按 Tool Call 查询不可变文件变更捕获。
 - `history_read.py` — `history_read` 的存储实现（41 条 / 24,000 字符边界）。
+- `thread_messaging.py` — 跨 Thread 投递的 Journal 探针：活动 Run 检测与
+  `threadSend` hop 计数读取。
 - `thread_read.py` — 跨 Thread 只读切片：复用 `history_read` 的切片与截断，追加 Thread 存在性与锚点解析。
 - `journal.py` — Journal 追加与读取、事件 schema 版本校验。
 - `maintenance.py` — check / backup / repair 的完整实现与校验流程。
@@ -379,12 +383,14 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `process.py` — 6 个进程工具（start/read/wait/stop/write/resize）的模型侧定义与
   参数校验。
 - `read.py` — `read`：≤2,000 行 / 50 KiB、行截断 2,000 字符、nextOffset 翻页。
+- `thread_manage.py` — `thread_create` / `thread_rename` / `thread_archive` /
+  `thread_send` 工具：模型侧会话管理（参数校验 + Service 委派）。
 - `thread_read.py` — `thread_list` / `thread_read` 工具：会话目录与跨 Thread 有界切片（默认 24,000 字符）。
 - `traversal.py` — 检索工具共享遍历：广度优先、确定性排序、不设深度上限、不跟随目录符号链接、
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 52 个 Python 文件）：
+`tests/`（Runtime 测试，共 53 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -426,6 +432,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_storage.py` — 存储、Journal 与投影测试。
 - `test_thread_catalog.py` — 目录分页与游标测试。
 - `test_thread_history.py` — 回合历史分页测试。
+- `test_thread_messaging.py` — 会话管理工具测试（创建/改名/归档幂等、非阻塞与 wait、
+  目标忙、归档目标、hop 上限、凭据拦截、取消传播）。
 - `test_thread_read.py` — 跨 Thread 目录与切片测试（分页 / 锚点 / 截断 / 越界 / 不存在 / 隔离）。
 - `test_tools.py` — 文件工具（read/write/edit）测试。
 
@@ -836,7 +844,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - 协议版本 12，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：36 个 post-initialize RPC 方法、15 种持久化事件类型、17 个 provider
+- 规模：36 个 post-initialize RPC 方法、15 种持久化事件类型、21 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -983,7 +991,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（17 个）
+### 6.9 内建工具（21 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
@@ -996,6 +1004,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
 | `thread_list` | 可选 `archived`（布尔，默认 `false`）、可选 `limit`（1–50，默认 20） | 返回 `id`/`title`/`updatedAt`/`archived` 的稳定目录（`updatedAt` 降序、`id` 升序），供模型发现会话 id；只读、无副作用 |
 | `thread_read` | `threadId`、可选 `itemId`（锚点）、`before`/`after`（0–41）、`maxChars`（256–24,000，默认 24,000） | 跨 Thread 只读已结算 Item 的有界切片（含 Thread 元数据与时间）；缺省锚点为默认分支最新已结算 Item；`thread_not_found` / `item_not_found` / `item_not_settled` 为显式错误码；不改变每 Run 冻结上下文 |
+| `thread_create` | 可选 `title`（≤200 字符）、可选 `workspace`（已存在绝对目录，≤4,096 字符） | 创建 Thread（缺省 `title`/`workspace` 时按既有规则分配托管工作区）；`clientRequestId` 由工具调用 Item ID 派生，重放返回同一个 Thread（`created: false`）；显式 project 目录的工作区 id 与 Desktop 的项目标识一致 |
+| `thread_rename` | `threadId`、`title`（1–200 字符） | 重命名 Thread；同标题重复调用返回 `changed: false`；未知 Thread 返回 `thread_not_found` |
+| `thread_archive` | `threadId`、可选 `archived`（布尔，默认 `true`） | 归档 / 取消归档；重复状态返回 `changed: false`；目标有活动 Run 时归档返回 `thread_busy` |
+| `thread_send` | `threadId`、`content`（1–32,768 字符）、可选 `wait`（布尔，默认 `false`） | 向目标 Thread 投递一条消息并启动 Turn/Run：默认非阻塞（立即返回 `threadId`/`runId`/`status`），`wait: true` 在调用方 worker 内联执行该 Run 并返回最终回答原文；目标忙 `thread_busy`、归档 `thread_archived`、超过 hop 上限 `thread_hop_limit`；重放返回同一个 Run |
 | `read` | `filePath`、`offset`、`limit`（1–2,000，默认 2,000） | UTF-8；每次 ≤50 KiB；单行超 2,000 字符截断；拒绝目录/二进制/非法编码；`nextOffset` 翻页 |
 | `write` | `filePath`、`content` | 建父目录；同目录临时文件 + SHA-256 校验 + fsync + 原子替换；保留 BOM/换行/文件模式 |
 | `edit` | `filePath`、`oldString`、`newString`、`replaceAll` | 精确匹配；默认要求唯一匹配；CRLF/孤立 CR 规范化为 LF；变更前检测 `stale_content` |
@@ -1010,6 +1022,22 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
 `asyncio.to_thread` 中执行并定期检查取消令牌。
+
+跨会话消息（`thread_create` / `thread_rename` / `thread_archive` / `thread_send`）：
+
+- 与 RPC 共用同一套服务层：创建 / 改名 / 归档经 `ThreadService` 校验与事件路径，
+  模型与 Desktop 行为一致；工具调用 Item ID 派生 `clientRequestId`，重放幂等。
+- `thread_send` 把消息作为目标 Thread 的 User Item 写入（头部
+  `[Cross-session message from thread <源 threadId>]` + 原文），不做跨会话上下文注入；
+  目标 Run 冻结的配置沿用调用方 Run 的模板（Provider / 模型 / 工具 / 身份）。
+- 目标 Thread 已有 queued/running Run 时显式返回 `thread_busy`，不静默排队；归档 Thread
+  返回 `thread_archived`，**不会自动取消归档**，需先 `thread_archive(archived: false)`。
+- 防环：hop 计数写入目标 Run 的 User Item `data.threadSend`（Journal 投影，可重建），
+  超过 `THREAD_SEND_MAX_HOPS = 3` 返回 `thread_hop_limit`；与 `subagent` 的深度计数
+  同为显式上限，只是作用域不同（跨会话链 vs. 子会话树）。
+- 凭据：参数先过 `assert_request_safe`，凭据值（含 ≥8 字符嵌入）不能跨 Thread 传递。
+- 调度：非阻塞投递交给 Agent 调度器（可被 `run.cancel` 取消）；`wait: true` 在调用方
+  worker 内联执行（与 `subagent` 同思路，避免占满 worker 池互相等待）。
 
 大结果落盘（全部工具通用）：
 
@@ -1369,7 +1397,7 @@ Process              running ──▶ exited / terminated
   （Provider 可能先完成）。
 - 历史 Tool 调用永不自动重放；`unknown` 进程必须在新 Turn 中重新检查。
 
-## 7. RPC 接口参考（协议 11，共 36 个方法）
+## 7. RPC 接口参考（协议 12，共 36 个方法）
 
 通用约定：
 
@@ -2171,7 +2199,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 ### 10.1 测试布局
 
-- Runtime：`runtime/tests/` 共 52 个测试文件，覆盖 agent 循环、上下文与压缩、
+- Runtime：`runtime/tests/` 共 53 个测试文件，覆盖 agent 循环、上下文与压缩、
   存储与 schema、协议契约与路由、Provider 适配、进程管理、工具、Memory 召回、
   Skills、服务器与运行时锁；测试使用隔离的临时 Runtime home。
 - Desktop：Vitest（`ikaros/desktop/src` 内 `*.test.ts(x)`），包含协议解析、
@@ -2310,8 +2338,10 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 11；36 方法；15 事件；17 工具 |
+| 协议 | 版本/规模 | protocol 12；36 方法；15 事件；21 工具 |
 | 工具 | subagent | `wait` 默认 true；`wait=false` 每 Run 最多 4 个存活子 Run；深度上限 `IKAROS_SUBAGENT_MAX_DEPTH` 默认 2、范围 1–8；无墙钟超时；`title` ≤200 字符 |
+| 工具 | thread_create / thread_rename / thread_archive | 与 RPC 共用 `ThreadService` 校验；`title` ≤200 字符；`workspace` 为已存在绝对目录；重放幂等，重复状态 `changed=false` |
+| 工具 | thread_send | 默认非阻塞；`wait=true` 内联等待并返回最终回答；hop 上限 3；正文 ≤32,768 字符；目标忙 `thread_busy`、归档 `thread_archived` |
 | 存储 | 版本 | state schema 15；Journal 11；memory 3；config 2；channel 1 |
 | Thread | 标题生成 | 首个 Run 终态后后台一次；≤24 tokens、超时 30 秒、标题 ≤60 字符；`IKAROS_THREAD_TITLES=0` 关闭 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |

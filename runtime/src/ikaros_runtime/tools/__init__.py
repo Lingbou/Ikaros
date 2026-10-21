@@ -31,6 +31,13 @@ from .process import (
 from .process_manager import ProcessManager
 from .read import ReadTool
 from .subagent import SubagentTool
+from .thread_manage import (
+    ThreadArchiveTool,
+    ThreadCreateTool,
+    ThreadManagementBackend,
+    ThreadRenameTool,
+    ThreadSendTool,
+)
 from .thread_read import ThreadListTool, ThreadReadTool
 from .write import WriteTool
 
@@ -53,8 +60,13 @@ __all__ = [
     "ProcessWriteTool",
     "ReadTool",
     "SubagentTool",
+    "ThreadArchiveTool",
+    "ThreadCreateTool",
     "ThreadListTool",
+    "ThreadManagementBackend",
     "ThreadReadTool",
+    "ThreadRenameTool",
+    "ThreadSendTool",
     "Tool",
     "ToolArtifactStore",
     "ToolCall",

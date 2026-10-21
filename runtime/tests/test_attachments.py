@@ -138,7 +138,7 @@ def test_text_attachment_stays_a_path_reference(tmp_path: Path) -> None:
     )
 
     assert reference.kind == "text"
-    assert reference.size == len(b"# Notes\n")
+    assert reference.size == notes.stat().st_size
     assert estimate_attachment_tokens([reference]) >= len(str(notes)) // 4
     with pytest.raises(ValueError, match="only image attachments can be encoded"):
         image_data_url(reference)
