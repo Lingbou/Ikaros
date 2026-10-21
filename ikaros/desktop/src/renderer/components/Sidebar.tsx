@@ -1,6 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   SquarePen,
@@ -148,6 +149,7 @@ export function Sidebar() {
   const selectThread = useAppStore((state) => state.selectThread);
   const toggleProject = useAppStore((state) => state.toggleProject);
   const newChat = useAppStore((state) => state.newChat);
+  const archiveThread = useAppStore((state) => state.archiveThread);
   const threadCatalogHasMore = useAppStore((state) => state.threadCatalogHasMore);
   const threadCatalogMoreStatus = useAppStore(
     (state) => state.threadCatalogMoreStatus,
@@ -400,32 +402,44 @@ export function Sidebar() {
                     <div className="mt-0.5 space-y-px">
                       {projectThreads.length ? (
                         projectThreads.map((thread) => (
-                          <button
+                          <div
                             key={thread.id}
-                            type="button"
-                            aria-current={selectedThreadId === thread.id ? "page" : undefined}
-                            onClick={() => void selectThread(thread.id)}
                             className={cx(
-                              "flex h-[30px] w-full items-center rounded-[10px] pl-[31px] pr-2 text-left text-[13px] leading-5 transition-colors",
+                              "group/thread flex h-[30px] w-full items-center rounded-[10px] pl-[31px] pr-0.5 transition-colors",
                               selectedThreadId === thread.id
                                 ? "bg-[var(--panel-selected)] font-medium text-[var(--text)]"
                                 : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
                             )}
                           >
-                            <span className="min-w-0 flex-1 truncate">
-                              {thread.title || t("sidebar.newChat")}
-                            </span>
-                            {runningThreadIds.has(thread.id) ? (
-                              <span
-                                role="img"
-                                aria-label={t("sidebar.threadRunning")}
-                                title={t("sidebar.threadRunning")}
-                                className="ml-1 flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
-                              >
-                                <LoaderCircle size={12} className="animate-spin" />
+                            <button
+                              type="button"
+                              aria-current={selectedThreadId === thread.id ? "page" : undefined}
+                              onClick={() => void selectThread(thread.id)}
+                              className="flex h-full min-w-0 flex-1 items-center gap-1 pr-1 text-left text-[13px] leading-5 outline-none"
+                            >
+                              <span className="min-w-0 flex-1 truncate">
+                                {thread.title || t("sidebar.newChat")}
                               </span>
-                            ) : null}
-                          </button>
+                              {runningThreadIds.has(thread.id) ? (
+                                <span
+                                  role="img"
+                                  aria-label={t("sidebar.threadRunning")}
+                                  title={t("sidebar.threadRunning")}
+                                  className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
+                                >
+                                  <LoaderCircle size={12} className="animate-spin" />
+                                </span>
+                              ) : null}
+                            </button>
+                            <IconButton
+                              label={t("thread.archive")}
+                              tooltipSide="bottom"
+                              className="size-6 shrink-0 rounded-md opacity-0 transition-opacity group-hover/thread:opacity-100 focus-visible:opacity-100"
+                              onClick={() => void archiveThread(thread.id).catch(() => undefined)}
+                            >
+                              <Archive size={13} />
+                            </IconButton>
+                          </div>
                         ))
                       ) : (
                         <div className="flex h-[30px] items-center pl-[31px] pr-2 text-[12px] leading-[18px] text-[var(--muted)]">
@@ -465,32 +479,44 @@ export function Sidebar() {
             </div>
             {recentsExpanded ? <div className="space-y-px">
               {recentThreads.map((thread) => (
-                <button
+                <div
                   key={`recent-${thread.id}`}
-                  type="button"
-                  aria-current={selectedThreadId === thread.id ? "page" : undefined}
-                  onClick={() => void selectThread(thread.id)}
                   className={cx(
-                    "flex h-[30px] w-full items-center rounded-[10px] px-2 text-left text-[13px] leading-5 transition-colors",
+                    "group/thread flex h-[30px] w-full items-center rounded-[10px] pl-2 pr-0.5 transition-colors",
                     selectedThreadId === thread.id
                       ? "bg-[var(--panel-selected)] font-medium text-[var(--text)]"
                       : "text-[var(--muted-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
                   )}
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    {thread.title || t("sidebar.newChat")}
-                  </span>
-                  {runningThreadIds.has(thread.id) ? (
-                    <span
-                      role="img"
-                      aria-label={t("sidebar.threadRunning")}
-                      title={t("sidebar.threadRunning")}
-                      className="ml-1 flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
-                    >
-                      <LoaderCircle size={12} className="animate-spin" />
+                  <button
+                    type="button"
+                    aria-current={selectedThreadId === thread.id ? "page" : undefined}
+                    onClick={() => void selectThread(thread.id)}
+                    className="flex h-full min-w-0 flex-1 items-center gap-1 pr-1 text-left text-[13px] leading-5 outline-none"
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {thread.title || t("sidebar.newChat")}
                     </span>
-                  ) : null}
-                </button>
+                    {runningThreadIds.has(thread.id) ? (
+                      <span
+                        role="img"
+                        aria-label={t("sidebar.threadRunning")}
+                        title={t("sidebar.threadRunning")}
+                        className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
+                      >
+                        <LoaderCircle size={12} className="animate-spin" />
+                      </span>
+                    ) : null}
+                  </button>
+                  <IconButton
+                    label={t("thread.archive")}
+                    tooltipSide="bottom"
+                    className="size-6 shrink-0 rounded-md opacity-0 transition-opacity group-hover/thread:opacity-100 focus-visible:opacity-100"
+                    onClick={() => void archiveThread(thread.id).catch(() => undefined)}
+                  >
+                    <Archive size={13} />
+                  </IconButton>
+                </div>
               ))}
             </div> : null}
           </section>
