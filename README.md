@@ -345,7 +345,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
 - `policy.py` — 执行策略：当前固定 FullAccessPolicy。
 - `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
-  终止 6 秒 / 排空 2 秒。
+  终止 6 秒 / 排空 2 秒；持久化 `background` 并支持前台完成门禁。
 - `process_platform.py` — 平台原语：Windows 挂起创建 + Job Object；POSIX 进程组；
   环境白名单 + UTF-8 变量；PTY 会话（Windows ConPTY / POSIX pty）、输出流控与
   窗口尺寸。
@@ -419,11 +419,14 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 `src/main/`（Electron 主进程）：
 
 - `index.ts` — 主进程入口：装配窗口、IPC、RuntimeHost 与应用生命周期。
-- `ipc.ts` — 类型化 IPC 注册与转发（`registerDesktopIpc`）。
+- `ipc.ts` — 类型化 IPC 注册与转发（`registerDesktopIpc`），并接线后台
+  命令终态通知。
+- `backgroundProcessNotifications.ts` — 后台命令终态检测与 Electron Notification
+  触发/去重/点击聚焦。
 - `lifecycle.ts` — 退出前等待 Runtime 干净关闭。
 - `preferences.ts` — `ui-preferences.json` 读写、校验、原生主题同步。
 - `runtime/wire.ts` — JSON-RPC 信封与版本校验：方法 / 事件白名单、initialize
-  manifest、Memory 错误码映射。
+  manifest、Memory 错误码映射与 process.recorded 字段校验。
 - `runtimeHost.ts` — Runtime 子进程监督：启动/认证/WS 重连/进程重启/状态通知
   。
 - `runtimePaths.ts` — 路径解析：Runtime home（`IKAROS_HOME` / `~/.ikaros`）、开发态
@@ -613,7 +616,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 ### 4.7 文件与命令界面
 
 - 命令卡片：`process_start` / `process_read` / `process_wait` / `process_stop`
-  显示有界日志、展开更多与停止操作。
+  显示有界日志、展开更多与停止操作；`background: true` 的命令显示“后台运行中 /
+  后台已结束”徽标，进入终态且主窗口未聚焦时发送系统通知，点击通知聚焦窗口。
 - 文件卡片：`read` / `write` / `edit` 显示路径、行范围、字节数、替换次数等有界
   元数据；不显示完整写入内容。
 - 文件预览面板（只读）：按 revision 绑定分页，每页最多 50 KiB / 2,000 行，
@@ -902,7 +906,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
-| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Thread 最多 64 个运行中命令；命令属于 Thread、跨 Run 存活；`pty: true` 时挂接伪终端 |
+| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、可选 `background`（布尔，默认 `false`）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Thread 最多 64 个运行中命令；命令属于 Thread、跨 Run 存活；`background: true` 不阻塞本 Run 收尾，`false` 时运行中的前台命令必须在 Run 正常结束前 wait/stop；`pty: true` 时挂接伪终端 |
 | `process_read` | `processId`、可选 `cursor` | 返回状态 + 最多 16 KiB 输出页；稳定字节游标 |
 | `process_wait` | `processId`、可选 `cursor`、`timeoutMs`（1–60,000，默认 1,000） | 等待退出；超时返回 `running` 且不杀进程 |
 | `process_stop` | `processId`、可选 `cursor` | 停止进程树；重复调用无害 |
@@ -939,8 +943,14 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   写入。
 - 进程状态：`running` / `exited` / `terminated` / `unknown`；只有观察到成功退出
   才算成功。
+- 完成检查：`background: false`（默认）的运行中命令会阻止 Run 正常收尾；
+  `background: true` 不进入 `has_unsettled_processes`，其进程工具结果也不触发
+  completion check，因此 Run 可以正常结束而命令继续运行。
 - 归属与存活：命令属于 Thread；Run 结束（完成/失败/取消）不终止命令，同一
   Thread 的后续 Run 仍可 `process_read/wait/stop`；每 Thread 并发上限 64。
+- Desktop 通知：后台命令首次进入 `exited` / `terminated` / `unknown` 且主窗口
+  未聚焦时，Electron Notification 对每个进程至多发送一条；点击通知恢复并聚焦
+  窗口。
 - 重启接管（custody）：按 PID + 启动时间核验存活命令，保留输出可读、可
   `process_stop`；对已接管的命令，`process_write/resize` 返回
   `process_recovered`。
@@ -954,8 +964,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   一般无法接管。
 - 清理超时：终止进程树 6 秒、排空管道 2 秒；Run 关闭不再清理命令，Runtime
   关闭只持久化事实（由下次启动接管）。
-- 已知限制：Runtime 退出后，继续写 stdout/stderr 的存活命令可能因管道断开而
-  退出；完整的后台执行需要常驻进程守护（后续方向）。
+- 已知限制：Run 级后台执行已支持；Runtime 退出后，继续写 stdout/stderr 的存活
+  命令可能因管道断开而退出，持续输出与常驻进程守护仍未实现。
 - 环境：子进程只继承白名单环境变量，并强制 `PYTHONIOENCODING=utf-8`、
   `PYTHONUTF8=1`。
 - 文件路径锁：按解析后的绝对路径加锁；符号链接别名解析到目标后共享同一把锁。
@@ -1969,7 +1979,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 | 项目 | 状态 |
 | --- | --- |
 | Runtime 离线基线 | pytest 822 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 485 passed / 1 skipped |
+| Desktop 离线基线 | Vitest 491 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2035,8 +2045,10 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
 
 尚未实现或未接通：
 
-- 跨重启的 PTY 终端与持续输出（Runtime 退出会关闭管道/伪终端；非 PTY 命令可被
-  接管，但实时 IO 不可用）；
+- 后台执行仅覆盖 Run 级 detach 与终态桌面通知；Runtime 退出后 PTY / 持续输出仍
+  会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
+- 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
+  主窗口时不发送；
 - 多个 Run 并发、Multi-Agent 与子 Agent；
 - cron 与主动唤醒任务；
 - 附件、Web/浏览器/桌面操作工具；
@@ -2094,6 +2106,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 文件 | history_read | before/after ≤41；maxChars 256–24,000 |
 | 文件 | 路径长度 | ≤4,096 字符 |
 | 进程 | 并发上限 | 64/ Thread（命令跨 Run 存活） |
+| 进程 | 后台执行 | `background` 默认 `false`；`true` 不阻塞 Run 收尾；终态系统通知每个进程至多 1 条 |
 | 进程 | 重启接管 | PID + 启动时间核验（±5 秒）；存活命令以 `runtime_recovered` 接管 |
 | 进程 | 输出保留 | 总量 1 MiB（stdout/stderr 各 256 KiB）；分页 16 KiB |
 | 进程 | 快照频率 | ≤4 条/秒（0.25 秒间隔） |

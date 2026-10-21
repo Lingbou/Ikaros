@@ -272,6 +272,7 @@ function processSummary(result: Record<string, unknown>, status: ToolResultEvent
 function processDetails(result: Record<string, unknown>): ToolResultEvent["details"] {
   return {
     ...(typeof result.processId === "string" ? { processId: result.processId } : {}),
+    ...(typeof result.background === "boolean" ? { background: result.background } : {}),
     ...(result.exitCode === null || Number.isSafeInteger(result.exitCode) ? { exitCode: result.exitCode as number | null } : {}),
     ...(["running", "exited", "terminated", "unknown"].includes(String(result.state)) ? { processState: result.state as "running" | "exited" | "terminated" | "unknown" } : {}),
     ...(typeof result.truncated === "boolean" ? { truncated: result.truncated } : {}),
@@ -656,6 +657,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
     const process = event.payload.process;
     if (isRecord(process) && typeof process.processId === "string") {
       const processState = process.state;
+      const background = process.background;
       const exitCode = process.exitCode;
       const output = process.output;
       const truncated = process.truncated;
@@ -678,6 +680,7 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
                   ...(["running", "exited", "terminated", "unknown"].includes(String(processState))
                     ? { processState: processState as "running" | "exited" | "terminated" | "unknown" }
                     : {}),
+                  ...(typeof background === "boolean" ? { background } : {}),
                   ...(typeof exitCode === "number" || exitCode === null
                     ? { exitCode: exitCode as number | null }
                     : {}),

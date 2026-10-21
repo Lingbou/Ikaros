@@ -434,4 +434,44 @@ describe("managed process results", () => {
     expect(screen.getByText(/Exit code 2/)).toBeVisible();
     expect(screen.getByText("中文 output")).toBeVisible();
   });
+
+  it("labels background commands while running and after they finish", () => {
+    const event: ToolResultEvent = {
+      id: "background-process",
+      turnId: "turn-process",
+      createdAt: "2026-10-21T00:00:00Z",
+      type: "tool_result",
+      toolCallId: "background-call",
+      toolName: "process_start",
+      status: "success",
+      summary: appEventText("result.processRunning"),
+      output: "",
+      details: {
+        processId: "process-background",
+        background: true,
+        processState: "running",
+        exitCode: null,
+      },
+    };
+    const view = render(
+      <Tooltip.Provider>
+        <EventCard event={event} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByText("Background running")).toBeVisible();
+    view.rerender(
+      <Tooltip.Provider>
+        <EventCard
+          event={{
+            ...event,
+            status: "success",
+            summary: appEventText("result.processCompleted"),
+            details: { ...event.details, processState: "exited", exitCode: 0 },
+          }}
+        />
+      </Tooltip.Provider>,
+    );
+    expect(screen.getByText("Background finished")).toBeVisible();
+  });
 });

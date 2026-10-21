@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 
-import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { BrowserWindow, dialog, ipcMain, Notification, type IpcMainInvokeEvent } from "electron";
 
 import { DESKTOP_IPC_CHANNELS, type UiPreferences } from "../shared/platform";
 import type {
@@ -55,6 +55,10 @@ import type {
   RuntimeUsageReadResult,
   RuntimeWorkspaceSummary
 } from "../shared/runtime";
+import {
+  BackgroundProcessNotifier,
+  backgroundProcessCompletion,
+} from "./backgroundProcessNotifications";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
 import type { RendererTrustPolicy } from "./security";
 import {
@@ -196,6 +200,12 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.window.toggleMaximize
   ];
 
+  const backgroundProcessNotifier = new BackgroundProcessNotifier({
+    getWindows: () => BrowserWindow.getAllWindows(),
+    createNotification: (options) =>
+      Notification.isSupported() ? new Notification(options) : null,
+  });
+
   const removeRuntimeNotification = runtimeHost.onNotification((notification) => {
     if (notification.method === RUNTIME_HOST_STATUS_NOTIFICATION) {
       const status = notification.params as Partial<RuntimeHostStatus>;
@@ -216,6 +226,16 @@ export function registerDesktopIpc(
       return;
     }
     const event = notification.params as RuntimeJournalEvent;
+    const backgroundCompletion = backgroundProcessCompletion(event);
+    if (backgroundCompletion !== null) {
+      void getUiPreferences()
+        .then((preferences) => {
+          backgroundProcessNotifier.notify(backgroundCompletion, preferences.language);
+        })
+        .catch((error: unknown) => {
+          reportWindowDeliveryFailure("failed to prepare background process notification", error);
+        });
+    }
     for (const window of BrowserWindow.getAllWindows()) {
       sendToLiveWindow(window, DESKTOP_IPC_CHANNELS.runtime.event, event);
     }

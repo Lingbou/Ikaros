@@ -54,6 +54,8 @@ describe("renderer i18n", () => {
     expect(translate("titlebar.showSidebar", undefined, "zh-CN")).toBe("显示边栏");
     expect(translate("titlebar.hideSidebar", undefined, "zh-CN")).toBe("隐藏边栏");
     expect(translate("composer.stopRun", undefined, "zh-CN")).toBe("停止");
+    expect(translate("events.result.processBackgroundRunning", undefined, "zh-CN")).toBe("后台运行中");
+    expect(translate("events.result.processBackgroundFinished", undefined, "zh-CN")).toBe("后台已结束");
     expect(translate("sidebar.newChat", undefined, "zh-CN")).toBe("新对话");
     expect(translate("sidebar.noChats", undefined, "zh-CN")).toBe("没有聊天");
     expect(translate("sidebar.recents", undefined, "zh-CN")).toBe("最近");
@@ -63,6 +65,8 @@ describe("renderer i18n", () => {
       "Language for the app UI",
     );
     expect(translate("composer.stopRun", undefined, "en")).toBe("Stop");
+    expect(translate("events.result.processBackgroundRunning", undefined, "en")).toBe("Background running");
+    expect(translate("events.result.processBackgroundFinished", undefined, "en")).toBe("Background finished");
     expect(translate("files.referenceText", { path: "a.ts", start: 1, end: 5 }, "en")).toBe("File: a.ts (lines 1–5)");
   });
 });

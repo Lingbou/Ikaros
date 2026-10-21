@@ -131,7 +131,7 @@
                       "kind": "tool_result",
                       "role": "tool",
                       "status": "completed",
-                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_start\",\"ok\":true,\"output\":\"\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"running\",\"exitCode\":null,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":null,\"cursor\":0,\"nextCursor\":0,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+                      "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_start\",\"ok\":true,\"output\":\"\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"running\",\"exitCode\":null,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":null,\"cursor\":0,\"nextCursor\":0,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
                       "data": {
                         "stepId": "step_00000000000000000000000000000008",
                         "callId": "call_00000000000000000000000000000007",
@@ -144,6 +144,7 @@
                           "output": "",
                           "cancelled": false,
                           "processId": "process_022566fb2be55053ac8716649d851bef",
+                          "background": false,
                           "state": "running",
                           "exitCode": null,
                           "cwd": "C:/golden-workspace",
@@ -190,7 +191,7 @@
                       "kind": "tool_result",
                       "role": "tool",
                       "status": "completed",
-                      "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+                      "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
                       "data": {
                         "stepId": "step_0000000000000000000000000000000c",
                         "callId": "call_0000000000000000000000000000000b",
@@ -203,6 +204,7 @@
                           "output": "golden-output\n",
                           "cancelled": false,
                           "processId": "process_022566fb2be55053ac8716649d851bef",
+                          "background": false,
                           "state": "exited",
                           "exitCode": 0,
                           "cwd": "C:/golden-workspace",
@@ -807,10 +809,13 @@
               "tools": [
                 {
                   "name": "process_start",
-                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this thread: they keep running after the Run ends (including cancellation) and stay readable from later Runs. Set pty true to attach an interactive terminal: process_write then sends input and process_resize changes its window size.",
+                  "description": "Start a local shell command and return its processId immediately. A running state does not mean success: use process_wait/read to inspect actual completion. Commands belong to this thread: they keep running after the Run ends (including cancellation) and stay readable from later Runs. Set background true to detach the command from this Run's completion check; foreground commands must be waited for or stopped before the Run can finish normally. Set pty true to attach an interactive terminal: process_write then sends input and process_resize changes its window size.",
                   "inputSchema": {
                     "additionalProperties": false,
                     "properties": {
+                      "background": {
+                        "type": "boolean"
+                      },
                       "columns": {
                         "maximum": 4096,
                         "minimum": 1,
@@ -840,7 +845,7 @@
                     ],
                     "type": "object"
                   },
-                  "definitionSha256": "1a4d7539e331f7b7a46d6fa038fc4d65f0a1681171d596c5066db3a9ff971412"
+                  "definitionSha256": "e0bfbfa74f488792b7fd4bfe8e46ee6276e9729b3a6046737cc37254a01ef818"
                 },
                 {
                   "name": "process_read",
@@ -1046,11 +1051,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2361,
+                "toolTokens": 2555,
                 "historyTokens": 0,
                 "currentRunTokens": 83,
                 "memoryTokens": 276,
-                "totalTokens": 4995
+                "totalTokens": 5189
               },
               "omissions": [],
               "historyStatus": {
@@ -1090,11 +1095,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2361,
+                "toolTokens": 2555,
                 "historyTokens": 0,
                 "currentRunTokens": 83,
                 "memoryTokens": 276,
-                "totalTokens": 4995
+                "totalTokens": 5189
               },
               "omissions": [],
               "historyStatus": {
@@ -1219,6 +1224,7 @@
               "itemId": "item_00000000000000000000000000000009",
               "command": "golden",
               "cwd": "C:/golden-workspace",
+              "background": false,
               "state": "unknown",
               "exitCode": null,
               "pid": null,
@@ -1262,6 +1268,7 @@
               "itemId": "item_00000000000000000000000000000009",
               "command": "golden",
               "cwd": "C:/golden-workspace",
+              "background": false,
               "state": "running",
               "exitCode": null,
               "pid": 4242,
@@ -1350,7 +1357,7 @@
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
-              "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_start\",\"ok\":true,\"output\":\"\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"running\",\"exitCode\":null,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":null,\"cursor\":0,\"nextCursor\":0,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+              "content": "{\"toolCallId\":\"call_00000000000000000000000000000007\",\"toolName\":\"process_start\",\"ok\":true,\"output\":\"\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"running\",\"exitCode\":null,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":null,\"cursor\":0,\"nextCursor\":0,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
               "data": {
                 "stepId": "step_00000000000000000000000000000008",
                 "callId": "call_00000000000000000000000000000007",
@@ -1363,6 +1370,7 @@
                   "output": "",
                   "cancelled": false,
                   "processId": "process_022566fb2be55053ac8716649d851bef",
+                  "background": false,
                   "state": "running",
                   "exitCode": null,
                   "cwd": "C:/golden-workspace",
@@ -1432,7 +1440,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 447
+                  "tokens": 466
                 }
               ],
               "memory": [
@@ -1450,11 +1458,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2361,
+                "toolTokens": 2555,
                 "historyTokens": 0,
-                "currentRunTokens": 702,
+                "currentRunTokens": 721,
                 "memoryTokens": 276,
-                "totalTokens": 5614
+                "totalTokens": 5827
               },
               "omissions": [],
               "historyStatus": {
@@ -1580,6 +1588,7 @@
               "itemId": "item_00000000000000000000000000000009",
               "command": "golden",
               "cwd": "C:/golden-workspace",
+              "background": false,
               "state": "exited",
               "exitCode": 0,
               "pid": 4242,
@@ -1669,7 +1678,7 @@
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
-              "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+              "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
               "data": {
                 "stepId": "step_0000000000000000000000000000000c",
                 "callId": "call_0000000000000000000000000000000b",
@@ -1682,6 +1691,7 @@
                   "output": "golden-output\n",
                   "cancelled": false,
                   "processId": "process_022566fb2be55053ac8716649d851bef",
+                  "background": false,
                   "state": "exited",
                   "exitCode": 0,
                   "cwd": "C:/golden-workspace",
@@ -1751,7 +1761,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 447
+                  "tokens": 466
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000d",
@@ -1767,7 +1777,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 480
+                  "tokens": 499
                 }
               ],
               "memory": [
@@ -1785,11 +1795,11 @@
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
                 "contextDataTokens": 744,
-                "toolTokens": 2361,
+                "toolTokens": 2555,
                 "historyTokens": 0,
-                "currentRunTokens": 1408,
+                "currentRunTokens": 1446,
                 "memoryTokens": 276,
-                "totalTokens": 6320
+                "totalTokens": 6552
               },
               "omissions": [],
               "historyStatus": {
@@ -2265,7 +2275,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 447
+                  "tokens": 466
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000d",
@@ -2281,7 +2291,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 480
+                  "tokens": 499
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000f",
@@ -2309,10 +2319,10 @@
                 "instructionTokens": 1531,
                 "contextDataTokens": 0,
                 "toolTokens": 400,
-                "historyTokens": 1513,
+                "historyTokens": 1551,
                 "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 3523
+                "totalTokens": 3561
               },
               "omissions": [],
               "historyStatus": {
@@ -2350,7 +2360,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 447
+                  "tokens": 466
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000d",
@@ -2366,7 +2376,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 480
+                  "tokens": 499
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000f",
@@ -2394,10 +2404,10 @@
                 "instructionTokens": 1531,
                 "contextDataTokens": 0,
                 "toolTokens": 400,
-                "historyTokens": 1513,
+                "historyTokens": 1551,
                 "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 3523
+                "totalTokens": 3561
               },
               "omissions": [],
               "historyStatus": {
@@ -2882,7 +2892,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 447
+                  "tokens": 466
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000d",
@@ -2898,7 +2908,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 480
+                  "tokens": 499
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000f",
@@ -2950,10 +2960,10 @@
                 "instructionTokens": 1531,
                 "contextDataTokens": 0,
                 "toolTokens": 0,
-                "historyTokens": 2090,
+                "historyTokens": 2128,
                 "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 3700
+                "totalTokens": 3738
               },
               "omissions": [],
               "historyStatus": {
@@ -2991,7 +3001,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 447
+                  "tokens": 466
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000d",
@@ -3007,7 +3017,7 @@
                   "runId": "run_00000000000000000000000000000004",
                   "kind": "tool_result",
                   "role": "tool",
-                  "tokens": 480
+                  "tokens": 499
                 },
                 {
                   "itemId": "item_0000000000000000000000000000000f",
@@ -3059,10 +3069,10 @@
                 "instructionTokens": 1531,
                 "contextDataTokens": 0,
                 "toolTokens": 0,
-                "historyTokens": 2090,
+                "historyTokens": 2128,
                 "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 3700
+                "totalTokens": 3738
               },
               "omissions": [],
               "historyStatus": {

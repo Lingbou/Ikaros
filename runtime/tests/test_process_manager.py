@@ -254,6 +254,14 @@ async def test_repeated_start_and_read_do_not_replay_command(tmp_path: Path) -> 
         await manager.start(
             command, str(tmp_path.parent), context=context, cancellation=CancellationToken()
         )
+    with pytest.raises(ProcessError, match="different command"):
+        await manager.start(
+            command,
+            str(tmp_path),
+            context=context,
+            cancellation=CancellationToken(),
+            background=True,
+        )
     # Commands are thread-owned: another Run of the same thread can still read them.
     assert manager.read(first["processId"], context=_context(run="run_other"))["state"] == "exited"
     await manager.close()
@@ -366,6 +374,7 @@ async def test_nonzero_exit_and_invalid_tool_arguments(tmp_path: Path) -> None:
     assert not final.ok and final.details["exitCode"] == 7
     cases: list[tuple[str, JsonObject]] = [
         ("process_start", {"command": "echo bad", "runId": "spoof"}),
+        ("process_start", {"command": "echo bad", "background": "yes"}),
         ("process_read", {"processId": "missing", "cursor": True}),
         ("process_wait", {"processId": "missing", "timeoutMs": 0}),
         ("process_stop", {"processId": "missing"}),
@@ -483,13 +492,16 @@ async def test_commands_outlive_the_run_and_serve_later_runs(tmp_path: Path) -> 
         str(tmp_path),
         context=first,
         cancellation=CancellationToken(),
+        background=True,
     )
     process_id = started["processId"]
+    assert started["background"] is True
     await manager.close_run("run_one")
     later = _context(item="item_later", run="run_two")
-    assert manager.read(process_id, context=later)["state"] == "running"
+    later_read = manager.read(process_id, context=later)
+    assert later_read["state"] == "running" and later_read["background"] is True
     stopped = await manager.stop(process_id, context=later)
-    assert stopped["state"] == "terminated"
+    assert stopped["state"] == "terminated" and stopped["background"] is True
     other_thread = ToolExecutionContext("run_two", 1, "item_later", "thread_other", None)
     with pytest.raises(ProcessError, match="belongs to this thread"):
         manager.read(process_id, context=other_thread)
@@ -506,7 +518,9 @@ async def test_restore_readopts_a_live_command_and_stop_settles_it(tmp_path: Pat
         str(tmp_path),
         context=context,
         cancellation=CancellationToken(),
+        background=True,
     )
+    assert started["background"] is True
     running = dict(facts[-1])
     await manager.close()  # a Runtime exit keeps the command alive
     recovered: list[JsonObject] = []
@@ -514,13 +528,16 @@ async def test_restore_readopts_a_live_command_and_stop_settles_it(tmp_path: Pat
     restored.restore([running])
     assert recovered[-1]["state"] == "running"
     assert recovered[-1]["errorCode"] == "runtime_recovered"
+    assert recovered[-1]["background"] is True
     read = restored.read(started["processId"], context=context)
     assert read["state"] == "running" and read["errorCode"] == "runtime_recovered"
+    assert read["background"] is True
     with pytest.raises(ProcessError, match="live input is unavailable"):
         await restored.write(started["processId"], context=context, data="x\n")
     stopped = await restored.stop(started["processId"], context=context)
     assert stopped["state"] == "terminated"
     assert stopped["exitCode"] is None
+    assert stopped["background"] is True
     await _wait_for_process_exit(int(started["pid"]))
     assert not _process_is_alive(int(started["pid"]))
     await restored.close()
@@ -536,7 +553,9 @@ async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: P
         str(tmp_path),
         context=context,
         cancellation=CancellationToken(),
+        background=True,
     )
+    assert started["background"] is True
     running = dict(facts[-1])
     await manager.stop(started["processId"], context=context)
     await _wait_for_process_exit(int(running["pid"]))
@@ -547,6 +566,7 @@ async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: P
     assert recovered[-1]["state"] == "unknown"
     assert recovered[-1]["exitCode"] is None
     assert recovered[-1]["errorCode"] == "runtime_interrupted"
+    assert recovered[-1]["background"] is True
     # A live PID whose recorded start time does not match must never be adopted.
     mismatched = dict(running, pid=os.getpid(), startedAt="2020-01-01T00:00:00.000Z")
     reused: list[JsonObject] = []

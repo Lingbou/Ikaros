@@ -334,6 +334,7 @@ export interface RuntimeProcessRecord {
   runId: string;
   command: string;
   cwd: string;
+  background: boolean;
   state: "running" | "exited" | "terminated" | "unknown";
   exitCode: number | null;
   pid: number | null;
@@ -364,6 +365,7 @@ export interface RuntimeProcessReadResult {
   state: RuntimeProcessRecord["state"];
   exitCode: number | null;
   cwd: string;
+  background: boolean;
   pid: number | null;
   startedAt: string;
   finishedAt: string | null;
