@@ -109,7 +109,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
   6 个 Run（`IKAROS_AGENT_WORKERS`，默认 6、范围 1–8）；并发只发生在不同 Thread 之间，
   同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具调用按读/写闸门并发执行
-  （只读工具可重叠，写类工具独占）；每个 Branch 拥有串行队列。
+  （只读工具可重叠，写类工具独占）；每个 Branch 拥有串行队列。`subagent` 的
+  `wait=false` 子 Run 也经同一调度器运行；父 Run 正常结束不会取消它。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
   独立数据库，只共享 Runtime-home 锁。
 - Desktop 与 Runtime 的生命周期绑定：关闭应用会先请求 Runtime 干净关闭。
@@ -900,6 +901,12 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
   Run 内工具调用按读/写闸门并发（只读可重叠、写类独占）；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
   下一个可运行 Thread。
+- 子 Agent：`subagent` 默认 `wait=true`，在父 worker 上 inline 执行以保证等待
+  子 Run 不会死锁；`wait=false` 通过调度器 enqueue 并立即返回，父 Run 正常结束
+  不强杀子 Run，父 Run 取消会传播到所有子 Run。每个 Run 最多 4 个存活的非阻塞
+  子 Run；嵌套深度由 `IKAROS_SUBAGENT_MAX_DEPTH` 控制，默认 2、范围 1–8。
+  父会话用 `thread_read` 收集子会话结果；子 Run 未结算时返回 `activeRun` 与
+  明确提示。
 - 无总模型调用次数/时长上限；可手动取消；单次 Provider 请求有超时；资源清理
   有界。
 - 失败/取消的 Run 向后续对话提供：已持久化的工具结果 + 独立的 Runtime 状态块
@@ -981,7 +988,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–200）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 2,000 字符；单文件 ≤32 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
 | `memory` | `action`（`save` / `search` / `update` / `forget`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5）；update：`memoryId` + `content`（不得改 kind/scope）；forget：`memoryId` | save/update 复用 `memory.create` / `memory.correct` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；forget 按 ID 追加内容抹除墓碑，删除只由显式 forget 触发 |
-| `subagent` | `prompt`（非空字符串）、可选 `title`（≤200 字符，与 Thread 标题同限） | 创建子 Thread + 子 Run 并等待结束，返回最终回答原文（不截断）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；子会话不能再 spawn（深度 1）；不设墙钟超时（父取消会传播，长任务由取消而非计时终止）；同一工具调用重放幂等 |
+| `subagent` | `prompt`（非空字符串）、可选 `title`（≤200 字符，与 Thread 标题同限）、可选 `wait`（布尔，默认 `true`） | `wait=true` 创建子 Thread + 子 Run 并在父 worker 上 inline 等待结束，返回最终回答原文（不截断）；`wait=false` 经调度器 enqueue 后立即返回 `threadId`/`runId`，父 Run 正常结束不强杀子 Run，但父取消会传播；每个 Run 最多 4 个存活的非阻塞子 Run；嵌套深度由 `IKAROS_SUBAGENT_MAX_DEPTH` 控制（默认 2、范围 1–8）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；未结算时 `thread_read` 返回 `activeRun` 与提示；不设墙钟超时；同一工具调用重放幂等 |
+
+
 
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
@@ -1199,6 +1208,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
 - `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 6，范围 1–8；值为 1
   时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
+- `IKAROS_SUBAGENT_MAX_DEPTH`：子 Agent 最大嵌套深度，默认 2、范围 1–8；
+  非法值会让 Runtime 启动失败。深度 0 是顶层 Run，深度达到上限的 Run 再调用
+  `subagent` 会得到 `subagent_depth_limit`。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
 - `channels.yaml`（version 1）结构概要：
@@ -2195,7 +2207,7 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   主窗口时不发送；
 - Telegram 通道：单用户私聊、固定 `Telegram` Thread、long polling、文本消息；
   暂不支持群组、附件、webhook 与 headless 常驻；
-- Multi-Agent 与更深的子 Agent 树（当前支持单层 `subagent`，子会话不可再 spawn；不同 Thread 的多个 Run 已可并发）；
+- 子 Agent 树支持到 `IKAROS_SUBAGENT_MAX_DEPTH`（默认 2），但不提供树状可视化或跨 Run 的父子消息总线；
 - cron 与主动唤醒任务；
 - 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
@@ -2274,7 +2286,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 11；36 方法；15 事件；17 工具 |
-| 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
+| 工具 | subagent | `wait` 默认 true；`wait=false` 每 Run 最多 4 个存活子 Run；深度上限 `IKAROS_SUBAGENT_MAX_DEPTH` 默认 2、范围 1–8；无墙钟超时；`title` ≤200 字符 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2；channel 1 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 模型 | 思考等级 | `reasoning_efforts` 多选：none / minimal / low / medium / high / xhigh / max / ultra；`reasoning_effort` 默认等级，未设置=自动不下发 |
