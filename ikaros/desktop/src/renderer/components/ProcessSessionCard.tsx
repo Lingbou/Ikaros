@@ -17,6 +17,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
   const [background, setBackground] = useState(event.details?.background ?? false);
   const [exitCode, setExitCode] = useState(event.details?.exitCode);
   const [truncated, setTruncated] = useState(event.details?.truncated ?? false);
+  const [restartCount, setRestartCount] = useState(event.details?.restartCount ?? 0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const processId = event.details?.processId;
@@ -36,6 +37,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
     setBackground(event.details?.background ?? false);
     setExitCode(event.details?.exitCode);
     setTruncated(event.details?.truncated ?? false);
+    setRestartCount(event.details?.restartCount ?? 0);
     setError(null);
   }, [event]);
 
@@ -53,6 +55,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
       setBackground(page.background);
       setExitCode(page.exitCode);
       setTruncated(page.truncated);
+      setRestartCount(page.restartCount);
     }).catch((failure: unknown) => {
       setError(failure instanceof Error ? failure.message : t("events.result.processControlFailed"));
     }).finally(() => setBusy(false));
@@ -72,6 +75,7 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
       setBackground(page.background);
       setExitCode(page.exitCode);
       setTruncated(page.truncated);
+      setRestartCount(page.restartCount);
     }).catch((failure: unknown) => {
       setError(failure instanceof Error ? failure.message : t("events.result.processControlFailed"));
     }).finally(() => setBusy(false));
@@ -92,6 +96,11 @@ export function ProcessSessionCard({ event }: { event: ToolResultEvent }) {
             )}
           >
             {t(running ? "events.result.processBackgroundRunning" : "events.result.processBackgroundFinished")}
+          </span>
+        ) : null}
+        {restartCount > 0 ? (
+          <span className="rounded-full border border-[#3f6f9e]/50 bg-[#20364b]/40 px-1.5 py-0.5 text-[10px] text-[#9dc8f5]">
+            {t("events.result.processRestarted", { count: restartCount })}
           </span>
         ) : null}
         <code className="ml-auto text-[10px] text-[var(--muted)]">{processId}</code>

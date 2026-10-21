@@ -278,6 +278,8 @@ function processDetails(result: Record<string, unknown>): ToolResultEvent["detai
     ...(typeof result.background === "boolean" ? { background: result.background } : {}),
     ...(result.exitCode === null || Number.isSafeInteger(result.exitCode) ? { exitCode: result.exitCode as number | null } : {}),
     ...(["running", "exited", "terminated", "unknown"].includes(String(result.state)) ? { processState: result.state as "running" | "exited" | "terminated" | "unknown" } : {}),
+    ...(result.supervise === "always" || result.supervise === "on-failure" ? { supervise: result.supervise } : {}),
+    ...(Number.isSafeInteger(result.restartCount) ? { restartCount: result.restartCount as number } : {}),
     ...(typeof result.truncated === "boolean" ? { truncated: result.truncated } : {}),
     ...(Number.isSafeInteger(result.cursor) ? { cursor: result.cursor as number } : {}),
     ...(Number.isSafeInteger(result.nextCursor) ? { nextCursor: result.nextCursor as number } : {}),
@@ -755,6 +757,8 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
       const exitCode = process.exitCode;
       const output = process.output;
       const truncated = process.truncated;
+      const supervise = process.supervise;
+      const restartCount = process.restartCount;
       next = updateTurn(thread, event.branchId, event.turnId, (turn) => ({
         id: event.turnId as string,
         branchId: event.branchId as string,
@@ -777,6 +781,10 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
                   ...(typeof background === "boolean" ? { background } : {}),
                   ...(typeof exitCode === "number" || exitCode === null
                     ? { exitCode: exitCode as number | null }
+                    : {}),
+                  ...(supervise === "always" || supervise === "on-failure" ? { supervise } : {}),
+                  ...(typeof restartCount === "number" && Number.isSafeInteger(restartCount)
+                    ? { restartCount }
                     : {}),
                   ...(typeof truncated === "boolean" ? { truncated } : {}),
                 },
