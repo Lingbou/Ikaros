@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { standaloneThreads, threadsForProject, type Thread } from "./domain";
 import { LOCAL_PROFILE, profileInitials } from "./localProfile";
-import { composePromptContent, useAppStore } from "./store";
+import {
+  COMPOSER_ATTACHMENT_LIMIT_ERROR,
+  mergeComposerAttachments,
+  runtimeAttachments,
+  useAppStore,
+} from "./store";
+import { RUNTIME_ATTACHMENT_LIMITS } from "../shared/runtime";
 
 const initialState = useAppStore.getInitialState();
 
@@ -118,11 +124,26 @@ describe("core store invariants", () => {
     expect(useAppStore.getInitialState().sidebarWidth).toBe(260);
   });
 
-  it("appends attachment references to the outgoing prompt", () => {
-    expect(composePromptContent("hello", [])).toBe("hello");
-    expect(composePromptContent("hello", ["/tmp/a.txt", "/tmp/b.txt"])).toBe(
-      "hello\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.txt",
-    );
+  it("sends attachments as structured input instead of folding paths into the prompt", () => {
+    const image = {
+      path: "/tmp/a.png",
+      kind: "image" as const,
+      mimeType: "image/png",
+      name: "a.png",
+    };
+    expect(runtimeAttachments([image])).toEqual([
+      { kind: "image", path: "/tmp/a.png", mimeType: "image/png" },
+    ]);
+    expect(mergeComposerAttachments([], [image, { ...image }])).toEqual([image]);
+    expect(() =>
+      mergeComposerAttachments(
+        Array.from({ length: RUNTIME_ATTACHMENT_LIMITS.maxPerMessage }, (_, index) => ({
+          ...image,
+          path: `/tmp/${index}.png`,
+        })),
+        [image],
+      ),
+    ).toThrow(COMPOSER_ATTACHMENT_LIMIT_ERROR);
   });
 
   it("stages a new project workspace without fabricating a Runtime Thread", () => {

@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
+from .attachments import estimate_attachment_tokens, message_attachment_refs
 from .domain import (
     WORKSPACE_KINDS,
     ContextItem,
@@ -37,7 +38,7 @@ type MemoryScope = Literal["global", "workspace"]
 type OmissionSourceType = Literal["history", "memory"]
 type OmissionReason = Literal["omitted_by_budget", "omitted_by_limit"]
 
-INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound"
+INPUT_BUDGET_MEASUREMENT_VERSION = "conservative-utf8-upper-bound-v2"
 USABLE_CONTEXT_WINDOW_PERCENT = 95
 AUTO_COMPACT_TOKEN_LIMIT_PERCENT = 90
 MEMORY_CONTENT_MAX_CHARACTERS = 2_048
@@ -602,7 +603,11 @@ class ContextItemRecord:
         if self.kind == "message":
             if self.role not in {"user", "assistant"}:
                 raise ValueError("message context Item has an invalid role")
-            return estimate_tokens(self.content) + 64
+            return (
+                estimate_tokens(self.content)
+                + 64
+                + estimate_attachment_tokens(message_attachment_refs(self.data))
+            )
         if self.kind == "tool_call":
             if self.role != "assistant" or not isinstance(self.data.get("arguments"), dict):
                 raise ValueError("Tool Call context Item data is invalid")

@@ -1,7 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from pathlib import Path
 
+from ..attachments import (
+    AttachmentRef,
+    AttachmentUnavailableError,
+    attachment_reference_line,
+    attachments_prompt_note,
+    image_data_url,
+    message_attachment_refs,
+)
 from ..domain import ContextItem
 from ..history_status import HISTORY_STATUS_PREAMBLE, FrozenHistoryStatus
 from ..json_codec import loads as json_loads
@@ -10,7 +19,8 @@ from ..memory.domain import (
     MEMORY_CONTENT_MAX_CHARACTERS,
     validate_memory_content,
 )
-from ..providers.base import ProviderMessage, ProviderRequest
+from ..providers.base import ImageUrlPart, MessagePart, ProviderMessage, ProviderRequest
+from ..providers.model_defaults import model_supports_vision
 from ..run_input import (
     MEMORY_SELECTION_MAX_CHARACTERS,
     MEMORY_SELECTION_MAX_ITEMS,
@@ -30,9 +40,21 @@ _MEMORY_CONTEXT_MAX_CHARACTERS = MEMORY_SELECTION_MAX_CHARACTERS
 class ContextBuilder:
     """Render one provider-neutral model input plan into a Provider request."""
 
+    def __init__(
+        self,
+        *,
+        supports_vision: Callable[[str], bool] | None = None,
+    ) -> None:
+        self._supports_vision = supports_vision or model_supports_vision
+        self._attachment_cache: dict[tuple[str, int, int, str], str] = {}
+
     def build_request(self, plan: ModelInputPlan) -> ProviderRequest:
         """Lower ordered plan blocks without changing their content."""
 
+        attachments = _AttachmentRenderer(
+            supports_vision=self._supports_vision(plan.model_id),
+            cache=self._attachment_cache,
+        )
         return ProviderRequest(
             model_id=plan.model_id,
             messages=(
@@ -41,7 +63,7 @@ class ContextBuilder:
                     for block in plan.instructions
                 ),
                 *_context_data_messages(plan.context_data),
-                *_provider_messages(plan.messages),
+                *_provider_messages(plan.messages, attachments=attachments),
             ),
             tools=plan.tools,
         )
@@ -239,7 +261,11 @@ def _memory_context_messages(
     return (ProviderMessage(role="system", content=block.content),)
 
 
-def _provider_messages(items: Sequence[ContextItem]) -> tuple[ProviderMessage, ...]:
+def _provider_messages(
+    items: Sequence[ContextItem],
+    *,
+    attachments: _AttachmentRenderer,
+) -> tuple[ProviderMessage, ...]:
     messages: list[ProviderMessage] = []
     index = 0
     while index < len(items):
@@ -264,7 +290,11 @@ def _provider_messages(items: Sequence[ContextItem]) -> tuple[ProviderMessage, .
                     )
                 )
                 continue
-            messages.append(ProviderMessage(role=item.role, content=item.content))
+            messages.append(
+                attachments.user_message(item)
+                if item.role == "user"
+                else ProviderMessage(role=item.role, content=item.content)
+            )
             index += 1
             continue
         if item.kind == "tool_call":
@@ -296,6 +326,75 @@ def _provider_messages(items: Sequence[ContextItem]) -> tuple[ProviderMessage, .
             continue
         raise RuntimeError(f"unknown context item kind: {item.kind}")
     return tuple(messages)
+
+
+class _AttachmentRenderer:
+    """Lower recorded attachments into image parts or explicit text fallbacks."""
+
+    def __init__(
+        self,
+        *,
+        supports_vision: bool,
+        cache: dict[tuple[str, int, int, str], str],
+    ) -> None:
+        self._supports_vision = supports_vision
+        self._cache = cache
+
+    def user_message(self, item: ContextItem) -> ProviderMessage:
+        refs = message_attachment_refs(item.data)
+        if not refs:
+            return ProviderMessage(role="user", content=item.content)
+        parts: list[MessagePart] = []
+        lines: list[str] = []
+        for ref in refs:
+            if ref.kind != "image":
+                lines.append(
+                    attachment_reference_line(
+                        ref, notice="read the file with the read tool when needed"
+                    )
+                )
+                continue
+            if not self._supports_vision:
+                lines.append(
+                    attachment_reference_line(
+                        ref,
+                        notice=(
+                            "this model cannot view images, so the file is "
+                            "referenced by path instead"
+                        ),
+                    )
+                )
+                continue
+            try:
+                parts.append(ImageUrlPart(url=self._image_data_url(ref)))
+            except AttachmentUnavailableError as error:
+                lines.append(
+                    attachment_reference_line(
+                        ref, notice=f"image was not sent: {error}"
+                    )
+                )
+                continue
+            lines.append(attachment_reference_line(ref))
+        content = item.content
+        if lines:
+            note = attachments_prompt_note(lines)
+            content = f"{content}\n\n{note}" if content else note
+        return ProviderMessage(role="user", content=content, parts=tuple(parts))
+
+    def _image_data_url(self, ref: AttachmentRef) -> str:
+        try:
+            stat = Path(ref.path).stat()
+        except OSError:
+            raise AttachmentUnavailableError("attachment file is missing") from None
+        key = (ref.path, stat.st_mtime_ns, stat.st_size, ref.sha256)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        url = image_data_url(ref)
+        if len(self._cache) >= 64:
+            self._cache.clear()
+        self._cache[key] = url
+        return url
 
 
 def _reasoning_content(item: ContextItem) -> str | None:

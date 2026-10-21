@@ -4,6 +4,11 @@ from collections.abc import Callable
 from typing import Any
 
 from ..agent.scheduler import AgentScheduler
+from ..attachments import (
+    attachment_refs_to_wire,
+    message_attachment_refs,
+    resolve_attachment_inputs,
+)
 from ..domain import CommandOutcome, SkillDescriptor
 from ..errors import ConfigError, InvalidParamsError
 from ..providers.registry import ConfigStore
@@ -52,7 +57,7 @@ class TurnService:
 
     def start_turn(self, params: dict[str, Any]) -> CommandOutcome:
         required = {"threadId", "branchId", "content", "providerId", "modelId"}
-        allowed = required | {"clientRequestId"}
+        allowed = required | {"clientRequestId", "attachments"}
         if not required <= set(params) or not set(params) <= allowed:
             raise InvalidParamsError("turn.start fields do not match the required schema")
         values = {name: params[name] for name in required}
@@ -61,8 +66,14 @@ class TurnService:
         content = values["content"]
         if not content.strip():
             raise InvalidParamsError("content must not be empty")
+        try:
+            attachments = resolve_attachment_inputs(params.get("attachments"))
+        except ValueError as error:
+            raise InvalidParamsError(str(error)) from None
         client_request_id = client_request_id_from(params)
-        self._assert_request_safe((*values.values(), content, client_request_id))
+        self._assert_request_safe(
+            (*values.values(), content, client_request_id, attachment_refs_to_wire(attachments))
+        )
         if client_request_id is not None:
             try:
                 existing = self._store.find_turn_by_client_request_id(
@@ -72,6 +83,7 @@ class TurnService:
                     provider_id=values["providerId"],
                     model_id=values["modelId"],
                     client_request_id=client_request_id,
+                    attachments=attachments,
                 )
             except LookupError as error:
                 raise InvalidParamsError(str(error)) from error
@@ -106,6 +118,7 @@ class TurnService:
                 content=content,
                 run_config_template=run_config_template,
                 client_request_id=client_request_id,
+                attachments=attachments,
             )
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
@@ -141,7 +154,7 @@ class TurnService:
 
     async def steer_run(self, params: dict[str, Any]) -> CommandOutcome:
         required = {"runId", "content", "expectedRunId", "clientRequestId"}
-        if set(params) != required:
+        if not required <= set(params) or set(params) - required - {"attachments"}:
             raise InvalidParamsError(
                 "run.steer requires runId, content, expectedRunId and clientRequestId"
             )
@@ -154,7 +167,13 @@ class TurnService:
             raise InvalidParamsError("run.steer content must not be empty")
         if run_id != expected:
             raise InvalidParamsError("expectedRunId does not match runId")
-        self._assert_request_safe((run_id, content, expected, request_id))
+        try:
+            attachments = resolve_attachment_inputs(params.get("attachments"))
+        except ValueError as error:
+            raise InvalidParamsError(str(error)) from None
+        self._assert_request_safe(
+            (run_id, content, expected, request_id, attachment_refs_to_wire(attachments))
+        )
         try:
             status = self._store.run_status(run_id)
         except LookupError as error:
@@ -162,7 +181,9 @@ class TurnService:
         if status != "running":
             existing = self._store.find_steer_item(run_id, request_id)
             if existing is not None:
-                if existing["content"] != content:
+                if existing["content"] != content or (
+                    message_attachment_refs(existing.get("data", {})) != attachments
+                ):
                     raise InvalidParamsError(
                         "clientRequestId was already used with different steer content"
                     )
@@ -177,7 +198,7 @@ class TurnService:
                 )
             raise InvalidParamsError(f"run is not steerable (status: {status})")
         try:
-            accepted = await self._scheduler.steer(run_id, content, request_id)
+            accepted = await self._scheduler.steer(run_id, content, request_id, attachments)
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
         if not accepted:

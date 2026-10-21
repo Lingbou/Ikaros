@@ -1978,6 +1978,91 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().runtimeError).toBeNull();
   });
 
+  it("sends composer attachments with turn.start and clears them", async () => {
+    const thread = {
+      id: "thread-attachments",
+      title: "describe this",
+      defaultBranchId: "branch-attachments",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+      archivedAt: null,
+    };
+    const createThread = vi.fn(async (params: RuntimeThreadCreateParams) => ({
+      thread,
+      event: {
+        seq: 1,
+        schemaVersion: RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
+        type: "thread.created",
+        threadId: thread.id,
+        branchId: thread.defaultBranchId,
+        turnId: null,
+        runId: null,
+        itemId: null,
+        timestamp: createdAt,
+        payload: {
+          clientRequestId: params.clientRequestId,
+          thread,
+          branch: {
+            id: thread.defaultBranchId,
+            threadId: thread.id,
+            createdAt,
+            isDefault: true,
+          },
+        },
+      } as RuntimeJournalEvent,
+    }));
+    const startTurn = vi.fn(async (_params: Record<string, unknown>) => ({
+      threadId: thread.id,
+      branchId: thread.defaultBranchId,
+      turnId: "turn-attachments",
+      runId: "run-attachments",
+    }));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [] })),
+        createThread,
+        startTurn,
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 0,
+          nextAfterSeq: 0,
+          hasMore: false,
+        })),
+        onEvent: vi.fn(() => () => undefined),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    useAppStore.setState({
+      composerAttachments: [
+        {
+          path: "/tmp/pixel.png",
+          kind: "image",
+          mimeType: "image/png",
+          name: "pixel.png",
+        },
+      ],
+    });
+    useAppStore.getState().setDraft("describe this");
+    await useAppStore.getState().sendDraft();
+
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(startTurn.mock.calls[0]?.[0]).toMatchObject({
+      content: "describe this",
+      attachments: [
+        { kind: "image", path: "/tmp/pixel.png", mimeType: "image/png" },
+      ],
+    });
+    expect(useAppStore.getState().composerAttachments).toEqual([]);
+  });
+
   it("keeps retrying an idempotent thread.create after the initial recovery window", async () => {
     vi.useFakeTimers();
     const thread = {

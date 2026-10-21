@@ -11,17 +11,24 @@ import {
   X,
 } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { RUNTIME_ATTACHMENT_LIMITS } from "../../shared/runtime";
 import { isRunActive } from "../domain";
 import { type TranslationKey, useTranslation } from "../i18n";
-import { useAppStore } from "../store";
+import { COMPOSER_ATTACHMENT_LIMIT_ERROR, useAppStore } from "../store";
 import { MenuItem } from "./ui";
 
 const MIN_COMPOSER_CLEARANCE = 150;
 const MESSAGE_TO_COMPOSER_GAP = 24;
 
-function attachmentName(path: string): string {
-  const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return separator === -1 ? path : path.slice(separator + 1);
+function clipboardImageFiles(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  for (const item of Array.from(data.items)) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) files.push(file);
+  }
+  return files;
 }
 
 export function Composer({
@@ -52,7 +59,9 @@ export function Composer({
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const pendingNewThread = useAppStore((state) => state.pendingRuntimeNewThread);
   const removeComposerAttachment = useAppStore((state) => state.removeComposerAttachment);
-  const [projectFolderError, setProjectFolderError] = useState(false);
+  const addComposerImageFiles = useAppStore((state) => state.addComposerImageFiles);
+  const [attachmentError, setAttachmentError] = useState<"failed" | "limit" | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -174,11 +183,26 @@ export function Composer({
   };
 
 
+  const attachComposerAction = async (action: () => Promise<void>) => {
+    setAttachmentError(null);
+    try {
+      await action();
+    } catch (error: unknown) {
+      setAttachmentError(
+        error instanceof Error && error.message === COMPOSER_ATTACHMENT_LIMIT_ERROR
+          ? "limit"
+          : "failed",
+      );
+    }
+  };
+
+  const attachFiles = (files: File[]) => {
+    if (!files.length) return;
+    void attachComposerAction(() => addComposerImageFiles(files));
+  };
+
   const addFilesAndFolders = () => {
-    setProjectFolderError(false);
-    void attachComposerContext().catch(() => {
-      setProjectFolderError(true);
-    });
+    void attachComposerAction(attachComposerContext);
   };
 
   return (
@@ -210,23 +234,49 @@ export function Composer({
         <div
           ref={surfaceRef}
           data-composer-surface
-          className="composer-shadow rounded-[16px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
+          className="composer-shadow relative rounded-[16px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            setDragActive(true);
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            setDragActive(false);
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            setDragActive(false);
+            attachFiles(Array.from(event.dataTransfer.files));
+          }}
         >
           {composerAttachments.length ? (
             <div data-composer-attachments className="mb-2 flex flex-wrap gap-1.5 px-1">
-              {composerAttachments.map((path) => (
+              {composerAttachments.map((attachment) => (
                 <span
-                  key={path}
-                  className="flex h-7 max-w-[240px] items-center gap-1.5 rounded-lg border border-[var(--border-soft)] bg-[var(--panel)] pl-2 pr-1 text-[11px] leading-4 text-[var(--muted-strong)]"
+                  key={attachment.path}
+                  data-attachment-kind={attachment.kind}
+                  className="flex h-10 max-w-[260px] items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--panel)] pl-1 pr-1 text-[11px] leading-4 text-[var(--muted-strong)]"
                 >
-                  <FileText size={12} className="shrink-0" aria-hidden="true" />
-                  <span className="min-w-0 truncate" title={path}>
-                    {attachmentName(path)}
+                  {attachment.previewUrl ? (
+                    <img
+                      src={attachment.previewUrl}
+                      alt={t("composer.attachmentImage", { name: attachment.name })}
+                      className="size-8 shrink-0 rounded-md object-cover"
+                    />
+                  ) : (
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--surface-hover)]">
+                      <FileText size={13} aria-hidden="true" />
+                    </span>
+                  )}
+                  <span className="min-w-0 truncate" title={attachment.path}>
+                    {attachment.name}
                   </span>
                   <button
                     type="button"
-                    aria-label={t("composer.removeAttachment", { name: attachmentName(path) })}
-                    onClick={() => removeComposerAttachment(path)}
+                    aria-label={t("composer.removeAttachment", { name: attachment.name })}
+                    onClick={() => removeComposerAttachment(attachment.path)}
                     className="flex size-5 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                   >
                     <X size={11} />
@@ -242,6 +292,12 @@ export function Composer({
             value={draft}
             onChange={(event) => {
               setDraft(event.target.value);
+            }}
+            onPaste={(event) => {
+              const files = clipboardImageFiles(event.clipboardData);
+              if (!files.length) return;
+              event.preventDefault();
+              attachFiles(files);
             }}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing) return;
@@ -447,9 +503,18 @@ export function Composer({
               {t(modelAccess.message)}
             </p>
           ) : null}
-          {projectFolderError ? (
+          {attachmentError ? (
             <div role="alert" className="px-1 pt-1.5 text-[11px] leading-4 text-[#e07070]">
-              {t("composer.addFilesAndFoldersFailed")}
+              {attachmentError === "limit"
+                ? t("composer.attachmentsLimit", {
+                    count: RUNTIME_ATTACHMENT_LIMITS.maxPerMessage,
+                  })
+                : t("composer.addFilesAndFoldersFailed")}
+            </div>
+          ) : null}
+          {dragActive ? (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[16px] border border-dashed border-[var(--accent)] bg-[var(--panel-raised)]/90 text-[12px] text-[var(--muted-strong)]">
+              {t("composer.dropFiles")}
             </div>
           ) : null}
         </div>

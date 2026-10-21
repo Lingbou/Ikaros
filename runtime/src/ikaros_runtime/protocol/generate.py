@@ -60,6 +60,8 @@ def _typescript_text() -> str:
         "RUNTIME_PROTOCOL_MANIFEST.historyStatusPreamble;\n"
         "export const RUNTIME_MEMORY_LIMITS = "
         "RUNTIME_PROTOCOL_MANIFEST.memoryLimits;\n"
+        "export const RUNTIME_ATTACHMENT_LIMITS = "
+        "RUNTIME_PROTOCOL_MANIFEST.attachments;\n"
     )
 
 
