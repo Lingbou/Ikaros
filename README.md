@@ -346,7 +346,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `file_common.py` — 文件工具共享行为：路径校验（≤4,096）、二进制嗅探、按路径锁、
   原子写；`resolve_tool_path` / `validate_directory_path` 供检索工具复用。
 - `glob.py` — `glob`：模式匹配文件（结果上限默认 1,000、忽略 .git/node_modules/
-  二进制、深度 ≤12）。
+  二进制）。
 - `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 2,000 字符。
 - `history_read.py` — `history_read` 工具：itemId 周边的有界切片。
 - `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
@@ -362,7 +362,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   参数校验。
 - `read.py` — `read`：≤2,000 行 / 50 KiB、行截断 2,000 字符、nextOffset 翻页。
 - `thread_read.py` — `thread_list` / `thread_read` 工具：会话目录与跨 Thread 有界切片（默认 24,000 字符）。
-- `traversal.py` — 检索工具共享遍历：广度优先、确定性排序、不跟随目录符号链接、
+- `traversal.py` — 检索工具共享遍历：广度优先、确定性排序、不设深度上限、不跟随目录符号链接、
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
@@ -946,7 +946,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `read` | `filePath`、`offset`、`limit`（1–2,000，默认 2,000） | UTF-8；每次 ≤50 KiB；单行超 2,000 字符截断；拒绝目录/二进制/非法编码；`nextOffset` 翻页 |
 | `write` | `filePath`、`content` | 建父目录；同目录临时文件 + SHA-256 校验 + fsync + 原子替换；保留 BOM/换行/文件模式 |
 | `edit` | `filePath`、`oldString`、`newString`、`replaceAll` | 精确匹配；默认要求唯一匹配；CRLF/孤立 CR 规范化为 LF；变更前检测 `stale_content` |
-| `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules`、已知二进制扩展名与深度 >12 的目录；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
+| `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules` 与已知二进制扩展名，不设深度上限；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–200）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 2,000 字符；单文件 ≤32 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
 | `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
@@ -2170,7 +2170,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 列表分页 | 默认 50、最大 100 |
 | Memory | 模型工具 | `memory`（save / search）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
-| 文件 | glob | 结果上限默认 1,000、最大 5,000；扫描深度 ≤12；忽略 .git/node_modules/二进制 |
+| 文件 | glob | 结果上限默认 1,000、最大 5,000；不设扫描深度上限；忽略 .git/node_modules/二进制 |
 | 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤200 行；单行 2,000 字符；单文件 ≤32 MiB |
 | 文件 | list | 单层目录；条目上限 5,000 |
 | 工具结果 | 落盘阈值 | >64 KiB → `~/.ikaros/artifacts/<threadId>/<itemId>.txt`；预览约 200 行 / ≤32 KiB |
