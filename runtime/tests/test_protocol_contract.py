@@ -200,7 +200,7 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 
 
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
-    assert PROTOCOL_VERSION == 8
+    assert PROTOCOL_VERSION == 9
     assert JOURNAL_EVENT_SCHEMA_VERSION == 10
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {
@@ -222,8 +222,9 @@ def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> Non
         "glob",
         "grep",
         "list",
+        "memory",
     } <= set(PROVIDER_TOOL_IDS)
-    assert len(PROVIDER_TOOL_IDS) == len(set(PROVIDER_TOOL_IDS)) == 13
+    assert len(PROVIDER_TOOL_IDS) == len(set(PROVIDER_TOOL_IDS)) == 14
     assert "process_run" not in PROVIDER_TOOL_IDS
     assert "process.run" not in PROVIDER_TOOL_IDS
     assert "search" not in PROVIDER_TOOL_IDS

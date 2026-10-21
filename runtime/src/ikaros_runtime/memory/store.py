@@ -487,6 +487,7 @@ class SqliteMemoryStore:
                    requested.memory_id AS requested_memory_id,
                    requested.revision AS requested_revision,
                    records.id AS stored_memory_id,
+                   records.kind AS stored_kind,
                    records.state,
                    records.scope_type,
                    records.scope_key,
@@ -532,7 +533,16 @@ class SqliteMemoryStore:
                 content = str(row["content"])
                 if str(row["content_digest"]) != _canonical_sha256(content):
                     raise ValueError("stored Memory content digest does not match")
-                materialized.append(MaterializedMemory(reference, content))
+                kind = str(row["stored_kind"])
+                if kind not in MEMORY_KINDS:
+                    raise ValueError("frozen Memory kind is invalid")
+                materialized.append(
+                    MaterializedMemory(
+                        reference,
+                        cast(MemoryKind, kind),
+                        content,
+                    )
+                )
         except (TypeError, ValueError):
             raise MemoryRetrievalError("memory_snapshot_unavailable") from None
         return tuple(materialized)

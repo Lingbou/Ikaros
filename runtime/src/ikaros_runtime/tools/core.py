@@ -95,7 +95,8 @@ class ToolTaskCancelled(asyncio.CancelledError):
 
 
 class Tool(Protocol):
-    definition: ToolDefinition
+    @property
+    def definition(self) -> ToolDefinition: ...
 
     async def execute(
         self,

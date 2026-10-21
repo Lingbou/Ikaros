@@ -107,6 +107,17 @@ function searchToolResultDetails(event: ToolResultEvent, t: Translate): string[]
   return metadata;
 }
 
+function memoryToolResultDetails(event: ToolResultEvent, t: Translate): string[] {
+  const details = event.details;
+  if (!details) return [];
+  const metadata: string[] = [];
+  if (Number.isInteger(details.count)) {
+    metadata.push(t("events.result.memoryCount", { count: details.count as number }));
+  }
+  if (details.truncated === true) metadata.push(t("events.result.outputTruncated"));
+  return metadata;
+}
+
 function fileToolResultDetails(event: ToolResultEvent, t: Translate): string[] {
   const details = event.details;
   if (!details) return [];
@@ -315,7 +326,9 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
     ? fileToolResultDetails(event, t)
     : isSearchResult
       ? searchToolResultDetails(event, t)
-      : [];
+      : event.toolName === "memory"
+        ? memoryToolResultDetails(event, t)
+        : [];
   if (event.toolName?.startsWith("process_") && event.details) {
     if (typeof event.details.exitCode === "number") metadata.push(t("events.result.exitCode", { code: event.details.exitCode }));
     if (event.details.processId) metadata.push(event.details.processId);

@@ -103,9 +103,12 @@ class MemorySnapshotReference:
 @dataclass(frozen=True, slots=True)
 class MaterializedMemory:
     reference: MemorySnapshotReference
+    kind: MemoryKind
     content: str
 
     def __post_init__(self) -> None:
+        if self.kind not in MEMORY_KINDS:
+            raise ValueError("materialized Memory kind is invalid")
         validate_memory_content(self.content)
         if len(self.content) != self.reference.characters:
             raise ValueError("materialized Memory character count does not match")
@@ -257,6 +260,7 @@ class MemoryRetriever:
                 continue
             materialized = MaterializedMemory(
                 reference=candidate.to_reference(),
+                kind=candidate.kind,
                 content=candidate.content,
             )
             if accept_selection is not None and not accept_selection(

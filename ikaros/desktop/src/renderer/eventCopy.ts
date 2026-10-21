@@ -18,6 +18,7 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "tool.globFiles": "events.tool.globFiles",
   "tool.searchFiles": "events.tool.searchFiles",
   "tool.listDirectory": "events.tool.listDirectory",
+  "tool.memory": "events.tool.memory",
   "result.processRunning": "events.result.processRunning",
   "result.processStopped": "events.result.processStopped",
   "result.processUnknown": "events.result.processUnknown",
@@ -43,7 +44,14 @@ const APP_EVENT_TEXT_KEYS: Record<AppEventTextKind, TranslationKey> = {
   "result.listFailed": "events.result.listFailed",
   "result.listInterrupted": "events.result.listInterrupted",
   "result.entryCount": "events.result.entryCount",
-  "result.matchCount": "events.result.matchCount"
+  "result.matchCount": "events.result.matchCount",
+  "result.memorySaved": "events.result.memorySaved",
+  "result.memorySaveFailed": "events.result.memorySaveFailed",
+  "result.memorySaveInterrupted": "events.result.memorySaveInterrupted",
+  "result.memoryFound": "events.result.memoryFound",
+  "result.memorySearchFailed": "events.result.memorySearchFailed",
+  "result.memorySearchInterrupted": "events.result.memorySearchInterrupted",
+  "result.memoryCount": "events.result.memoryCount"
 };
 
 export function resolveEventText(copy: EventText, t: Translate): string {

@@ -127,7 +127,13 @@ def test_context_builder_lowers_only_canonical_memory_context_data() -> None:
         config=run_config("provider", "model-1"),
         items=(),
         context_data=build_memory_context_data(
-            (MaterializedMemory(reference=reference, content=content),)
+            (
+                MaterializedMemory(
+                    reference=reference,
+                    kind="fact",
+                    content=content,
+                ),
+            )
         ),
         budget_snapshot=bounded_budget(),
     )
