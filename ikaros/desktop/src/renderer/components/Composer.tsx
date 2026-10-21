@@ -3,17 +3,24 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
-  FolderPlus,
+  FileText,
+  Paperclip,
   Plus,
+  X,
 } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isRunActive } from "../domain";
 import { type TranslationKey, useTranslation } from "../i18n";
 import { useAppStore } from "../store";
-import { IconButton, MenuItem } from "./ui";
+import { MenuItem } from "./ui";
 
 const MIN_COMPOSER_CLEARANCE = 150;
 const MESSAGE_TO_COMPOSER_GAP = 24;
+
+function attachmentName(path: string): string {
+  const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return separator === -1 ? path : path.slice(separator + 1);
+}
 
 export function Composer({
   onClearanceChange,
@@ -36,7 +43,9 @@ export function Composer({
   const sendDraft = useAppStore((state) => state.sendDraft);
   const steerRun = useAppStore((state) => state.steerRun);
   const stopRun = useAppStore((state) => state.stopRun);
-  const bindWorkspaceFromFolder = useAppStore((state) => state.bindWorkspaceFromFolder);
+  const attachComposerContext = useAppStore((state) => state.attachComposerContext);
+  const composerAttachments = useAppStore((state) => state.composerAttachments);
+  const removeComposerAttachment = useAppStore((state) => state.removeComposerAttachment);
   const [projectFolderError, setProjectFolderError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -156,9 +165,9 @@ export function Composer({
   };
 
 
-  const addProjectFolder = () => {
+  const addFilesAndFolders = () => {
     setProjectFolderError(false);
-    void bindWorkspaceFromFolder().catch(() => {
+    void attachComposerContext().catch(() => {
       setProjectFolderError(true);
     });
   };
@@ -176,6 +185,30 @@ export function Composer({
           data-composer-surface
           className="composer-shadow rounded-[22px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
         >
+          {composerAttachments.length ? (
+            <div data-composer-attachments className="mb-2 flex flex-wrap gap-1.5 px-1">
+              {composerAttachments.map((path) => (
+                <span
+                  key={path}
+                  className="flex h-7 max-w-[240px] items-center gap-1.5 rounded-lg border border-[var(--border-soft)] bg-[var(--panel)] pl-2 pr-1 text-[11px] leading-4 text-[var(--muted-strong)]"
+                >
+                  <FileText size={12} className="shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 truncate" title={path}>
+                    {attachmentName(path)}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={t("composer.removeAttachment", { name: attachmentName(path) })}
+                    onClick={() => removeComposerAttachment(path)}
+                    className="flex size-5 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
           <textarea
             ref={textareaRef}
             rows={1}
@@ -200,22 +233,32 @@ export function Composer({
           <div className="mt-2 flex min-w-0 items-center gap-1.5">
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
-                <IconButton
-                  label={t("composer.addContext")}
-                  className="size-7 rounded-full border border-[var(--border-soft)] bg-[var(--panel)]"
+                <button
+                  type="button"
+                  aria-label={t("composer.addContext")}
+                  className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--panel)] text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] data-[state=open]:bg-[var(--surface-hover)] data-[state=open]:text-[var(--text)]"
                 >
                   <Plus size={13} />
-                </IconButton>
+                </button>
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
                 <DropdownMenu.Content
                   side="top"
                   align="start"
                   sideOffset={8}
-                  className="glass-menu z-[90] w-52 rounded-xl p-1.5"
+                  className="glass-menu z-[90] w-60 rounded-xl p-1.5"
                 >
-                  <DropdownMenu.Item onSelect={addProjectFolder} className="outline-none">
-                    <MenuItem icon={<FolderPlus size={14} />} label={t("composer.addProjectFolder")} />
+                  <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
+                    {t("composer.addContext")}
+                  </DropdownMenu.Label>
+                  <DropdownMenu.Item
+                    onSelect={addFilesAndFolders}
+                    className="rounded-lg outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                  >
+                    <MenuItem
+                      icon={<Paperclip size={14} />}
+                      label={t("composer.addFilesAndFolders")}
+                    />
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
@@ -301,7 +344,7 @@ export function Composer({
           ) : null}
           {projectFolderError ? (
             <div role="alert" className="px-1 pt-1.5 text-[11px] leading-4 text-[#e07070]">
-              {t("composer.addProjectFolderFailed")}
+              {t("composer.addFilesAndFoldersFailed")}
             </div>
           ) : null}
         </div>

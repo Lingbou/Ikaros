@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { standaloneThreads, threadsForProject, type Thread } from "./domain";
 import { LOCAL_PROFILE, profileInitials } from "./localProfile";
-import { useAppStore } from "./store";
+import { composePromptContent, useAppStore } from "./store";
 
 const initialState = useAppStore.getInitialState();
 
@@ -116,6 +116,13 @@ describe("core store invariants", () => {
 
     expect(useAppStore.getState().sidebarWidth).toBe(404);
     expect(useAppStore.getInitialState().sidebarWidth).toBe(260);
+  });
+
+  it("appends attachment references to the outgoing prompt", () => {
+    expect(composePromptContent("hello", [])).toBe("hello");
+    expect(composePromptContent("hello", ["/tmp/a.txt", "/tmp/b.txt"])).toBe(
+      "hello\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.txt",
+    );
   });
 
   it("stages a new project workspace without fabricating a Runtime Thread", () => {
