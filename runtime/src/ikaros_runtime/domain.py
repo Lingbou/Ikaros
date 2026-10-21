@@ -22,6 +22,13 @@ type WorkspaceKind = Literal["project", "managed"]
 
 WORKSPACE_KINDS: Final = frozenset({"project", "managed"})
 
+# Thread title provenance (threads.title_source): "provisional" titles are
+# supplied when a Thread is created (a client placeholder) and may be replaced by
+# a model-generated title; "user" titles come from an explicit rename and are
+# never overwritten; "auto" titles are the model-generated result. Only an
+# explicit rename can make an existing title user-owned.
+THREAD_TITLE_RENAME_SOURCES: Final = frozenset({"user", "auto"})
+
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSummary:

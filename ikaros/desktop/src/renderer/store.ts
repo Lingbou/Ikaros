@@ -2791,7 +2791,10 @@ async function sendRuntimeDraft(
     return;
   }
 
-  const title = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
+  // Provisional title: the Runtime replaces it with a model-generated title once
+  // the Thread's first Run settles (thread.renamed keeps Recents in sync). A user
+  // rename is recorded as user-owned and is never replaced by that generator.
+  const provisionalTitle = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
   try {
     const created = await invokeIdempotentRuntimeCommand(
       set,
@@ -2799,7 +2802,7 @@ async function sendRuntimeDraft(
       submission.afterSeq,
       () =>
         runtimeClient.createThread({
-          title,
+          title: provisionalTitle,
           workspace: submission.workspace,
           clientRequestId: submission.createRequestId,
         }),

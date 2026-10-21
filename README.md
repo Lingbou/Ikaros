@@ -342,7 +342,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `maintenance.py` — check / backup / repair 的完整实现与校验流程。
 - `processes.py` — 进程事实读取；重启恢复只回放观察，永不启动命令。
 - `projections.py` — 投影重建与一致性校验。
-- `schema.py` — state.db schema 14 的规范 DDL。
+- `schema.py` — state.db schema 15 的规范 DDL。
 - `session_provenance.py` — Memory 来源 Item 的只读校验（schema 1）。
 - `store.py` — 主 SQLite 存储：Threads/Turns/Runs/Items/Journal/
   进程/文件/usage 的全部查询与事务。
@@ -415,7 +415,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_protocol_contract.py` — 协议契约与生成物测试。
 - `test_protocol_router.py` — 方法派发与错误码测试。
 - `test_runtime_lock.py` — 单实例锁测试。
-- `test_schema.py` — schema 14 校验测试。
+- `test_schema.py` — schema 15 校验测试。
 - `test_server.py` — WebSocket 服务与连接测试。
 - `test_skills.py` — Skill 目录扫描与诊断测试。
 - `test_storage.py` — 存储、Journal 与投影测试。
@@ -852,7 +852,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.3 存储与数据
 
-- `state.db`：SQLite，schema 14；Journal Event schema 10。保存 Threads/Branches/
+- `state.db`：SQLite，schema 15；Journal Event schema 11。保存 Threads/Branches/
   Turns/Runs/Items、事件 Journal、RunConfig、ContextRevision、StepInput 审计、
   usage、进程与文件操作事实；投影可从 Journal 重建。
 - `memory.db`：独立 schema 3；有自己的连接、事务、revision、操作回执与后台
@@ -868,7 +868,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage check`：校验 schema、Journal 顺序、投影可重建性；
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
-- 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 / channel 1 /
+- 数据策略：只支持当前格式（config 2 / state schema 15 / Journal 11 / channel 1 /
   protocol 9 / memory 3）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
   更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
   要求显式重置。
@@ -1129,6 +1129,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - ThreadSummary 字段：`id`、`title`、`defaultBranchId`、`workspace`（可空）、
   `createdAt`、`updatedAt`、`archivedAt`（可空）。
+- Thread 标题来源（`threads.title_source`，仅存于 Runtime）：`provisional`（创建时
+  由客户端提供，可被自动标题替换）、`user`（显式 `thread.rename`，永不被自动
+  标题覆盖）、`auto`（首个 Run 终态后由该 Run 的 Provider/Model 生成）；创建时
+  无标题为 null。
 - WorkspaceSummary 字段：`id`、`name`、`kind`（`project` / `managed`）、`rootUri`（可空）。
 - JournalEvent 信封字段：`seq`、`schemaVersion`、`type`、`threadId`、`branchId`、
   `turnId`、`runId`、`itemId`、`timestamp`、`payload`（作用域 ID 可为空）。
@@ -1184,6 +1188,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - `IKAROS_RUNTIME_PYTHON`：Desktop 指定 Runtime 的 Python 可执行文件；优先于内置
   payload（调试用）。
 - `IKAROS_MEMORY_REFINEMENT`：后台记忆精炼开关；显式设为 `0` 时关闭（默认开启）。
+- `IKAROS_THREAD_TITLES`：后台会话标题生成开关；显式设为 `0` 时关闭（默认开启）。
 - `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
 - `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 6，范围 1–8；值为 1
@@ -1341,8 +1346,8 @@ Process              running ──▶ exited / terminated
 
 | 方法 | 参数 | 返回 |
 | --- | --- | --- |
-| `thread.create` | `title: string\|null`；`workspace: {id≤200, name≤200, kind: project\|managed, rootUri≤4096}\|null`（省略或 `null` 时自动创建 managed 工作区）；`clientRequestId?: string` | `{ thread, event }`（幂等时返回既有 Thread 与同一工作区） |
-| `thread.rename` | `threadId`；`title: string\|null` | `{ thread, changed, event\|null }` |
+| `thread.create` | `title: string\|null`（视为 provisional，首个 Run 终态后可能被自动标题替换）；`workspace: {id≤200, name≤200, kind: project\|managed, rootUri≤4096}\|null`（省略或 `null` 时自动创建 managed 工作区）；`clientRequestId?: string` | `{ thread, event }`（幂等时返回既有 Thread 与同一工作区） |
+| `thread.rename` | `threadId`；`title: string\|null`（标题记为 user 所有，永不被自动标题覆盖） | `{ thread, changed, event\|null }` |
 | `thread.archive` | `threadId` | `{ thread, changed, event\|null }` |
 | `thread.unarchive` | `threadId` | `{ thread, changed, event\|null }` |
 | `thread.get` | `threadId` | `{ thread, snapshotSeq }` |
@@ -1410,7 +1415,7 @@ Process              running ──▶ exited / terminated
 
 ### 7.6 事件类型与载荷
 
-事件信封（所有事件）：`seq`（≥1，单调递增）、`schemaVersion`（=10）、`type`、
+事件信封（所有事件）：`seq`（≥1，单调递增）、`schemaVersion`（=11）、`type`、
 `threadId` / `branchId` / `turnId` / `runId` / `itemId`（按作用域可空）、
 `timestamp`、`payload`。非空的 `turnId` / `runId` / `itemId` 必须在 `payload`
 中以同值镜像出现；为空的键不得出现在 `payload` 中。
@@ -1418,7 +1423,7 @@ Process              running ──▶ exited / terminated
 | 事件 | 作用域 | payload 关键字段 |
 | --- | --- | --- |
 | `thread.created` | Thread | `thread`（完整摘要）、`branch`（id/threadId/createdAt/isDefault）、`clientRequestId?` |
-| `thread.renamed` | Thread | `thread`（updatedAt 与事件时间一致） |
+| `thread.renamed` | Thread | `thread`（updatedAt 与事件时间一致）、`titleSource`（user / auto） |
 | `thread.archived` | Thread | `thread`（archivedAt 等于事件时间） |
 | `thread.unarchived` | Thread | `thread`（archivedAt 为 null） |
 | `run.state_changed` | Run | `status`：queued / running |
@@ -1645,7 +1650,7 @@ Memory、文件、进程与系统：
 
 ## 8. 数据库表结构（列级）
 
-### 8.1 state.db（schema 14）
+### 8.1 state.db（schema 15）
 
 `events` — 追加型事件 Journal（唯一事实来源）：
 
@@ -1667,6 +1672,7 @@ Memory、文件、进程与系统：
 | --- | --- |
 | `id` | TEXT PRIMARY KEY |
 | `title` | TEXT（可空） |
+| `title_source` | TEXT（可空；provisional / user / auto，见 6.16） |
 | `default_branch_id` | TEXT NOT NULL UNIQUE |
 | `created_at` / `updated_at` | TEXT NOT NULL |
 | `archived_at` | TEXT（可空） |
@@ -1790,7 +1796,7 @@ auto_extracted）；
 
 ### 8.5 完整 DDL
 
-`state.db`（schema 14）的完整建表语句（含 `file_changes`）：
+`state.db`（schema 15）的完整建表语句（含 `file_changes`）：
 
 ```sql
 CREATE TABLE events (
@@ -1814,6 +1820,7 @@ ON events(run_id) WHERE event_type = 'run.settled';
 CREATE TABLE threads (
     id TEXT PRIMARY KEY,
     title TEXT,
+    title_source TEXT CHECK (title_source IN ('provisional', 'user', 'auto')),
     default_branch_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -2087,7 +2094,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 ```text
 ~/.ikaros/
   config.yaml          provider/model 配置、Skill 禁用列表（version 2，≤256 KiB）
-  state.db             权威会话与执行记录（SQLite，schema 14）
+  state.db             权威会话与执行记录（SQLite，schema 15）
   memory.db            独立长期 Memory（schema 3，含 FTS5 召回索引）
   channels.yaml        Telegram 通道配置（version 1，≤64 KiB）
   channels.db          通道绑定与投递状态（SQLite，schema 1）
@@ -2263,7 +2270,8 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 11；36 方法；15 事件；17 工具 |
 | 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
-| 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2；channel 1 |
+| 存储 | 版本 | state schema 15；Journal 11；memory 3；config 2；channel 1 |
+| Thread | 标题生成 | 首个 Run 终态后后台一次；≤24 tokens、超时 30 秒、标题 ≤60 字符；`IKAROS_THREAD_TITLES=0` 关闭 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 模型 | 思考等级 | `reasoning_efforts` 多选：none / minimal / low / medium / high / xhigh / max / ultra；`reasoning_effort` 默认等级，未设置=自动不下发 |
 | 存储 | config 上限 | 256 KiB |

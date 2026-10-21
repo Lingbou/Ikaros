@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from ..domain import (
     JOURNAL_EVENT_SCHEMA_VERSION,
+    THREAD_TITLE_RENAME_SOURCES,
     WORKSPACE_KINDS,
     ContextItem,
     JournalEvent,
@@ -471,13 +472,16 @@ def apply_event(
         connection.execute(
             """
             INSERT INTO threads(
-                id, title, default_branch_id, workspace_json,
+                id, title, title_source, default_branch_id, workspace_json,
                 created_at, updated_at, archived_at, client_request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 thread["id"],
                 thread["title"],
+                # A title supplied at creation is a client placeholder: it may be
+                # replaced once the Thread's first Run generates a model title.
+                "provisional" if thread["title"] is not None else None,
                 thread["defaultBranchId"],
                 workspace_to_json(workspace_from_wire(thread["workspace"])),
                 thread["createdAt"],
@@ -496,7 +500,10 @@ def apply_event(
             ),
         )
     elif event_type in {"thread.renamed", "thread.archived", "thread.unarchived"}:
-        _require_keys(payload, {"thread"})
+        _require_keys(
+            payload,
+            {"thread", "titleSource"} if event_type == "thread.renamed" else {"thread"},
+        )
         thread = _record(payload, "thread", _THREAD_KEYS)
         _validate_thread(thread)
         _require_equal("thread update time", thread["updatedAt"], event.timestamp)
@@ -513,19 +520,36 @@ def apply_event(
             run_id=None,
             item_id=None,
         )
-        updated = connection.execute(
-            """
-            UPDATE threads
-            SET title = ?, updated_at = ?, archived_at = ?
-            WHERE id = ?
-            """,
-            (
-                thread["title"],
-                thread["updatedAt"],
-                thread["archivedAt"],
-                thread["id"],
-            ),
-        )
+        if event_type == "thread.renamed":
+            title_source = _require_thread_rename_source(payload["titleSource"])
+            updated = connection.execute(
+                """
+                UPDATE threads
+                SET title = ?, title_source = ?, updated_at = ?, archived_at = ?
+                WHERE id = ?
+                """,
+                (
+                    thread["title"],
+                    title_source,
+                    thread["updatedAt"],
+                    thread["archivedAt"],
+                    thread["id"],
+                ),
+            )
+        else:
+            updated = connection.execute(
+                """
+                UPDATE threads
+                SET title = ?, updated_at = ?, archived_at = ?
+                WHERE id = ?
+                """,
+                (
+                    thread["title"],
+                    thread["updatedAt"],
+                    thread["archivedAt"],
+                    thread["id"],
+                ),
+            )
         _require_one_update(updated, event_type)
     elif event_type == "item.completed" and "turn" in payload:
         _require_keys(
@@ -1536,6 +1560,12 @@ _ITEM_KEYS = {
     "updatedAt",
 }
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def _require_thread_rename_source(value: object) -> str:
+    if not isinstance(value, str) or value not in THREAD_TITLE_RENAME_SOURCES:
+        raise RuntimeError("thread.renamed payload titleSource is invalid")
+    return value
 
 
 def _validate_thread(thread: dict[str, Any]) -> None:
