@@ -145,7 +145,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   递增；Thread/Turn/Run/Item 查询表都是可重建投影。
 - 恢复：异常退出后 `running` → `failed(runtime_interrupted)`，`queued` 按原顺序
   重排；进程记录按 custody（PID + 启动时间）结算——仍存活的命令以 `running`
-  （`errorCode=runtime_recovered`）接管，其余标 `unknown`；终态 Run 永不重跑。
+  （`errorCode=runtime_recovered`）接管并继续跟随输出文件，其余标 `unknown`
+  （带 `supervise` 策略的命令在重启预算内自动重启）；终态 Run 永不重跑。
 - 重放：客户端从最后连续 `seq` 调用 `event.replay` 追赶，遇到缺口不推进游标；
   目录/历史页返回 `snapshotSeq` 水位线用于对齐。
 - 三个独立数据域：`state.db`（会话与执行）、`memory.db`（长期记忆）、
@@ -172,6 +173,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 | 主题、语言、字体、侧边栏状态、用户名、草稿、所选 Model、展开分组、设置导航 | Desktop |
 | 文件系统内容 | 用户（工具以用户权限访问） |
 | 会话 SQLite、Memory SQLite、配置文档 | `~/.ikaros`（Runtime 独占管理） |
+| 进程输出文件（`~/.ikaros/processes/`） | Runtime（命令跨 Run 与 Runtime 重启保留） |
 | 内置 Runtime payload（`~/.ikaros/runtime/`） | Desktop（安装包携带，首次启动布置） |
 
 ## 2. 技术栈与版本
@@ -367,8 +369,11 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `memory.py` — `memory` 工具：模型侧 save / search；save 复用 `memory.create`
   的校验、凭据保护、来源捕获与幂等路径，search 复用确定性混合召回（只读）。
 - `policy.py` — 执行策略：当前固定 FullAccessPolicy。
-- `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
-  终止 6 秒 / 排空 2 秒；持久化 `background` 并支持前台完成门禁。
+- `process_manager.py` — 托管进程管理器：64 并发、文件承载输出（1 MiB 保留窗口、
+  16 KiB 分页）、4 条/秒快照、终止 6 秒 / 排空 2 秒；持久化 `background`、
+  `supervise` 策略与重启计数，并按指数退避守护命令。
+- `process_log.py` — 每进程输出文件：`~/.ikaros/processes/<threadId>/<processId>.log`
+  与同名 `.json` 元数据；路径段校验、尾部跟随、窗口折叠与字节游标映射。
 - `process_platform.py` — 平台原语：Windows 挂起创建 + Job Object；POSIX 进程组；
   环境白名单 + UTF-8 变量；PTY 会话（Windows ConPTY / POSIX pty）、输出流控与
   窗口尺寸。
@@ -852,7 +857,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.3 存储与数据
 
-- `state.db`：SQLite，schema 14；Journal Event schema 10。保存 Threads/Branches/
+- `state.db`：SQLite，schema 15；Journal Event schema 11。保存 Threads/Branches/
   Turns/Runs/Items、事件 Journal、RunConfig、ContextRevision、StepInput 审计、
   usage、进程与文件操作事实；投影可从 Journal 重建。
 - `memory.db`：独立 schema 3；有自己的连接、事务、revision、操作回执与后台
@@ -868,8 +873,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage check`：校验 schema、Journal 顺序、投影可重建性；
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
-- 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 / channel 1 /
-  protocol 9 / memory 3）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
+- 数据策略：只支持当前格式（config 2 / state schema 15 / Journal 11 / channel 1 /
+  protocol 12 / memory 3）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
   更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
   要求显式重置。
 
@@ -881,9 +886,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   部分 assistant 文本）；`queued` Run 按原 Journal 顺序重新调度；终态 Run 永不
   重跑。
 - 进程记录：重启按 custody（PID + 启动时间，容差 ±5 秒）结算——仍存活的命令以
-  `running` + `errorCode=runtime_recovered` 接管（保留输出可读、可 `process_stop`，
-  但实时输入/输出不可用）；已退出或无法核验的命令标 `unknown`
-  （`runtime_interrupted`）；不重放、不重跑命令。
+  `running` + `errorCode=runtime_recovered` 接管（继续跟随输出文件、可
+  `process_stop`，但实时输入不可用）；已退出或无法核验的命令先折叠停机期间的输出
+  再标 `unknown`（`runtime_interrupted`）；带 `supervise` 策略的命令在重启预算内
+  自动重启；不重放、不重跑命令。
 
 ### 6.5 Agent 执行模型
 
@@ -960,10 +966,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
-| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、可选 `background`（布尔，默认 `false`）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Thread 最多 64 个运行中命令；命令属于 Thread、跨 Run 存活；`background: true` 不阻塞本 Run 收尾，`false` 时运行中的前台命令必须在 Run 正常结束前 wait/stop；`pty: true` 时挂接伪终端 |
-| `process_read` | `processId`、可选 `cursor` | 返回状态 + 最多 16 KiB 输出页；稳定字节游标 |
-| `process_wait` | `processId`、可选 `cursor`、`timeoutMs`（1–60,000，默认 1,000） | 等待退出；超时返回 `running` 且不杀进程 |
-| `process_stop` | `processId`、可选 `cursor` | 停止进程树；重复调用无害 |
+| `process_start` | `command`（≤32,768 字符）、可选 `cwd`（≤4,096 字符）、可选 `background`（布尔，默认 `false`）、`pty`、`columns`/`rows`（1–4,096，默认 80×24，仅 `pty`）、可选 `supervise`（`always` / `on-failure`）、可选 `backoffMs`（100–60,000，默认 500） | 返回稳定 `processId`；同 Item 同参数幂等，改参数报错；每 Thread 最多 64 个运行中命令；命令属于 Thread、跨 Run 存活；`background: true` 不阻塞本 Run 收尾，`false` 时运行中的前台命令必须在 Run 正常结束前 wait/stop；`pty: true` 时挂接伪终端（与 `supervise` 互斥）；`supervise` 命中时按指数退避重启，结果含 `restartCount` / `lastRestartAt` |
+| `process_read` | `processId`、可选 `cursor` | 从输出文件返回状态 + 最多 16 KiB 输出页；绝对字节游标跨 Runtime 重启与折叠稳定 |
+| `process_wait` | `processId`、可选 `cursor`、`timeoutMs`（1–60,000，默认 1,000） | 等待退出；超时返回 `running` 且不杀进程；守护中的命令在下一次重启前保持 `running` |
+| `process_stop` | `processId`、可选 `cursor` | 停止进程树并关闭守护；重复调用无害 |
 | `process_write` | `processId`、`data`（≤32,768 字符）、可选 `cursor` | 仅 PTY：写 UTF-8 输入，返回该游标起的输出页 |
 | `process_resize` | `processId`、`columns`/`rows`（1–4,096）、可选 `cursor` | 仅 PTY：调整终端尺寸，返回该游标起的输出页 |
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
@@ -995,8 +1001,15 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 进程与输出细节：
 
-- 每进程保留总量 1 MiB（head/tail 各半）；stdout/stderr 各自最多保留 256 KiB，
-  超出持续排空丢弃。
+- 输出文件承载：每个命令把 stdout/stderr 合并写入
+  `~/.ikaros/processes/<threadId>/<processId>.log`，并写同名 `.json` 元数据；PTY
+  命令由 Runtime 代写同一文件。threadId / processId 必须是安全路径段，路径永不
+  逃出该目录。
+- 保留窗口：每进程保留总量 1 MiB（head/tail 各半）；超过后 Runtime 就地折叠文件
+  （只丢弃 head 与尾部之间的中间段），单文件磁盘占用不超过 1 MiB。
+- 游标：`process_read` 的 `cursor` 是输出流的绝对字节偏移，每页 ≤16 KiB 且按
+  UTF-8 边界切分；被折叠的中间段返回 `... N bytes omitted ...` 标记并跳到保留
+  尾部，因此游标跨 Runtime 重启与折叠保持稳定。
 - 输出快照最多每 0.25 秒一条（4 条/秒）；终态事实立即记录；缓冲区不变时不重复
   写入。
 - 进程状态：`running` / `exited` / `terminated` / `unknown`；只有观察到成功退出
@@ -1009,21 +1022,26 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Desktop 通知：后台命令首次进入 `exited` / `terminated` / `unknown` 且主窗口
   未聚焦时，Electron Notification 对每个进程至多发送一条；点击通知恢复并聚焦
   窗口。
-- 重启接管（custody）：按 PID + 启动时间核验存活命令，保留输出可读、可
-  `process_stop`；对已接管的命令，`process_write/resize` 返回
-  `process_recovered`。
+- 重启接管（custody）：按 PID + 启动时间核验存活命令；接管后继续跟随日志文件，
+  Runtime 停机期间写入的输出重启后仍可读到，`process_stop` 仍可用；对已接管的
+  命令，`process_write/resize` 返回 `process_recovered`。
+- 常驻守护：`process_start(supervise="always"/"on-failure")` 在命令退出且策略
+  命中时按 `backoffMs × 2^(n-1)`（封顶 30 秒）重启；`restartCount` /
+  `lastRestartAt` 写入事实与工具结果；`process_stop` 关闭守护。600 秒窗口内重启
+  超过 10 次时停止守护并置 `errorCode=supervise_storm`（保留最后一次退出码）。
+- 守护跨重启：Runtime 重启时仍存活的守护命令按 custody 接管；已死且带守护的命令
+  在重启预算内自动重启；命令文本被凭据改写（`invocationRedacted`）的命令不重启，
+  以 `supervise_unavailable` 结算。
 - 平台行为：Windows 挂起创建 + Job Object（用于树终止；不再随 Runtime 关闭
   杀进程）+ 恢复；POSIX 新会话/进程组；根进程退出后清理残留后代。
 - PTY 会话：`process_start(pty=true)` 挂接伪终端（Windows ConPTY / POSIX pty），
-  stdout/stderr 合并为同一终端流，按同一 head/tail 缓冲与字节游标读取；
-  `process_write` 写 stdin（Windows 上换行规范化为 CRLF），`process_resize`
-  调整窗口尺寸；生命周期、超时、取消与进程树清理与非 PTY 命令一致；PTY 命令
-  同样跨 Run 存活，但 Runtime 退出会关闭伪终端（POSIX 通常 SIGHUP），重启后
-  一般无法接管。
+  stdout/stderr 合并为同一终端流，由 Runtime 写入同一输出文件并按同一 head/tail
+  窗口与字节游标读取；`process_write` 写 stdin（Windows 上换行规范化为 CRLF），
+  `process_resize` 调整窗口尺寸；生命周期、超时、取消与进程树清理与非 PTY 命令
+  一致；PTY 命令同样跨 Run 存活，但不接受 `supervise`，且 Runtime 退出会关闭
+  伪终端（POSIX 通常 SIGHUP），重启后一般无法接管。
 - 清理超时：终止进程树 6 秒、排空管道 2 秒；Run 关闭不再清理命令，Runtime
-  关闭只持久化事实（由下次启动接管）。
-- 已知限制：Run 级后台执行已支持；Runtime 退出后，继续写 stdout/stderr 的存活
-  命令可能因管道断开而退出，持续输出与常驻进程守护仍未实现。
+  关闭只持久化事实并释放日志句柄（由下次启动接管）。
 - 环境：子进程只继承白名单环境变量，并强制 `PYTHONIOENCODING=utf-8`、
   `PYTHONUTF8=1`。
 - 文件路径锁：按解析后的绝对路径加锁；符号链接别名解析到目标后共享同一把锁。
@@ -2087,13 +2105,14 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 ```text
 ~/.ikaros/
   config.yaml          provider/model 配置、Skill 禁用列表（version 2，≤256 KiB）
-  state.db             权威会话与执行记录（SQLite，schema 14）
+  state.db             权威会话与执行记录（SQLite，schema 15）
   memory.db            独立长期 Memory（schema 3，含 FTS5 召回索引）
   channels.yaml        Telegram 通道配置（version 1，≤64 KiB）
   channels.db          通道绑定与投递状态（SQLite，schema 1）
   runtime.lock         单进程独占锁
   backups/             离线备份（按需创建，永不覆盖）
   artifacts/           大工具结果落盘（>64 KiB，按 <threadId>/<itemId>.txt 存放）
+  processes/           进程输出（<threadId>/<processId>.log + .json 元数据）
   skills/              用户 Skills：<name>/SKILL.md
   logs/                持久文件日志（启用时创建）
   runtime/             内置 Runtime payload（打包态首次启动布置）
@@ -2111,8 +2130,8 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线基线 | pytest 927 passed / 2 skipped（WSL Linux）；Windows 本机 877 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 520 passed / 1 skipped |
+| Runtime 离线基线 | pytest 934 passed / 2 skipped（WSL Linux）；Windows 本机 924 passed，失败均为已知平台差异（file.preview 换行、Golden Trace 仅 POSIX 生成校验） |
+| Desktop 离线基线 | Vitest 524 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2178,8 +2197,9 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
 
 尚未实现或未接通：
 
-- 后台执行仅覆盖 Run 级 detach 与终态桌面通知；Runtime 退出后 PTY / 持续输出仍
-  会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
+- 进程守护只覆盖非 PTY 命令：PTY 会话随 Runtime 退出而结束（重启后无法接管），
+  也不接受 `supervise`；命令文本被凭据改写的守护命令（`invocationRedacted`）不会
+  在 Runtime 重启后重启；
 - 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
   主窗口时不发送；
 - Telegram 通道：单用户私聊、固定 `Telegram` Thread、long polling、文本消息；
@@ -2250,9 +2270,12 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 文件 | 路径长度 | ≤4,096 字符 |
 | 进程 | 并发上限 | 64/ Thread（命令跨 Run 存活） |
 | 进程 | 后台执行 | `background` 默认 `false`；`true` 不阻塞 Run 收尾；终态系统通知每个进程至多 1 条 |
-| 进程 | 重启接管 | PID + 启动时间核验（±5 秒）；存活命令以 `runtime_recovered` 接管 |
-| 进程 | 输出保留 | 总量 1 MiB（stdout/stderr 各 256 KiB）；分页 16 KiB |
+| 进程 | 重启接管 | PID + 启动时间核验（±5 秒）；存活命令以 `runtime_recovered` 接管并继续跟随日志 |
+| 进程 | 输出文件 | `~/.ikaros/processes/<threadId>/<processId>.log`（+ 同名 `.json`）；单文件 ≤1 MiB |
+| 进程 | 输出保留 | 总量 1 MiB（head/tail 各半，stdout/stderr 合并）；分页 16 KiB；绝对字节游标 |
 | 进程 | 快照频率 | ≤4 条/秒（0.25 秒间隔） |
+| 进程 | 守护策略 | `supervise` = `always` / `on-failure`；`backoffMs` 100–60,000（默认 500）；与 `pty` 互斥 |
+| 进程 | 守护退避 / 风暴 | `backoffMs × 2^(n-1)`，封顶 30 秒；600 秒窗口内 ≤10 次重启，超出 `supervise_storm` |
 | 进程 | wait | 默认 1,000 ms、上限 60,000 ms |
 | 进程 | 清理超时 | 终止 6 秒、排空 2 秒、Run 关闭 10 秒 |
 | 进程 | 命令/cwd 长度 | ≤32,768 / ≤4,096 字符 |
@@ -2261,9 +2284,9 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 11；36 方法；15 事件；17 工具 |
+| 协议 | 版本/规模 | protocol 12；36 方法；15 事件；17 工具 |
 | 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
-| 存储 | 版本 | state schema 14；Journal 10；memory 3；config 2；channel 1 |
+| 存储 | 版本 | state schema 15；Journal 11；memory 3；config 2；channel 1 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 模型 | 思考等级 | `reasoning_efforts` 多选：none / minimal / low / medium / high / xhigh / max / ultra；`reasoning_effort` 默认等级，未设置=自动不下发 |
 | 存储 | config 上限 | 256 KiB |
@@ -2298,7 +2321,8 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 
 - `state database schema is incompatible; reset required`：开发数据版本不符。
   停止 Runtime → 备份或移走 `state.db`（连同 `-wal` / `-shm`）→ 重启自动重建；
-  `memory.db`、`config.yaml`、`skills/` 不受影响。
+  `memory.db`、`config.yaml`、`skills/`、`processes/` 不受影响（进程输出文件只按
+  线程/进程目录保留，可手动删除）。
 - `memory database schema is incompatible; restore a compatible backup`：恢复
   与当前 Runtime 同版本的 `memory.db` 备份，或移走后重建（会丢失记忆）。
   `memory.db` 现为 schema 3（schema 2 没有后台精炼抽取游标表），开发期没有
@@ -2329,9 +2353,14 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
   `unsupported_encoding`、`too_large`、`scan_limit`、`revision_changed`、
   `protected_content`；按原因处理（刷新、换文件、检查编码）。
 - 命令输出不全：每进程只保留 1 MiB head/tail；用 `process.read` 游标翻页
-  （每页 16 KiB），被省略的中间部分不会恢复。
-- 命令状态为 `unknown`：Runtime 重启过；不会重挂 PID，先检查实际状态再决定
-  新的操作。
+  （每页 16 KiB），被省略的中间部分不会恢复；完整文件在
+  `~/.ikaros/processes/<threadId>/<processId>.log`（同样受 1 MiB 折叠上限约束）。
+- 命令状态为 `unknown`：Runtime 重启过且无法核验存活；未启用 `supervise` 时不会
+  自动重启，先检查实际状态再决定新的操作。
+- `supervise_storm`：守护命令在 600 秒内重启超过 10 次，Runtime 已停止重启；先
+  修复命令再重新 `process_start`。
+- `supervise_unavailable`：命令文本含受保护凭据（`invocationRedacted`），Runtime
+  重启后无法安全重放该命令，守护不会自动重启。
 
 ### 14.6 live smoke
 
