@@ -104,12 +104,15 @@ describe("Runtime protocol Golden Trace", () => {
       "process_write",
       "process_resize",
       "history_read",
+      "thread_list",
+      "thread_read",
       "read",
       "write",
       "edit",
       "glob",
       "grep",
       "list",
+      "memory",
     ]);
   });
 

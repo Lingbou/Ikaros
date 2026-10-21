@@ -41,6 +41,7 @@ from ..run_input import (
 )
 from ..security import response_values_contain_protected_value
 from ..tools.core import ToolCall
+from ..tools.thread_read import MAX_THREAD_READ_CHARS
 from .context_history import load_context_for_revision, select_context_revision
 from .file_changes import get_file_change, resolve_file_tool_path
 from .history_read import (
@@ -95,6 +96,7 @@ from .thread_history import (
     get_thread_metadata,
     list_turn_history_page,
 )
+from .thread_read import read_thread_slice as read_thread_history_slice
 from .usage import local_activity_date, read_usage
 
 
@@ -835,6 +837,41 @@ class SqliteRuntimeStore:
             thread_id=thread_id,
             after=after,
             limit=limit,
+    def list_threads_for_model(self, *, archived: bool, limit: int) -> JsonObject:
+        """List Threads in the compact shape exposed by the thread_list Tool."""
+
+        page = self.list_thread_page(cursor=None, limit=limit, archived=archived)
+        return {
+            "threads": [
+                {
+                    "id": thread.id,
+                    "title": thread.title,
+                    "updatedAt": thread.updated_at,
+                    "archived": thread.archived_at is not None,
+                }
+                for thread in page.threads
+            ],
+            "hasMore": page.has_more,
+        }
+
+    def read_thread_slice(
+        self,
+        *,
+        thread_id: str,
+        item_id: str | None = None,
+        before: int = 10,
+        after: int = 10,
+        max_chars: int = MAX_THREAD_READ_CHARS,
+    ) -> JsonObject:
+        """Read a bounded slice of another Thread without mutating the store."""
+
+        return read_thread_history_slice(
+            self._connection,
+            thread_id=thread_id,
+            item_id=item_id,
+            before=before,
+            after=after,
+            max_chars=max_chars,
         )
 
     def capture_session_item_provenance(
@@ -848,6 +885,23 @@ class SqliteRuntimeStore:
         expected: SessionItemProvenanceSnapshot,
     ) -> bool:
         return session_item_provenance_is_available(self._connection, expected)
+
+    def memory_tool_run_scope(self, run_id: str) -> tuple[str, str | None]:
+        """Resolve the trusted Memory tool scope of one Run.
+
+        Returns the User Item that triggered the Run and the Run Workspace ID
+        (or ``None``), so model-supplied arguments can never retarget the
+        provenance source or the Workspace Memory key.
+        """
+
+        try:
+            config = self.get_run_config(run_id)
+        except RuntimeError as error:
+            raise LookupError("Run scope is unavailable") from error
+        return (
+            config.user_item_id,
+            config.workspace.id if config.workspace is not None else None,
+        )
 
     def mark_run_running(self, run_id: str) -> JournalEvent:
         run = self.get_run(run_id)

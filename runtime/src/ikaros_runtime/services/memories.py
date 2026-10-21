@@ -7,8 +7,15 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Protocol, cast
 
+from ..domain import JsonObject
 from ..errors import InvalidParamsError, MemoryOperationError
-from ..memory import MEMORY_KINDS, MEMORY_STATES, MemoryScope, SqliteMemoryStore
+from ..memory import (
+    MEMORY_KINDS,
+    MEMORY_STATES,
+    MemoryRetriever,
+    MemoryScope,
+    SqliteMemoryStore,
+)
 from ..memory.domain import (
     MemoryKind,
     MemoryScopeType,
@@ -225,6 +232,98 @@ class MemoryService:
         return {"memory": memory.to_wire()}
 
 
+class MemoryToolService:
+    """Model-facing Memory save/search assembled from the owning subsystems.
+
+    Saves deliberately go through :meth:`MemoryService.create` so the model
+    tool shares one validation, credential-protection, provenance, and
+    idempotency path with explicit user-created Memory.
+    """
+
+    def __init__(
+        self,
+        memories: MemoryService,
+        retriever: MemoryRetriever,
+        run_scope: Callable[[str], tuple[str, str | None]],
+    ) -> None:
+        self._memories = memories
+        self._retriever = retriever
+        self._run_scope = run_scope
+
+    def save_memory(
+        self,
+        *,
+        run_id: str,
+        item_id: str,
+        kind: str,
+        scope: str,
+        content: str,
+    ) -> JsonObject:
+        user_item_id, workspace_id = self._run_scope(run_id)
+        memory_scope = _tool_memory_scope(scope, workspace_id)
+        receipt = self._memories.create(
+            {
+                "kind": kind,
+                "scope": memory_scope.to_wire(),
+                "content": content,
+                "clientRequestId": f"memory-tool:{item_id}",
+                "source": {"type": "session_item", "itemId": user_item_id},
+            }
+        )
+        return {
+            "action": "save",
+            "memoryId": receipt["memoryId"],
+            "kind": kind,
+            "scope": scope,
+            "revision": receipt["resultingRevision"],
+            "created": receipt["created"],
+            "truncated": False,
+        }
+
+    def search_memories(
+        self,
+        *,
+        run_id: str,
+        query: str,
+        limit: int,
+    ) -> JsonObject:
+        _, workspace_id = self._run_scope(run_id)
+        retrieval = self._retriever.retrieve(
+            query=query,
+            workspace_id=workspace_id,
+        )
+        selected = retrieval.selected[:limit]
+        omitted = len(retrieval.selected) - len(selected) + len(retrieval.omissions)
+        return {
+            "action": "search",
+            "query": query,
+            "count": len(selected),
+            "characters": sum(memory.characters for memory in selected),
+            "truncated": omitted > 0,
+            "omittedCount": omitted,
+            "memories": [
+                {
+                    "id": memory.memory_id,
+                    "kind": memory.kind,
+                    "scope": memory.scope,
+                    "revision": memory.revision,
+                    "content": memory.content,
+                }
+                for memory in selected
+            ],
+        }
+
+
+def _tool_memory_scope(scope: str, workspace_id: str | None) -> MemoryScope:
+    if scope == "global":
+        return MemoryScope("global", None)
+    if workspace_id is None:
+        raise InvalidParamsError(
+            "workspace Memory scope requires a Workspace on this Thread"
+        )
+    return MemoryScope("workspace", workspace_id)
+
+
 def _memory_kind_from(value: object, *, method: str) -> MemoryKind:
     if not isinstance(value, str) or value not in MEMORY_KINDS:
         raise InvalidParamsError(f"{method} kind is invalid")
@@ -286,4 +385,4 @@ def _expected_revision_from(value: object) -> int:
     return value
 
 
-__all__ = ["MemoryService"]
+__all__ = ["MemoryService", "MemoryToolService"]

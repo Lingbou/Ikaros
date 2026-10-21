@@ -9,6 +9,7 @@ active revision.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -132,6 +133,7 @@ def read_history_slice(
     before: int = 10,
     after: int = 10,
     max_chars: int = MAX_HISTORY_READ_CHARS,
+    envelope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a bounded chronological slice around *item_id* in one thread.
 
@@ -160,7 +162,8 @@ def read_history_slice(
     rows = connection.execute(
         """
         SELECT i.id, i.turn_id, i.run_id, i.kind, i.role, i.status, i.content,
-               i.data_json, i.ordinal AS item_ordinal, t.ordinal AS turn_ordinal,
+               i.data_json, i.created_at, i.updated_at,
+               i.ordinal AS item_ordinal, t.ordinal AS turn_ordinal,
                r.created_at AS run_created_at
         FROM items i
         JOIN turns t ON t.id = i.turn_id
@@ -191,6 +194,10 @@ def read_history_slice(
         "items": selected,
         "truncated": False,
     }
+    if envelope:
+        # Callers such as thread_read add Thread metadata that must share the
+        # same character budget as the Item slice.
+        payload = {**envelope, **payload}
     encoded = json_dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if len(encoded) <= max_chars:
         return payload
@@ -227,6 +234,8 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
         "status": str(row["status"]),
         "content": str(row["content"]),
         "data": json_loads(str(row["data_json"])),
+        "createdAt": str(row["created_at"]),
+        "updatedAt": str(row["updated_at"]),
     }
 
 

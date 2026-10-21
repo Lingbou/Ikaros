@@ -1,3 +1,4 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -257,6 +258,60 @@ describe("desktop window controls", () => {
     expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(electron.targetWindow, {
       properties: ["openDirectory"],
     });
+  });
+
+  it("classifies picked entries into project workspaces and file references", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ikaros-entries-"));
+    const folder = join(root, "project");
+    const file = join(root, "notes.txt");
+    await mkdir(folder, { recursive: true });
+    await writeFile(file, "hello", "utf8");
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    electron.dialog.showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: [folder, file],
+    });
+
+    try {
+      const handler = electron.handlers.get("ikaros:workspace:choose-entries");
+      expect(handler).toBeDefined();
+
+      const selection = await handler?.({ sender: {} });
+
+      expect(selection).toEqual({
+        directories: [
+          {
+            id: expect.stringMatching(/^workspace-[0-9a-f]{24}$/),
+            name: "project",
+            kind: "project",
+            rootUri: folder,
+          },
+        ],
+        files: [file],
+      });
+      expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(electron.targetWindow, {
+        properties: ["openFile", "openDirectory", "multiSelections"],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when the composer picker is cancelled", async () => {
+    const trustPolicy = {
+      assertTrustedIpc: vi.fn(),
+      isTrustedUrl: vi.fn(() => true),
+    };
+    registerDesktopIpc(trustPolicy, electron.runtimeHost);
+    electron.dialog.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+
+    const handler = electron.handlers.get("ikaros:workspace:choose-entries");
+
+    await expect(handler?.({ sender: {} })).resolves.toBeNull();
   });
 
   it("leaves the workspace unchanged when directory selection is cancelled", async () => {

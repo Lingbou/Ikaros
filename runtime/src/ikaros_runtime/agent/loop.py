@@ -127,6 +127,8 @@ class _TextDeltaBatch:
 
 
 class AgentLoop:
+    """Execute independent Runs; instance fields are shared dependencies only."""
+
     def __init__(
         self,
         store: SqliteRuntimeStore,
@@ -157,6 +159,11 @@ class AgentLoop:
         self._provider_snapshot_resolver = provider_snapshot_resolver
         self._identity_core = identity_core
         self._on_run_terminal = on_run_terminal
+
+    def run_thread_id(self, run_id: str) -> str:
+        """Return the scheduling scope that must serialize this Run."""
+
+        return self._store.get_run(run_id).thread_id
 
     async def run(self, run_id: str, cancellation: CancellationToken) -> None:
         work: asyncio.Task[None] | None = None

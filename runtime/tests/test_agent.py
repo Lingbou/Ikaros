@@ -68,6 +68,9 @@ class FailingOnceExecutor:
     async def cancel(self, run_id: str) -> None:
         del run_id
 
+    def run_thread_id(self, run_id: str) -> str:
+        return run_id
+
 
 class PausingProvider:
     def __init__(self) -> None:
@@ -159,6 +162,9 @@ class BlockingExecutor:
 
     async def cancel(self, run_id: str) -> None:
         self.cancelled_queued.append(run_id)
+
+    def run_thread_id(self, run_id: str) -> str:
+        return run_id
 
 
 class RecordingTool:
@@ -1724,7 +1730,7 @@ async def test_agent_returns_stale_content_to_the_provider_and_rebuilds_it(
 @pytest.mark.asyncio
 async def test_queued_run_is_cancelled_without_calling_executor() -> None:
     executor = BlockingExecutor()
-    scheduler = AgentScheduler(executor)
+    scheduler = AgentScheduler(executor, max_workers=1)
     scheduler.start()
     try:
         await scheduler.enqueue("run-first")
@@ -1742,7 +1748,7 @@ async def test_queued_run_is_cancelled_without_calling_executor() -> None:
 @pytest.mark.asyncio
 async def test_cancelling_reserved_head_wakes_next_activated_run() -> None:
     executor = BlockingExecutor()
-    scheduler = AgentScheduler(executor)
+    scheduler = AgentScheduler(executor, max_workers=1)
     scheduler.start()
     try:
         scheduler.reserve("run-reserved")
@@ -1762,7 +1768,7 @@ async def test_cancelling_reserved_head_wakes_next_activated_run() -> None:
 @pytest.mark.asyncio
 async def test_scheduler_close_wakes_and_terminalizes_reserved_head() -> None:
     executor = BlockingExecutor()
-    scheduler = AgentScheduler(executor)
+    scheduler = AgentScheduler(executor, max_workers=1)
     scheduler.start()
     scheduler.reserve("run-reserved")
     await asyncio.sleep(0)
@@ -1776,7 +1782,7 @@ async def test_scheduler_close_wakes_and_terminalizes_reserved_head() -> None:
 @pytest.mark.asyncio
 async def test_scheduler_continues_after_an_unhandled_run_failure() -> None:
     executor = FailingOnceExecutor()
-    scheduler = AgentScheduler(executor)
+    scheduler = AgentScheduler(executor, max_workers=1)
     scheduler.start()
     try:
         await scheduler.enqueue("run-first")

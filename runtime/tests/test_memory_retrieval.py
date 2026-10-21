@@ -544,7 +544,9 @@ def test_exact_materialization_keeps_old_revision_after_correction_then_fails_fo
         store = SqliteMemoryStore(memory_path)
         retriever = MemoryRetriever(store)
         materialized = retriever.materialize_exact((reference,), workspace_id=None)
-        assert materialized == (MaterializedMemory(reference, "remember alpha"),)
+        assert materialized == (
+            MaterializedMemory(reference, kind="fact", content="remember alpha"),
+        )
 
         store.forget_memory_once(
             memory_id=memory_id,

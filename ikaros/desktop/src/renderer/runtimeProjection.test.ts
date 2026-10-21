@@ -368,7 +368,7 @@ function searchToolCallItem(
   id: string,
   turnId: string,
   runId: string,
-  toolName: "glob" | "grep" | "list",
+  toolName: "glob" | "grep" | "list" | "memory",
   status: "running" | "completed" | "failed" | "cancelled",
   argumentsValue: Record<string, unknown>,
 ) {
@@ -396,7 +396,7 @@ function searchToolResultItem(
   id: string,
   turnId: string,
   runId: string,
-  toolName: "glob" | "grep" | "list",
+  toolName: "glob" | "grep" | "list" | "memory",
   status: "completed" | "failed" | "cancelled",
   toolCallItemId: string,
   result: Record<string, unknown>,
@@ -1094,6 +1094,243 @@ describe("Runtime event projection", () => {
       status: "success",
       summary: { source: "app", kind: "result.listCompleted" },
       details: { entryCount: 1200, truncated: true },
+    });
+  });
+
+  it("projects compact, replay-safe Thread catalog and read tool events", () => {
+    const toolCallItem = (
+      id: string,
+      toolName: "thread_list" | "thread_read",
+      argumentsValue: Record<string, unknown>,
+    ) => ({
+      id,
+      turnId: "turn-thread",
+      runId: "run-thread",
+      ordinal: 2,
+      kind: "tool_call",
+      role: "assistant",
+      status: "completed",
+      content: "",
+      data: {
+        stepId: "step-thread",
+        callId: `provider-${id}`,
+        toolName,
+        arguments: argumentsValue,
+      },
+      createdAt: "2026-08-11T12:00:00.000Z",
+      updatedAt: "2026-08-11T12:00:00.000Z",
+    });
+    const toolResultItem = (
+      id: string,
+      toolName: "thread_list" | "thread_read",
+      toolCallItemId: string,
+      result: Record<string, unknown>,
+    ) => ({
+      id,
+      turnId: "turn-thread",
+      runId: "run-thread",
+      ordinal: 3,
+      kind: "tool_result",
+      role: "tool",
+      status: "completed",
+      content: "{}",
+      data: {
+        stepId: "step-thread",
+        callId: `provider-${toolCallItemId}`,
+        toolCallItemId,
+        toolName,
+        result,
+      },
+      createdAt: "2026-08-11T12:00:00.000Z",
+      updatedAt: "2026-08-11T12:00:00.000Z",
+    });
+
+    const events = [
+      event(2, "item.completed", "turn-thread", "run-thread", "call-thread-list", {
+        item: toolCallItem("call-thread-list", "thread_list", { archived: false, limit: 5 }),
+      }),
+      event(3, "item.completed", "turn-thread", "run-thread", "result-thread-list", {
+        item: toolResultItem("result-thread-list", "thread_list", "call-thread-list", {
+          output: '{"threads":[],"hasMore":false}',
+          archived: false,
+          threadCount: 0,
+          hasMore: false,
+          truncated: false,
+        }),
+      }),
+      event(4, "item.completed", "turn-thread", "run-thread", "call-thread-read", {
+        item: toolCallItem("call-thread-read", "thread_read", {
+          threadId: "thread-other",
+          before: 2,
+          after: 2,
+        }),
+      }),
+      event(5, "item.completed", "turn-thread", "run-thread", "result-thread-read", {
+        item: toolResultItem("result-thread-read", "thread_read", "call-thread-read", {
+          output: '{"items":[]}',
+          threadId: "thread-other",
+          itemId: "item-anchor",
+          truncated: true,
+        }),
+  it("projects Memory save and search results with bounded metadata", () => {
+    const events = [
+      event(2, "item.completed", "turn-memory", "run-memory", "call-memory-save", {
+        item: searchToolCallItem(
+          "call-memory-save",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          {
+            action: "save",
+            content: "The user prefers concise answers.",
+            kind: "preference",
+            scope: "global",
+          },
+        ),
+      }),
+      event(3, "item.completed", "turn-memory", "run-memory", "result-memory-save", {
+        item: searchToolResultItem(
+          "result-memory-save",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          "call-memory-save",
+          {
+            action: "save",
+            memoryId: "memory_00000000000000000000000000000001",
+            kind: "preference",
+            scope: "global",
+            revision: 1,
+            created: true,
+            truncated: false,
+            output: '{"action":"save"}',
+          },
+        ),
+      }),
+      event(4, "item.completed", "turn-memory", "run-memory", "call-memory-search", {
+        item: searchToolCallItem(
+          "call-memory-search",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          { action: "search", query: "starlattice", limit: 2 },
+        ),
+      }),
+      event(5, "item.completed", "turn-memory", "run-memory", "result-memory-search", {
+        item: searchToolResultItem(
+          "result-memory-search",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          "call-memory-search",
+          {
+            action: "search",
+            count: 2,
+            truncated: true,
+            output: '{"action":"search"}',
+          },
+        ),
+      }),
+      event(6, "item.completed", "turn-memory", "run-memory", "call-memory-failed", {
+        item: searchToolCallItem(
+          "call-memory-failed",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          { action: "search", query: "unavailable" },
+        ),
+      }),
+      event(7, "item.completed", "turn-memory", "run-memory", "result-memory-failed", {
+        item: searchToolResultItem(
+          "result-memory-failed",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "failed",
+          "call-memory-failed",
+          {
+            action: "search",
+            errorCode: "memory_unavailable",
+            output: "memory_snapshot_unavailable",
+          },
+        ),
+      }),
+    ];
+
+    const once = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    const twice = replayRuntimeEvents(once, events);
+    const projected = twice[0]?.branches[0]?.turns[0]?.events;
+
+    expect(projected).toHaveLength(4);
+    expect(projected?.[0]).toMatchObject({
+      type: "tool_call",
+      toolName: "thread_list",
+      label: { source: "app", kind: "tool.listThreads" },
+      arguments: { archived: false, limit: 5 },
+    });
+    expect(projected?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "thread_list",
+      status: "success",
+      summary: { source: "app", kind: "result.threadListCompleted" },
+      details: { truncated: false },
+    });
+    expect(projected?.[2]).toMatchObject({
+      type: "tool_call",
+      toolName: "thread_read",
+      label: { source: "app", kind: "tool.readThread" },
+      arguments: { threadId: "thread-other", before: 2, after: 2 },
+    });
+    expect(projected?.[3]).toMatchObject({
+      type: "tool_result",
+      toolName: "thread_read",
+      status: "success",
+      summary: { source: "app", kind: "result.threadReadCompleted" },
+      details: { truncated: true },
+    });
+  });
+    expect(projected).toHaveLength(6);
+    expect(projected?.[0]).toMatchObject({
+      type: "tool_call",
+      toolName: "memory",
+      label: { source: "app", kind: "tool.memory" },
+    });
+    expect(projected?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "memory",
+      status: "success",
+      summary: { source: "app", kind: "result.memorySaved" },
+      details: { created: true, truncated: false },
+    });
+    expect(projected?.[2]).toMatchObject({
+      type: "tool_call",
+      toolName: "memory",
+      label: { source: "app", kind: "tool.memory" },
+    });
+    expect(projected?.[3]).toMatchObject({
+      type: "tool_result",
+      toolName: "memory",
+      status: "success",
+      summary: { source: "app", kind: "result.memoryFound" },
+      details: { count: 2, truncated: true },
+    });
+    expect(projected?.[4]).toMatchObject({
+      type: "tool_call",
+      toolName: "memory",
+      label: { source: "app", kind: "tool.memory" },
+    });
+    expect(projected?.[5]).toMatchObject({
+      type: "tool_result",
+      toolName: "memory",
+      status: "error",
+      summary: { source: "app", kind: "result.memorySearchFailed" },
+      errorCode: "memory_unavailable",
+      output: "memory_snapshot_unavailable",
     });
   });
 

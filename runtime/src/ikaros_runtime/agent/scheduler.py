@@ -1,8 +1,13 @@
+"""Bounded worker-pool scheduler for independent Agent Runs."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+import os
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -10,49 +15,110 @@ from ..cancellation import CancellationToken
 
 _LOGGER = logging.getLogger("ikaros_runtime.agent.scheduler")
 
+AGENT_WORKERS_ENV = "IKAROS_AGENT_WORKERS"
+DEFAULT_AGENT_WORKERS = 2
+MIN_AGENT_WORKERS = 1
+MAX_AGENT_WORKERS = 8
+
 
 class RunExecutor(Protocol):
     async def run(self, run_id: str, cancellation: CancellationToken) -> None: ...
 
     async def cancel(self, run_id: str) -> None: ...
 
+    def run_thread_id(self, run_id: str) -> str: ...
+
     # Implementations may opt into in-flight steering.
 
 
 @dataclass(slots=True)
 class _ScheduledRun:
+    thread_id: str
     cancellation: CancellationToken
-    activation: asyncio.Event
     state: str = "queued"
 
 
+def agent_worker_limit(environment: Mapping[str, str] | None = None) -> int:
+    """Read and validate the configured Run concurrency limit."""
+
+    source = os.environ if environment is None else environment
+    raw = source.get(AGENT_WORKERS_ENV)
+    if raw is None:
+        return DEFAULT_AGENT_WORKERS
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise ValueError(
+            f"{AGENT_WORKERS_ENV} must be an integer between "
+            f"{MIN_AGENT_WORKERS} and {MAX_AGENT_WORKERS}"
+        ) from None
+    if not MIN_AGENT_WORKERS <= value <= MAX_AGENT_WORKERS:
+        raise ValueError(
+            f"{AGENT_WORKERS_ENV} must be an integer between "
+            f"{MIN_AGENT_WORKERS} and {MAX_AGENT_WORKERS}"
+        )
+    return value
+
+
 class AgentScheduler:
-    def __init__(self, loop: RunExecutor) -> None:
+    """Run a bounded number of independent Threads concurrently."""
+
+    def __init__(self, loop: RunExecutor, *, max_workers: int | None = None) -> None:
+        workers = agent_worker_limit() if max_workers is None else max_workers
+        if (
+            isinstance(workers, bool)
+            or not isinstance(workers, int)
+            or not MIN_AGENT_WORKERS <= workers <= MAX_AGENT_WORKERS
+        ):
+            raise ValueError(
+                f"max_workers must be an integer between "
+                f"{MIN_AGENT_WORKERS} and {MAX_AGENT_WORKERS}"
+            )
         self._loop = loop
-        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
-        self._worker: asyncio.Task[None] | None = None
+        self._max_workers = workers
+        self._pending: deque[str] = deque()
+        self._workers: list[asyncio.Task[None]] = []
         self._entries: dict[str, _ScheduledRun] = {}
+        self._active_threads: set[str] = set()
+        self._running_count = 0
+        self._wakeup = asyncio.Event()
         self._accepting = False
+        self._closing = False
+
+    @property
+    def max_workers(self) -> int:
+        return self._max_workers
 
     def start(self, initial_run_ids: Sequence[str] = ()) -> None:
-        if self._worker is not None:
+        if self._workers:
             return
         self._accepting = True
+        self._closing = False
+        self._wakeup.clear()
         for run_id in initial_run_ids:
-            entry = self._register(run_id, state="queued")
-            entry.activation.set()
-            self._queue.put_nowait(run_id)
-        self._worker = asyncio.create_task(self._work(), name="ikaros-agent-scheduler")
+            self._register(run_id, state="queued")
+            self._pending.append(run_id)
+        self._workers = [
+            asyncio.create_task(
+                self._work(index),
+                name=f"ikaros-agent-scheduler-{index}",
+            )
+            for index in range(self._max_workers)
+        ]
+        self._wakeup.set()
 
     def reserve(self, run_id: str) -> None:
         """Make a persisted Run cancellable before its start ACK is attempted."""
-        if self._worker is None or not self._accepting:
+
+        if not self._workers or not self._accepting:
             raise RuntimeError("Agent scheduler has not started")
         self._register(run_id, state="reserved")
-        self._queue.put_nowait(run_id)
+        self._pending.append(run_id)
+        self._wakeup.set()
 
     async def activate(self, run_id: str) -> bool:
         """Queue a reserved Run after the command ACK attempt has finished."""
+
         entry = self._entries.get(run_id)
         if entry is None:
             return False
@@ -61,15 +127,15 @@ class AgentScheduler:
         if not self._accepting:
             return False
         entry.state = "queued"
-        entry.activation.set()
+        self._wakeup.set()
         return True
 
     async def enqueue(self, run_id: str) -> None:
-        if self._worker is None or not self._accepting:
+        if not self._workers or not self._accepting:
             raise RuntimeError("Agent scheduler has not started")
-        entry = self._register(run_id, state="queued")
-        entry.activation.set()
-        self._queue.put_nowait(run_id)
+        self._register(run_id, state="queued")
+        self._pending.append(run_id)
+        self._wakeup.set()
 
     async def cancel(self, run_id: str) -> bool:
         entry = self._entries.get(run_id)
@@ -77,8 +143,10 @@ class AgentScheduler:
             return False
         entry.cancellation.cancel()
         if entry.state in {"reserved", "queued"}:
+            entry.state = "cancelled"
             self._entries.pop(run_id, None)
-            entry.activation.set()
+            self._discard_pending(run_id)
+            self._wakeup.set()
             await self._loop.cancel(run_id)
         return True
 
@@ -93,53 +161,109 @@ class AgentScheduler:
         return await callback(run_id, content, request_id)
 
     async def close(self) -> None:
-        worker = self._worker
-        if worker is None:
+        workers = tuple(self._workers)
+        if not workers:
             return
         self._accepting = False
+        self._closing = True
         queued_run_ids: list[str] = []
         for run_id, entry in tuple(self._entries.items()):
             entry.cancellation.cancel()
             if entry.state in {"reserved", "queued"}:
+                entry.state = "cancelled"
                 self._entries.pop(run_id, None)
-                entry.activation.set()
                 queued_run_ids.append(run_id)
+        self._pending.clear()
+        self._wakeup.set()
         for run_id in queued_run_ids:
             await self._loop.cancel(run_id)
-        await self._queue.put(None)
-        await worker
-        self._worker = None
+        await asyncio.gather(*workers)
+        self._workers = []
         self._entries.clear()
+        self._pending.clear()
+        self._active_threads.clear()
+        self._running_count = 0
+        self._closing = False
 
     def _register(self, run_id: str, *, state: str) -> _ScheduledRun:
         if run_id in self._entries:
             raise RuntimeError("run is already scheduled")
-        entry = _ScheduledRun(CancellationToken(), asyncio.Event(), state=state)
+        thread_id = self._loop.run_thread_id(run_id)
+        if not isinstance(thread_id, str) or not thread_id:
+            raise RuntimeError("run thread id is unavailable")
+        entry = _ScheduledRun(
+            thread_id=thread_id,
+            cancellation=CancellationToken(),
+            state=state,
+        )
         self._entries[run_id] = entry
         return entry
 
-    async def _work(self) -> None:
+    def _discard_pending(self, run_id: str) -> None:
+        with suppress(ValueError):
+            self._pending.remove(run_id)
+
+    def _take_next(self) -> str | None:
+        index = 0
+        while index < len(self._pending):
+            run_id = self._pending[index]
+            entry = self._entries.get(run_id)
+            if entry is None or entry.state == "cancelled":
+                del self._pending[index]
+                continue
+            if entry.state == "reserved":
+                # Preserve the existing ACK barrier: a reserved Run must be
+                # activated or cancelled before later Runs may start.
+                return None
+            if entry.state != "queued":
+                del self._pending[index]
+                continue
+            if entry.thread_id in self._active_threads:
+                index += 1
+                continue
+            del self._pending[index]
+            entry.state = "running"
+            self._active_threads.add(entry.thread_id)
+            self._running_count += 1
+            return run_id
+        return None
+
+    async def _wait_for_run(self) -> str | None:
         while True:
-            run_id = await self._queue.get()
+            run_id = self._take_next()
+            if run_id is not None:
+                return run_id
+            if self._closing and self._running_count == 0:
+                return None
+            self._wakeup.clear()
+            await self._wakeup.wait()
+
+    async def _work(self, index: int) -> None:
+        del index
+        while True:
+            run_id = await self._wait_for_run()
+            if run_id is None:
+                return
+            entry = self._entries.get(run_id)
+            if entry is None:
+                continue
             try:
-                if run_id is None:
-                    return
-                entry = self._entries.get(run_id)
-                if entry is None:
-                    continue
-                if entry.state == "reserved":
-                    await entry.activation.wait()
-                    entry = self._entries.get(run_id)
-                    if entry is None:
-                        continue
-                if entry.state != "queued":
-                    continue
-                entry.state = "running"
-                try:
-                    await self._loop.run(run_id, entry.cancellation)
-                except Exception:
-                    _LOGGER.error("Unhandled scheduler failure for run %s", run_id)
-                finally:
-                    self._entries.pop(run_id, None)
+                await self._loop.run(run_id, entry.cancellation)
+            except Exception:
+                _LOGGER.error("Unhandled scheduler failure for run %s", run_id)
             finally:
-                self._queue.task_done()
+                self._entries.pop(run_id, None)
+                self._active_threads.discard(entry.thread_id)
+                self._running_count -= 1
+                self._wakeup.set()
+
+
+__all__ = [
+    "AGENT_WORKERS_ENV",
+    "DEFAULT_AGENT_WORKERS",
+    "MAX_AGENT_WORKERS",
+    "MIN_AGENT_WORKERS",
+    "AgentScheduler",
+    "RunExecutor",
+    "agent_worker_limit",
+]
