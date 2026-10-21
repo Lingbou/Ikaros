@@ -368,7 +368,7 @@ function searchToolCallItem(
   id: string,
   turnId: string,
   runId: string,
-  toolName: "glob" | "grep" | "list",
+  toolName: "glob" | "grep" | "list" | "memory",
   status: "running" | "completed" | "failed" | "cancelled",
   argumentsValue: Record<string, unknown>,
 ) {
@@ -396,7 +396,7 @@ function searchToolResultItem(
   id: string,
   turnId: string,
   runId: string,
-  toolName: "glob" | "grep" | "list",
+  toolName: "glob" | "grep" | "list" | "memory",
   status: "completed" | "failed" | "cancelled",
   toolCallItemId: string,
   result: Record<string, unknown>,
@@ -1094,6 +1094,140 @@ describe("Runtime event projection", () => {
       status: "success",
       summary: { source: "app", kind: "result.listCompleted" },
       details: { entryCount: 1200, truncated: true },
+    });
+  });
+
+  it("projects Memory save and search results with bounded metadata", () => {
+    const events = [
+      event(2, "item.completed", "turn-memory", "run-memory", "call-memory-save", {
+        item: searchToolCallItem(
+          "call-memory-save",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          {
+            action: "save",
+            content: "The user prefers concise answers.",
+            kind: "preference",
+            scope: "global",
+          },
+        ),
+      }),
+      event(3, "item.completed", "turn-memory", "run-memory", "result-memory-save", {
+        item: searchToolResultItem(
+          "result-memory-save",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          "call-memory-save",
+          {
+            action: "save",
+            memoryId: "memory_00000000000000000000000000000001",
+            kind: "preference",
+            scope: "global",
+            revision: 1,
+            created: true,
+            truncated: false,
+            output: '{"action":"save"}',
+          },
+        ),
+      }),
+      event(4, "item.completed", "turn-memory", "run-memory", "call-memory-search", {
+        item: searchToolCallItem(
+          "call-memory-search",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          { action: "search", query: "starlattice", limit: 2 },
+        ),
+      }),
+      event(5, "item.completed", "turn-memory", "run-memory", "result-memory-search", {
+        item: searchToolResultItem(
+          "result-memory-search",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          "call-memory-search",
+          {
+            action: "search",
+            count: 2,
+            truncated: true,
+            output: '{"action":"search"}',
+          },
+        ),
+      }),
+      event(6, "item.completed", "turn-memory", "run-memory", "call-memory-failed", {
+        item: searchToolCallItem(
+          "call-memory-failed",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "completed",
+          { action: "search", query: "unavailable" },
+        ),
+      }),
+      event(7, "item.completed", "turn-memory", "run-memory", "result-memory-failed", {
+        item: searchToolResultItem(
+          "result-memory-failed",
+          "turn-memory",
+          "run-memory",
+          "memory",
+          "failed",
+          "call-memory-failed",
+          {
+            action: "search",
+            errorCode: "memory_unavailable",
+            output: "memory_snapshot_unavailable",
+          },
+        ),
+      }),
+    ];
+
+    const once = replayRuntimeEvents(projectRuntimeThreads([summary]), events);
+    const twice = replayRuntimeEvents(once, events);
+    const projected = twice[0]?.branches[0]?.turns[0]?.events;
+
+    expect(projected).toHaveLength(6);
+    expect(projected?.[0]).toMatchObject({
+      type: "tool_call",
+      toolName: "memory",
+      label: { source: "app", kind: "tool.memory" },
+    });
+    expect(projected?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "memory",
+      status: "success",
+      summary: { source: "app", kind: "result.memorySaved" },
+      details: { created: true, truncated: false },
+    });
+    expect(projected?.[2]).toMatchObject({
+      type: "tool_call",
+      toolName: "memory",
+      label: { source: "app", kind: "tool.memory" },
+    });
+    expect(projected?.[3]).toMatchObject({
+      type: "tool_result",
+      toolName: "memory",
+      status: "success",
+      summary: { source: "app", kind: "result.memoryFound" },
+      details: { count: 2, truncated: true },
+    });
+    expect(projected?.[4]).toMatchObject({
+      type: "tool_call",
+      toolName: "memory",
+      label: { source: "app", kind: "tool.memory" },
+    });
+    expect(projected?.[5]).toMatchObject({
+      type: "tool_result",
+      toolName: "memory",
+      status: "error",
+      summary: { source: "app", kind: "result.memorySearchFailed" },
+      errorCode: "memory_unavailable",
+      output: "memory_snapshot_unavailable",
     });
   });
 

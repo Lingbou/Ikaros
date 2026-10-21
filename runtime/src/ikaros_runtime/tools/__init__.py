@@ -18,6 +18,7 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .history_read import HistoryReadTool
 from .list import ListTool
+from .memory import MemoryTool, MemoryToolBackend
 from .policy import FullAccessPolicy
 from .process import (
     ProcessReadTool,
@@ -39,6 +40,8 @@ __all__ = [
     "HistoryReadTool",
     "ListTool",
     "MAX_INLINE_RESULT_BYTES",
+    "MemoryTool",
+    "MemoryToolBackend",
     "ProcessManager",
     "ProcessReadTool",
     "ProcessResizeTool",

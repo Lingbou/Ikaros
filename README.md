@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：13 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：14 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -265,7 +265,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 8、32 方法、15 事件、13 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 9、32 方法、15 事件、14 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -346,6 +346,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 200 字符。
 - `history_read.py` — `history_read` 工具：itemId 周边的有界切片。
 - `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
+- `memory.py` — `memory` 工具：模型侧 save / search；save 复用 `memory.create`
+  的校验、凭据保护、来源捕获与幂等路径，search 复用确定性混合召回（只读）。
 - `policy.py` — 执行策略：当前固定 FullAccessPolicy。
 - `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
   终止 6 秒 / 排空 2 秒；持久化 `background` 并支持前台完成门禁。
@@ -359,7 +361,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 42 个 Python 文件）：
+`tests/`（Runtime 测试，共 48 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -381,6 +383,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_maintenance.py` — check/backup/repair 测试。
 - `test_memory_recall.py` — Memory 召回整链路测试。
 - `test_memory_retrieval.py` — 召回算法与预算测试。
+- `test_memory_tool.py` — `memory` 工具 save / search、幂等、凭据拒绝与参数越界测试。
 - `test_memory.py` — Memory 存储、幂等、墓碑测试。
 - `test_model_defaults.py` — 默认上下文窗口测试。
 - `test_model_input_pipeline.py` — RunConfig → StepInput 流水线测试。
@@ -789,9 +792,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 ### 6.2 协议与 RPC
 
-- 协议版本 8，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
+- 协议版本 9，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、13 个 provider
+- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、14 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -832,7 +835,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   - `storage backup`：SQLite Backup API（包含已提交 WAL），拒绝覆盖目标；
   - `storage repair-projections`：先产出修复前备份，再在单事务里重建派生表。
 - 数据策略：只支持当前格式（config 2 / state schema 14 / Journal 10 /
-  protocol 8 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
+  protocol 9 / memory 2）；不兼容的开发数据以"需要重置"错误失败，需要显式重建；
   更新代码不会动配置、Skills 与桌面偏好，`memory.db` 只在 schema 版本不符时
   要求显式重置。
 
@@ -919,7 +922,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（13 个）
+### 6.9 内建工具（14 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
@@ -936,6 +939,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules`、已知二进制扩展名与深度 >12 的目录；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–10）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 200 字符；单文件 ≤4 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
+| `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
 
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
@@ -1022,8 +1026,15 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   embedding 服务、不做 LLM 精排。
 - 输入包装：Memory 正文以 contextual-data 包装进入模型，不改变工具权限、身份、
   执行策略或用户请求；审计只记录 ID/revision/scope/字符数。
-- 边界：没有自动 Memory 写入器、没有学习循环；Memory 不保存运行进度、命令日志
-  或文件差异。
+- 模型工具：单个 provider 工具 `memory`（`save` / `search`）。save 走与
+  `memory.create` 相同的校验、凭据保护、来源捕获与幂等路径（`clientRequestId`
+  由工具调用 Item ID 派生；来源指向触发本次 Run 的 User Item，因为工具调用 Item
+  尚未结算）；workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生，模型
+  不能指定。search 复用 `MemoryRetriever`，只读、不改变每 Run 冻结的召回集合；
+  limit 1–8（默认 5），正文总量 ≤6,000 字符并显式报告截断。没有 forget / delete：
+  删除仍由用户控制。
+- 边界：没有自动 Memory 写入器（只有用户显式操作与模型显式调用的 `memory`
+  工具）、没有学习循环；Memory 不保存运行进度、命令日志或文件差异。
 
 ### 6.12 Skills 子系统
 
@@ -1247,7 +1258,7 @@ Process              running ──▶ exited / terminated
   （Provider 可能先完成）。
 - 历史 Tool 调用永不自动重放；`unknown` 进程必须在新 Turn 中重新检查。
 
-## 7. RPC 接口参考（协议 8，共 32 个方法）
+## 7. RPC 接口参考（协议 9，共 32 个方法）
 
 通用约定：
 
@@ -2122,6 +2133,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
 | Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
 | Memory | 列表分页 | 默认 50、最大 100 |
+| Memory | 模型工具 | `memory`（save / search）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
 | 文件 | glob | 结果上限默认 1,000、最大 5,000；扫描深度 ≤12；忽略 .git/node_modules/二进制 |
 | 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤10 行；单行 200 字符；单文件 ≤4 MiB |
@@ -2144,7 +2156,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 8；32 方法；15 事件；13 工具 |
+| 协议 | 版本/规模 | protocol 9；32 方法；15 事件；14 工具 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |

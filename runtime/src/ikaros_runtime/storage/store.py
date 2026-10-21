@@ -827,6 +827,23 @@ class SqliteRuntimeStore:
     ) -> bool:
         return session_item_provenance_is_available(self._connection, expected)
 
+    def memory_tool_run_scope(self, run_id: str) -> tuple[str, str | None]:
+        """Resolve the trusted Memory tool scope of one Run.
+
+        Returns the User Item that triggered the Run and the Run Workspace ID
+        (or ``None``), so model-supplied arguments can never retarget the
+        provenance source or the Workspace Memory key.
+        """
+
+        try:
+            config = self.get_run_config(run_id)
+        except RuntimeError as error:
+            raise LookupError("Run scope is unavailable") from error
+        return (
+            config.user_item_id,
+            config.workspace.id if config.workspace is not None else None,
+        )
+
     def mark_run_running(self, run_id: str) -> JournalEvent:
         run = self.get_run(run_id)
         timestamp = utc_now()

@@ -31,6 +31,7 @@ export type AppEventTextKind =
   | "tool.globFiles"
   | "tool.searchFiles"
   | "tool.listDirectory"
+  | "tool.memory"
   | "result.processCompleted"
   | "result.processRunning"
   | "result.processStopped"
@@ -56,7 +57,14 @@ export type AppEventTextKind =
   | "result.listFailed"
   | "result.listInterrupted"
   | "result.entryCount"
-  | "result.matchCount";
+  | "result.matchCount"
+  | "result.memorySaved"
+  | "result.memorySaveFailed"
+  | "result.memorySaveInterrupted"
+  | "result.memoryFound"
+  | "result.memorySearchFailed"
+  | "result.memorySearchInterrupted"
+  | "result.memoryCount";
 
 export type EventTextValues = Record<string, string | number>;
 
@@ -119,6 +127,7 @@ export interface ToolResultEvent extends EventBase {
     truncated?: boolean;
     entryCount?: number;
     matchCount?: number;
+    count?: number;
     processId?: string;
     background?: boolean;
     processState?: "running" | "exited" | "terminated" | "unknown";

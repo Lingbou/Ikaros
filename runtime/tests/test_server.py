@@ -2673,6 +2673,7 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
             "glob": {"pattern"},
             "grep": {"pattern"},
             "list": set(),
+            "memory": {"action"},
         }
         for request in endpoint.requests:
             definitions = {
