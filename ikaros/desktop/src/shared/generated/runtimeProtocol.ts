@@ -84,6 +84,8 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "process_write",
     "process_resize",
     "history_read",
+    "thread_list",
+    "thread_read",
     "read",
     "write",
     "edit",

@@ -1097,6 +1097,81 @@ describe("Runtime event projection", () => {
     });
   });
 
+  it("projects compact, replay-safe Thread catalog and read tool events", () => {
+    const toolCallItem = (
+      id: string,
+      toolName: "thread_list" | "thread_read",
+      argumentsValue: Record<string, unknown>,
+    ) => ({
+      id,
+      turnId: "turn-thread",
+      runId: "run-thread",
+      ordinal: 2,
+      kind: "tool_call",
+      role: "assistant",
+      status: "completed",
+      content: "",
+      data: {
+        stepId: "step-thread",
+        callId: `provider-${id}`,
+        toolName,
+        arguments: argumentsValue,
+      },
+      createdAt: "2026-08-11T12:00:00.000Z",
+      updatedAt: "2026-08-11T12:00:00.000Z",
+    });
+    const toolResultItem = (
+      id: string,
+      toolName: "thread_list" | "thread_read",
+      toolCallItemId: string,
+      result: Record<string, unknown>,
+    ) => ({
+      id,
+      turnId: "turn-thread",
+      runId: "run-thread",
+      ordinal: 3,
+      kind: "tool_result",
+      role: "tool",
+      status: "completed",
+      content: "{}",
+      data: {
+        stepId: "step-thread",
+        callId: `provider-${toolCallItemId}`,
+        toolCallItemId,
+        toolName,
+        result,
+      },
+      createdAt: "2026-08-11T12:00:00.000Z",
+      updatedAt: "2026-08-11T12:00:00.000Z",
+    });
+
+    const events = [
+      event(2, "item.completed", "turn-thread", "run-thread", "call-thread-list", {
+        item: toolCallItem("call-thread-list", "thread_list", { archived: false, limit: 5 }),
+      }),
+      event(3, "item.completed", "turn-thread", "run-thread", "result-thread-list", {
+        item: toolResultItem("result-thread-list", "thread_list", "call-thread-list", {
+          output: '{"threads":[],"hasMore":false}',
+          archived: false,
+          threadCount: 0,
+          hasMore: false,
+          truncated: false,
+        }),
+      }),
+      event(4, "item.completed", "turn-thread", "run-thread", "call-thread-read", {
+        item: toolCallItem("call-thread-read", "thread_read", {
+          threadId: "thread-other",
+          before: 2,
+          after: 2,
+        }),
+      }),
+      event(5, "item.completed", "turn-thread", "run-thread", "result-thread-read", {
+        item: toolResultItem("result-thread-read", "thread_read", "call-thread-read", {
+          output: '{"items":[]}',
+          threadId: "thread-other",
+          itemId: "item-anchor",
+          truncated: true,
+        }),
   it("projects Memory save and search results with bounded metadata", () => {
     const events = [
       event(2, "item.completed", "turn-memory", "run-memory", "call-memory-save", {
@@ -1191,6 +1266,34 @@ describe("Runtime event projection", () => {
     const twice = replayRuntimeEvents(once, events);
     const projected = twice[0]?.branches[0]?.turns[0]?.events;
 
+    expect(projected).toHaveLength(4);
+    expect(projected?.[0]).toMatchObject({
+      type: "tool_call",
+      toolName: "thread_list",
+      label: { source: "app", kind: "tool.listThreads" },
+      arguments: { archived: false, limit: 5 },
+    });
+    expect(projected?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "thread_list",
+      status: "success",
+      summary: { source: "app", kind: "result.threadListCompleted" },
+      details: { truncated: false },
+    });
+    expect(projected?.[2]).toMatchObject({
+      type: "tool_call",
+      toolName: "thread_read",
+      label: { source: "app", kind: "tool.readThread" },
+      arguments: { threadId: "thread-other", before: 2, after: 2 },
+    });
+    expect(projected?.[3]).toMatchObject({
+      type: "tool_result",
+      toolName: "thread_read",
+      status: "success",
+      summary: { source: "app", kind: "result.threadReadCompleted" },
+      details: { truncated: true },
+    });
+  });
     expect(projected).toHaveLength(6);
     expect(projected?.[0]).toMatchObject({
       type: "tool_call",

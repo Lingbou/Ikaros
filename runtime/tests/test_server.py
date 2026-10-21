@@ -2667,6 +2667,8 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
             "process_write": {"processId", "data"},
             "process_resize": {"processId", "columns", "rows"},
             "history_read": {"itemId"},
+            "thread_list": set(),
+            "thread_read": {"threadId"},
                 "read": {"filePath"},
             "write": {"filePath", "content"},
             "edit": {"filePath", "oldString", "newString"},
@@ -5374,7 +5376,7 @@ async def test_jsonrpc_cancel_queued_run_never_executes_provider_and_replays_onc
             {
                 "threadId": thread["id"],
                 "branchId": thread["defaultBranchId"],
-                "content": "hold-active-" + ("x" * 12000),
+                "content": "hold-active-" + ("x" * 8000),
                 "providerId": "scripted",
                 "modelId": "scripted-v1",
             },
@@ -5467,7 +5469,7 @@ async def test_runtime_shutdown_settles_active_and_queued_runs_without_recovery(
             {
                 "threadId": thread["id"],
                 "branchId": thread["defaultBranchId"],
-                "content": "shutdown-active-" + ("x" * 12000),
+                "content": "shutdown-active-" + ("x" * 8000),
                 "providerId": "scripted",
                 "modelId": "scripted-v1",
             },

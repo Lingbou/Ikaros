@@ -222,9 +222,11 @@ def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> Non
         "glob",
         "grep",
         "list",
+        "thread_list",
+        "thread_read",
         "memory",
     } <= set(PROVIDER_TOOL_IDS)
-    assert len(PROVIDER_TOOL_IDS) == len(set(PROVIDER_TOOL_IDS)) == 14
+    assert len(PROVIDER_TOOL_IDS) == len(set(PROVIDER_TOOL_IDS)) == 16
     assert "process_run" not in PROVIDER_TOOL_IDS
     assert "process.run" not in PROVIDER_TOOL_IDS
     assert "search" not in PROVIDER_TOOL_IDS
