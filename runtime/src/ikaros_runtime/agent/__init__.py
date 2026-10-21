@@ -1,4 +1,4 @@
-"""Agent execution loop and serial scheduler."""
+"""Agent execution loop and bounded worker-pool scheduler."""
 
 from ..run_input import InputBudgetRecord
 from .context import ContextBuilder

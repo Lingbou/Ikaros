@@ -106,8 +106,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - 每个应用生命周期只有 1 个 Python Runtime 进程；通过 `runtime.lock` 独占
   `~/.ikaros`，启动第二个实例会失败而不共享状态。
-- Runtime 内部是单事件循环（asyncio）；调度器只有 1 个 worker，同一时刻只运行
-  1 个 Run；同一 Run 内工具串行执行；每个 Branch 拥有串行队列。
+- Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
+  2 个 Run（`IKAROS_AGENT_WORKERS`，范围 1–8）；并发只发生在不同 Thread 之间，
+  同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具串行执行；每个 Branch 拥有
+  串行队列。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
   独立数据库，只共享 Runtime-home 锁。
 - Desktop 与 Runtime 的生命周期绑定：关闭应用会先请求 Runtime 干净关闭。
@@ -244,7 +246,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `loop.py` — Agent 主循环：执行 Run、流式处理、工具调度、压缩、
   完成检查与终结。
 - `model_input.py` — 单步模型输入计划（ModelInputPlan）与校验。
-- `scheduler.py` — 单 worker 调度：预留/激活/取消/steer 与关闭顺序。
+- `scheduler.py` — worker 池调度：FIFO、同 Thread 串行、预留/激活/取消/steer
+  与关闭顺序。
 
 `memory/`（长期记忆）：
 
@@ -479,7 +482,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `AppearanceSettings.tsx` — 外观设置：主题、颜色、字体、侧边栏、动效。
 - `ArchivedThreadsDialog.tsx` — 归档对话管理对话框（取消归档、空态、错误态）。
-- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、模型选择与运行状态提示。
+- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、附件路径、“文件和
+  文件夹”菜单、模型选择与运行状态提示。
 - `ConversationHeader.tsx` — 会话标题栏：重命名/归档菜单、Model 标识。
 - `CreateProjectDialog.tsx` — 新建项目（选择工作区文件夹）。
 - `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口。
@@ -496,7 +500,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `SearchDialog.tsx` — 对话搜索对话框（标题过滤、键盘打开）。
 - `SettingsPage.tsx` — 设置页容器与导航（Provider/Model/Skills/Memory/Profile/
   外观/通用）。
-- `Sidebar.tsx` — 侧边栏：对话列表、Projects、归档入口、搜索按钮。
+- `Sidebar.tsx` — 侧边栏：对话列表、Projects、运行中指示、归档入口、搜索按钮。
 - `SkillsSettings.tsx` — Skills 设置：列表、诊断、启用开关。
 - `ThemePreview.tsx` — 主题预览卡与代码 diff 预览。
 - `TitleBar.tsx` — 自定义标题栏与窗口控制（最小化/最大化/关闭）。
@@ -543,6 +547,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   是否停止由用户决定。
 - 运行中补充（steering）：Run 执行期间可继续输入（`run.steer`），补充内容进入
   当前 Run 的后续模型调用。
+- 添加上下文：Composer 加号菜单目前只有“文件和文件夹”一项；选择文件夹绑定项目
+  工作区，选择文件生成可移除的附件条目，发送时把绝对路径追加到消息正文（内容
+  仍由 Agent 通过文件工具读取）。
 - 失败后继续：失败/取消的 Run 保留已结算的工具结果，并给出本地化说明和有界的
   原因码；新一轮对话不会重放旧命令，也不会回滚可能已生效的文件或命令操作。
 - 草稿保护：没有可用 Model 时，Composer 直接打开 Provider/Model 设置，并保留
@@ -835,7 +842,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 ### 6.4 崩溃恢复语义
 
 - 干净关闭：Scheduler 停止接收新工作 → 协作取消活动 Run → 排队/预留 Run 标记
-  `cancelled` → 等待 worker → 关闭数据库。
+  `cancelled` → 等待全部 worker → 关闭数据库。
 - 异常退出后启动：`running` Run → `failed`（原因码 `runtime_interrupted`，保留
   部分 assistant 文本）；`queued` Run 按原 Journal 顺序重新调度；终态 Run 永不
   重跑。
@@ -850,8 +857,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   + 其工具调用与结果）。
 - 提交时冻结 RunConfig：Provider/Model、workspace、工具定义（含 schema 哈希）、
   身份（IKAROS.md）、已启用 Skill 描述符、模型上下文窗口。
-- 调度：全局 1 个 scheduler worker（同时只跑一个 Run）；同一 Run 内工具串行
-  执行；每个 Branch 有串行队列。
+- 调度：全局 worker 池（`IKAROS_AGENT_WORKERS`，默认 2、范围 1–8）；FIFO
+  拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
+  Run 内工具串行执行；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
+  下一个可运行 Thread。
 - 无总模型调用次数/时长上限；可手动取消；单次 Provider 请求有超时；资源清理
   有界。
 - 失败/取消的 Run 向后续对话提供：已持久化的工具结果 + 独立的 Runtime 状态块
@@ -1126,6 +1135,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   payload（调试用）。
 - `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
+- `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 2，范围 1–8；值为 1
+  时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
 - `config.yaml`（version 2）结构概要：
@@ -2004,7 +2015,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 | 项目 | 状态 |
 | --- | --- |
 | Runtime 离线基线 | pytest 831 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 496 passed / 1 skipped |
+| Desktop 离线基线 | Vitest 502 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2074,9 +2085,9 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
 - 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
   主窗口时不发送；
-- 多个 Run 并发、Multi-Agent 与子 Agent；
+- Multi-Agent 与子 Agent（不同 Thread 的多个 Run 已可并发）；
 - cron 与主动唤醒任务；
-- 附件、Web/浏览器/桌面操作工具；
+- 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
 - 自动 Memory 提取与 Skill 学习；
 - Linux 安装包内置 Runtime、自动更新、代码签名与正式发布渠道；
@@ -2108,6 +2119,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 
 | 类别 | 参数 | 值 |
 | --- | --- | --- |
+| 调度 | Run 并发上限 | `IKAROS_AGENT_WORKERS` 默认 2，范围 1–8；同一 Thread 至多 1 个活动 Run |
 | 上下文 | 输入预算 | 模型窗口 95% |
 | 上下文 | 自动压缩阈值 | 模型窗口 90% |
 | 上下文 | 历史选择分页 | 32 Turns/页 |

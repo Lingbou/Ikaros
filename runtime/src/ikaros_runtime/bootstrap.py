@@ -73,6 +73,7 @@ class RuntimeApplication:
         identity_core: InstructionBlock | None = None,
         extra_providers: Mapping[str, ProviderAdapter] | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
+        agent_workers: int | None = None,
     ) -> None:
         self._store = store
         self._memory_store = memory_store
@@ -186,7 +187,7 @@ class RuntimeApplication:
             identity_core=self.identity_core,
             memory_retriever=memory_retriever,
         )
-        self._scheduler = AgentScheduler(loop)
+        self._scheduler = AgentScheduler(loop, max_workers=agent_workers)
         self._publish = publish
 
         self.threads = ThreadService(

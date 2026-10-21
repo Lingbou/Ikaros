@@ -5,6 +5,7 @@ import {
   ChevronRight,
   SquarePen,
   Folder,
+  LoaderCircle,
   PanelRightClose,
   Plus,
   Search,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -22,7 +24,7 @@ import {
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
 } from "../../shared/platform";
-import { standaloneThreads, type Thread } from "../domain";
+import { isRunActive, standaloneThreads, type Thread } from "../domain";
 import { useTranslation } from "../i18n";
 import { profileInitials } from "../localProfile";
 import { useAppStore } from "../store";
@@ -137,6 +139,8 @@ export function Sidebar() {
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
   const profileUsername = useAppStore((state) => state.profileUsername);
   const expandedProjects = useAppStore((state) => state.expandedProjects);
+  const runtimeThreadActivity = useAppStore((state) => state.runtimeThreadActivity);
+  const pendingRuntimeSubmissions = useAppStore((state) => state.pendingRuntimeSubmissions);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
   const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
   const setSearchOpen = useAppStore((state) => state.setSearchOpen);
@@ -164,6 +168,18 @@ export function Sidebar() {
     previewWidth: number;
   } | null>(null);
   const catalogSentinelRef = useRef<HTMLDivElement>(null);
+  const runningThreadIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [threadId, activities] of Object.entries(runtimeThreadActivity)) {
+      if (Object.values(activities).some((activity) => isRunActive(activity.status))) {
+        ids.add(threadId);
+      }
+    }
+    for (const threadId of Object.keys(pendingRuntimeSubmissions)) {
+      ids.add(threadId);
+    }
+    return ids;
+  }, [runtimeThreadActivity, pendingRuntimeSubmissions]);
 
   useEffect(() => {
     const sentinel = catalogSentinelRef.current;
@@ -321,7 +337,7 @@ export function Sidebar() {
       </div>
 
       <div className="shrink-0 space-y-0.5 px-2">
-        <NavigationButton icon={<Plus size={15} />} label={t("sidebar.newChat")} onClick={newChat} />
+        <NavigationButton icon={<SquarePen size={15} />} label={t("sidebar.newChat")} onClick={newChat} />
       </div>
 
       <ScrollArea.Root className="mt-4 min-h-0 flex-1 overflow-hidden">
@@ -369,6 +385,16 @@ export function Sidebar() {
                   >
                     <Folder size={15} className="shrink-0" style={{ color: project.color }} />
                     <span className="flex-1 truncate">{project.name}</span>
+                    {projectThreads.some((thread) => runningThreadIds.has(thread.id)) ? (
+                      <span
+                        role="img"
+                        aria-label={t("sidebar.threadRunning")}
+                        title={t("sidebar.threadRunning")}
+                        className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
+                      >
+                        <LoaderCircle size={12} className="animate-spin" />
+                      </span>
+                    ) : null}
                   </button>
                   {expanded ? (
                     <div className="mt-0.5 space-y-px">
@@ -389,6 +415,16 @@ export function Sidebar() {
                             <span className="min-w-0 flex-1 truncate">
                               {thread.title || t("sidebar.newChat")}
                             </span>
+                            {runningThreadIds.has(thread.id) ? (
+                              <span
+                                role="img"
+                                aria-label={t("sidebar.threadRunning")}
+                                title={t("sidebar.threadRunning")}
+                                className="ml-1 flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
+                              >
+                                <LoaderCircle size={12} className="animate-spin" />
+                              </span>
+                            ) : null}
                           </button>
                         ))
                       ) : (
@@ -444,6 +480,16 @@ export function Sidebar() {
                   <span className="min-w-0 flex-1 truncate">
                     {thread.title || t("sidebar.newChat")}
                   </span>
+                  {runningThreadIds.has(thread.id) ? (
+                    <span
+                      role="img"
+                      aria-label={t("sidebar.threadRunning")}
+                      title={t("sidebar.threadRunning")}
+                      className="ml-1 flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
+                    >
+                      <LoaderCircle size={12} className="animate-spin" />
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div> : null}
