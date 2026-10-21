@@ -7,6 +7,7 @@ import {
   SquarePen,
   Folder,
   LoaderCircle,
+  MoreHorizontal,
   PanelRightClose,
   Plus,
   Search,
@@ -150,6 +151,7 @@ export function Sidebar() {
   const toggleProject = useAppStore((state) => state.toggleProject);
   const newChat = useAppStore((state) => state.newChat);
   const archiveThread = useAppStore((state) => state.archiveThread);
+  const newProjectChat = useAppStore((state) => state.newProjectChat);
   const threadCatalogHasMore = useAppStore((state) => state.threadCatalogHasMore);
   const threadCatalogMoreStatus = useAppStore(
     (state) => state.threadCatalogMoreStatus,
@@ -363,7 +365,7 @@ export function Sidebar() {
               </button>
               <span className="min-w-0 flex-1" />
               <IconButton
-                label={t("sidebar.newProjectChat")}
+                label={t("sidebar.newProject")}
                 className="size-6 opacity-0 transition-opacity group-hover:opacity-100"
                 onClick={() => setCreateProjectOpen(true)}
               >
@@ -378,26 +380,69 @@ export function Sidebar() {
               );
               return (
                 <section key={project.id} aria-labelledby={`${project.id}-label`}>
-                  <button
-                    id={`${project.id}-label`}
-                    type="button"
-                    aria-expanded={expanded}
-                    onClick={() => toggleProject(project.id)}
-                    className="group flex h-[30px] w-full items-center gap-2 rounded-[10px] px-2 text-left text-[13px] font-medium leading-5 text-[var(--text)] transition-colors hover:bg-[var(--surface-hover)]"
-                  >
-                    <Folder size={15} className="shrink-0" style={{ color: project.color }} />
-                    <span className="flex-1 truncate">{project.name}</span>
-                    {projectThreads.some((thread) => runningThreadIds.has(thread.id)) ? (
-                      <span
-                        role="img"
-                        aria-label={t("sidebar.threadRunning")}
-                        title={t("sidebar.threadRunning")}
-                        className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
-                      >
-                        <LoaderCircle size={12} className="animate-spin" />
-                      </span>
-                    ) : null}
-                  </button>
+                  <div className="group/project flex h-[30px] w-full items-center rounded-[10px] pl-2 pr-0.5 transition-colors hover:bg-[var(--surface-hover)]">
+                    <button
+                      id={`${project.id}-label`}
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => toggleProject(project.id)}
+                      className="flex h-full min-w-0 flex-1 items-center gap-2 text-left text-[13px] font-medium leading-5 text-[var(--text)] outline-none"
+                    >
+                      <Folder size={15} className="shrink-0" style={{ color: project.color }} />
+                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                      {projectThreads.some((thread) => runningThreadIds.has(thread.id)) ? (
+                        <span
+                          role="img"
+                          aria-label={t("sidebar.threadRunning")}
+                          title={t("sidebar.threadRunning")}
+                          className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]"
+                        >
+                          <LoaderCircle size={12} className="animate-spin" />
+                        </span>
+                      ) : null}
+                    </button>
+                    <IconButton
+                      label={t("sidebar.newProjectChat")}
+                      tooltipSide="bottom"
+                      className="size-6 shrink-0 rounded-md opacity-0 transition-opacity group-hover/project:opacity-100 focus-visible:opacity-100"
+                      onClick={() => newProjectChat(project.id)}
+                    >
+                      <SquarePen size={13} />
+                    </IconButton>
+                    <DropdownMenu.Root>
+                      <DropdownMenu.Trigger asChild>
+                        <button
+                          type="button"
+                          aria-label={t("sidebar.projectActions")}
+                          title={t("sidebar.projectActions")}
+                          className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-strong)] opacity-0 transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover/project:opacity-100 data-[state=open]:opacity-100"
+                        >
+                          <MoreHorizontal size={14} />
+                        </button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.Content
+                          side="bottom"
+                          align="end"
+                          sideOffset={6}
+                          className="glass-menu z-[90] min-w-[176px] rounded-xl p-1"
+                        >
+                          <DropdownMenu.Item
+                            disabled={projectThreads.length === 0}
+                            onSelect={() => {
+                              void Promise.allSettled(
+                                projectThreads.map((thread) => archiveThread(thread.id)),
+                              );
+                            }}
+                            className="flex h-9 cursor-default items-center gap-2.5 rounded-lg px-2.5 text-[12px] leading-5 text-[var(--text)] outline-none data-[disabled]:opacity-40 data-[highlighted]:bg-[var(--surface-hover)]"
+                          >
+                            <Archive size={13} aria-hidden="true" className="text-[var(--muted-strong)]" />
+                            {t("sidebar.archiveProjectChats")}
+                          </DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu.Root>
+                  </div>
                   {expanded ? (
                     <div className="mt-0.5 space-y-px">
                       {projectThreads.length ? (
