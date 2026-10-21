@@ -48,6 +48,7 @@ from .services.turns import TurnService
 from .services.usage import UsageService
 from .skills import SkillCatalog
 from .storage import SqliteRuntimeStore
+from .thread_titles import ThreadTitleService
 from .tools import (
     EditTool,
     GlobTool,
@@ -218,6 +219,14 @@ class RuntimeApplication:
             protected_values=self.security.protected_values,
             enabled=_memory_refinement_enabled(),
         )
+        self._titles = ThreadTitleService(
+            runtime_store=store,
+            resolve_provider=self._provider_registry.resolve,
+            provider_snapshot=provider_snapshot,
+            protected_values=self.security.protected_values,
+            publish=publish,
+            enabled=_thread_titles_enabled(),
+        )
         loop = AgentLoop(
             store,
             self._provider_registry,
@@ -293,6 +302,12 @@ class RuntimeApplication:
             self._channel_service,
         )
 
+    def _notify_run_terminal(self, config: RunConfig, status: str) -> None:
+        """Fan a settled Run out to observers that must never block it."""
+
+        self._refinement.notify_run_terminal(config, status)
+        self._titles.notify_run_terminal(config, status)
+
     def start(self, recovered_run_ids: Sequence[str] = ()) -> None:
         self._scheduler.start(recovered_run_ids)
 
@@ -340,6 +355,7 @@ class RuntimeApplication:
             self._subagents.close()
             await self._scheduler.close()
             await self._refinement.close()
+            await self._titles.close()
             await self._process_manager.close()
             if self._process_events:
                 await asyncio.gather(*self._process_events)
@@ -352,6 +368,12 @@ def _memory_refinement_enabled() -> bool:
     """Honor the ``IKAROS_MEMORY_REFINEMENT=0`` kill switch."""
 
     return os.environ.get("IKAROS_MEMORY_REFINEMENT", "1").strip() != "0"
+
+
+def _thread_titles_enabled() -> bool:
+    """Honor the ``IKAROS_THREAD_TITLES=0`` kill switch."""
+
+    return os.environ.get("IKAROS_THREAD_TITLES", "1").strip() != "0"
 
 
 async def run_runtime_server(

@@ -556,6 +556,105 @@ describe("Runtime-backed renderer store", () => {
     expect(useAppStore.getState().runtimeSeq).toBe(4);
   });
 
+  it("replaces a provisional title with the Runtime-generated one", async () => {
+    const createdThread: RuntimeThreadSummary = {
+      id: "thread-provisional-title",
+      title: "first message…",
+      defaultBranchId: "branch-provisional-title",
+      workspace: null,
+      createdAt,
+      updatedAt: createdAt,
+      archivedAt: null,
+    };
+    const generatedAt = "2026-08-11T12:00:30.000Z";
+    const generatedThread: RuntimeThreadSummary = {
+      ...createdThread,
+      title: "Generated title",
+      updatedAt: generatedAt,
+    };
+    let emit: ((event: RuntimeJournalEvent) => void) | undefined;
+    const createThread = vi.fn(async () => ({
+      thread: createdThread,
+      event: runtimeEvent(
+        1,
+        "thread.created",
+        null,
+        {
+          thread: createdThread,
+          branch: {
+            id: createdThread.defaultBranchId,
+            threadId: createdThread.id,
+            createdAt,
+            isDefault: true,
+          },
+        },
+        {
+          threadId: createdThread.id,
+          branchId: createdThread.defaultBranchId,
+          turnId: null,
+          runId: null,
+        },
+      ),
+    }));
+    const api = {
+      runtime: {
+        listThreads: vi.fn(async () => ({ threads: [], snapshotSeq: 0 })),
+        createThread,
+        startTurn: vi.fn(async () => ({
+          threadId: createdThread.id,
+          branchId: createdThread.defaultBranchId,
+          turnId: "turn-provisional-title",
+          runId: "run-provisional-title",
+        })),
+        cancelRun: vi.fn(),
+        replayEvents: vi.fn(async () => ({
+          events: [],
+          latestSeq: 1,
+          nextAfterSeq: 1,
+          hasMore: false,
+        })),
+        onEvent: vi.fn((listener: (event: RuntimeJournalEvent) => void) => {
+          emit = listener;
+          return () => undefined;
+        }),
+      },
+      preferences: {},
+      windowControls: {},
+    } as unknown as IkarosDesktopApi;
+    installRuntimeBridge(api);
+    vi.resetModules();
+    const { useAppStore } = await import("./store");
+    await useAppStore.getState().initializeRuntime();
+
+    useAppStore.getState().setDraft("first message");
+    await useAppStore.getState().sendDraft();
+    expect(createThread).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "first message" })
+    );
+    expect(useAppStore.getState().threads[0]?.title).toBe("first message…");
+
+    emit?.(
+      runtimeEvent(
+        2,
+        "thread.renamed",
+        null,
+        { thread: generatedThread, titleSource: "auto" },
+        {
+          threadId: createdThread.id,
+          branchId: createdThread.defaultBranchId,
+          turnId: null,
+          runId: null,
+        }
+      )
+    );
+    await vi.waitFor(() =>
+      expect(
+        useAppStore
+          .getState()
+          .threads.find((thread) => thread.id === createdThread.id)?.title
+      ).toBe("Generated title")
+    );
+  });
   it("does not restore a live-unarchived Thread from an older archived catalog response", async () => {
     const listeners = new Set<(event: RuntimeJournalEvent) => void>();
     const archived: RuntimeThreadSummary = {

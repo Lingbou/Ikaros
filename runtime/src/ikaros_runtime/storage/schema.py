@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _FILE_CHANGES_SCHEMA = """
 CREATE TABLE file_changes (
     tool_call_item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
@@ -34,6 +34,7 @@ ON events(run_id) WHERE event_type = 'run.settled';
 CREATE TABLE threads (
     id TEXT PRIMARY KEY,
     title TEXT,
+    title_source TEXT CHECK (title_source IN ('provisional', 'user', 'auto')),
     default_branch_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
