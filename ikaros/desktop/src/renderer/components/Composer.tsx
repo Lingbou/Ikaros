@@ -398,34 +398,26 @@ export function Composer({
                             <DropdownMenu.SubContent
                               sideOffset={6}
                               alignOffset={-4}
-                              className="glass-menu z-[95] min-w-[170px] rounded-xl p-1.5"
+                              className="glass-menu z-[95] min-w-[148px] rounded-xl p-1.5"
                             >
                               <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
                                 {t("settings.models.reasoningLevels")}
                               </DropdownMenu.Label>
-                              <DropdownMenu.Item
-                                onSelect={() => applyLevel(null)}
-                                className="flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                              >
-                                <span className="min-w-0 flex-1 truncate">
-                                  {t("settings.models.reasoningAuto")}
-                                </span>
-                                {candidate.reasoningEffort === null ? (
-                                  <Check size={14} className="shrink-0 text-[var(--accent)]" />
-                                ) : null}
-                              </DropdownMenu.Item>
-                              {candidate.reasoningEfforts.map((level) => (
-                                <DropdownMenu.Item
-                                  key={level}
-                                  onSelect={() => applyLevel(level)}
-                                  className="flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                                >
-                                  <span className="min-w-0 flex-1 truncate">{level}</span>
-                                  {candidate.reasoningEffort === level ? (
-                                    <Check size={14} className="shrink-0 text-[var(--accent)]" />
-                                  ) : null}
-                                </DropdownMenu.Item>
-                              ))}
+                              {candidate.reasoningEfforts.map((level) => {
+                                const active = candidate.reasoningEffort === level;
+                                return (
+                                  <DropdownMenu.Item
+                                    key={level}
+                                    onSelect={() => applyLevel(active ? null : level)}
+                                    className="flex h-8 cursor-default items-center gap-3 rounded-lg px-2.5 text-[12px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                                  >
+                                    <span className="min-w-0 flex-1 truncate">{level}</span>
+                                    {active ? (
+                                      <Check size={13} className="shrink-0 text-[var(--accent)]" />
+                                    ) : null}
+                                  </DropdownMenu.Item>
+                                );
+                              })}
                             </DropdownMenu.SubContent>
                           </DropdownMenu.Portal>
                         </DropdownMenu.Sub>
