@@ -5278,7 +5278,7 @@ async def test_scripted_provider_runs_a_real_command_and_continues_the_conversat
             if event["type"] == "process.recorded"
         ]
         assert process_facts[-1]["state"] == "exited"
-        assert "gate5-tool-output" in process_facts[-1]["stdout"]
+        assert "gate5-tool-output" in process_facts[-1]["output"]
         assert "gate5-tool-output" in assistant["content"]
         assert not any(event["type"].startswith("permission.") for event in run_events)
         assert sum(event["type"] == "run.settled" for event in run_events) == 1
@@ -5471,7 +5471,7 @@ async def test_cancelling_process_wait_preserves_partial_output_and_clears_runni
             ):
                 waiting = True
             if event["type"] == "process.recorded":
-                saw_output = saw_output or "before-stop" in event["payload"]["process"]["stdout"]
+                saw_output = saw_output or "before-stop" in event["payload"]["process"]["output"]
             if waiting and saw_output:
                 break
         notifications: list[dict[str, Any]] = []
@@ -5518,7 +5518,7 @@ async def test_cancelling_process_wait_preserves_partial_output_and_clears_runni
         # Commands are thread-owned: cancelling the Run leaves the command running
         # and the thread can still stop it through the process control plane.
         assert process_facts[-1]["state"] == "running"
-        assert "before-stop" in process_facts[-1]["stdout"]
+        assert "before-stop" in process_facts[-1]["output"]
         stopped = await _rpc(
             connection,
             5,

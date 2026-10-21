@@ -22,20 +22,36 @@ def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
         "command",
         "cwd",
         "background",
+        "supervise",
+        "restartCount",
+        "lastRestartAt",
         "state",
         "exitCode",
         "pid",
+        "pidStartedAt",
         "startedAt",
         "finishedAt",
-        "stdout",
-        "stderr",
         "output",
+        "outputBytes",
+        "headBytes",
+        "tailStart",
+        "fileBytes",
         "truncated",
         "errorCode",
+        "invocationRedacted",
     }
     if set(value) != required:
         raise ValueError("process record fields are invalid")
-    for key in ("processId", "threadId", "runId", "itemId", "command", "cwd", "startedAt"):
+    for key in (
+        "processId",
+        "threadId",
+        "runId",
+        "itemId",
+        "command",
+        "cwd",
+        "startedAt",
+        "pidStartedAt",
+    ):
         if not isinstance(value[key], str) or not value[key]:
             raise ValueError("process record identity is invalid")
     if value["state"] not in {"running", "exited", "terminated", "unknown"}:
@@ -46,18 +62,27 @@ def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
         raise ValueError("process background flag is invalid")
     if type(value["truncated"]) is not bool:
         raise ValueError("process truncation is invalid")
-    output_limits = {
-        "stdout": 256 * 1024 + 128,
-        "stderr": 256 * 1024 + 128,
-        "output": 1024 * 1024 + 128,
-    }
-    for key, limit in output_limits.items():
-        if not isinstance(value[key], str) or len(value[key].encode("utf-8")) > limit:
-            raise ValueError("process output is invalid")
+    if type(value["invocationRedacted"]) is not bool:
+        raise ValueError("process redaction flag is invalid")
+    if value["supervise"] not in (None, "always", "on-failure"):
+        raise ValueError("process supervision policy is invalid")
+    if type(value["restartCount"]) is not int or value["restartCount"] < 0:
+        raise ValueError("process restart count is invalid")
+    if not isinstance(value["output"], str) or len(value["output"].encode("utf-8")) > (
+        1024 * 1024 + 128
+    ):
+        raise ValueError("process output is invalid")
+    for key in ("outputBytes", "headBytes", "tailStart", "fileBytes"):
+        if type(value[key]) is not int or value[key] < 0:
+            raise ValueError("process output window is invalid")
+    if value["headBytes"] > value["outputBytes"] or value["tailStart"] > value["outputBytes"]:
+        raise ValueError("process output window is invalid")
+    if value["fileBytes"] < value["headBytes"]:
+        raise ValueError("process output file size is invalid")
     for key in ("exitCode", "pid"):
         if value[key] is not None and type(value[key]) is not int:
             raise ValueError("process result is invalid")
-    for key in ("finishedAt", "errorCode"):
+    for key in ("finishedAt", "errorCode", "lastRestartAt"):
         if value[key] is not None and not isinstance(value[key], str):
             raise ValueError("process result is invalid")
     owner = connection.execute(
@@ -79,7 +104,17 @@ def project_process(connection: sqlite3.Connection, value: JsonObject) -> None:
     ).fetchone()
     if previous is not None:
         before: dict[str, Any] = json_loads(previous["record_json"])
-        for key in ("threadId", "runId", "stepOrdinal", "itemId", "command", "cwd", "startedAt"):
+        for key in (
+            "threadId",
+            "runId",
+            "stepOrdinal",
+            "itemId",
+            "command",
+            "cwd",
+            "startedAt",
+            "supervise",
+            "invocationRedacted",
+        ):
             if before[key] != value[key]:
                 raise ValueError("process ownership or invocation changed")
         terminal = before["state"] in {"exited", "terminated"} or (

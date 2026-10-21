@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import IO, Any
 
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_SUSPENDED = 0x00000004
@@ -76,16 +76,20 @@ def _windows_creation_flags() -> int:
 async def _spawn_process(
     command: str,
     cwd: str | None,
+    *,
+    log: IO[bytes] | None = None,
 ) -> _SpawnedProcess:
+    """Start one command; ``log`` receives stdout/stderr instead of pipes."""
     arguments = _shell_command(command)
+    stdout: Any = log if log is not None else asyncio.subprocess.PIPE
     if os.name == "nt":
         process = await asyncio.create_subprocess_exec(
             *arguments,
             cwd=cwd,
             env=_minimal_environment(),
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=stdout,
+            stderr=stdout,
             creationflags=_windows_creation_flags(),
         )
         job: _WindowsJob | None = None
@@ -104,8 +108,8 @@ async def _spawn_process(
         cwd=cwd,
         env=_minimal_environment(),
         stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=stdout,
+        stderr=stdout,
         start_new_session=True,
     )
     return _SpawnedProcess(process=process)

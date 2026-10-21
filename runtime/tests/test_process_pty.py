@@ -138,8 +138,8 @@ async def _wait_for_exit(pid: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pty_session_drives_an_interactive_repl() -> None:
-    manager = ProcessManager()
+async def test_pty_session_drives_an_interactive_repl(tmp_path: Path) -> None:
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     executor = _executor(manager)
     context = _context()
     started = await _run(
@@ -230,8 +230,8 @@ async def test_pty_session_drives_an_interactive_repl() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pty_stop_terminates_the_terminal_and_its_children() -> None:
-    manager = ProcessManager()
+async def test_pty_stop_terminates_the_terminal_and_its_children(tmp_path: Path) -> None:
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     executor = _executor(manager)
     context = _context()
     started = await _run(
@@ -254,8 +254,8 @@ async def test_pty_stop_terminates_the_terminal_and_its_children() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pty_arguments_are_validated_and_terminal_only() -> None:
-    manager = ProcessManager()
+async def test_pty_arguments_are_validated_and_terminal_only(tmp_path: Path) -> None:
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     executor = _executor(manager)
     context = _context()
 
@@ -305,8 +305,8 @@ async def test_pty_arguments_are_validated_and_terminal_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pty_write_rejects_an_unknown_or_finished_command() -> None:
-    manager = ProcessManager()
+async def test_pty_write_rejects_an_unknown_or_finished_command(tmp_path: Path) -> None:
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     executor = _executor(manager)
     context = _context()
     missing = await executor.execute(

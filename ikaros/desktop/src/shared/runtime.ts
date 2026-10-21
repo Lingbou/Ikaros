@@ -411,17 +411,23 @@ export interface RuntimeProcessRecord {
   command: string;
   cwd: string;
   background: boolean;
+  supervise: "always" | "on-failure" | null;
+  restartCount: number;
+  lastRestartAt: string | null;
   state: "running" | "exited" | "terminated" | "unknown";
   exitCode: number | null;
   pid: number | null;
+  pidStartedAt: string;
   startedAt: string;
   finishedAt: string | null;
   output: string;
-  stdout: string;
-  stderr: string;
+  outputBytes: number;
+  headBytes: number;
+  tailStart: number;
+  fileBytes: number;
   truncated: boolean;
   errorCode: string | null;
-  nextCursor: number;
+  invocationRedacted: boolean;
 }
 
 export interface RuntimeProcessReadParams {
@@ -442,6 +448,9 @@ export interface RuntimeProcessReadResult {
   exitCode: number | null;
   cwd: string;
   background: boolean;
+  supervise: "always" | "on-failure" | null;
+  restartCount: number;
+  lastRestartAt: string | null;
   pid: number | null;
   startedAt: string;
   finishedAt: string | null;

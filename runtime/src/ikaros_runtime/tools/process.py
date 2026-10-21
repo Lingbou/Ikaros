@@ -17,7 +17,14 @@ from .core import (
     is_json_integer,
     require_exact_arguments,
 )
-from .process_manager import ProcessError, ProcessManager
+from .process_manager import (
+    SUPERVISE_BACKOFF_DEFAULT_MS,
+    SUPERVISE_BACKOFF_MAX_MS,
+    SUPERVISE_BACKOFF_MIN_MS,
+    SUPERVISE_POLICIES,
+    ProcessError,
+    ProcessManager,
+)
 from .process_platform import (
     PTY_DEFAULT_COLUMNS,
     PTY_DEFAULT_ROWS,
@@ -42,7 +49,10 @@ class ProcessStartTool:
             "the command from this Run's completion check; foreground commands must be waited "
             "for or stopped before the Run can finish normally. Set pty true to attach an "
             "interactive terminal: process_write then sends input and process_resize changes "
-            "its window size."
+            "its window size. Set supervise to \"always\" or \"on-failure\" to keep a "
+            "long-running command alive: the Runtime restarts it with exponential backoff "
+            "(restartCount/lastRestartAt report progress) until process_stop or the restart "
+            "storm budget is exhausted."
         ),
         input_schema={
             "type": "object",
@@ -61,6 +71,12 @@ class ProcessStartTool:
                     "minimum": PTY_MIN_CELLS,
                     "maximum": PTY_MAX_CELLS,
                 },
+                "supervise": {"type": "string", "enum": ["always", "on-failure"]},
+                "backoffMs": {
+                    "type": "integer",
+                    "minimum": SUPERVISE_BACKOFF_MIN_MS,
+                    "maximum": SUPERVISE_BACKOFF_MAX_MS,
+                },
             },
             "required": ["command"],
             "additionalProperties": False,
@@ -77,7 +93,7 @@ class ProcessStartTool:
         mismatch = require_exact_arguments(
             call.arguments,
             required={"command"},
-            optional={"cwd", "background", "pty", "columns", "rows"},
+            optional={"cwd", "background", "pty", "columns", "rows", "supervise", "backoffMs"},
         )
         if mismatch is not None:
             return ToolResult.rejected(call, code="invalid_arguments", message=mismatch)
@@ -98,6 +114,32 @@ class ProcessStartTool:
                 call,
                 code="invalid_arguments",
                 message="background must be a boolean.",
+            )
+        supervise = call.arguments.get("supervise")
+        if supervise is not None and supervise not in SUPERVISE_POLICIES:
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message="supervise must be always or on-failure.",
+            )
+        if supervise is not None and pty:
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message="supervise is unavailable for terminal commands.",
+            )
+        backoff_ms = call.arguments.get("backoffMs", SUPERVISE_BACKOFF_DEFAULT_MS)
+        if (
+            not is_json_integer(backoff_ms)
+            or not SUPERVISE_BACKOFF_MIN_MS <= backoff_ms <= SUPERVISE_BACKOFF_MAX_MS
+        ):
+            return ToolResult.rejected(
+                call,
+                code="invalid_arguments",
+                message=(
+                    f"backoffMs must be an integer between {SUPERVISE_BACKOFF_MIN_MS} "
+                    f"and {SUPERVISE_BACKOFF_MAX_MS}."
+                ),
             )
         cwd_value = call.arguments.get("cwd", context.default_cwd)
         if cwd_value is not None and (
@@ -120,6 +162,8 @@ class ProcessStartTool:
                 pty=pty,
                 columns=columns,
                 rows=rows,
+                supervise=supervise,
+                backoff_ms=backoff_ms,
             )
         except ProcessError as error:
             return ToolResult.rejected(call, code=error.code, message=str(error))
@@ -454,10 +498,8 @@ def _validate_reference(call: ToolCall, *, wait: bool = False) -> tuple[str, int
 def _result(call: ToolCall, fact: JsonObject) -> ToolResult:
     details = dict(fact)
     output = str(details.pop("output"))
-    # The model-facing page is the only command-output body. Full stream copies
-    # remain Runtime facts for projection and Desktop rendering.
-    details.pop("stdout", None)
-    details.pop("stderr", None)
+    # The model-facing page is the only command-output body; the retained window
+    # stays a Runtime fact for projection and Desktop rendering.
     state = details["state"]
     ok = state == "running" or (state == "exited" and details["exitCode"] == 0)
     if call.name == "process_stop" and state == "terminated":

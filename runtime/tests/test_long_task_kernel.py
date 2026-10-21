@@ -55,7 +55,9 @@ def _manager(store: SqliteRuntimeStore) -> ProcessManager:
     def record(fact: JsonObject) -> None:
         store.record_process(fact)
 
-    return ProcessManager(record=record)
+    return ProcessManager(
+        logs_root=store.database_path.parent / "processes", record=record
+    )
 
 
 async def _start_durable_command(
@@ -262,7 +264,7 @@ async def test_process_journal_rebuilds_lost_projection_and_survives_reopen(tmp_
         await manager.close_run(context.run_id)
         store.terminalize_run(context.run_id, "completed")
         facts = store.process_records()
-        assert len(facts) == 1 and "durable" in facts[0]["stdout"]
+        assert len(facts) == 1 and "durable" in facts[0]["output"]
         events, _ = store.replay_events(0, 1000)
         assert sum(event.type == "process.recorded" for event in events) >= 3
         with store._connection:
@@ -299,10 +301,12 @@ async def test_manual_cancellation_stops_wait_and_process_tree_but_preserves_par
 
     def record(fact: JsonObject) -> None:
         store.record_process(fact)
-        if "cancel-partial" in fact["stdout"]:
+        if "cancel-partial" in fact["output"]:
             output_ready.set()
 
-    manager = ProcessManager(record=record)
+    manager = ProcessManager(
+        logs_root=store.database_path.parent / "processes", record=record
+    )
     executor = _executor(manager)
     events: list[JournalEvent] = []
     cancellation = CancellationToken()
@@ -346,7 +350,7 @@ async def test_manual_cancellation_stops_wait_and_process_tree_but_preserves_par
         facts = store.process_records()
         # Cancelling a Run leaves its thread-owned command running (B2).
         assert len(facts) == 1 and facts[0]["state"] == "running"
-        assert "cancel-partial" in facts[0]["stdout"]
+        assert "cancel-partial" in facts[0]["output"]
         wait_results = [
             event.payload["item"]["data"]["result"]
             for event in events

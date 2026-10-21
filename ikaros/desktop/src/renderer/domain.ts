@@ -141,6 +141,8 @@ export interface ToolResultEvent extends EventBase {
     processId?: string;
     background?: boolean;
     processState?: "running" | "exited" | "terminated" | "unknown";
+    supervise?: "always" | "on-failure" | null;
+    restartCount?: number;
     exitCode?: number | null;
     cursor?: number;
     nextCursor?: number;
