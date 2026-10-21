@@ -707,7 +707,7 @@ def test_model_context_window_persists_and_frozen_snapshot_remains_unchanged(
         models=[ModelInput("model", "Model", 65536)],
     )
     frozen = store.execution_snapshot("deepseek", "model")
-    updated = store.set_model_context_window("deepseek", "model", 131072)
+    updated = store.set_model_limits("deepseek", "model", 131072, "high")
     reloaded = ConfigStore(tmp_path)
     assert updated.to_wire() == {
         "providerId": "deepseek",
@@ -715,7 +715,11 @@ def test_model_context_window_persists_and_frozen_snapshot_remains_unchanged(
         "displayName": "Model",
         "enabled": True,
         "contextWindow": 131072,
+        "reasoningEffort": "high",
     }
+    assert reloaded.model_summaries()[0].reasoning_effort == "high"
+    assert store.get_provider("deepseek") is not None
+    assert "reasoning_effort: high" in store.path.read_text(encoding="utf-8")
     assert reloaded.model_summaries()[0] == updated
     assert frozen.context_window == 65536
     store.set_model_enabled("deepseek", "model", False)
@@ -734,5 +738,39 @@ def test_invalid_model_context_window_does_not_change_configuration(
     store.configure_deepseek(api_key="test-invalid-limits-secret", models=[model()])
     before = store.path.read_bytes()
     with pytest.raises(ConfigError, match="context window"):
-        store.set_model_context_window("deepseek", "deepseek-chat", window)  # type: ignore[arg-type]
+        store.set_model_limits("deepseek", "deepseek-chat", window)  # type: ignore[arg-type]
+    assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "effort",
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+)
+def test_reasoning_effort_round_trips_through_configuration(
+    tmp_path: Path,
+    effort: str,
+) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(api_key="test-reasoning-secret", models=[model()])
+
+    updated = store.set_model_limits("deepseek", "deepseek-chat", 32768, effort)
+    reloaded = ConfigStore(tmp_path)
+
+    assert updated.reasoning_effort == effort
+    assert reloaded.model_summaries()[0].reasoning_effort == effort
+
+
+def test_reasoning_effort_can_be_cleared_and_rejects_unknown_levels(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(api_key="test-reasoning-clear-secret", models=[model()])
+    store.set_model_limits("deepseek", "deepseek-chat", 32768, "max")
+
+    cleared = store.set_model_limits("deepseek", "deepseek-chat", 32768)
+    assert cleared.reasoning_effort is None
+    assert "reasoning_effort" not in store.path.read_text(encoding="utf-8")
+
+    store.set_model_limits("deepseek", "deepseek-chat", 32768, "max")
+    before = store.path.read_bytes()
+    with pytest.raises(ConfigError, match="reasoning effort"):
+        store.set_model_limits("deepseek", "deepseek-chat", 32768, "extreme")
     assert store.path.read_bytes() == before

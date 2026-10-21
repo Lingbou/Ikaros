@@ -1030,6 +1030,7 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "displayName": "DeepSeek Chat",
                 "enabled": True,
                 "contextWindow": 32768,
+                "reasoningEffort": None,
             },
             {
                 "providerId": "local",
@@ -1037,6 +1038,7 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "displayName": "Local Model",
                 "enabled": False,
                 "contextWindow": 32768,
+                "reasoningEffort": None,
             },
         ]
         assert replay["result"]["events"] == []
@@ -1077,6 +1079,7 @@ async def test_provider_configuration_rpc_is_persisted_redacted_and_event_free(
                 "id": "local-model",
                 "displayName": "Local Model",
                 "enabled": False,
+                "reasoningEffort": None,
                 "contextWindow": 32768,
             }
         ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Final, Protocol
 
 from ..cancellation import CancellationToken
 from ..domain import ModelUsage
@@ -34,6 +34,11 @@ class ModelInput:
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
 
 
+REASONING_EFFORT_LEVELS: Final = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     id: str
@@ -41,6 +46,7 @@ class ModelConfig:
     enabled: bool
     supports_tools: bool
     context_window: int = UNKNOWN_MODEL_CAPACITY.context_window
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)

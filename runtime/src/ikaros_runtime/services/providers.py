@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from ..errors import ConfigError, InvalidParamsError
+from ..providers.base import REASONING_EFFORT_LEVELS
 from ..providers.registry import (
     ConfigStore,
     ModelInput,
@@ -181,17 +182,40 @@ class ProviderService:
         self._providers.configuration_changed(provider_id)
         return {"model": summary.to_wire()}
 
-    def set_model_context_window(self, params: dict[str, Any]) -> dict[str, Any]:
-        if set(params) != {"providerId", "modelId", "contextWindow"}:
+    def set_model_limits(self, params: dict[str, Any]) -> dict[str, Any]:
+        if set(params) - {"providerId", "modelId", "contextWindow", "reasoningEffort"}:
+            raise InvalidParamsError("model.set_limits received unsupported parameters")
+        if not {"providerId", "modelId", "contextWindow"} <= set(params):
             raise InvalidParamsError(
                 "model.set_limits requires providerId, modelId, and contextWindow"
             )
         provider_id, model_id = params["providerId"], params["modelId"]
         if not isinstance(provider_id, str) or not isinstance(model_id, str):
             raise InvalidParamsError("providerId and modelId must be strings")
+        reasoning_effort: str | None = None
+        if "reasoningEffort" in params:
+            raw_effort = params["reasoningEffort"]
+            if raw_effort is not None and (
+                not isinstance(raw_effort, str) or raw_effort not in REASONING_EFFORT_LEVELS
+            ):
+                raise InvalidParamsError(
+                    "reasoningEffort must be null or one of "
+                    + ", ".join(sorted(REASONING_EFFORT_LEVELS))
+                )
+            reasoning_effort = raw_effort
+        else:
+            provider = self._config.get_provider(provider_id)
+            existing_model = (
+                next((item for item in provider.models if item.id == model_id), None)
+                if provider is not None
+                else None
+            )
+            reasoning_effort = (
+                existing_model.reasoning_effort if existing_model is not None else None
+            )
         try:
-            model = self._config.set_model_context_window(
-                provider_id, model_id, params["contextWindow"]
+            model = self._config.set_model_limits(
+                provider_id, model_id, params["contextWindow"], reasoning_effort
             )
         except ConfigError as error:
             raise InvalidParamsError(str(error)) from None

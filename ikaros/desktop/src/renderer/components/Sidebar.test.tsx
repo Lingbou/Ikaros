@@ -1,6 +1,6 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { Profiler, type ProfilerOnRenderCallback } from "react";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findThread, flattenEvents, type MessageEvent } from "../domain";
 import { setUiLanguage } from "../i18n";
@@ -114,6 +114,35 @@ describe("Sidebar run indicators", () => {
     const idleRow = screen.getByText("Plan tomorrow's priorities").closest("button");
     expect(idleRow).not.toBeNull();
     expect(within(idleRow as HTMLElement).queryByRole("img", { name: "Running" })).toBeNull();
+  });
+});
+
+describe("Sidebar project actions", () => {
+  it("starts a project chat and archives every project chat from the row actions", async () => {
+    const newProjectChat = vi.fn();
+    const archiveThread = vi.fn(async () => undefined);
+    useAppStore.setState({ newProjectChat, archiveThread } as Partial<typeof initialState>);
+
+    render(
+      <Tooltip.Provider>
+        <Sidebar />
+      </Tooltip.Provider>,
+    );
+
+    const projectRow = screen.getByRole("button", { name: "Research" }).parentElement;
+    expect(projectRow).not.toBeNull();
+    const row = projectRow as HTMLElement;
+
+    fireEvent.click(within(row).getByRole("button", { name: "New chat in project" }));
+    expect(newProjectChat).toHaveBeenCalledWith("project-research");
+
+    fireEvent.pointerDown(within(row).getByRole("button", { name: "Project actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive chats" }));
+
+    await waitFor(() => expect(archiveThread).toHaveBeenCalledTimes(3));
+    expect(archiveThread).toHaveBeenCalledWith("thread-streaming");
+    expect(archiveThread).toHaveBeenCalledWith("thread-tools");
+    expect(archiveThread).toHaveBeenCalledWith("thread-artifact");
   });
 });
 
@@ -342,7 +371,7 @@ describe("Sidebar conversation ownership", () => {
       </Tooltip.Provider>,
     );
 
-    const projectAction = screen.getByRole("button", { name: "New project chat" });
+    const projectAction = screen.getByRole("button", { name: "New project" });
     const newChatActions = screen.getAllByRole("button", { name: "New chat" });
     const recentAction = newChatActions.at(-1);
     const projectsToggle = screen.getByRole("button", { name: "Projects" });
@@ -521,7 +550,7 @@ describe("Sidebar conversation ownership", () => {
     );
 
     expect(screen.getAllByRole("button", { name: "新对话" })).not.toHaveLength(0);
-    expect(screen.getByRole("button", { name: "新建项目对话" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新建项目" })).toBeTruthy();
     expect(screen.getByText("项目")).toBeTruthy();
     expect(screen.getByText("最近")).toBeTruthy();
     expect(screen.getByText("Research")).toBeTruthy();

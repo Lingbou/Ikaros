@@ -82,6 +82,7 @@ def provider(
     headers: tuple[tuple[str, str], ...] = (("X-Tenant", "header-secret"),),
     supports_tools: bool = True,
     origin: str = "custom",
+    reasoning_effort: str | None = None,
 ) -> ProviderConfig:
     return ProviderConfig(
         id="custom",
@@ -96,6 +97,7 @@ def provider(
                 display_name="Model",
                 enabled=True,
                 supports_tools=supports_tools,
+                reasoning_effort=reasoning_effort,
             ),
         ),
     )
@@ -1503,3 +1505,25 @@ async def test_internal_request_output_limit_is_sent_for_auxiliary_calls() -> No
             ),
         )
     assert bodies[0]["max_tokens"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_only_sent_when_configured() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        bodies.append(cast(dict[str, Any], json.loads(incoming.content)))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream; charset=utf-8"},
+            content=sse(text_chunk("ok", finish_reason="stop")) + b"data: [DONE]\n\n",
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await collect(OpenAICompatibleAdapter(provider(), client=client))
+        await collect(
+            OpenAICompatibleAdapter(provider(reasoning_effort="high"), client=client)
+        )
+
+    assert "reasoning_effort" not in bodies[0]
+    assert bodies[1]["reasoning_effort"] == "high"

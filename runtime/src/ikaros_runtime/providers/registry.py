@@ -13,6 +13,7 @@ from ..errors import ConfigError as ConfigError
 from ..run_input import ProviderExecutionSnapshot
 from ..security import contains_protected_value
 from .base import (
+    REASONING_EFFORT_LEVELS,
     ModelConfig,
     ModelInput,
     ProviderAdapter,
@@ -75,6 +76,7 @@ class ModelSummary:
     display_name: str
     enabled: bool
     context_window: int
+    reasoning_effort: str | None = None
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -83,6 +85,7 @@ class ModelSummary:
             "displayName": self.display_name,
             "enabled": self.enabled,
             "contextWindow": self.context_window,
+            "reasoningEffort": self.reasoning_effort,
         }
 
 
@@ -138,6 +141,7 @@ class ConfigStore:
                 model.display_name,
                 model.enabled,
                 model.context_window,
+                model.reasoning_effort,
             )
             for provider in sorted(self._providers.values(), key=lambda item: item.id)
             for model in provider.models
@@ -280,19 +284,29 @@ class ConfigStore:
             model.display_name,
             model.enabled,
             model.context_window,
+            model.reasoning_effort,
         )
 
-    def set_model_context_window(
-        self, provider_id: str, model_id: str, context_window: int
+    def set_model_limits(
+        self,
+        provider_id: str,
+        model_id: str,
+        context_window: int,
+        reasoning_effort: str | None = None,
     ) -> ModelSummary:
         context_window = _context_window(context_window)
+        reasoning_effort = _reasoning_effort_value(reasoning_effort)
         provider = self._providers.get(provider_id)
         if provider is None:
             raise ConfigError("provider does not exist")
         model = next((model for model in provider.models if model.id == model_id), None)
         if model is None:
             raise ConfigError("model does not exist")
-        updated_model = replace(model, context_window=context_window)
+        updated_model = replace(
+            model,
+            context_window=context_window,
+            reasoning_effort=reasoning_effort,
+        )
         self._replace(
             replace(
                 provider,
@@ -308,6 +322,7 @@ class ConfigStore:
             model.display_name,
             model.enabled,
             context_window,
+            reasoning_effort,
         )
 
     def _replace(self, provider: ProviderConfig) -> None:
@@ -357,6 +372,11 @@ def _provider_section(providers: Mapping[str, ProviderConfig]) -> dict[str, obje
                 "enabled": model.enabled,
                 "supports_tools": model.supports_tools,
                 "context_window": model.context_window,
+                **(
+                    {"reasoning_effort": model.reasoning_effort}
+                    if model.reasoning_effort is not None
+                    else {}
+                ),
             }
             for model in provider.models
         }
@@ -480,7 +500,9 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
         if not isinstance(raw_id, str) or not isinstance(raw_model, dict):
             raise ConfigError("provider contains an invalid model record")
         required = {"display_name", "enabled", "supports_tools"}
-        if not required <= set(raw_model) or set(raw_model) - (required | {"context_window"}):
+        if not required <= set(raw_model) or set(raw_model) - (
+            required | {"context_window", "reasoning_effort"}
+        ):
             raise ConfigError("model configuration contains unsupported fields")
         model_id = _model_id(raw_id)
         if model_id in seen:
@@ -499,6 +521,7 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
                 enabled=enabled,
                 supports_tools=supports_tools,
                 context_window=context_window,
+                reasoning_effort=_reasoning_effort_value(raw_model.get("reasoning_effort")),
             )
         )
     return tuple(models)
@@ -527,9 +550,20 @@ def _models(
                 enabled=previous.enabled if previous is not None else True,
                 supports_tools=previous.supports_tools if previous is not None else True,
                 context_window=context_window,
+                reasoning_effort=previous.reasoning_effort if previous is not None else None,
             )
         )
     return tuple(models)
+
+
+def _reasoning_effort_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in REASONING_EFFORT_LEVELS:
+        raise ConfigError(
+            "reasoning effort must be one of " + ", ".join(sorted(REASONING_EFFORT_LEVELS))
+        )
+    return value
 
 
 def _context_window(context_window: object) -> int:

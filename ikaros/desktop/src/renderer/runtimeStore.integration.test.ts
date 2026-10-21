@@ -78,6 +78,7 @@ function installRuntimeBridge(api: unknown): void {
         displayName: "Test Model",
         contextWindow: 32768,
         enabled: true,
+        reasoningEffort: null,
       },
     ],
   };
@@ -318,7 +319,12 @@ function modelSelectionFixture() {
     { providerId: "unconfigured-provider", id: "unconfigured", enabled: true },
     { providerId: "test-provider", id: "model-a", enabled: true },
     { providerId: "test-provider", id: "model-b", enabled: true },
-  ].map((model) => ({ ...model, displayName: model.id, contextWindow: 32768 }));
+  ].map((model) => ({
+    ...model,
+    displayName: model.id,
+    contextWindow: 32768,
+    reasoningEffort: null,
+  }));
   const history = threads.map((thread, index) => {
     const page = singleTurnHistoryPage(thread, [], "completed", 0);
     page.turns[0]!.runs[0]!.providerId = "test-provider";
@@ -908,6 +914,7 @@ describe("Runtime-backed renderer store", () => {
               displayName: "DeepSeek Chat",
               contextWindow: 32768,
               enabled: true,
+              reasoningEffort: null,
             },
           ],
         })),
@@ -977,6 +984,7 @@ describe("Runtime-backed renderer store", () => {
               displayName: "Model A",
               contextWindow: 32768,
               enabled: true,
+              reasoningEffort: null,
             },
             {
               providerId: "test-provider",
@@ -984,6 +992,7 @@ describe("Runtime-backed renderer store", () => {
               displayName: "Model B",
               contextWindow: 32768,
               enabled: true,
+              reasoningEffort: null,
             },
           ],
         })),
@@ -1044,6 +1053,7 @@ describe("Runtime-backed renderer store", () => {
         displayName: "DeepSeek Chat",
         contextWindow: 32768,
         enabled: true,
+        reasoningEffort: null,
       },
       {
         providerId: "custom-provider",
@@ -1051,6 +1061,7 @@ describe("Runtime-backed renderer store", () => {
         displayName: "Custom Model",
         contextWindow: 32768,
         enabled: true,
+        reasoningEffort: null,
       },
     ];
     const setModelEnabled = vi.fn(async ({
@@ -1160,6 +1171,7 @@ describe("Runtime-backed renderer store", () => {
         displayName: "DeepSeek Chat",
         contextWindow: 32768,
         enabled: true,
+        reasoningEffort: null,
       },
     ];
     const candidates = [
@@ -1242,6 +1254,7 @@ describe("Runtime-backed renderer store", () => {
       displayName: "Stale Model",
       contextWindow: 32768,
       enabled: true,
+      reasoningEffort: null,
     };
     const freshModel: RuntimeModelSummary = {
       providerId: "fresh-provider",
@@ -1249,6 +1262,7 @@ describe("Runtime-backed renderer store", () => {
       displayName: "Fresh Model",
       contextWindow: 32768,
       enabled: true,
+      reasoningEffort: null,
     };
     const listProviders = vi
       .fn()
@@ -4466,6 +4480,7 @@ describe("Runtime-backed renderer store", () => {
       displayName,
       contextWindow: 32768,
       enabled: true,
+      reasoningEffort: null,
     });
     let resolveStaleProviders!: (value: { providers: RuntimeProviderSummary[] }) => void;
     let resolveStaleModels!: (value: { models: RuntimeModelSummary[] }) => void;
