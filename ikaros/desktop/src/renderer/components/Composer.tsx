@@ -3,6 +3,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  ChevronRight,
   FileText,
   Folder,
   Paperclip,
@@ -40,6 +41,7 @@ export function Composer({
   const retryRuntimeConnection = useAppStore((state) => state.retryRuntimeConnection);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const selectModel = useAppStore((state) => state.selectModel);
+  const setModelLimits = useAppStore((state) => state.setModelLimits);
   const setDraft = useAppStore((state) => state.setDraft);
   const sendDraft = useAppStore((state) => state.sendDraft);
   const steerRun = useAppStore((state) => state.steerRun);
@@ -48,6 +50,7 @@ export function Composer({
   const composerAttachments = useAppStore((state) => state.composerAttachments);
   const newThreadWorkspace = useAppStore((state) => state.newThreadWorkspace);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
+  const pendingNewThread = useAppStore((state) => state.pendingRuntimeNewThread);
   const removeComposerAttachment = useAppStore((state) => state.removeComposerAttachment);
   const [projectFolderError, setProjectFolderError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -67,6 +70,9 @@ export function Composer({
           providerId: candidate.providerId,
           modelId: candidate.id,
           label: candidate.displayName,
+          contextWindow: candidate.contextWindow,
+          reasoningEffort: candidate.reasoningEffort,
+          reasoningEfforts: candidate.reasoningEfforts,
         },
       ];
     });
@@ -182,27 +188,30 @@ export function Composer({
       className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[var(--canvas)] via-[var(--canvas)]/96 to-transparent px-3 pb-3 pt-16 sm:px-5 sm:pb-3.5"
     >
       <div className="conversation-rail pointer-events-auto relative mx-auto w-full">
+        {newThreadWorkspace && selectedThreadId === null && pendingNewThread === null ? (
+          <div
+            data-composer-project
+            className="mx-2.5 mb-1.5 flex h-10 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel-raised)] px-3 text-[13px] leading-5 text-[var(--text)]"
+          >
+            <Folder
+              size={14}
+              className="shrink-0 text-[var(--muted-strong)]"
+              aria-hidden="true"
+            />
+            <span
+              className="min-w-0 truncate"
+              title={newThreadWorkspace.rootUri ?? undefined}
+            >
+              {newThreadWorkspace.name}
+            </span>
+          </div>
+        ) : null}
 
         <div
           ref={surfaceRef}
           data-composer-surface
           className="composer-shadow rounded-[22px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
         >
-          {newThreadWorkspace && selectedThreadId === null ? (
-            <div
-              data-composer-project
-              className="mb-2 flex items-center gap-2 border-b border-[var(--border-soft)] px-1 pb-2 text-[12px] leading-4 text-[var(--muted-strong)]"
-            >
-              <Folder size={13} className="shrink-0" aria-hidden="true" />
-              <span
-                className="min-w-0 truncate"
-                title={newThreadWorkspace.rootUri ?? undefined}
-              >
-                {newThreadWorkspace.name}
-              </span>
-            </div>
-          ) : null}
-
           {composerAttachments.length ? (
             <div data-composer-attachments className="mb-2 flex flex-wrap gap-1.5 px-1">
               {composerAttachments.map((path) => (
@@ -302,9 +311,14 @@ export function Composer({
                     data-model-settings-trigger
                     className="hidden h-7 min-w-0 max-w-[200px] items-center gap-1.5 rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-2.5 text-[11px] leading-4 text-[var(--muted-strong)] transition-colors hover:border-[var(--border)] hover:text-[var(--text)] data-[state=open]:border-[var(--border)] data-[state=open]:text-[var(--text)] sm:flex"
                   >
-                    <span className="min-w-0 max-w-[156px] truncate">
+                    <span className="min-w-0 max-w-[140px] truncate">
                       {selectedRuntimeModel?.label ?? t("composer.selectModel")}
                     </span>
+                    {selectedRuntimeModel?.reasoningEffort ? (
+                      <span className="shrink-0 text-[var(--muted)]">
+                        {selectedRuntimeModel.reasoningEffort}
+                      </span>
+                    ) : null}
                     <ChevronDown size={11} className="shrink-0" />
                   </button>
                 </DropdownMenu.Trigger>
@@ -322,22 +336,99 @@ export function Composer({
                       const selected =
                         selectedRuntimeModel?.providerId === candidate.providerId &&
                         selectedRuntimeModel.modelId === candidate.modelId;
-                      return (
-                        <DropdownMenu.Item
-                          key={`${candidate.providerId}/${candidate.modelId}`}
-                          onSelect={() =>
-                            selectModel({
-                              providerId: candidate.providerId,
-                              modelId: candidate.modelId,
-                            })
-                          }
-                          className="flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
-                        >
+                      const rowClassName =
+                        "flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)] data-[state=open]:bg-[var(--surface-hover)]";
+                      const label = (
+                        <>
                           <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
-                          {selected ? (
-                            <Check size={14} className="shrink-0 text-[var(--accent)]" />
+                          {candidate.reasoningEffort ? (
+                            <span className="shrink-0 text-[11px] leading-4 text-[var(--muted)]">
+                              {candidate.reasoningEffort}
+                            </span>
                           ) : null}
-                        </DropdownMenu.Item>
+                        </>
+                      );
+                      const applyLevel = (level: string | null) => {
+                        void setModelLimits({
+                          providerId: candidate.providerId,
+                          modelId: candidate.modelId,
+                          contextWindow: candidate.contextWindow,
+                          reasoningEfforts: candidate.reasoningEfforts,
+                          reasoningEffort: level,
+                        }).catch(() => undefined);
+                      };
+                      if (candidate.reasoningEfforts.length === 0) {
+                        return (
+                          <DropdownMenu.Item
+                            key={`${candidate.providerId}/${candidate.modelId}`}
+                            onSelect={() =>
+                              selectModel({
+                                providerId: candidate.providerId,
+                                modelId: candidate.modelId,
+                              })
+                            }
+                            className={rowClassName}
+                          >
+                            {label}
+                            {selected ? (
+                              <Check size={14} className="shrink-0 text-[var(--accent)]" />
+                            ) : null}
+                          </DropdownMenu.Item>
+                        );
+                      }
+                      return (
+                        <DropdownMenu.Sub key={`${candidate.providerId}/${candidate.modelId}`}>
+                          <DropdownMenu.SubTrigger
+                            onSelect={() =>
+                              selectModel({
+                                providerId: candidate.providerId,
+                                modelId: candidate.modelId,
+                              })
+                            }
+                            className={rowClassName}
+                          >
+                            {label}
+                            <ChevronRight
+                              size={13}
+                              aria-hidden="true"
+                              className="shrink-0 text-[var(--muted)]"
+                            />
+                          </DropdownMenu.SubTrigger>
+                          <DropdownMenu.Portal>
+                            <DropdownMenu.SubContent
+                              sideOffset={6}
+                              alignOffset={-4}
+                              className="glass-menu z-[95] min-w-[170px] rounded-xl p-1.5"
+                            >
+                              <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium leading-4 text-[var(--muted)]">
+                                {t("settings.models.reasoningLevels")}
+                              </DropdownMenu.Label>
+                              <DropdownMenu.Item
+                                onSelect={() => applyLevel(null)}
+                                className="flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                              >
+                                <span className="min-w-0 flex-1 truncate">
+                                  {t("settings.models.reasoningAuto")}
+                                </span>
+                                {candidate.reasoningEffort === null ? (
+                                  <Check size={14} className="shrink-0 text-[var(--accent)]" />
+                                ) : null}
+                              </DropdownMenu.Item>
+                              {candidate.reasoningEfforts.map((level) => (
+                                <DropdownMenu.Item
+                                  key={level}
+                                  onSelect={() => applyLevel(level)}
+                                  className="flex h-9 cursor-default items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
+                                >
+                                  <span className="min-w-0 flex-1 truncate">{level}</span>
+                                  {candidate.reasoningEffort === level ? (
+                                    <Check size={14} className="shrink-0 text-[var(--accent)]" />
+                                  ) : null}
+                                </DropdownMenu.Item>
+                              ))}
+                            </DropdownMenu.SubContent>
+                          </DropdownMenu.Portal>
+                        </DropdownMenu.Sub>
                       );
                     })}
                   </DropdownMenu.Content>

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../store";
 import { Composer } from "./Composer";
@@ -251,6 +251,116 @@ describe("Composer input and clearance", () => {
 
     act(() => useAppStore.setState({ newThreadWorkspace: null }));
     expect(document.querySelector("[data-composer-project]")).toBeNull();
+  });
+
+  it("hides the staged project while the first message is pending", () => {
+    useAppStore.setState({
+      newThreadWorkspace: {
+        id: "project-research",
+        name: "Research",
+        kind: "project",
+        rootUri: "/workspace/research",
+      },
+      selectedThreadId: null,
+      pendingRuntimeNewThread: { epoch: 1 } as never,
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    expect(document.querySelector("[data-composer-project]")).toBeNull();
+  });
+
+  it("changes the reasoning level from the model submenu", async () => {
+    const setModelLimits = vi.fn(async () => undefined);
+    useAppStore.setState({
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: true,
+          credentialConfigured: true,
+          health: "ready",
+        },
+      ],
+      models: [
+        {
+          contextWindow: 32768,
+          providerId: "deepseek",
+          id: "deepseek-flash",
+          displayName: "DeepSeek Flash",
+          enabled: true,
+          reasoningEffort: "high",
+          reasoningEfforts: ["low", "high", "max"],
+        },
+      ],
+      selectedModel: { providerId: "deepseek", modelId: "deepseek-flash" },
+      runtimeConnectionStatus: "connected",
+      providerCatalogStatus: "ready",
+      setModelLimits,
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: /DeepSeek Flash/ }));
+    const subTrigger = await screen.findByRole("menuitem", { name: /DeepSeek Flash/ });
+    fireEvent.keyDown(subTrigger, { key: "ArrowRight" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "max" }));
+
+    await waitFor(() =>
+      expect(setModelLimits).toHaveBeenCalledWith({
+        providerId: "deepseek",
+        modelId: "deepseek-flash",
+        contextWindow: 32768,
+        reasoningEfforts: ["low", "high", "max"],
+        reasoningEffort: "max",
+      }),
+    );
+  });
+
+  it("does not offer a reasoning submenu when the model has no levels", async () => {
+    useAppStore.setState({
+      providers: [
+        {
+          id: "deepseek",
+          displayName: "DeepSeek",
+          origin: "builtin",
+          configured: true,
+          credentialConfigured: true,
+          health: "ready",
+        },
+      ],
+      models: [
+        {
+          contextWindow: 32768,
+          providerId: "deepseek",
+          id: "deepseek-flash",
+          displayName: "DeepSeek Flash",
+          enabled: true,
+          reasoningEffort: null,
+          reasoningEfforts: [],
+        },
+      ],
+      selectedModel: { providerId: "deepseek", modelId: "deepseek-flash" },
+      runtimeConnectionStatus: "connected",
+      providerCatalogStatus: "ready",
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "DeepSeek Flash" }));
+    const item = await screen.findByRole("menuitem", { name: "DeepSeek Flash" });
+
+    expect(item.getAttribute("aria-haspopup")).toBeNull();
   });
 
   it("stays quiet without a configured provider and keeps the draft, thread, and workspace", () => {

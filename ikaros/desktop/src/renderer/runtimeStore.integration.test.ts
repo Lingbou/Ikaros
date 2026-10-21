@@ -740,6 +740,8 @@ describe("Runtime-backed renderer store", () => {
     useAppStore.getState().stageProjectWorkspace(workspace);
     useAppStore.getState().setDraft("project request");
     await useAppStore.getState().sendDraft();
+    // The staged project chip disappears as soon as the first message is sent.
+    expect(useAppStore.getState().newThreadWorkspace).toBeNull();
     useAppStore.getState().newChat();
     useAppStore.getState().setDraft("ordinary request");
     await useAppStore.getState().sendDraft();
@@ -2992,9 +2994,17 @@ describe("Runtime-backed renderer store", () => {
     const { useAppStore } = await import("./store");
     await useAppStore.getState().initializeRuntime();
 
+    const stagedWorkspace = {
+      id: "project-retry",
+      name: "Retry project",
+      kind: "project" as const,
+      rootUri: "/workspace/retry",
+    };
+    useAppStore.getState().stageProjectWorkspace(stagedWorkspace);
     useAppStore.getState().setDraft("retry creation");
     await useAppStore.getState().sendDraft();
     expect(useAppStore.getState().runtimeError).toBe("create failed");
+    expect(useAppStore.getState().newThreadWorkspace).toEqual(stagedWorkspace);
     expect(useAppStore.getState().runStatus).toBe("failed");
     expect(useAppStore.getState().draft).toBe("retry creation");
     expect(useAppStore.getState().pendingRuntimeNewThread).toBeNull();
