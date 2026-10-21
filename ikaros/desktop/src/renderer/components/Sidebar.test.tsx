@@ -64,6 +64,59 @@ afterEach(() => {
   useAppStore.setState(initialState, true);
 });
 
+describe("Sidebar run indicators", () => {
+  it("marks running Threads and their project without touching idle rows", () => {
+    useAppStore.setState({
+      runtimeThreadActivity: {
+        "thread-tools": {
+          "run-project": {
+            seq: 4,
+            branchId: "branch-tools",
+            turnId: "turn-tools",
+            runId: "run-project",
+            status: "running",
+            turnOrdinal: 1,
+            runOrdinal: 1,
+          },
+        },
+        "thread-recent-notes": {
+          "run-recent": {
+            seq: 9,
+            branchId: "branch-recent",
+            turnId: "turn-recent",
+            runId: "run-recent",
+            status: "queued",
+            turnOrdinal: 1,
+            runOrdinal: 1,
+          },
+        },
+      },
+    });
+
+    render(
+      <Tooltip.Provider>
+        <Sidebar />
+      </Tooltip.Provider>,
+    );
+
+    const projectRow = screen.getByText("Research").closest("button");
+    expect(projectRow).not.toBeNull();
+    expect(within(projectRow as HTMLElement).getByRole("img", { name: "Running" })).toBeTruthy();
+
+    const runningThreadRow = screen.getByText("Check the source archive").closest("button");
+    expect(runningThreadRow).not.toBeNull();
+    expect(within(runningThreadRow as HTMLElement).getByRole("img", { name: "Running" })).toBeTruthy();
+
+    const recentRow = screen.getByText("Compare note-taking methods").closest("button");
+    expect(recentRow).not.toBeNull();
+    expect(within(recentRow as HTMLElement).getByRole("img", { name: "Running" })).toBeTruthy();
+
+    const idleRow = screen.getByText("Plan tomorrow's priorities").closest("button");
+    expect(idleRow).not.toBeNull();
+    expect(within(idleRow as HTMLElement).queryByRole("img", { name: "Running" })).toBeNull();
+  });
+});
+
 describe("Sidebar conversation ownership", () => {
   it("shows the product name without a leading brand icon", () => {
     render(
