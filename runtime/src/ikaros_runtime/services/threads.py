@@ -116,7 +116,11 @@ class ThreadService:
         title = title_from(params["title"])
         self._assert_request_safe((thread_id, title))
         try:
-            thread, event = self._store.rename_thread(thread_id, title)
+            thread, event = self._store.rename_thread(
+                thread_id,
+                title,
+                title_source="user",
+            )
         except LookupError as error:
             raise InvalidParamsError(str(error)) from error
         return _mutation_outcome(thread.to_wire(), event)

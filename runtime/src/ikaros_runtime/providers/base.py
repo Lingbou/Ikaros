@@ -11,12 +11,28 @@ from .model_defaults import UNKNOWN_MODEL_CAPACITY
 
 
 @dataclass(frozen=True, slots=True)
+class TextPart:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImageUrlPart:
+    """One inline image reference (always a ``data:`` URL)."""
+
+    url: str
+
+
+type MessagePart = TextPart | ImageUrlPart
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderMessage:
     role: str
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     reasoning_content: str | None = None
+    parts: tuple[MessagePart, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

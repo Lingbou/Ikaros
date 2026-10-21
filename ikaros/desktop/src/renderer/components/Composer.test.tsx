@@ -132,7 +132,20 @@ describe("Composer input and clearance", () => {
 
   it("lists attached files above the input and removes them", async () => {
     useAppStore.setState({
-      composerAttachments: ["/tmp/notes.txt", "/tmp/spec.md"],
+      composerAttachments: [
+        {
+          path: "/tmp/notes.txt",
+          kind: "text",
+          mimeType: "text/plain",
+          name: "notes.txt",
+        },
+        {
+          path: "/tmp/spec.md",
+          kind: "text",
+          mimeType: "text/markdown",
+          name: "spec.md",
+        },
+      ],
     });
     render(
       <Tooltip.Provider>
@@ -145,8 +158,80 @@ describe("Composer input and clearance", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
 
-    expect(useAppStore.getState().composerAttachments).toEqual(["/tmp/spec.md"]);
+    expect(useAppStore.getState().composerAttachments).toEqual([
+      {
+        path: "/tmp/spec.md",
+        kind: "text",
+        mimeType: "text/markdown",
+        name: "spec.md",
+      },
+    ]);
     expect(screen.queryByText("notes.txt")).toBeNull();
+  });
+
+  it("renders image thumbnails and removes them", () => {
+    useAppStore.setState({
+      composerAttachments: [
+        {
+          path: "/tmp/pixel.png",
+          kind: "image",
+          mimeType: "image/png",
+          name: "pixel.png",
+          previewUrl: "data:image/png;base64,AAAA",
+        },
+      ],
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByAltText("Attached image pixel.png")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,AAAA",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove pixel.png" }));
+    expect(useAppStore.getState().composerAttachments).toEqual([]);
+  });
+
+  it("attaches images pasted into the composer", () => {
+    const addComposerImageFiles = vi.fn(async () => undefined);
+    useAppStore.setState({ addComposerImageFiles } as Partial<typeof initialState>);
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+    const pasted = new File([new Uint8Array([1, 2, 3])], "pasted.png", { type: "image/png" });
+
+    fireEvent.paste(screen.getByRole("textbox", { name: "Message Ikaros" }), {
+      clipboardData: {
+        items: [{ kind: "file", type: "image/png", getAsFile: () => pasted }],
+      },
+    });
+
+    expect(addComposerImageFiles).toHaveBeenCalledWith([pasted]);
+  });
+
+  it("attaches files dropped onto the composer", () => {
+    const addComposerImageFiles = vi.fn(async () => undefined);
+    useAppStore.setState({ addComposerImageFiles } as Partial<typeof initialState>);
+    const { container } = render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+    const surface = container.querySelector<HTMLElement>("[data-composer-surface]");
+    if (!surface) throw new Error("composer surface was not rendered");
+    const dropped = new File([new Uint8Array([1])], "dropped.png", { type: "image/png" });
+
+    fireEvent.dragOver(surface, { dataTransfer: { types: ["Files"], files: [dropped] } });
+    expect(screen.getByText("Drop files to attach")).toBeVisible();
+    fireEvent.drop(surface, { dataTransfer: { types: ["Files"], files: [dropped] } });
+
+    expect(addComposerImageFiles).toHaveBeenCalledWith([dropped]);
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
   });
 
   it("uses one primary button for steer and Stop while a run is active", () => {

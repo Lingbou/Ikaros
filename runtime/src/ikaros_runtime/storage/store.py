@@ -7,7 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
 
+from ..attachments import (
+    AttachmentRef,
+    attachment_refs_to_wire,
+    message_attachment_refs,
+)
 from ..domain import (
+    THREAD_TITLE_RENAME_SOURCES,
     ContextItem,
     JournalEvent,
     JsonObject,
@@ -442,13 +448,16 @@ class SqliteRuntimeStore:
             self._connection.execute(
                 """
                 INSERT INTO threads(
-                    id, title, default_branch_id, workspace_json,
+                    id, title, title_source, default_branch_id, workspace_json,
                     created_at, updated_at, client_request_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     thread_id,
                     title,
+                    # A title supplied at creation is a client placeholder: the
+                    # Thread title service may replace it with a model title.
+                    "provisional" if title is not None else None,
                     branch_id,
                     workspace_to_json(workspace),
                     timestamp,
@@ -493,8 +502,21 @@ class SqliteRuntimeStore:
         self,
         thread_id: str,
         title: str | None,
+        *,
+        title_source: str = "user",
     ) -> tuple[ThreadSummary, JournalEvent | None]:
+        """Rename a Thread and record where the title came from.
+
+        ``user`` renames are explicit client intent and are never replaced by a
+        generated title; ``auto`` renames come from the title service and are
+        dropped when the Thread already owns a user title.
+        """
+
+        if title_source not in THREAD_TITLE_RENAME_SOURCES:
+            raise ValueError("title_source must be user or auto")
         current = self.get_thread(thread_id).thread
+        if title_source == "auto" and self.thread_title_source(thread_id) == "user":
+            return current, None
         if current.title == title:
             return current, None
         timestamp = utc_now()
@@ -509,17 +531,58 @@ class SqliteRuntimeStore:
         )
         with self._connection:
             self._connection.execute(
-                "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
-                (title, timestamp, thread_id),
+                """
+                UPDATE threads
+                SET title = ?, title_source = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title, title_source, timestamp, thread_id),
             )
             event = self._append_event(
                 event_type="thread.renamed",
                 thread_id=thread_id,
                 branch_id=current.default_branch_id,
                 timestamp=timestamp,
-                payload={"thread": updated.to_wire()},
+                payload={"thread": updated.to_wire(), "titleSource": title_source},
             )
         return updated, event
+
+    def thread_title_source(self, thread_id: str) -> str | None:
+        """Return the recorded provenance of one Thread title."""
+
+        row = self._connection.execute(
+            "SELECT title_source FROM threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("thread was not found")
+        return row["title_source"]
+
+    def is_thread_first_run(self, run_id: str) -> bool:
+        """Return whether a Run is the earliest Run of its Thread."""
+
+        row = self._connection.execute(
+            """
+            SELECT runs.created_at, turns.thread_id
+            FROM runs JOIN turns ON turns.id = runs.turn_id
+            WHERE runs.id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("run was not found")
+        earlier = self._connection.execute(
+            """
+            SELECT 1
+            FROM runs JOIN turns ON turns.id = runs.turn_id
+            WHERE turns.thread_id = ?
+              AND runs.id != ?
+              AND (runs.created_at < ? OR (runs.created_at = ? AND runs.id < ?))
+            LIMIT 1
+            """,
+            (row["thread_id"], run_id, row["created_at"], row["created_at"], run_id),
+        ).fetchone()
+        return earlier is None
 
     def set_thread_archived(
         self,
@@ -593,6 +656,7 @@ class SqliteRuntimeStore:
         provider_id: str,
         model_id: str,
         client_request_id: str,
+        attachments: Sequence[AttachmentRef] = (),
     ) -> PreparedTurn | None:
         return find_turn_by_client_request_id(
             self._connection,
@@ -600,6 +664,7 @@ class SqliteRuntimeStore:
             branch_id=branch_id,
             content=content,
             provider_id=provider_id,
+            attachments=attachments,
             model_id=model_id,
             client_request_id=client_request_id,
         )
@@ -613,6 +678,7 @@ class SqliteRuntimeStore:
         run_config_template: RunConfigTemplate,
         client_request_id: str | None = None,
         user_item_data: dict[str, Any] | None = None,
+        attachments: Sequence[AttachmentRef] = (),
     ) -> PreparedTurn:
         provider_id = run_config_template.provider.provider_id
         model_id = run_config_template.provider.model_id
@@ -624,6 +690,7 @@ class SqliteRuntimeStore:
                 provider_id=provider_id,
                 model_id=model_id,
                 client_request_id=client_request_id,
+                attachments=attachments,
             )
             if existing is not None:
                 return existing
@@ -685,6 +752,8 @@ class SqliteRuntimeStore:
         }
         if client_request_id is not None:
             run_payload["clientRequestId"] = client_request_id
+        if attachments:
+            item_data["attachments"] = attachment_refs_to_wire(attachments)
         item_payload = self._item_payload(
             item_id=user_item_id,
             turn_id=turn_id,
@@ -2014,7 +2083,11 @@ class SqliteRuntimeStore:
         return None
 
     def append_steer_item_idempotent(
-        self, run_id: str, content: str, request_id: str
+        self,
+        run_id: str,
+        content: str,
+        request_id: str,
+        attachments: Sequence[AttachmentRef] = (),
     ) -> tuple[JournalEvent, bool]:
         """Persist an in-flight user supplement; consumed by the next model step."""
 
@@ -2028,7 +2101,9 @@ class SqliteRuntimeStore:
                 raise LookupError("run is no longer active")
             existing = self.find_steer_item(run_id, request_id)
             if existing is not None:
-                if existing["content"] != content:
+                if existing["content"] != content or (
+                    message_attachment_refs(existing.get("data", {})) != tuple(attachments)
+                ):
                     raise LookupError(
                         "clientRequestId was already used with different steer content"
                     )
@@ -2043,7 +2118,13 @@ class SqliteRuntimeStore:
                 return event_from_row(prior), False
             item_id = f"item_{uuid.uuid4().hex}"
             ordinal = next_item_ordinal(self._connection, run_id)
-            data = {"steer": True, "clientRequestId": request_id, "status": "received"}
+            data: JsonObject = {
+                "steer": True,
+                "clientRequestId": request_id,
+                "status": "received",
+            }
+            if attachments:
+                data["attachments"] = attachment_refs_to_wire(attachments)
             item = self._item_payload(
                 item_id=item_id,
                 turn_id=run.turn_id,

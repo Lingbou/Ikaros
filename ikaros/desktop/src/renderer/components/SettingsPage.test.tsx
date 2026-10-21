@@ -181,6 +181,14 @@ function desktopApiWithPreferences(
         chooseDirectory: async () => null,
         chooseEntries: async () => null
       },
+      attachments: {
+        describe: async () => [],
+        thumbnail: async () => null,
+        saveImage: async () => {
+          throw new Error("not used in settings tests");
+        },
+        pathForFile: () => ""
+      },
       preferences: {
         get: async () => cloneUiPreferences(current),
         update,

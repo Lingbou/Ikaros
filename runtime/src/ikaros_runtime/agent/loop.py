@@ -8,6 +8,7 @@ from dataclasses import replace
 from itertools import count
 from time import monotonic
 
+from ..attachments import AttachmentRef
 from ..cancellation import CancellationToken, RunCancelled
 from ..domain import JournalEvent, ModelUsage
 from ..errors import (
@@ -236,11 +237,19 @@ class AgentLoop:
         except Exception:
             _LOGGER.exception("Run %s terminal observer failed", config.run_id)
 
-    async def steer(self, run_id: str, content: str, request_id: str) -> bool:
+    async def steer(
+        self,
+        run_id: str,
+        content: str,
+        request_id: str,
+        attachments: Sequence[AttachmentRef] = (),
+    ) -> bool:
         """Queue an in-flight supplement for the next model input."""
         if self._store.run_status(run_id) not in {"queued", "running"}:
             return False
-        event, created = self._store.append_steer_item_idempotent(run_id, content, request_id)
+        event, created = self._store.append_steer_item_idempotent(
+            run_id, content, request_id, attachments
+        )
         if created:
             await self._publish(event)
         return True

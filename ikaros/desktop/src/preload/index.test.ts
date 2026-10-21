@@ -15,6 +15,9 @@ const electron = vi.hoisted(() => {
       on: vi.fn(),
       removeListener: vi.fn()
     },
+    webUtils: {
+      getPathForFile: vi.fn((_file: File) => "/tmp/dropped.png")
+    },
     exposedApi: () => exposedApi,
     reset: () => {
       exposedApi = undefined;
@@ -24,7 +27,8 @@ const electron = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   contextBridge: electron.contextBridge,
-  ipcRenderer: electron.ipcRenderer
+  ipcRenderer: electron.ipcRenderer,
+  webUtils: electron.webUtils
 }));
 
 describe("preload Runtime bridge", () => {
@@ -75,6 +79,43 @@ describe("preload Runtime bridge", () => {
     );
     expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
       "ikaros:runtime:file-change-get", changeParams,
+    );
+  });
+
+  it("forwards attachment describe, thumbnail, and pasted-image channels", async () => {
+    const descriptor = {
+      path: "/tmp/a.png",
+      kind: "image" as const,
+      mimeType: "image/png",
+      size: 3,
+    };
+    electron.ipcRenderer.invoke
+      .mockResolvedValueOnce([descriptor])
+      .mockResolvedValueOnce("data:image/png;base64,AAAA")
+      .mockResolvedValueOnce(descriptor);
+    await import("./index");
+    const api = electron.exposedApi();
+    const bytes = new Uint8Array([1, 2, 3]).buffer;
+    const file = new File([bytes], "dropped.png", { type: "image/png" });
+
+    await expect(api?.attachments.describe(["/tmp/a.png"])).resolves.toEqual([descriptor]);
+    await expect(api?.attachments.thumbnail("/tmp/a.png")).resolves.toBe(
+      "data:image/png;base64,AAAA",
+    );
+    await expect(api?.attachments.saveImage(bytes, "image/png")).resolves.toEqual(descriptor);
+    expect(api?.attachments.pathForFile(file)).toBe("/tmp/dropped.png");
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:attachments:describe",
+      ["/tmp/a.png"],
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:attachments:thumbnail",
+      "/tmp/a.png",
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      "ikaros:attachments:save-image",
+      bytes,
+      "image/png",
     );
   });
 

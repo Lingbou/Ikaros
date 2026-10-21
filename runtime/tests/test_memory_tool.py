@@ -22,6 +22,7 @@ from .helpers import prepare_turn
 
 _TOOL_ITEM_ID = "item_" + "a" * 32
 _OTHER_TOOL_ITEM_ID = "item_" + "b" * 32
+_THIRD_TOOL_ITEM_ID = "item_" + "c" * 32
 _PROTECTED_VALUE = "sk-memory-tool-sentinel-0123456789"
 
 
@@ -127,6 +128,12 @@ def test_memory_tool_definition_freezes_the_argument_surface() -> None:
         def search_memories(self, **_arguments: object) -> dict[str, Any]:
             raise AssertionError("the definition must not touch the backend")
 
+        def update_memory(self, **_arguments: object) -> dict[str, Any]:
+            raise AssertionError("the definition must not touch the backend")
+
+        def forget_memory(self, **_arguments: object) -> dict[str, Any]:
+            raise AssertionError("the definition must not touch the backend")
+
     assert MemoryTool(_UnusedBackend()).definition == memory_tool_definition()
     definition = memory_tool_definition()
     assert definition.name == "memory"
@@ -134,7 +141,7 @@ def test_memory_tool_definition_freezes_the_argument_surface() -> None:
     assert schema["required"] == ["action"]
     assert schema["additionalProperties"] is False
     properties = cast(dict[str, dict[str, Any]], schema["properties"])
-    assert properties["action"]["enum"] == ["save", "search"]
+    assert properties["action"]["enum"] == ["save", "search", "update", "forget"]
     assert properties["kind"]["enum"] == [
         "fact",
         "preference",
@@ -143,6 +150,9 @@ def test_memory_tool_definition_freezes_the_argument_surface() -> None:
     ]
     assert properties["scope"]["enum"] == ["global", "workspace"]
     assert properties["content"]["maxLength"] == 2_048
+    assert properties["memoryId"]["pattern"] == "^memory_[0-9a-f]{32}$"
+    assert properties["memoryId"]["minLength"] == 39
+    assert properties["memoryId"]["maxLength"] == 39
     assert properties["limit"]["minimum"] == 1
     assert properties["limit"]["maximum"] == 8
 
@@ -332,6 +342,285 @@ async def test_memory_tool_save_rejects_protected_credential_values(
         assert "protected configuration data" in outcome.output
         assert _PROTECTED_VALUE not in json.dumps(outcome.details) + outcome.output
         assert _count_memories(environment.memory_store) == 0
+    finally:
+        environment.store.close()
+        environment.memory_store.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_tool_update_appends_revision_and_preserves_scope(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    try:
+        context = _prepare_search_run(environment)
+        saved = await _call(
+            environment.tool,
+            {
+                "action": "save",
+                "content": "The user prefers concise technical explanations.",
+                "kind": "preference",
+                "scope": "global",
+            },
+            context,
+        )
+        memory_id = cast(str, saved.payload["memoryId"])
+        update_context = _context(
+            context.run_id,
+            context.thread_id,
+            _OTHER_TOOL_ITEM_ID,
+        )
+        arguments = {
+            "action": "update",
+            "memoryId": memory_id,
+            "content": "The user prefers light mode.",
+        }
+
+        updated = await _call(environment.tool, arguments, update_context)
+
+        assert updated.ok is True
+        assert updated.payload == {
+            "action": "update",
+            "memoryId": memory_id,
+            "revision": 2,
+            "created": True,
+            "truncated": False,
+        }
+        assert updated.details == {
+            "action": "update",
+            "truncated": False,
+            "memoryId": memory_id,
+            "created": True,
+            "revision": 2,
+        }
+        stored = environment.memory_store.get_memory(memory_id)
+        assert stored.content == "The user prefers light mode."
+        assert stored.kind == "preference"
+        assert stored.scope.to_wire() == {"type": "global", "key": None}
+        assert stored.revision == 2
+        config = environment.store.get_run_config(context.run_id)
+        assert stored.provenance.source_kind == "session_item"
+        assert stored.provenance.item_id == config.user_item_id
+        old_revision = environment.memory_store._connection.execute(
+            """
+            SELECT content, source_kind
+            FROM memory_revisions
+            WHERE memory_id = ? AND revision = 1
+            """,
+            (memory_id,),
+        ).fetchone()
+        assert old_revision is not None
+        assert tuple(old_revision) == (
+            "The user prefers concise technical explanations.",
+            "session_item",
+        )
+        assert _count_memories(environment.memory_store) == 1
+
+        replay = await _call(environment.tool, arguments, update_context)
+
+        assert replay.payload["revision"] == 2
+        assert replay.payload["created"] is False
+        assert _count_memories(environment.memory_store) == 1
+
+        found = await _call(
+            environment.tool,
+            {"action": "search", "query": "light mode"},
+            context,
+        )
+        memories = cast(list[dict[str, Any]], found.payload["memories"])
+        assert [(memory["id"], memory["revision"], memory["content"]) for memory in memories] == [
+            (memory_id, 2, "The user prefers light mode.")
+        ]
+        old = await _call(
+            environment.tool,
+            {"action": "search", "query": "concise technical explanations"},
+            context,
+        )
+        assert old.payload["count"] == 0
+    finally:
+        environment.store.close()
+        environment.memory_store.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_tool_forget_is_idempotent_and_removes_from_search(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    try:
+        context = _prepare_search_run(environment)
+        saved = await _call(
+            environment.tool,
+            {
+                "action": "save",
+                "content": "The release cadence is weekly.",
+                "kind": "project",
+                "scope": "global",
+            },
+            context,
+        )
+        memory_id = cast(str, saved.payload["memoryId"])
+        forget_context = _context(
+            context.run_id,
+            context.thread_id,
+            _THIRD_TOOL_ITEM_ID,
+        )
+        arguments = {"action": "forget", "memoryId": memory_id}
+
+        forgotten = await _call(environment.tool, arguments, forget_context)
+
+        assert forgotten.ok is True
+        assert forgotten.payload == {
+            "action": "forget",
+            "memoryId": memory_id,
+            "revision": 2,
+            "created": True,
+            "truncated": False,
+        }
+        stored = environment.memory_store.get_memory(memory_id)
+        assert stored.state == "forgotten"
+        assert stored.revision == 2
+        assert stored.content is None
+        assert stored.forgotten_at is not None
+        config = environment.store.get_run_config(context.run_id)
+        assert stored.provenance.source_kind == "session_item"
+        assert stored.provenance.item_id == config.user_item_id
+        found = await _call(
+            environment.tool,
+            {"action": "search", "query": "release cadence"},
+            context,
+        )
+        assert found.payload["count"] == 0
+
+        replay = await _call(environment.tool, arguments, forget_context)
+
+        assert replay.payload["revision"] == 2
+        assert replay.payload["created"] is False
+        assert environment.memory_store.get_memory(memory_id).revision == 2
+    finally:
+        environment.store.close()
+        environment.memory_store.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_tool_update_rejects_mutation_and_protected_content(
+    tmp_path: Path,
+) -> None:
+    protected_value = "sk-memory-update-sentinel-0123456789"
+    environment = _environment(tmp_path, protected_values=(protected_value,))
+    try:
+        context = _prepare_search_run(environment)
+        saved = await _call(
+            environment.tool,
+            {
+                "action": "save",
+                "content": "A safe durable fact.",
+                "kind": "fact",
+                "scope": "global",
+            },
+            context,
+        )
+        memory_id = cast(str, saved.payload["memoryId"])
+        update_context = _context(
+            context.run_id,
+            context.thread_id,
+            _OTHER_TOOL_ITEM_ID,
+        )
+        contract_violation = await _call(
+            environment.tool,
+            {
+                "action": "update",
+                "memoryId": memory_id,
+                "content": "Attempted change.",
+                "kind": "preference",
+            },
+            update_context,
+        )
+        assert contract_violation.details["errorCode"] == "invalid_arguments"
+
+        protected = await _call(
+            environment.tool,
+            {
+                "action": "update",
+                "memoryId": memory_id,
+                "content": f"The token is {protected_value}.",
+            },
+            update_context,
+        )
+
+        assert protected.ok is False
+        assert protected.details["errorCode"] == "invalid_arguments"
+        assert protected_value not in protected.output
+        stored = environment.memory_store.get_memory(memory_id)
+        assert stored.content == "A safe durable fact."
+        assert stored.revision == 1
+        assert stored.kind == "fact"
+        assert stored.scope.to_wire() == {"type": "global", "key": None}
+    finally:
+        environment.store.close()
+        environment.memory_store.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_tool_update_and_forget_report_stable_reason_codes(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    try:
+        context = _prepare_search_run(environment)
+        missing = await _call(
+            environment.tool,
+            {
+                "action": "update",
+                "memoryId": "memory_" + "0" * 32,
+                "content": "A replacement.",
+            },
+            _context(context.run_id, context.thread_id, _OTHER_TOOL_ITEM_ID),
+        )
+        assert missing.ok is False
+        assert missing.details["errorCode"] == "memory_not_found"
+
+        saved = await _call(
+            environment.tool,
+            {
+                "action": "save",
+                "content": "A fact that will be forgotten.",
+                "kind": "fact",
+                "scope": "global",
+            },
+            context,
+        )
+        memory_id = cast(str, saved.payload["memoryId"])
+        forgot = await _call(
+            environment.tool,
+            {"action": "forget", "memoryId": memory_id},
+            _context(context.run_id, context.thread_id, _THIRD_TOOL_ITEM_ID),
+        )
+        assert forgot.ok is True
+
+        stale_update = await _call(
+            environment.tool,
+            {
+                "action": "update",
+                "memoryId": memory_id,
+                "content": "Cannot revive a tombstone.",
+            },
+            _context(context.run_id, context.thread_id, _TOOL_ITEM_ID),
+        )
+        assert stale_update.ok is False
+        assert stale_update.details["errorCode"] == "memory_forgotten"
+
+        conflict = await _call(
+            environment.tool,
+            {
+                "action": "update",
+                "memoryId": memory_id,
+                "content": "A different body for the same request id.",
+            },
+            _context(context.run_id, context.thread_id, _THIRD_TOOL_ITEM_ID),
+        )
+        assert conflict.ok is False
+        assert conflict.details["errorCode"] == "memory_idempotency_conflict"
     finally:
         environment.store.close()
         environment.memory_store.close()
