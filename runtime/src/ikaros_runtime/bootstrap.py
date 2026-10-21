@@ -28,7 +28,7 @@ from .providers.base import ProviderAdapter
 from .providers.openai_compatible.adapter import OpenAICompatibleAdapter
 from .providers.openai_compatible.discovery import discover_openai_compatible_models
 from .providers.registry import ConfigStore, RuntimeProviderRegistry
-from .run_input import InstructionBlock, ProviderExecutionSnapshot
+from .run_input import InstructionBlock, ProviderExecutionSnapshot, RunConfig
 from .security import (
     RuntimeSecurity,
     contains_protected_value,
@@ -43,11 +43,13 @@ from .services.processes import ProcessService
 from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
 from .services.subagents import SubagentService
+from .services.thread_messaging import ThreadMessagingService
 from .services.threads import ThreadService
 from .services.turns import TurnService
 from .services.usage import UsageService
 from .skills import SkillCatalog
 from .storage import SqliteRuntimeStore
+from .thread_titles import ThreadTitleService
 from .tools import (
     EditTool,
     GlobTool,
@@ -64,8 +66,12 @@ from .tools import (
     ProcessWriteTool,
     ReadTool,
     SubagentTool,
+    ThreadArchiveTool,
+    ThreadCreateTool,
     ThreadListTool,
     ThreadReadTool,
+    ThreadRenameTool,
+    ThreadSendTool,
     WriteTool,
 )
 from .tools.artifacts import ToolArtifactStore
@@ -155,10 +161,25 @@ class RuntimeApplication:
             store,
         )
         memory_retriever = MemoryRetriever(memory_store)
+        self.threads = ThreadService(
+            store,
+            self.security.assert_request_safe,
+            managed_workspace_factory=provision_managed_workspace,
+        )
+        self._thread_messaging = ThreadMessagingService(
+            store=store,
+            threads=self.threads,
+            assert_request_safe=self.security.assert_request_safe,
+            publish=publish,
+            enqueue_run=self._enqueue_thread_run,
+            run_inline=self._run_thread_message,
+        )
         self._subagents = SubagentService(
             store=store,
             run_child=self._run_subagent,
             publish=publish,
+            enqueue=self._enqueue_subagent_run,
+            cancel=self._cancel_subagent_run,
         )
         tool_executor = ToolExecutor(
             ToolRegistry(
@@ -174,7 +195,11 @@ class RuntimeApplication:
                     EditTool(),
                     HistoryReadTool(store.read_history_slice),
                     ThreadListTool(store.list_threads_for_model),
-                    ThreadReadTool(store.read_thread_slice),
+                    ThreadReadTool(self._subagents.read_thread),
+                    ThreadCreateTool(self._thread_messaging),
+                    ThreadRenameTool(self._thread_messaging),
+                    ThreadArchiveTool(self._thread_messaging),
+                    ThreadSendTool(self._thread_messaging),
                     GlobTool(),
                     GrepTool(),
                     ListTool(),
@@ -217,6 +242,14 @@ class RuntimeApplication:
             protected_values=self.security.protected_values,
             enabled=_memory_refinement_enabled(),
         )
+        self._titles = ThreadTitleService(
+            runtime_store=store,
+            resolve_provider=self._provider_registry.resolve,
+            provider_snapshot=provider_snapshot,
+            protected_values=self.security.protected_values,
+            publish=publish,
+            enabled=_thread_titles_enabled(),
+        )
         loop = AgentLoop(
             store,
             self._provider_registry,
@@ -227,17 +260,12 @@ class RuntimeApplication:
             provider_snapshot_resolver=provider_snapshot,
             identity_core=self.identity_core,
             memory_retriever=memory_retriever,
-            on_run_terminal=self._refinement.notify_run_terminal,
+            on_run_terminal=self._notify_run_terminal,
         )
         self._scheduler = AgentScheduler(loop, max_workers=agent_workers)
         self._agent_loop = loop
         self._publish = publish
 
-        self.threads = ThreadService(
-            store,
-            self.security.assert_request_safe,
-            managed_workspace_factory=provision_managed_workspace,
-        )
         self.turns = TurnService(
             store,
             self._scheduler,
@@ -307,11 +335,38 @@ class RuntimeApplication:
         if outcome.cancel_after_ack is not None:
             await self._scheduler.cancel(outcome.cancel_after_ack)
 
+    def _notify_run_terminal(self, config: RunConfig, status: str) -> None:
+        """Fan a settled Run out to observers that must never block it."""
+
+        self._subagents.notify_run_terminal(config.run_id)
+        self._refinement.notify_run_terminal(config, status)
+        self._titles.notify_run_terminal(config, status)
+
+    async def _enqueue_subagent_run(self, run_id: str) -> None:
+        await self._scheduler.enqueue(run_id)
+
+    async def _cancel_subagent_run(self, run_id: str) -> None:
+        await self._scheduler.cancel(run_id)
+
     async def _run_subagent(
         self,
         run_id: str,
         cancellation: CancellationToken,
     ) -> None:
+        await self._agent_loop.run(run_id, cancellation)
+
+    async def _enqueue_thread_run(self, run_id: str) -> None:
+        """Hand a delivered Turn to the scheduler for independent execution."""
+
+        await self._scheduler.enqueue(run_id)
+
+    async def _run_thread_message(
+        self,
+        run_id: str,
+        cancellation: CancellationToken,
+    ) -> None:
+        """Run a delivered Turn inline on the worker that is waiting for it."""
+
         await self._agent_loop.run(run_id, cancellation)
 
     async def close(self) -> None:
@@ -326,8 +381,10 @@ class RuntimeApplication:
                     logging.getLogger("ikaros_runtime").exception(
                         "telegram channel shutdown failed"
                     )
+            self._subagents.close()
             await self._scheduler.close()
             await self._refinement.close()
+            await self._titles.close()
             await self._process_manager.close()
             if self._process_events:
                 await asyncio.gather(*self._process_events)
@@ -340,6 +397,12 @@ def _memory_refinement_enabled() -> bool:
     """Honor the ``IKAROS_MEMORY_REFINEMENT=0`` kill switch."""
 
     return os.environ.get("IKAROS_MEMORY_REFINEMENT", "1").strip() != "0"
+
+
+def _thread_titles_enabled() -> bool:
+    """Honor the ``IKAROS_THREAD_TITLES=0`` kill switch."""
+
+    return os.environ.get("IKAROS_THREAD_TITLES", "1").strip() != "0"
 
 
 async def run_runtime_server(

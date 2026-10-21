@@ -7,8 +7,10 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any, cast
 
+from ..attachments import AttachmentRef, message_attachment_refs
 from ..domain import (
     JOURNAL_EVENT_SCHEMA_VERSION,
+    THREAD_TITLE_RENAME_SOURCES,
     WORKSPACE_KINDS,
     ContextItem,
     JournalEvent,
@@ -181,11 +183,12 @@ def find_turn_by_client_request_id(
     provider_id: str,
     model_id: str,
     client_request_id: str,
+    attachments: Sequence[AttachmentRef] = (),
 ) -> PreparedTurn | None:
     existing = connection.execute(
         """
         SELECT r.id AS run_id, r.turn_id, r.provider_id, r.model_id,
-               t.thread_id, t.branch_id, i.content
+               t.thread_id, t.branch_id, i.content, i.data_json
         FROM runs r
         JOIN turns t ON t.id = r.turn_id
         JOIN items i ON i.run_id = r.id AND i.ordinal = 1
@@ -200,7 +203,11 @@ def find_turn_by_client_request_id(
         str(existing[name])
         for name in ("thread_id", "branch_id", "provider_id", "model_id", "content")
     )
-    if actual != expected:
+    stored_data = json_loads(str(existing["data_json"]))
+    stored_attachments = (
+        message_attachment_refs(stored_data) if isinstance(stored_data, dict) else ()
+    )
+    if actual != expected or stored_attachments != tuple(attachments):
         raise LookupError("clientRequestId was already used with different turn.start parameters")
     return PreparedTurn(
         turn_id=str(existing["turn_id"]),
@@ -471,13 +478,16 @@ def apply_event(
         connection.execute(
             """
             INSERT INTO threads(
-                id, title, default_branch_id, workspace_json,
+                id, title, title_source, default_branch_id, workspace_json,
                 created_at, updated_at, archived_at, client_request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 thread["id"],
                 thread["title"],
+                # A title supplied at creation is a client placeholder: it may be
+                # replaced once the Thread's first Run generates a model title.
+                "provisional" if thread["title"] is not None else None,
                 thread["defaultBranchId"],
                 workspace_to_json(workspace_from_wire(thread["workspace"])),
                 thread["createdAt"],
@@ -496,7 +506,10 @@ def apply_event(
             ),
         )
     elif event_type in {"thread.renamed", "thread.archived", "thread.unarchived"}:
-        _require_keys(payload, {"thread"})
+        _require_keys(
+            payload,
+            {"thread", "titleSource"} if event_type == "thread.renamed" else {"thread"},
+        )
         thread = _record(payload, "thread", _THREAD_KEYS)
         _validate_thread(thread)
         _require_equal("thread update time", thread["updatedAt"], event.timestamp)
@@ -513,19 +526,36 @@ def apply_event(
             run_id=None,
             item_id=None,
         )
-        updated = connection.execute(
-            """
-            UPDATE threads
-            SET title = ?, updated_at = ?, archived_at = ?
-            WHERE id = ?
-            """,
-            (
-                thread["title"],
-                thread["updatedAt"],
-                thread["archivedAt"],
-                thread["id"],
-            ),
-        )
+        if event_type == "thread.renamed":
+            title_source = _require_thread_rename_source(payload["titleSource"])
+            updated = connection.execute(
+                """
+                UPDATE threads
+                SET title = ?, title_source = ?, updated_at = ?, archived_at = ?
+                WHERE id = ?
+                """,
+                (
+                    thread["title"],
+                    title_source,
+                    thread["updatedAt"],
+                    thread["archivedAt"],
+                    thread["id"],
+                ),
+            )
+        else:
+            updated = connection.execute(
+                """
+                UPDATE threads
+                SET title = ?, updated_at = ?, archived_at = ?
+                WHERE id = ?
+                """,
+                (
+                    thread["title"],
+                    thread["updatedAt"],
+                    thread["archivedAt"],
+                    thread["id"],
+                ),
+            )
         _require_one_update(updated, event_type)
     elif event_type == "item.completed" and "turn" in payload:
         _require_keys(
@@ -1538,6 +1568,12 @@ _ITEM_KEYS = {
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 
+def _require_thread_rename_source(value: object) -> str:
+    if not isinstance(value, str) or value not in THREAD_TITLE_RENAME_SOURCES:
+        raise RuntimeError("thread.renamed payload titleSource is invalid")
+    return value
+
+
 def _validate_thread(thread: dict[str, Any]) -> None:
     for key in ("id", "defaultBranchId", "createdAt", "updatedAt"):
         _require_string(f"Thread {key}", thread[key])
@@ -1595,6 +1631,10 @@ def _validate_item(item: dict[str, Any]) -> None:
     _require_choice("Item kind", item["kind"], {"message", "tool_call", "tool_result"})
     if not isinstance(item["data"], dict):
         raise RuntimeError("journal event Item data is not an object")
+    try:
+        message_attachment_refs(item["data"])
+    except (TypeError, ValueError):
+        raise RuntimeError("journal event Item attachments are invalid") from None
 
 
 def _validate_model_usage(step_ordinal: object, usage: dict[str, Any]) -> None:

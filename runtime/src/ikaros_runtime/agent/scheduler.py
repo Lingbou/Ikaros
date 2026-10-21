@@ -11,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+from ..attachments import AttachmentRef
 from ..cancellation import CancellationToken
 
 _LOGGER = logging.getLogger("ikaros_runtime.agent.scheduler")
@@ -150,15 +151,21 @@ class AgentScheduler:
             await self._loop.cancel(run_id)
         return True
 
-    async def steer(self, run_id: str, content: str, request_id: str) -> bool:
+    async def steer(
+        self,
+        run_id: str,
+        content: str,
+        request_id: str,
+        attachments: Sequence[AttachmentRef] = (),
+    ) -> bool:
         entry = self._entries.get(run_id)
         if entry is None or entry.state != "running":
             return False
         steer = getattr(self._loop, "steer", None)
         if steer is None:
             return False
-        callback = cast(Callable[[str, str, str], Awaitable[bool]], steer)
-        return await callback(run_id, content, request_id)
+        callback = cast(Callable[[str, str, str, Sequence[AttachmentRef]], Awaitable[bool]], steer)
+        return await callback(run_id, content, request_id, attachments)
 
     async def close(self) -> None:
         workers = tuple(self._workers)

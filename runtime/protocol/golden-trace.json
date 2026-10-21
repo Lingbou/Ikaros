@@ -685,7 +685,8 @@
               "createdAt": "2026-08-15T12:00:00.000Z",
               "updatedAt": "2026-08-15T12:00:00.001Z",
               "archivedAt": null
-            }
+            },
+            "titleSource": "user"
           }
         }
       }
@@ -1064,7 +1065,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -1108,7 +1109,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -1539,7 +1540,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -1835,7 +1836,7 @@
               ],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -2358,7 +2359,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -2443,7 +2444,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 31129,
                 "reservedCurrentRunTokens": 7782,
                 "instructionTokens": 1531,
@@ -2999,7 +3000,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,
@@ -3108,7 +3109,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,
@@ -3352,7 +3353,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,
@@ -3453,7 +3454,7 @@
               "memory": [],
               "budget": {
                 "mode": "bounded",
-                "measurementVersion": "conservative-utf8-upper-bound",
+                "measurementVersion": "conservative-utf8-upper-bound-v2",
                 "maximumTokens": 5700,
                 "reservedCurrentRunTokens": 1425,
                 "instructionTokens": 1531,

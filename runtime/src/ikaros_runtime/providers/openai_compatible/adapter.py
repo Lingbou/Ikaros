@@ -19,6 +19,7 @@ from ...json_codec import loads as json_loads
 from ...security import ProtectedStreamGuard, ProtectedValueError
 from ...tools.core import ToolDefinition
 from ..base import (
+    ImageUrlPart,
     ModelConfig,
     ProviderConfig,
     ProviderEvent,
@@ -27,6 +28,7 @@ from ..base import (
     ReasoningDelta,
     ResponseMetadata,
     TextDelta,
+    TextPart,
 )
 from .streaming import (
     PROTECTED_RESPONSE_MESSAGE,
@@ -486,10 +488,14 @@ def provider_request_headers(
 
 
 def _message_to_openai(message: ProviderMessage) -> dict[str, object]:
+    if message.parts and message.role != "user":
+        raise ProviderFailure("protocol", "provider context contains an invalid message")
     if message.role == "system":
         return {"role": "system", "content": message.content}
     if message.role == "user":
-        return {"role": "user", "content": message.content}
+        if not message.parts:
+            return {"role": "user", "content": message.content}
+        return {"role": "user", "content": _user_content_parts(message)}
     if message.role == "assistant" and message.tool_calls:
         value: dict[str, object] = {
             "role": "assistant",
@@ -522,6 +528,20 @@ def _message_to_openai(message: ProviderMessage) -> dict[str, object]:
             "content": message.content,
         }
     raise ProviderFailure("protocol", "provider context contains an invalid message")
+
+
+def _user_content_parts(message: ProviderMessage) -> list[dict[str, object]]:
+    content: list[dict[str, object]] = []
+    if message.content:
+        content.append({"type": "text", "text": message.content})
+    for part in message.parts:
+        if isinstance(part, TextPart):
+            content.append({"type": "text", "text": part.text})
+        elif isinstance(part, ImageUrlPart):
+            content.append({"type": "image_url", "image_url": {"url": part.url}})
+        else:
+            raise ProviderFailure("protocol", "provider context contains an invalid message")
+    return content
 
 
 def _tool_to_openai(tool: ToolDefinition) -> dict[str, object]:

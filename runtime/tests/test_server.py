@@ -313,14 +313,16 @@ async def _start_runtime(
     python_path = os.pathsep.join([str(_RUNTIME_SRC_ROOT), str(_RUNTIME_ROOT)])
     if existing_pp := os.environ.get("PYTHONPATH"):
         python_path = f"{python_path}{os.pathsep}{existing_pp}"
-    # Background Memory refinement is exercised end to end by
-    # test_completed_run_refines_memory_through_the_protocol; the other
+    # Background Memory refinement and Thread titles are exercised end to end by
+    # test_completed_run_refines_memory_through_the_protocol and
+    # test_completed_run_generates_a_thread_title_through_the_protocol; the other
     # server tests keep provider request accounting deterministic.
     child_env = {
         **os.environ,
         "IKAROS_HOME": str(runtime_home),
         "PYTHONPATH": python_path,
         "IKAROS_MEMORY_REFINEMENT": "0",
+        "IKAROS_THREAD_TITLES": "0",
     }
     if env is not None:
         child_env.update(env)
@@ -595,6 +597,20 @@ class FakeOpenAIEndpoint:
         return _fake_sse_text("Second fake response with context.")
 
 
+class TitlingOpenAIEndpoint(FakeOpenAIEndpoint):
+    """Answer the background Thread-title call with a stable title."""
+
+    async def _response_body(self, request: dict[str, Any]) -> bytes:
+        messages = cast(list[dict[str, Any]], request["messages"])
+        if any(
+            message["role"] == "system"
+            and "You name conversations." in message["content"]
+            for message in messages
+        ):
+            return _fake_sse_text('"Generated Thread Title"')
+        return await super()._response_body(request)
+
+
 class RefiningOpenAIEndpoint(FakeOpenAIEndpoint):
     """Answer a Memory refinement extraction call with strict JSON."""
 
@@ -606,7 +622,8 @@ class RefiningOpenAIEndpoint(FakeOpenAIEndpoint):
             for message in messages
         ):
             prompt = str(messages[-1]["content"])
-            records = json.loads(prompt[prompt.index("["):])
+            payload = json.loads(prompt[prompt.index("{"):])
+            records = payload["records"]
             return _fake_sse_text(
                 json.dumps(
                     {
@@ -2440,6 +2457,102 @@ async def test_completed_run_refines_memory_through_the_protocol(
         await endpoint.close()
 
 
+async def _wait_for_thread_title(
+    connection: ClientConnection,
+    thread_id: str,
+    *,
+    request_id: int,
+    budget_seconds: float = 15.0,
+) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + budget_seconds
+    while True:
+        metadata = await _rpc(connection, request_id, "thread.get", {"threadId": thread_id})
+        thread = cast(dict[str, Any], metadata["result"]["thread"])
+        if thread["title"] == "Generated Thread Title":
+            return thread
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("Thread title generation produced no title in time")
+        await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_completed_run_generates_a_thread_title_through_the_protocol(
+    tmp_path: Path,
+) -> None:
+    endpoint = TitlingOpenAIEndpoint()
+    base_url = await endpoint.start()
+    token = secrets.token_hex(32)
+    process, readiness = await _start_runtime(
+        token,
+        tmp_path,
+        env={"IKAROS_THREAD_TITLES": "1"},
+    )
+    uri = f"ws://{readiness['host']}:{readiness['port']}"
+    connection = await _initialize(uri, token)
+    try:
+        configured = await _rpc(
+            connection,
+            2,
+            "provider.configure",
+            {
+                "kind": "custom",
+                "providerId": "fake",
+                "displayName": "Fake Provider",
+                "baseUrl": base_url,
+                "models": [
+                    {
+                        "id": "fake-model",
+                        "displayName": "Fake Model",
+                        "contextWindow": 32768,
+                    }
+                ],
+            },
+        )
+        assert configured["result"]["provider"]["configured"] is True
+        created = await _rpc(
+            connection,
+            3,
+            "thread.create",
+            {"title": "Provisional title", "clientRequestId": "title-thread"},
+        )
+        thread = cast(dict[str, Any], created["result"]["thread"])
+        assert thread["title"] == "Provisional title"
+
+        started = await _rpc(
+            connection,
+            4,
+            "turn.start",
+            {
+                "threadId": thread["id"],
+                "branchId": thread["defaultBranchId"],
+                "content": "explain the scheduler",
+                "providerId": "fake",
+                "modelId": "fake-model",
+                "clientRequestId": "title-turn",
+            },
+        )
+        events = await _collect_run_events(connection, started["result"]["runId"])
+        assert events[-1]["payload"]["status"] == "completed"
+
+        renamed = await _wait_for_thread_title(connection, thread["id"], request_id=5)
+        assert renamed["title"] == "Generated Thread Title"
+
+        replay = await _rpc(connection, 6, "event.replay", {"afterSeq": 0, "limit": 1000})
+        renamed_events = [
+            event
+            for event in cast(list[dict[str, Any]], replay["result"]["events"])
+            if event["type"] == "thread.renamed" and event["threadId"] == thread["id"]
+        ]
+        assert len(renamed_events) == 1
+        assert renamed_events[0]["payload"]["titleSource"] == "auto"
+        assert renamed_events[0]["payload"]["thread"]["title"] == "Generated Thread Title"
+
+        await _shutdown(connection, process, 7)
+    finally:
+        if process.returncode is None:
+            await _stop_failed_process(process)
+        await endpoint.close()
+
 @pytest.mark.asyncio
 async def test_openai_compatible_fake_endpoint_runs_multiturn_and_process_tool(
     tmp_path: Path,
@@ -2818,6 +2931,10 @@ async def test_openai_fake_endpoint_runs_the_production_file_tool_chain(
             "history_read": {"itemId"},
             "thread_list": set(),
             "thread_read": {"threadId"},
+            "thread_create": set(),
+            "thread_rename": {"threadId", "title"},
+            "thread_archive": {"threadId"},
+            "thread_send": {"threadId", "content"},
                 "read": {"filePath"},
             "write": {"filePath", "content"},
             "edit": {"filePath", "oldString", "newString"},

@@ -64,6 +64,11 @@ import type {
   RuntimeWorkspaceSummary
 } from "../shared/runtime";
 import {
+  attachmentThumbnail,
+  describeAttachmentPaths,
+  saveClipboardImage,
+} from "./attachments";
+import {
   BackgroundProcessNotifier,
   backgroundProcessCompletion,
 } from "./backgroundProcessNotifications";
@@ -207,6 +212,9 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.workspace.chooseEntries,
+    DESKTOP_IPC_CHANNELS.attachments.describe,
+    DESKTOP_IPC_CHANNELS.attachments.thumbnail,
+    DESKTOP_IPC_CHANNELS.attachments.saveImage,
     DESKTOP_IPC_CHANNELS.preferences.get,
     DESKTOP_IPC_CHANNELS.preferences.update,
     DESKTOP_IPC_CHANNELS.window.close,
@@ -617,6 +625,24 @@ export function registerDesktopIpc(
     }
     return { directories, files };
   });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.attachments.describe, async (event, paths: unknown) => {
+    trustPolicy.assertTrustedIpc(event);
+    return describeAttachmentPaths(paths);
+  });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.attachments.thumbnail, async (event, path: unknown) => {
+    trustPolicy.assertTrustedIpc(event);
+    return attachmentThumbnail(path);
+  });
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.attachments.saveImage,
+    async (event, bytes: unknown, mimeType: unknown) => {
+      trustPolicy.assertTrustedIpc(event);
+      return saveClipboardImage(bytes, mimeType);
+    },
+  );
 
   ipcMain.handle(DESKTOP_IPC_CHANNELS.preferences.update, async (event, patch: unknown) => {
     trustPolicy.assertTrustedIpc(event);

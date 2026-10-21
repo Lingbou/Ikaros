@@ -12,6 +12,15 @@ EVENT_NOTIFICATION_METHOD: Final = "event"
 JOURNAL_EVENT_SCHEMA_VERSION: Final = 11
 MEMORY_OPERATION_ERROR_CODE: Final = -32020
 MEMORY_OPERATION_ERROR_MESSAGE: Final = "memory operation failed"
+ATTACHMENT_KINDS: Final = ("image", "text")
+ATTACHMENT_IMAGE_MIME_TYPES: Final = (
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+)
+ATTACHMENT_MAX_COUNT: Final = 8
+ATTACHMENT_MAX_BYTES: Final = 8 * 1024 * 1024
 
 RPC_METHODS: Final = (
     "runtime.shutdown",
@@ -84,6 +93,10 @@ PROVIDER_TOOL_IDS: Final = (
     "history_read",
     "thread_list",
     "thread_read",
+    "thread_create",
+    "thread_rename",
+    "thread_archive",
+    "thread_send",
     "read",
     "write",
     "edit",
@@ -123,6 +136,12 @@ def protocol_manifest() -> dict[str, object]:
             }
         },
         "providerToolIds": list(PROVIDER_TOOL_IDS),
+        "attachments": {
+            "kinds": list(ATTACHMENT_KINDS),
+            "imageMimeTypes": list(ATTACHMENT_IMAGE_MIME_TYPES),
+            "maxPerMessage": ATTACHMENT_MAX_COUNT,
+            "maxBytes": ATTACHMENT_MAX_BYTES,
+        },
         "inputBudgetMeasurementVersion": INPUT_BUDGET_MEASUREMENT_VERSION,
         "outputStyleContent": OUTPUT_STYLE_CONTENT,
         "historyStatusPreamble": HISTORY_STATUS_PREAMBLE,
@@ -136,6 +155,10 @@ def protocol_manifest() -> dict[str, object]:
 
 
 __all__ = [
+    "ATTACHMENT_IMAGE_MIME_TYPES",
+    "ATTACHMENT_KINDS",
+    "ATTACHMENT_MAX_BYTES",
+    "ATTACHMENT_MAX_COUNT",
     "EVENT_NOTIFICATION_METHOD",
     "INITIALIZE_METHOD",
     "JOURNAL_EVENT_SCHEMA_VERSION",

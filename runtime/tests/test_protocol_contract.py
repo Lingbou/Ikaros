@@ -9,6 +9,10 @@ from typing import Any, cast
 import pytest
 
 from ikaros_runtime.protocol.spec import (
+    ATTACHMENT_IMAGE_MIME_TYPES,
+    ATTACHMENT_KINDS,
+    ATTACHMENT_MAX_BYTES,
+    ATTACHMENT_MAX_COUNT,
     EVENT_NOTIFICATION_METHOD,
     INITIALIZE_METHOD,
     JOURNAL_EVENT_SCHEMA_VERSION,
@@ -202,6 +206,12 @@ def test_golden_trace_notifications_rebuild_the_production_projections(
 def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> None:
     assert PROTOCOL_VERSION == 12
     assert JOURNAL_EVENT_SCHEMA_VERSION == 11
+    assert protocol_manifest()["attachments"] == {
+        "kinds": list(ATTACHMENT_KINDS),
+        "imageMimeTypes": list(ATTACHMENT_IMAGE_MIME_TYPES),
+        "maxPerMessage": ATTACHMENT_MAX_COUNT,
+        "maxBytes": ATTACHMENT_MAX_BYTES,
+    }
     assert protocol_manifest()["errors"] == {
         "memoryOperation": {
             "code": MEMORY_OPERATION_ERROR_CODE,
@@ -224,10 +234,14 @@ def test_protocol_registries_are_unique_and_do_not_use_display_tool_ids() -> Non
         "list",
         "thread_list",
         "thread_read",
+        "thread_create",
+        "thread_rename",
+        "thread_archive",
+        "thread_send",
         "memory",
         "subagent",
     } <= set(PROVIDER_TOOL_IDS)
-    assert len(PROVIDER_TOOL_IDS) == len(set(PROVIDER_TOOL_IDS)) == 17
+    assert len(PROVIDER_TOOL_IDS) == len(set(PROVIDER_TOOL_IDS)) == 21
     assert "process_run" not in PROVIDER_TOOL_IDS
     assert "process.run" not in PROVIDER_TOOL_IDS
     assert "search" not in PROVIDER_TOOL_IDS

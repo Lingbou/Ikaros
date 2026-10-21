@@ -600,8 +600,14 @@ def test_projection_rebuild_rejects_lifecycle_event_semantics_that_disagree_with
         assert rename_event is not None
         with store._connection:
             store._connection.execute(
-                "UPDATE events SET event_type = 'thread.archived' WHERE seq = ?",
-                (rename_event.seq,),
+                """
+                UPDATE events SET event_type = 'thread.archived', payload_json = ?
+                WHERE seq = ?
+                """,
+                (
+                    json_dumps({"thread": rename_event.payload["thread"]}),
+                    rename_event.seq,
+                ),
             )
 
         with pytest.raises(RuntimeError, match="thread.archived payload state is invalid"):

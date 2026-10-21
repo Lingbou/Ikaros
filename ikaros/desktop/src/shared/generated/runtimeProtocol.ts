@@ -90,6 +90,10 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "history_read",
     "thread_list",
     "thread_read",
+    "thread_create",
+    "thread_rename",
+    "thread_archive",
+    "thread_send",
     "read",
     "write",
     "edit",
@@ -99,7 +103,21 @@ export const RUNTIME_PROTOCOL_MANIFEST = {
     "memory",
     "subagent"
   ],
-  "inputBudgetMeasurementVersion": "conservative-utf8-upper-bound",
+  "attachments": {
+    "kinds": [
+      "image",
+      "text"
+    ],
+    "imageMimeTypes": [
+      "image/gif",
+      "image/jpeg",
+      "image/png",
+      "image/webp"
+    ],
+    "maxPerMessage": 8,
+    "maxBytes": 8388608
+  },
+  "inputBudgetMeasurementVersion": "conservative-utf8-upper-bound-v2",
   "outputStyleContent": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets.",
   "historyStatusPreamble": "Runtime history status (contextual data): failed or cancelled Runs did not complete. Earlier tools may already have changed files or external state; failed, cancelled, or missing results do not prove that an action was not executed. Do not replay old Tool Calls. If details are omitted, inspect the current state or ask for missing information before continuing.",
   "memoryLimits": {
@@ -126,3 +144,4 @@ export const RUNTIME_INPUT_BUDGET_MEASUREMENT_VERSION = RUNTIME_PROTOCOL_MANIFES
 export const RUNTIME_OUTPUT_STYLE_CONTENT = RUNTIME_PROTOCOL_MANIFEST.outputStyleContent;
 export const RUNTIME_HISTORY_STATUS_PREAMBLE = RUNTIME_PROTOCOL_MANIFEST.historyStatusPreamble;
 export const RUNTIME_MEMORY_LIMITS = RUNTIME_PROTOCOL_MANIFEST.memoryLimits;
+export const RUNTIME_ATTACHMENT_LIMITS = RUNTIME_PROTOCOL_MANIFEST.attachments;

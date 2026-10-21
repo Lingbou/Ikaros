@@ -86,26 +86,11 @@ class MemoryService:
         )
         if existing is not None:
             return existing.to_wire()
-        source: MemorySourceSnapshot | None = None
-        if source_item_id is not None:
-            try:
-                captured = self._session_provenance.capture_session_item_provenance(
-                    source_item_id
-                )
-                source = MemorySourceSnapshot(
-                    thread_id=captured.thread_id,
-                    turn_id=captured.turn_id,
-                    item_id=captured.item_id,
-                    item_digest=captured.item_digest,
-                )
-            except (
-                LookupError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-                sqlite3.Error,
-            ) as error:
-                raise MemoryOperationError("memory_source_unavailable") from error
+        source = (
+            self._capture_source(source_item_id)
+            if source_item_id is not None
+            else None
+        )
         receipt = self._store.create_memory_once(
             kind=kind,
             scope=scope,
@@ -143,6 +128,45 @@ class MemoryService:
             client_request_id=client_request_id,
         ).to_wire()
 
+    def update_by_id(self, params: dict[str, Any]) -> dict[str, object]:
+        """Update one Memory by ID against its current revision.
+
+        Model tools use this path because they receive an ID from search or the
+        refinement catalog, not an optimistic-concurrency revision.
+        """
+
+        required = {"memoryId", "content", "clientRequestId"}
+        if set(params) not in (required, required | {"source"}):
+            raise InvalidParamsError(
+                "memory.update requires exactly memoryId, content, clientRequestId, "
+                "and optionally source"
+            )
+        memory_id = _memory_id_from(params["memoryId"])
+        try:
+            content = validate_memory_content(params["content"])
+        except ValueError as error:
+            raise InvalidParamsError(str(error)) from error
+        client_request_id = client_request_id_from(params)
+        if client_request_id is None:  # pragma: no cover - exact keys require a value
+            raise InvalidParamsError("memory.update clientRequestId is required")
+        source_item_id = (
+            _memory_source_item_id_from(params["source"])
+            if "source" in params
+            else None
+        )
+        self._assert_request_safe((content, client_request_id))
+        source = (
+            self._capture_source(source_item_id)
+            if source_item_id is not None
+            else None
+        )
+        return self._store.correct_memory_latest_once(
+            memory_id=memory_id,
+            content=content,
+            client_request_id=client_request_id,
+            source=source,
+        ).to_wire()
+
     def forget(self, params: dict[str, Any]) -> dict[str, object]:
         if set(params) != {"memoryId", "expectedRevision", "clientRequestId"}:
             raise InvalidParamsError(
@@ -158,6 +182,36 @@ class MemoryService:
             memory_id=memory_id,
             expected_revision=expected_revision,
             client_request_id=client_request_id,
+        ).to_wire()
+
+    def forget_by_id(self, params: dict[str, Any]) -> dict[str, object]:
+        """Forget one Memory by ID against its current revision."""
+
+        required = {"memoryId", "clientRequestId"}
+        if set(params) not in (required, required | {"source"}):
+            raise InvalidParamsError(
+                "memory.forget requires exactly memoryId, clientRequestId, "
+                "and optionally source"
+            )
+        memory_id = _memory_id_from(params["memoryId"])
+        client_request_id = client_request_id_from(params)
+        if client_request_id is None:  # pragma: no cover - exact keys require a value
+            raise InvalidParamsError("memory.forget clientRequestId is required")
+        source_item_id = (
+            _memory_source_item_id_from(params["source"])
+            if "source" in params
+            else None
+        )
+        self._assert_request_safe(client_request_id)
+        source = (
+            self._capture_source(source_item_id)
+            if source_item_id is not None
+            else None
+        )
+        return self._store.forget_memory_latest_once(
+            memory_id=memory_id,
+            client_request_id=client_request_id,
+            source=source,
         ).to_wire()
 
     def list(self, params: dict[str, Any]) -> dict[str, object]:
@@ -231,13 +285,33 @@ class MemoryService:
             )
         return {"memory": memory.to_wire()}
 
+    def _capture_source(self, source_item_id: str) -> MemorySourceSnapshot:
+        try:
+            captured = self._session_provenance.capture_session_item_provenance(
+                source_item_id
+            )
+        except (
+            LookupError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            sqlite3.Error,
+        ) as error:
+            raise MemoryOperationError("memory_source_unavailable") from error
+        return MemorySourceSnapshot(
+            thread_id=captured.thread_id,
+            turn_id=captured.turn_id,
+            item_id=captured.item_id,
+            item_digest=captured.item_digest,
+        )
+
 
 class MemoryToolService:
-    """Model-facing Memory save/search assembled from the owning subsystems.
+    """Model-facing Memory mutations and search assembled from owning services.
 
-    Saves deliberately go through :meth:`MemoryService.create` so the model
-    tool shares one validation, credential-protection, provenance, and
-    idempotency path with explicit user-created Memory.
+    Saves and updates deliberately go through MemoryService so the model tool
+    shares validation, credential protection, provenance, and idempotency
+    semantics with explicit user-managed Memory.
     """
 
     def __init__(
@@ -275,6 +349,54 @@ class MemoryToolService:
             "memoryId": receipt["memoryId"],
             "kind": kind,
             "scope": scope,
+            "revision": receipt["resultingRevision"],
+            "created": receipt["created"],
+            "truncated": False,
+        }
+
+    def update_memory(
+        self,
+        *,
+        run_id: str,
+        item_id: str,
+        memory_id: str,
+        content: str,
+    ) -> JsonObject:
+        user_item_id, _workspace_id = self._run_scope(run_id)
+        receipt = self._memories.update_by_id(
+            {
+                "memoryId": memory_id,
+                "content": content,
+                "clientRequestId": f"memory-tool:{item_id}",
+                "source": {"type": "session_item", "itemId": user_item_id},
+            }
+        )
+        return {
+            "action": "update",
+            "memoryId": receipt["memoryId"],
+            "revision": receipt["resultingRevision"],
+            "created": receipt["created"],
+            "truncated": False,
+        }
+
+    def forget_memory(
+        self,
+        *,
+        run_id: str,
+        item_id: str,
+        memory_id: str,
+    ) -> JsonObject:
+        user_item_id, _workspace_id = self._run_scope(run_id)
+        receipt = self._memories.forget_by_id(
+            {
+                "memoryId": memory_id,
+                "clientRequestId": f"memory-tool:{item_id}",
+                "source": {"type": "session_item", "itemId": user_item_id},
+            }
+        )
+        return {
+            "action": "forget",
+            "memoryId": receipt["memoryId"],
             "revision": receipt["resultingRevision"],
             "created": receipt["created"],
             "truncated": False,

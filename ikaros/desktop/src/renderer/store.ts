@@ -11,7 +11,12 @@ import {
   type Turn,
   updateThread,
 } from "./domain";
-import { DEFAULT_SIDEBAR_WIDTH } from "../shared/platform";
+import {
+  DEFAULT_SIDEBAR_WIDTH,
+  type DesktopAttachmentDescriptor,
+  type DesktopAttachmentKind,
+  type IkarosDesktopApi,
+} from "../shared/platform";
 import { LOCAL_PROFILE } from "./localProfile";
 import { createRuntimeClient, isRuntimeRpcError } from "./runtimeClient";
 import {
@@ -29,8 +34,10 @@ import {
   loadRuntimeThreadHistory,
   type LoadedRuntimeTurnHistory,
 } from "./runtimeHistory";
-import type {
-  RuntimeDiscoveredModel,
+import {
+  RUNTIME_ATTACHMENT_LIMITS,
+  type RuntimeAttachmentInput,
+  type RuntimeDiscoveredModel,
   RuntimeModelSetLimitsParams,
   RuntimeHostStatus,
   RuntimeHostStatusState,
@@ -56,10 +63,19 @@ type RunContext = {
   runId?: string;
   epoch: number;
 };
+export type ComposerAttachment = {
+  path: string;
+  kind: DesktopAttachmentKind;
+  mimeType: string;
+  name: string;
+  previewUrl?: string;
+};
+export const COMPOSER_ATTACHMENT_LIMIT_ERROR = "attachment limit reached";
 type PendingRuntimeSubmission = {
   epoch: number;
   branchId: string | null;
   prompt: string;
+  attachments: RuntimeAttachmentInput[];
   providerId: string;
   modelId: string;
   afterSeq: number;
@@ -151,7 +167,7 @@ interface AppState {
   selectedThreadId: string | null;
   runStatus: RunStatus;
   draft: string;
-  composerAttachments: string[];
+  composerAttachments: ComposerAttachment[];
   fileSelection: RuntimeFileSelection | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -202,7 +218,8 @@ interface AppState {
   newProjectChat: (projectId: string) => void;
   stageProjectWorkspace: (workspace: RuntimeWorkspaceSummary) => void;
   attachComposerContext: () => Promise<void>;
-  addComposerAttachments: (paths: string[]) => void;
+  addComposerAttachments: (paths: string[]) => Promise<void>;
+  addComposerImageFiles: (files: File[]) => Promise<void>;
   removeComposerAttachment: (path: string) => void;
   selectThread: (threadId: string) => Promise<void>;
   retryRuntimeThread: (threadId: string) => Promise<void>;
@@ -2604,6 +2621,9 @@ async function startRuntimeTurnForSubmission(
           providerId: submission.providerId,
           modelId: submission.modelId,
           clientRequestId: submission.turnRequestId,
+          ...(submission.attachments.length
+            ? { attachments: submission.attachments }
+            : {}),
         }),
       () => recoveredTurnStartResult(get(), threadId, submission),
     );
@@ -2712,16 +2732,68 @@ function continueRuntimeSubmission(
   return continuation;
 }
 
-export function composePromptContent(prompt: string, attachments: readonly string[]): string {
-  if (!attachments.length) return prompt;
-  const references = attachments.map((path) => `- ${path}`).join("\n");
-  return `${prompt}\n\nAttached files:\n${references}`;
+function desktopBridge(): IkarosDesktopApi | undefined {
+  return (
+    window as unknown as { ikarosDesktop?: IkarosDesktopApi }
+  ).ikarosDesktop;
+}
+
+export function composerAttachmentName(path: string): string {
+  const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return separator === -1 ? path : path.slice(separator + 1);
+}
+
+export function runtimeAttachments(
+  attachments: readonly ComposerAttachment[],
+): RuntimeAttachmentInput[] {
+  return attachments.map((attachment) => ({
+    kind: attachment.kind,
+    path: attachment.path,
+    mimeType: attachment.mimeType,
+  }));
+}
+
+export function mergeComposerAttachments(
+  existing: readonly ComposerAttachment[],
+  incoming: readonly ComposerAttachment[],
+): ComposerAttachment[] {
+  const merged = [...existing];
+  for (const attachment of incoming) {
+    if (merged.some((candidate) => candidate.path === attachment.path)) continue;
+    merged.push(attachment);
+  }
+  if (merged.length > RUNTIME_ATTACHMENT_LIMITS.maxPerMessage) {
+    throw new Error(COMPOSER_ATTACHMENT_LIMIT_ERROR);
+  }
+  return merged;
+}
+
+async function composerAttachmentsFromDescriptors(
+  descriptors: readonly DesktopAttachmentDescriptor[],
+): Promise<ComposerAttachment[]> {
+  const desktop = desktopBridge();
+  const attachments: ComposerAttachment[] = [];
+  for (const descriptor of descriptors) {
+    const previewUrl =
+      descriptor.kind === "image" && desktop
+        ? await desktop.attachments.thumbnail(descriptor.path).catch(() => null)
+        : null;
+    attachments.push({
+      path: descriptor.path,
+      kind: descriptor.kind,
+      mimeType: descriptor.mimeType,
+      name: composerAttachmentName(descriptor.path),
+      ...(previewUrl ? { previewUrl } : {}),
+    });
+  }
+  return attachments;
 }
 
 async function sendRuntimeDraft(
   set: StoreSet,
   get: StoreGet,
   prompt: string,
+  attachments: RuntimeAttachmentInput[],
   selectedThreadIdAtSend: string | null,
   selectedModelAtSend: RuntimeModelSelection | null,
 ): Promise<void> {
@@ -2759,6 +2831,7 @@ async function sendRuntimeDraft(
     epoch,
     branchId: thread?.activeBranchId ?? null,
     prompt,
+    attachments,
     providerId: selectedModelAtSend.providerId,
     modelId: selectedModelAtSend.modelId,
     afterSeq: initial.runtimeSeq,
@@ -2791,7 +2864,10 @@ async function sendRuntimeDraft(
     return;
   }
 
-  const title = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
+  // Provisional title: the Runtime replaces it with a model-generated title once
+  // the Thread's first Run settles (thread.renamed keeps Recents in sync). A user
+  // rename is recorded as user-owned and is never replaced by that generator.
+  const provisionalTitle = prompt.length > 42 ? `${prompt.slice(0, 42)}…` : prompt;
   try {
     const created = await invokeIdempotentRuntimeCommand(
       set,
@@ -2799,7 +2875,7 @@ async function sendRuntimeDraft(
       submission.afterSeq,
       () =>
         runtimeClient.createThread({
-          title,
+          title: provisionalTitle,
           workspace: submission.workspace,
           clientRequestId: submission.createRequestId,
         }),
@@ -2812,7 +2888,12 @@ async function sendRuntimeDraft(
   }
 }
 
-async function steerRuntimeDraft(set: StoreSet, get: StoreGet, prompt: string): Promise<void> {
+async function steerRuntimeDraft(
+  set: StoreSet,
+  get: StoreGet,
+  prompt: string,
+  attachments: RuntimeAttachmentInput[],
+): Promise<void> {
   if (!runtimeClient) return;
   const state = get();
   const context = currentRunContext(state);
@@ -2824,6 +2905,7 @@ async function steerRuntimeDraft(set: StoreSet, get: StoreGet, prompt: string): 
       expectedRunId: context.runId,
       content: prompt,
       clientRequestId,
+      ...(attachments.length ? { attachments } : {}),
     });
     set({ draft: "", composerAttachments: [], runtimeError: null, runtimeIssue: null });
   } catch (error: unknown) {
@@ -3032,11 +3114,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   attachComposerContext: async () => {
-    const desktop = (
-      window as unknown as Window & {
-        ikarosDesktop?: import("../shared/platform").IkarosDesktopApi;
-      }
-    ).ikarosDesktop;
+    const desktop = desktopBridge();
     if (!desktop) {
       throw new Error("Desktop workspace picker is unavailable.");
     }
@@ -3047,17 +3125,46 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
     const directory = selection.directories[0];
     if (directory) get().stageProjectWorkspace(directory);
-    if (selection.files.length) get().addComposerAttachments(selection.files);
+    if (selection.files.length) await get().addComposerAttachments(selection.files);
   },
 
-  addComposerAttachments: (paths) =>
+  addComposerAttachments: async (paths) => {
+    if (!paths.length) return;
+    const desktop = desktopBridge();
+    if (!desktop) {
+      throw new Error("Desktop attachment support is unavailable.");
+    }
+    const described = await desktop.attachments.describe(paths);
+    const attachments = await composerAttachmentsFromDescriptors(described);
     set((state) => ({
-      composerAttachments: [...new Set([...state.composerAttachments, ...paths])],
-    })),
+      composerAttachments: mergeComposerAttachments(state.composerAttachments, attachments),
+    }));
+  },
+
+  addComposerImageFiles: async (files) => {
+    const desktop = desktopBridge();
+    if (!desktop || !files.length) return;
+    const paths: string[] = [];
+    for (const file of files) {
+      const existingPath = desktop.attachments.pathForFile(file);
+      if (existingPath) {
+        paths.push(existingPath);
+        continue;
+      }
+      const saved = await desktop.attachments.saveImage(
+        await file.arrayBuffer(),
+        file.type,
+      );
+      paths.push(saved.path);
+    }
+    await get().addComposerAttachments(paths);
+  },
 
   removeComposerAttachment: (path) =>
     set((state) => ({
-      composerAttachments: state.composerAttachments.filter((candidate) => candidate !== path),
+      composerAttachments: state.composerAttachments.filter(
+        (candidate) => candidate.path !== path,
+      ),
     })),
 
   selectThread: async (threadId) => {
@@ -3090,9 +3197,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const state = get();
     const prompt = state.draft.trim();
     if (!prompt) return;
-    const content = composePromptContent(prompt, state.composerAttachments);
+    const attachments = runtimeAttachments(state.composerAttachments);
     if (isRunActive(state.runStatus)) {
-      await steerRuntimeDraft(set, get, content);
+      await steerRuntimeDraft(set, get, prompt, attachments);
       return;
     }
     if (!runtimeClient) return;
@@ -3104,7 +3211,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await sendRuntimeDraft(
       set,
       get,
-      content,
+      prompt,
+      attachments,
       state.selectedThreadId,
       state.selectedModel,
     );
@@ -3113,7 +3221,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const state = get();
     const prompt = state.draft.trim();
     if (prompt) {
-      await steerRuntimeDraft(set, get, composePromptContent(prompt, state.composerAttachments));
+      await steerRuntimeDraft(
+        set,
+        get,
+        prompt,
+        runtimeAttachments(state.composerAttachments),
+      );
     }
   },
 

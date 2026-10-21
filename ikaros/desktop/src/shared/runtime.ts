@@ -295,6 +295,14 @@ export interface RuntimeThreadMutationResult {
   event: RuntimeJournalEvent | null;
 }
 
+export type RuntimeAttachmentKind = "image" | "text";
+
+export interface RuntimeAttachmentInput {
+  kind: RuntimeAttachmentKind;
+  path: string;
+  mimeType: string;
+}
+
 export interface RuntimeTurnStartParams {
   threadId: string;
   branchId: string;
@@ -302,6 +310,7 @@ export interface RuntimeTurnStartParams {
   providerId: string;
   modelId: string;
   clientRequestId?: string;
+  attachments?: RuntimeAttachmentInput[];
 }
 
 export interface RuntimeTurnStartResult {
@@ -322,6 +331,7 @@ export interface RuntimeSteerRunParams {
   content: string;
   expectedRunId: string;
   clientRequestId: string;
+  attachments?: RuntimeAttachmentInput[];
 }
 
 export interface RuntimeSteerRunResult {
@@ -813,12 +823,14 @@ export interface IkarosRuntimeBridgeApi {
   onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
 }
 import {
+  RUNTIME_ATTACHMENT_LIMITS,
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   RUNTIME_PROTOCOL_MANIFEST,
   type RuntimeJournalEventType
 } from "./generated/runtimeProtocol";
 
 export {
+  RUNTIME_ATTACHMENT_LIMITS,
   RUNTIME_HISTORY_STATUS_PREAMBLE,
   RUNTIME_INPUT_BUDGET_MEASUREMENT_VERSION,
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,

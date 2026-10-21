@@ -13,6 +13,7 @@ from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken, RunCancelled
 from ikaros_runtime.domain import JournalEvent, ModelUsage
 from ikaros_runtime.providers.base import (
+    ImageUrlPart,
     ProviderEvent,
     ProviderMessage,
     ProviderRequest,
@@ -373,6 +374,76 @@ async def test_request_lowering_headers_and_text_stream() -> None:
         "content": '{"ok":true}',
     }
     assert lowered["tools"][0]["function"]["name"] == "process_start"
+
+
+@pytest.mark.asyncio
+async def test_request_lowering_inlines_image_parts_as_data_urls() -> None:
+    captured: dict[str, Any] = {}
+    body = b"".join([sse(text_chunk("ok", finish_reason="stop")), b"data: [DONE]\n\n"])
+
+    async def handler(incoming: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(incoming.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream; charset=utf-8"},
+            stream=ChunkStream([body]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = OpenAICompatibleAdapter(provider(), client=client)
+        await collect(
+            adapter,
+            request(
+                messages=[
+                    ProviderMessage(
+                        role="user",
+                        content="describe this",
+                        parts=(ImageUrlPart(url="data:image/png;base64,QUJD"),),
+                    )
+                ]
+            ),
+        )
+
+    lowered = cast(dict[str, Any], captured["body"])
+    assert lowered["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_non_user_messages_cannot_carry_content_parts() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}
+            )
+        )
+    ) as client:
+        adapter = OpenAICompatibleAdapter(provider(), client=client)
+        with pytest.raises(ProviderFailure) as captured:
+            await collect(
+                adapter,
+                request(
+                    messages=[
+                        ProviderMessage(
+                            role="assistant",
+                            content="",
+                            parts=(ImageUrlPart(url="data:image/png;base64,QUJD"),),
+                        )
+                    ]
+                ),
+            )
+
+    assert str(captured.value) == "provider context contains an invalid message"
 
 
 @pytest.mark.asyncio
