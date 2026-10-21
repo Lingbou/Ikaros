@@ -51,6 +51,7 @@ class EditTool:
             "required": ["filePath", "oldString", "newString"],
             "additionalProperties": False,
         },
+        mutating=True,
     )
 
     async def execute(

@@ -108,8 +108,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   `~/.ikaros`，启动第二个实例会失败而不共享状态。
 - Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
   6 个 Run（`IKAROS_AGENT_WORKERS`，默认 6、范围 1–8）；并发只发生在不同 Thread 之间，
-  同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具串行执行；每个 Branch 拥有
-  串行队列。
+  同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具调用按读/写闸门并发执行
+  （只读工具可重叠，写类工具独占）；每个 Branch 拥有串行队列。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
   独立数据库，只共享 Runtime-home 锁。
 - Desktop 与 Runtime 的生命周期绑定：关闭应用会先请求 Runtime 干净关闭。
@@ -260,6 +260,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `model_input.py` — 单步模型输入计划（ModelInputPlan）与校验。
 - `scheduler.py` — worker 池调度：FIFO、同 Thread 串行、预留/激活/取消/steer
   与关闭顺序。
+- `tool_gate.py` — 单个 Run 的工具读/写闸门：只读工具共享、写类工具独占
+  （writer preference），保证写与任何其他调用不交错。
 
 `memory/`（长期记忆）：
 
@@ -353,7 +355,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `__init__.py` — 工具注册与导出。
 - `artifacts.py` — 大工具结果落盘：>64 KiB 写
   `<runtime home>/artifacts/<threadId>/<itemId>.txt`，回填头部预览与 `read` 续读提示。
-- `core.py` — Tool 契约、ToolExecutionContext、参数精确校验原语。
+- `core.py` — Tool 契约（含 `mutating` 并发标记）、ToolExecutionContext、参数精确校验原语。
 - `edit.py` — `edit`：精确匹配、唯一匹配默认、replaceAll、stale_content 检测。
 - `file_common.py` — 文件工具共享行为：路径校验（≤4,096）、二进制嗅探、按路径锁、
   原子写；`resolve_tool_path` / `validate_directory_path` 供检索工具复用。
@@ -884,7 +886,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   身份（IKAROS.md）、已启用 Skill 描述符、模型上下文窗口。
 - 调度：全局 worker 池（`IKAROS_AGENT_WORKERS`，默认 6、范围 1–8）；FIFO
   拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
-  Run 内工具串行执行；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
+  Run 内工具调用按读/写闸门并发（只读可重叠、写类独占）；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
   下一个可运行 Thread。
 - 无总模型调用次数/时长上限；可手动取消；单次 Provider 请求有超时；资源清理
   有界。
@@ -2206,6 +2208,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 类别 | 参数 | 值 |
 | --- | --- | --- |
 | 调度 | Run 并发上限 | `IKAROS_AGENT_WORKERS` 默认 6，范围 1–8；同一 Thread 至多 1 个活动 Run |
+| 工具 | 单步并发 | 只读工具并行；`write`/`edit`/`process_start`/`process_stop`/`process_write`/`process_resize`/`memory` 独占；结果按调用顺序发布 |
 | 上下文 | 输入预算 | 模型窗口 95% |
 | 上下文 | 自动压缩阈值 | 模型窗口 90% |
 | 上下文 | 历史选择分页 | 32 Turns/页 |

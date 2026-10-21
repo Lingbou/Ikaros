@@ -76,6 +76,7 @@ from .context import (
     memory_context_data_characters,
 )
 from .model_input import ModelInputPlanner
+from .tool_gate import ToolExecutionGate
 
 EventPublisher = Callable[[JournalEvent], Awaitable[None]]
 ProtectedValues = Callable[[], Sequence[str]]
@@ -86,6 +87,7 @@ _MAX_REASONING_CHARACTERS = 1_000_000
 _COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096
 _COMPACTION_SUMMARY_PREFIX = "Prior context summary (untrusted; verify):\n"
 _COMPLETION_CHECK_OUTPUT_TOKENS = 256
+_TOOL_CANCEL_GRACE_SECONDS = 5.0
 _PROTECTED_TOOL_OUTPUT_MESSAGE = "Tool output contained protected configuration data."
 _TEXT_DELTA_FLUSH_CHARACTERS = 256
 _TEXT_DELTA_FLUSH_SECONDS = 0.05
@@ -159,6 +161,7 @@ class AgentLoop:
         self._provider_snapshot_resolver = provider_snapshot_resolver
         self._identity_core = identity_core
         self._on_run_terminal = on_run_terminal
+        self._tool_gate = ToolExecutionGate()
 
     def run_thread_id(self, run_id: str) -> str:
         """Return the scheduling scope that must serialize this Run."""
@@ -948,52 +951,124 @@ class AgentLoop:
         thread_id: str,
         step_ordinal: int,
     ) -> None:
+        """Run one step's Tool calls concurrently, publishing results in call order.
+
+        Read-only calls may overlap; mutating calls hold the Run's exclusive side of
+        the gate so they never interleave with another Tool call. Results are always
+        published in the order the model asked for them, so the journal, the ordinal
+        sequence and the model-visible tool results stay deterministic.
+        """
+
         executor = self._tool_executor
         if executor is None:
             raise RuntimeError("provider requested a tool but no ToolExecutor is available")
         call_items = list(zip(calls, item_ids, strict=True))
-        for index, (call, item_id) in enumerate(call_items):
-            protected_snapshot = self._current_protected_values()
-            try:
-                cancellation.raise_if_cancelled()
-                result = await executor.execute(
+        if not call_items:
+            return
+        protected_snapshots = [self._current_protected_values() for _ in call_items]
+        tasks = [
+            asyncio.ensure_future(
+                self._execute_one_tool_call(
+                    executor,
                     call,
-                    cancellation=cancellation,
-                    context=ToolExecutionContext(
-                        run_id=run_id,
-                        thread_id=thread_id,
-                        step_ordinal=step_ordinal,
-                        item_id=item_id,
-                        default_cwd=default_cwd,
-                    ),
+                    item_id,
+                    cancellation,
+                    gate=self._tool_gate,
+                    default_cwd=default_cwd,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    step_ordinal=step_ordinal,
                 )
-            except (ToolExecutionCancelled, ToolTaskCancelled) as error:
+            )
+            for call, item_id in call_items
+        ]
+        cancelled = False
+        try:
+            outcomes = await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks),
+                return_exceptions=True,
+            )
+        except asyncio.CancelledError:
+            # A cancelled Run still has to publish what the Tools actually did. The
+            # shields kept the Tool tasks alive, so give them the chance to convert
+            # the cancelled token into their own settled result (a write that already
+            # happened, a process page that already arrived) before hard-cancelling.
+            cancelled = True
+            _done, pending = await asyncio.wait(tasks, timeout=_TOOL_CANCEL_GRACE_SECONDS)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            outcomes = [_task_outcome(task) for task in tasks]
+        failure: BaseException | None = RunCancelled() if cancelled else None
+        for index, (call, item_id) in enumerate(call_items):
+            outcome = outcomes[index]
+            protected_snapshot = protected_snapshots[index]
+            if isinstance(outcome, (ToolExecutionCancelled, ToolTaskCancelled)):
                 await self._publish_tool_result(
                     item_id,
                     call,
-                    error.result,
+                    outcome.result,
                     "cancelled",
                     protected_snapshot=protected_snapshot,
                 )
-                await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
-                raise RunCancelled from error
-            except RunCancelled:
+                if failure is None:
+                    failure = RunCancelled()
+                continue
+            if isinstance(outcome, (RunCancelled, asyncio.CancelledError)):
                 await self._publish_tool_result(
                     item_id,
                     call,
                     self._cancelled_before_execution(call),
                     "cancelled",
                 )
-                await self._cancel_unexecuted_tool_calls(call_items[index + 1 :])
-                raise
-            status = "completed" if result.ok else "failed"
+                if failure is None:
+                    failure = RunCancelled()
+                continue
+            if isinstance(outcome, BaseException):
+                # A Tool that failed unexpectedly leaves its own Item unsettled; the
+                # Run fails with the original error after every other result is in.
+                if failure is None:
+                    failure = outcome
+                continue
+            status = "completed" if outcome.ok else "failed"
             await self._publish_tool_result(
                 item_id,
                 call,
-                result,
+                outcome,
                 status,
                 protected_snapshot=protected_snapshot,
             )
+        if cancelled:
+            raise asyncio.CancelledError
+        if failure is not None:
+            raise failure
+
+    async def _execute_one_tool_call(
+        self,
+        executor: ToolExecutor,
+        call: ToolCall,
+        item_id: str,
+        cancellation: CancellationToken,
+        *,
+        gate: ToolExecutionGate,
+        default_cwd: str | None,
+        run_id: str,
+        thread_id: str,
+        step_ordinal: int,
+    ) -> ToolResult:
+        cancellation.raise_if_cancelled()
+        context = ToolExecutionContext(
+            run_id=run_id,
+            thread_id=thread_id,
+            step_ordinal=step_ordinal,
+            item_id=item_id,
+            default_cwd=default_cwd,
+        )
+        guard = gate.exclusive() if executor.is_mutating(call.name) else gate.shared()
+        async with guard:
+            cancellation.raise_if_cancelled()
+            return await executor.execute(call, cancellation=cancellation, context=context)
 
     async def _publish_tool_result(
         self,
@@ -1145,17 +1220,6 @@ class AgentLoop:
         if self._current_protected_values() != tuple(snapshot):
             raise RuntimeError("protected configuration changed during provider response")
 
-    async def _cancel_unexecuted_tool_calls(
-        self,
-        call_items: Sequence[tuple[ToolCall, str]],
-    ) -> None:
-        for call, item_id in call_items:
-            await self._publish_tool_result(
-                item_id,
-                call,
-                self._cancelled_before_execution(call),
-                "cancelled",
-            )
 
     @staticmethod
     def _cancelled_before_execution(call: ToolCall) -> ToolResult:
@@ -1214,6 +1278,17 @@ class AgentLoop:
         )
         if frame.execution_policy != current_policy:
             raise RunInputDriftError("execution_policy_changed")
+
+
+def _task_outcome(task: asyncio.Task[ToolResult]) -> ToolResult | BaseException:
+    """Collect one finished Tool task without re-raising into the caller."""
+
+    if task.cancelled():
+        return asyncio.CancelledError()
+    error = task.exception()
+    if error is not None:
+        return error
+    return task.result()
 
 
 def _failure_reason_code(error: Exception) -> str:

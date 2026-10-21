@@ -121,7 +121,7 @@
                         "outcome": "completed"
                       },
                       "createdAt": "2026-08-15T12:00:00.008Z",
-                      "updatedAt": "2026-08-15T12:00:00.013Z"
+                      "updatedAt": "2026-08-15T12:00:00.015Z"
                     },
                     {
                       "id": "item_0000000000000000000000000000000a",
@@ -158,8 +158,8 @@
                           "errorCode": null
                         }
                       },
-                      "createdAt": "2026-08-15T12:00:00.013Z",
-                      "updatedAt": "2026-08-15T12:00:00.013Z"
+                      "createdAt": "2026-08-15T12:00:00.015Z",
+                      "updatedAt": "2026-08-15T12:00:00.015Z"
                     },
                     {
                       "id": "item_0000000000000000000000000000000d",
@@ -180,7 +180,7 @@
                         },
                         "outcome": "completed"
                       },
-                      "createdAt": "2026-08-15T12:00:00.015Z",
+                      "createdAt": "2026-08-15T12:00:00.017Z",
                       "updatedAt": "2026-08-15T12:00:00.019Z"
                     },
                     {
@@ -191,7 +191,7 @@
                       "kind": "tool_result",
                       "role": "tool",
                       "status": "completed",
-                      "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+                      "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.013Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
                       "data": {
                         "stepId": "step_0000000000000000000000000000000c",
                         "callId": "call_0000000000000000000000000000000b",
@@ -210,7 +210,7 @@
                           "cwd": "C:/golden-workspace",
                           "pid": 4242,
                           "startedAt": "2026-08-15T12:00:00.010Z",
-                          "finishedAt": "2026-08-15T12:00:00.017Z",
+                          "finishedAt": "2026-08-15T12:00:00.013Z",
                           "cursor": 0,
                           "nextCursor": 14,
                           "hasMore": false,
@@ -1288,7 +1288,7 @@
       }
     },
     {
-      "name": "tool-call-completed",
+      "name": "process-recorded-3",
       "kind": "notification",
       "envelope": {
         "jsonrpc": "2.0",
@@ -1296,13 +1296,57 @@
         "params": {
           "seq": 13,
           "schemaVersion": 10,
+          "type": "process.recorded",
+          "threadId": "thread_00000000000000000000000000000001",
+          "branchId": "branch_00000000000000000000000000000002",
+          "turnId": "turn_00000000000000000000000000000003",
+          "runId": "run_00000000000000000000000000000004",
+          "itemId": "item_00000000000000000000000000000009",
+          "timestamp": "2026-08-15T12:00:00.014Z",
+          "payload": {
+            "process": {
+              "processId": "process_022566fb2be55053ac8716649d851bef",
+              "threadId": "thread_00000000000000000000000000000001",
+              "runId": "run_00000000000000000000000000000004",
+              "stepOrdinal": 1,
+              "itemId": "item_00000000000000000000000000000009",
+              "command": "golden",
+              "cwd": "C:/golden-workspace",
+              "background": false,
+              "state": "exited",
+              "exitCode": 0,
+              "pid": 4242,
+              "startedAt": "2026-08-15T12:00:00.010Z",
+              "finishedAt": "2026-08-15T12:00:00.013Z",
+              "stdout": "golden-output\n",
+              "stderr": "",
+              "output": "golden-output\n",
+              "truncated": false,
+              "errorCode": null
+            },
+            "turnId": "turn_00000000000000000000000000000003",
+            "runId": "run_00000000000000000000000000000004",
+            "itemId": "item_00000000000000000000000000000009"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-call-completed",
+      "kind": "notification",
+      "envelope": {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+          "seq": 14,
+          "schemaVersion": 10,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
           "branchId": "branch_00000000000000000000000000000002",
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": "item_00000000000000000000000000000009",
-          "timestamp": "2026-08-15T12:00:00.013Z",
+          "timestamp": "2026-08-15T12:00:00.015Z",
           "payload": {
             "item": {
               "id": "item_00000000000000000000000000000009",
@@ -1323,7 +1367,7 @@
                 "outcome": "completed"
               },
               "createdAt": "2026-08-15T12:00:00.008Z",
-              "updatedAt": "2026-08-15T12:00:00.013Z"
+              "updatedAt": "2026-08-15T12:00:00.015Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
@@ -1339,7 +1383,7 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 14,
+          "seq": 15,
           "schemaVersion": 10,
           "type": "item.completed",
           "threadId": "thread_00000000000000000000000000000001",
@@ -1347,7 +1391,7 @@
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": "item_0000000000000000000000000000000a",
-          "timestamp": "2026-08-15T12:00:00.013Z",
+          "timestamp": "2026-08-15T12:00:00.015Z",
           "payload": {
             "item": {
               "id": "item_0000000000000000000000000000000a",
@@ -1384,8 +1428,8 @@
                   "errorCode": null
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.013Z",
-              "updatedAt": "2026-08-15T12:00:00.013Z"
+              "createdAt": "2026-08-15T12:00:00.015Z",
+              "updatedAt": "2026-08-15T12:00:00.015Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
@@ -1401,7 +1445,7 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 15,
+          "seq": 16,
           "schemaVersion": 10,
           "type": "model.input_prepared",
           "threadId": "thread_00000000000000000000000000000001",
@@ -1409,10 +1453,10 @@
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.014Z",
+          "timestamp": "2026-08-15T12:00:00.016Z",
           "payload": {
             "stepOrdinal": 2,
-            "preparedAt": "2026-08-15T12:00:00.014Z",
+            "preparedAt": "2026-08-15T12:00:00.016Z",
             "contextRevision": null,
             "stepInput": {
               "stepOrdinal": 2,
@@ -1486,7 +1530,7 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 16,
+          "seq": 17,
           "schemaVersion": 10,
           "type": "item.started",
           "threadId": "thread_00000000000000000000000000000001",
@@ -1494,7 +1538,7 @@
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": "item_0000000000000000000000000000000d",
-          "timestamp": "2026-08-15T12:00:00.015Z",
+          "timestamp": "2026-08-15T12:00:00.017Z",
           "payload": {
             "item": {
               "id": "item_0000000000000000000000000000000d",
@@ -1514,8 +1558,8 @@
                   "timeoutMs": 1000
                 }
               },
-              "createdAt": "2026-08-15T12:00:00.015Z",
-              "updatedAt": "2026-08-15T12:00:00.015Z"
+              "createdAt": "2026-08-15T12:00:00.017Z",
+              "updatedAt": "2026-08-15T12:00:00.017Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004",
@@ -1531,7 +1575,7 @@
         "jsonrpc": "2.0",
         "method": "event",
         "params": {
-          "seq": 17,
+          "seq": 18,
           "schemaVersion": 10,
           "type": "model.response_finished",
           "threadId": "thread_00000000000000000000000000000001",
@@ -1539,7 +1583,7 @@
           "turnId": "turn_00000000000000000000000000000003",
           "runId": "run_00000000000000000000000000000004",
           "itemId": null,
-          "timestamp": "2026-08-15T12:00:00.016Z",
+          "timestamp": "2026-08-15T12:00:00.018Z",
           "payload": {
             "stepOrdinal": 2,
             "providerId": "scripted",
@@ -1556,53 +1600,9 @@
               "totalTokens": 18
             },
             "activityDate": "2026-08-15",
-            "finishedAt": "2026-08-15T12:00:00.016Z",
+            "finishedAt": "2026-08-15T12:00:00.018Z",
             "turnId": "turn_00000000000000000000000000000003",
             "runId": "run_00000000000000000000000000000004"
-          }
-        }
-      }
-    },
-    {
-      "name": "process-recorded-3",
-      "kind": "notification",
-      "envelope": {
-        "jsonrpc": "2.0",
-        "method": "event",
-        "params": {
-          "seq": 18,
-          "schemaVersion": 10,
-          "type": "process.recorded",
-          "threadId": "thread_00000000000000000000000000000001",
-          "branchId": "branch_00000000000000000000000000000002",
-          "turnId": "turn_00000000000000000000000000000003",
-          "runId": "run_00000000000000000000000000000004",
-          "itemId": "item_00000000000000000000000000000009",
-          "timestamp": "2026-08-15T12:00:00.018Z",
-          "payload": {
-            "process": {
-              "processId": "process_022566fb2be55053ac8716649d851bef",
-              "threadId": "thread_00000000000000000000000000000001",
-              "runId": "run_00000000000000000000000000000004",
-              "stepOrdinal": 1,
-              "itemId": "item_00000000000000000000000000000009",
-              "command": "golden",
-              "cwd": "C:/golden-workspace",
-              "background": false,
-              "state": "exited",
-              "exitCode": 0,
-              "pid": 4242,
-              "startedAt": "2026-08-15T12:00:00.010Z",
-              "finishedAt": "2026-08-15T12:00:00.017Z",
-              "stdout": "golden-output\n",
-              "stderr": "",
-              "output": "golden-output\n",
-              "truncated": false,
-              "errorCode": null
-            },
-            "turnId": "turn_00000000000000000000000000000003",
-            "runId": "run_00000000000000000000000000000004",
-            "itemId": "item_00000000000000000000000000000009"
           }
         }
       }
@@ -1643,7 +1643,7 @@
                 },
                 "outcome": "completed"
               },
-              "createdAt": "2026-08-15T12:00:00.015Z",
+              "createdAt": "2026-08-15T12:00:00.017Z",
               "updatedAt": "2026-08-15T12:00:00.019Z"
             },
             "turnId": "turn_00000000000000000000000000000003",
@@ -1678,7 +1678,7 @@
               "kind": "tool_result",
               "role": "tool",
               "status": "completed",
-              "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.017Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
+              "content": "{\"toolCallId\":\"call_0000000000000000000000000000000b\",\"toolName\":\"process_wait\",\"ok\":true,\"output\":\"golden-output\\n\",\"cancelled\":false,\"processId\":\"process_022566fb2be55053ac8716649d851bef\",\"background\":false,\"state\":\"exited\",\"exitCode\":0,\"cwd\":\"C:/golden-workspace\",\"pid\":4242,\"startedAt\":\"2026-08-15T12:00:00.010Z\",\"finishedAt\":\"2026-08-15T12:00:00.013Z\",\"cursor\":0,\"nextCursor\":14,\"hasMore\":false,\"truncated\":false,\"errorCode\":null}",
               "data": {
                 "stepId": "step_0000000000000000000000000000000c",
                 "callId": "call_0000000000000000000000000000000b",
@@ -1697,7 +1697,7 @@
                   "cwd": "C:/golden-workspace",
                   "pid": 4242,
                   "startedAt": "2026-08-15T12:00:00.010Z",
-                  "finishedAt": "2026-08-15T12:00:00.017Z",
+                  "finishedAt": "2026-08-15T12:00:00.013Z",
                   "cursor": 0,
                   "nextCursor": 14,
                   "hasMore": false,

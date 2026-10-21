@@ -201,6 +201,7 @@ def memory_tool_definition() -> ToolDefinition:
             "required": ["action"],
             "additionalProperties": False,
         },
+        mutating=True,
     )
 
 
