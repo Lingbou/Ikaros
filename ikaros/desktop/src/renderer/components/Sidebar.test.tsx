@@ -117,6 +117,30 @@ describe("Sidebar run indicators", () => {
   });
 });
 
+describe("Sidebar Thread actions", () => {
+  it("archives a Thread from its row action without selecting it", () => {
+    const archiveThread = vi.fn(async () => undefined);
+    const selectThread = vi.fn(async () => undefined);
+    useAppStore.setState({ archiveThread, selectThread } as Partial<typeof initialState>);
+
+    render(
+      <Tooltip.Provider>
+        <Sidebar />
+      </Tooltip.Provider>,
+    );
+
+    const title = screen.getByText("Plan tomorrow's priorities");
+    const row = title.closest("button")?.parentElement;
+    expect(row).not.toBeNull();
+    const archive = within(row as HTMLElement).getByRole("button", { name: "Archive" });
+
+    fireEvent.click(archive);
+
+    expect(archiveThread).toHaveBeenCalledWith("thread-recent-priorities");
+    expect(selectThread).not.toHaveBeenCalled();
+  });
+});
+
 describe("Sidebar conversation ownership", () => {
   it("shows the product name without a leading brand icon", () => {
     render(
@@ -383,9 +407,9 @@ describe("Sidebar conversation ownership", () => {
     expect(researchButton.querySelectorAll("svg")).toHaveLength(1);
     expect(researchButton.className).toContain("text-[13px]");
     expect(researchButton.className).toContain("font-medium");
-    expect(projectThread.className).toContain("pl-[31px]");
+    expect(projectThread.parentElement?.className).toContain("pl-[31px]");
+    expect(projectThread.parentElement?.className).toContain("font-medium");
     expect(projectThread.className).toContain("text-[13px]");
-    expect(projectThread.className).toContain("font-medium");
     expect(recentThread.querySelector("svg")).toBeNull();
     expect(recentThread.className).toContain("text-[13px]");
     expect(recentThread.className).not.toContain("font-medium");
