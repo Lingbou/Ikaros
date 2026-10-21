@@ -404,6 +404,42 @@ function projectThreadResultDetails(
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
+const SESSION_TOOL_NAMES = new Set([
+  "subagent",
+  "thread_create",
+  "thread_send",
+  "thread_archive",
+  "thread_rename",
+]);
+
+function isSessionTool(name: string): boolean {
+  return SESSION_TOOL_NAMES.has(name);
+}
+
+const SESSION_RESULT_STATUSES = new Set([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+function projectSessionResultDetails(
+  result: Record<string, unknown>,
+): ToolResultEvent["details"] | undefined {
+  const details: NonNullable<ToolResultEvent["details"]> = {};
+  if (typeof result.threadId === "string" && result.threadId) {
+    details.threadId = result.threadId;
+  }
+  if (typeof result.runId === "string" && result.runId) details.runId = result.runId;
+  if (typeof result.status === "string" && SESSION_RESULT_STATUSES.has(result.status)) {
+    details.childStatus = result.status as NonNullable<
+      ToolResultEvent["details"]
+    >["childStatus"];
+  }
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
 type FileToolName = "read" | "write" | "edit";
 
 function isFileToolName(name: string): name is FileToolName {
@@ -676,9 +712,11 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
             ? projectSearchResultDetails(item.data.result)
             : threadTool
               ? projectThreadResultDetails(item.data.result)
-              : memoryAction === undefined
-                ? undefined
-                : projectMemoryResultDetails(item.data.result);
+              : isSessionTool(toolName)
+                ? projectSessionResultDetails(item.data.result)
+                : memoryAction === undefined
+                  ? undefined
+                  : projectMemoryResultDetails(item.data.result);
       const path =
         fileTool && typeof item.data.result.path === "string"
           ? item.data.result.path

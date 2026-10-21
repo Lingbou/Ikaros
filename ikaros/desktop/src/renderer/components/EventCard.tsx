@@ -1,6 +1,7 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import {
   AlertTriangle,
+  ArrowUpRight,
   Check,
   CheckCircle2,
   CircleX,
@@ -198,79 +199,133 @@ function FileActions({
   );
 }
 
+function shortId(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-4)}` : value;
+}
+
+function oneLine(value: unknown, max = 96): string {
+  if (typeof value !== "string") return "";
+  const single = value.replace(/\s+/g, " ").trim();
+  return single.length > max ? `${single.slice(0, max)}…` : single;
+}
+
+function toolCallSummary(event: ToolCallEvent): string {
+  const args = event.arguments;
+  switch (event.toolName) {
+    case "subagent":
+      return oneLine(args.title ?? args.prompt, 110);
+    case "thread_create":
+      return oneLine(args.title ?? args.workspace, 90);
+    case "thread_send": {
+      const target = shortId(args.threadId);
+      const content = oneLine(args.content, 60);
+      return [target ? `→ ${target}` : "", content].filter(Boolean).join("  ");
+    }
+    case "thread_rename":
+      return oneLine(args.title, 90);
+    case "thread_archive":
+      return [
+        args.archived === false ? "unarchive" : "archive",
+        shortId(args.threadId),
+      ]
+        .filter(Boolean)
+        .join(" ");
+    case "memory":
+      return [oneLine(args.action, 12), oneLine(args.query ?? args.content, 70)]
+        .filter(Boolean)
+        .join("  ");
+    default: {
+      const json = oneLine(JSON.stringify(args ?? {}), 90);
+      return json === "{}" ? "" : json;
+    }
+  }
+}
+
 function ToolCallCard({
   event,
   disclosure,
+  sessionThreadId,
 }: {
   event: ToolCallEvent;
   disclosure?: ToolDisclosure;
+  sessionThreadId?: string;
 }) {
   const { t } = useTranslation();
+  const openThreadPanel = useAppStore((state) => state.openThreadPanel);
   const fileDetails = isFileTool(event.toolName) ? fileToolCallDetails(event, t) : undefined;
   const callTarget = fileDetails
     ?? (isSearchTool(event.toolName) ? searchToolCallDetails(event) : undefined);
   const command = processCommand(event);
+  const summary = callTarget
+    ? [callTarget.path || event.toolName, ...callTarget.metadata].filter(Boolean).join("  ·  ")
+    : (command ?? toolCallSummary(event));
   const status = {
     running: {
-      icon: <LoaderCircle size={15} className="animate-spin" />,
+      icon: <LoaderCircle size={13} className="animate-spin" />,
       label: t("events.running"),
       className: "text-[var(--accent)]",
     },
     success: {
-      icon: <CheckCircle2 size={15} />,
+      icon: <CheckCircle2 size={13} />,
       label: t(event.toolName === "process_start" ? "events.processStarted" : "events.complete"),
       className: "text-[#72d3a7]",
     },
     error: {
-      icon: <CircleX size={15} />,
+      icon: <CircleX size={13} />,
       label: t("events.failed"),
       className: "text-[#ff7f7f]",
     },
     interrupted: {
-      icon: <AlertTriangle size={15} />,
+      icon: <AlertTriangle size={13} />,
       label: t("events.interrupted"),
       className: "text-[#d8a36f]",
     },
   }[event.status];
+  const duration =
+    typeof event.durationMs === "number" && event.durationMs > 0
+      ? event.durationMs >= 1000
+        ? `${(event.durationMs / 1000).toFixed(1)}s`
+        : `${event.durationMs}ms`
+      : undefined;
 
   const content = (
     <>
-      <span className={cx("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--panel-hover)]", status.className)}>
+      <span className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]">
         {toolIcon(event.toolName)}
       </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <span className="truncate text-[12px] font-medium leading-[18px] text-[var(--text)]">
-            {resolveEventText(event.label, t)}
-          </span>
-          <span className={cx("ml-auto flex shrink-0 items-center gap-1 text-[11px] leading-4", status.className)}>
-            {status.icon}
-            {status.label}
-          </span>
+      <span
+        className="shrink-0 truncate text-[11px] leading-4 font-medium text-[var(--muted-strong)]"
+        title={event.toolName}
+      >
+        {resolveEventText(event.label, t)}
+      </span>
+      <span
+        data-command-preview={command ? "true" : undefined}
+        className="min-w-0 flex-1 truncate text-[12px] leading-4 text-[var(--text)]"
+        title={summary}
+      >
+        {summary}
+      </span>
+      {duration ? (
+        <span className="shrink-0 font-mono text-[10px] leading-4 text-[var(--muted)]">
+          {duration}
         </span>
-        {callTarget ? (
-          <span className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-[16px] text-[var(--muted)]">
-            <span className="truncate" title={callTarget.path || undefined}>
-              {callTarget.path || event.toolName}
-            </span>
-            {callTarget.metadata.length > 0 ? (
-              <span className="shrink-0">· {callTarget.metadata.join(" · ")}</span>
-            ) : null}
-          </span>
-        ) : (
-          <span
-            data-command-preview={command ? "true" : undefined}
-            className="mt-1 block truncate font-mono text-[11px] leading-[16px] text-[var(--muted)]"
-          >
-            {command ?? `${event.toolName} · ${JSON.stringify(event.arguments)}`}
-          </span>
-        )}
+      ) : null}
+      <span
+        className={cx("flex shrink-0 items-center gap-1", status.className)}
+        title={status.label}
+      >
+        {status.icon}
+        {event.status === "error" || event.status === "interrupted" ? (
+          <span className="text-[10px] leading-4">{status.label}</span>
+        ) : null}
       </span>
     </>
   );
 
   const contentClassName =
-    "flex w-full items-start gap-3 rounded-xl px-3.5 py-3 text-left";
+    "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left";
   const mainContent = disclosure ? (
     <button
       type="button"
@@ -278,7 +333,10 @@ function ToolCallCard({
       aria-controls={disclosure.controlsId}
       data-tool-call-id={event.id}
       onClick={() => disclosure.onToggle(event.id)}
-      className={cx(contentClassName, "cursor-pointer")}
+      className={cx(
+        contentClassName,
+        "cursor-pointer transition-colors hover:bg-[var(--panel-hover)]",
+      )}
     >
       {content}
     </button>
@@ -309,17 +367,37 @@ function ToolCallCard({
   );
 
   return (
-    <div className="event-card-shadow w-full rounded-xl border border-[var(--border-soft)] bg-[var(--panel)]">
-      {commandTrigger}
+    <div
+      className={cx(
+        "group w-full min-w-0",
+        fileDetails &&
+          "rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-1 py-0.5",
+      )}
+    >
+      <div className="flex w-full min-w-0 items-center gap-1">
+        <div className="min-w-0 flex-1">{commandTrigger}</div>
+        {sessionThreadId ? (
+          <button
+            type="button"
+            aria-label={t("events.openSession")}
+            title={t("events.openSession")}
+            onClick={() => openThreadPanel(sessionThreadId)}
+            className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted)] opacity-0 transition-opacity hover:bg-[var(--panel-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <ArrowUpRight size={13} aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
       {fileDetails ? (
         <FileActions path={fileDetails.path} toolName={event.toolName} toolCallItemId={event.id} running={event.status === "running"} />
       ) : null}
     </div>
   );
 }
-
 function ToolResultCard({ event }: { event: ToolResultEvent }) {
   const { t } = useTranslation();
+  const openThreadPanel = useAppStore((state) => state.openThreadPanel);
+  const sessionThreadId = event.details?.threadId;
   const isFileResult = isFileTool(event.toolName);
   const isSearchResult = isSearchTool(event.toolName);
   const metadata = isFileResult
@@ -388,6 +466,17 @@ function ToolResultCard({ event }: { event: ToolResultEvent }) {
           <FileActions path={event.path} toolName={event.toolName} toolCallItemId={event.toolCallId} />
         ) : null}
       </div>
+      {sessionThreadId ? (
+        <button
+          type="button"
+          aria-label={t("events.openSession")}
+          title={t("events.openSession")}
+          onClick={() => openThreadPanel(sessionThreadId)}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition-colors hover:bg-[var(--panel-hover)] hover:text-[var(--text)]"
+        >
+          <ArrowUpRight size={13} aria-hidden="true" />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -507,11 +596,18 @@ function AssistantMessageCard({ event }: { event: Extract<AgentEvent, { type: "m
 interface EventCardProps {
   event: AgentEvent;
   toolDisclosure?: ToolDisclosure;
+  sessionThreadId?: string;
 }
 
-function EventCardView({ event, toolDisclosure }: EventCardProps) {
+function EventCardView({ event, toolDisclosure, sessionThreadId }: EventCardProps) {
   if (event.type === "tool_call") {
-    return <ToolCallCard event={event} disclosure={toolDisclosure} />;
+    return (
+      <ToolCallCard
+        event={event}
+        disclosure={toolDisclosure}
+        sessionThreadId={sessionThreadId}
+      />
+    );
   }
   if (event.type === "tool_result") {
     return event.toolName?.startsWith("process_") && event.details?.processId

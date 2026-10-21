@@ -4,6 +4,7 @@ import { Composer } from "./components/Composer";
 import { ConversationHeader } from "./components/ConversationHeader";
 import { EventFeed } from "./components/EventFeed";
 import { FilePanel } from "./components/FilePanel";
+import { ThreadPanel } from "./components/ThreadPanel";
 import { OnboardingDialog } from "./components/OnboardingDialog";
 import { SearchDialog } from "./components/SearchDialog";
 import { RuntimeStatusBanner } from "./components/RuntimeStatusBanner";
@@ -118,6 +119,7 @@ export function App() {
               </section>
             </main>
             <FilePanel />
+            <ThreadPanel />
           </div>
         )}
       </div>

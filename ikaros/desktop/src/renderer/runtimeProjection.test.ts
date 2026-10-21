@@ -1575,4 +1575,69 @@ describe("Runtime Turn model selection", () => {
       expect.objectContaining({ id: "assistant", content: "Done" }),
     );
   });
+  it("projects child Thread references from session tool results", () => {
+    const sessionItem = (
+      id: string,
+      kind: "tool_call" | "tool_result",
+      toolName: string,
+      data: Record<string, unknown>,
+    ) => ({
+      id,
+      turnId: "turn-session",
+      runId: "run-session",
+      ordinal: kind === "tool_call" ? 2 : 3,
+      kind,
+      role: kind === "tool_call" ? "assistant" : "tool",
+      status: "completed",
+      content: kind === "tool_call" ? "" : "{}",
+      data: { stepId: "step-session", ...data },
+      createdAt: "2026-08-11T12:00:00.000Z",
+      updatedAt: "2026-08-11T12:00:00.000Z",
+    });
+
+    const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), [
+      event(2, "item.completed", "turn-session", "run-session", "call-subagent", {
+        item: sessionItem("call-subagent", "tool_call", "subagent", {
+          callId: "provider-call-subagent",
+          toolName: "subagent",
+          arguments: { title: "Survey", prompt: "Look around" },
+        }),
+      }),
+      event(3, "item.completed", "turn-session", "run-session", "result-subagent", {
+        item: sessionItem("result-subagent", "tool_result", "subagent", {
+          callId: "provider-result-subagent",
+          toolCallItemId: "call-subagent",
+          toolName: "subagent",
+          result: {
+            threadId: "thread-child",
+            runId: "run-child",
+            status: "running",
+            output: "started",
+          },
+        }),
+      }),
+      event(4, "item.completed", "turn-session", "run-session", "result-rename", {
+        item: sessionItem("result-rename", "tool_result", "thread_rename", {
+          callId: "provider-result-rename",
+          toolCallItemId: "call-rename",
+          toolName: "thread_rename",
+          result: { threadId: "thread-child", title: "Renamed", status: "bogus" },
+        }),
+      }),
+    ]);
+
+    const events = thread?.branches[0]?.turns[0]?.events;
+    expect(events).toHaveLength(3);
+    expect(events?.[1]).toMatchObject({
+      type: "tool_result",
+      toolName: "subagent",
+      details: { threadId: "thread-child", runId: "run-child", childStatus: "running" },
+    });
+    expect(events?.[2]).toMatchObject({
+      type: "tool_result",
+      toolName: "thread_rename",
+      details: { threadId: "thread-child" },
+    });
+    expect(events?.[2]).not.toHaveProperty("details.childStatus");
+  });
 });

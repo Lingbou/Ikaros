@@ -10,7 +10,7 @@ import {
 } from "react";
 import { activeBranch, type AgentEvent, type Turn } from "../domain";
 import { useTranslation } from "../i18n";
-import { selectCurrentThread, useAppStore } from "../store";
+import { selectCurrentThread, selectThreadById, useAppStore } from "../store";
 import { EventCard } from "./EventCard";
 import { RuntimeRunProgress } from "./RuntimeRunProgress";
 import { RuntimeTurnOutcome } from "./RuntimeTurnOutcome";
@@ -106,9 +106,18 @@ function eventRowVisualOffset(viewport: HTMLElement, eventId: string): number | 
   return match ? Number(match[1]) : null;
 }
 
-export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
+export function EventFeed({
+  bottomClearance,
+  threadId,
+}: {
+  bottomClearance: number;
+  /** Render another Thread (for example a subagent session) instead of the selection. */
+  threadId?: string;
+}) {
   const { t } = useTranslation();
-  const thread = useAppStore(selectCurrentThread);
+  const selectedThread = useAppStore(selectCurrentThread);
+  const panelThread = useAppStore(selectThreadById(threadId ?? null));
+  const thread = (threadId ? panelThread : selectedThread) ?? undefined;
   const detail = useAppStore((state) =>
     thread ? state.runtimeThreadDetails[thread.id] : undefined,
   );
@@ -144,6 +153,17 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
     }) ?? [],
     [turns],
   );
+  const sessionThreadByCallId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const event of events) {
+      if (event.type !== "tool_result") continue;
+      const childThreadId = event.details?.threadId;
+      if (typeof childThreadId === "string" && childThreadId) {
+        map.set(event.toolCallId, childThreadId);
+      }
+    }
+    return map;
+  }, [events]);
   const toolCallIds = useMemo(
     () =>
       new Set(
@@ -512,11 +532,26 @@ export function EventFeed({ bottomClearance }: { bottomClearance: number }) {
                       )}
                     >
                       <div className="tool-result-disclosure__content">
-                        <EventCard event={event} />
+                        <EventCard
+                          event={event}
+                          sessionThreadId={
+                            event.type === "tool_result"
+                              ? event.details?.threadId
+                              : undefined
+                          }
+                        />
                       </div>
                     </div>
                   ) : (
-                    <EventCard event={event} toolDisclosure={toolDisclosure} />
+                    <EventCard
+                      event={event}
+                      toolDisclosure={toolDisclosure}
+                      sessionThreadId={
+                        event.type === "tool_call"
+                          ? sessionThreadByCallId.get(event.id)
+                          : undefined
+                      }
+                    />
                   )}
                 </div>
               </div>
