@@ -1120,7 +1120,7 @@ describe("RuntimeHost integration", () => {
       const active = await host.request<{ runId: string }>("turn.start", {
         threadId: created.thread.id,
         branchId: created.thread.defaultBranchId,
-        content: `shutdown-active-${"x".repeat(12_000)}`,
+        content: `shutdown-active-${"x".repeat(8_000)}`,
         providerId: "scripted",
         modelId: "scripted-v1",
       });

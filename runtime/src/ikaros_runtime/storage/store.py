@@ -837,6 +837,8 @@ class SqliteRuntimeStore:
             thread_id=thread_id,
             after=after,
             limit=limit,
+        )
+
     def list_threads_for_model(self, *, archived: bool, limit: int) -> JsonObject:
         """List Threads in the compact shape exposed by the thread_list Tool."""
 

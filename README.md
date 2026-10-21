@@ -366,7 +366,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 50 个 Python 文件）：
+`tests/`（Runtime 测试，共 51 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -2057,7 +2057,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 ### 10.1 测试布局
 
-- Runtime：`runtime/tests/` 共 45 个测试文件，覆盖 agent 循环、上下文与压缩、
+- Runtime：`runtime/tests/` 共 51 个测试文件，覆盖 agent 循环、上下文与压缩、
   存储与 schema、协议契约与路由、Provider 适配、进程管理、工具、Memory 召回、
   Skills、服务器与运行时锁；测试使用隔离的临时 Runtime home。
 - Desktop：Vitest（`ikaros/desktop/src` 内 `*.test.ts(x)`），包含协议解析、
