@@ -96,6 +96,7 @@ from .thread_history import (
     get_thread_metadata,
     list_turn_history_page,
 )
+from .thread_messaging import thread_has_active_run, thread_send_hop
 from .thread_read import read_thread_slice as read_thread_history_slice
 from .usage import local_activity_date, read_usage
 
@@ -611,6 +612,7 @@ class SqliteRuntimeStore:
         content: str,
         run_config_template: RunConfigTemplate,
         client_request_id: str | None = None,
+        user_item_data: dict[str, Any] | None = None,
     ) -> PreparedTurn:
         provider_id = run_config_template.provider.provider_id
         model_id = run_config_template.provider.model_id
@@ -626,6 +628,7 @@ class SqliteRuntimeStore:
             if existing is not None:
                 return existing
 
+        item_data = dict(user_item_data) if user_item_data is not None else {}
         owner = self._connection.execute(
             """
             SELECT t.archived_at, t.workspace_json
@@ -691,7 +694,7 @@ class SqliteRuntimeStore:
             role="user",
             status="completed",
             content=content,
-            data={},
+            data=item_data,
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -725,10 +728,18 @@ class SqliteRuntimeStore:
                 """
                 INSERT INTO items(
                     id, turn_id, run_id, ordinal, kind, role, status, content,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, 1, 'message', 'user', 'completed', ?, ?, ?)
+                    created_at, updated_at, data_json
+                ) VALUES (?, ?, ?, 1, 'message', 'user', 'completed', ?, ?, ?, ?)
                 """,
-                (user_item_id, turn_id, run_id, content, timestamp, timestamp),
+                (
+                    user_item_id,
+                    turn_id,
+                    run_id,
+                    content,
+                    timestamp,
+                    timestamp,
+                    json_dumps(item_data, separators=(",", ":"), ensure_ascii=False),
+                ),
             )
             self._connection.execute(
                 """
@@ -815,6 +826,16 @@ class SqliteRuntimeStore:
 
     def run_status(self, run_id: str) -> str:
         return run_status(self._connection, run_id)
+
+    def thread_has_active_run(self, thread_id: str) -> bool:
+        """Whether the Thread still owns a queued or running Run."""
+
+        return thread_has_active_run(self._connection, thread_id)
+
+    def thread_send_hop(self, run_id: str) -> int:
+        """Read the cross-session hop count recorded for one Run."""
+
+        return thread_send_hop(self._connection, run_id)
 
     def context_messages(
         self,

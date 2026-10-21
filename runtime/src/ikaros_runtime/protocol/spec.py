@@ -4,7 +4,7 @@ from typing import Final
 
 from ..errors import MEMORY_OPERATION_REASON_CODES
 
-PROTOCOL_VERSION: Final = 11
+PROTOCOL_VERSION: Final = 12
 JSONRPC_VERSION: Final = "2.0"
 SERVER_NAME: Final = "ikaros-runtime"
 INITIALIZE_METHOD: Final = "initialize"
@@ -84,6 +84,10 @@ PROVIDER_TOOL_IDS: Final = (
     "history_read",
     "thread_list",
     "thread_read",
+    "thread_create",
+    "thread_rename",
+    "thread_archive",
+    "thread_send",
     "read",
     "write",
     "edit",

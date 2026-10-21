@@ -6,7 +6,7 @@
       "kind": "response",
       "method": "initialize",
       "requestParams": {
-        "protocolVersion": 11,
+        "protocolVersion": 12,
         "client": {
           "name": "golden-client",
           "version": "1.0.0"
@@ -16,7 +16,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "protocolVersion": 11,
+          "protocolVersion": 12,
           "server": {
             "name": "ikaros-runtime",
             "version": "0.1.0"
