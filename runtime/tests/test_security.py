@@ -9,7 +9,7 @@ from ikaros_runtime.security import (
     install_protected_value_redaction,
 )
 
-_SECRET = "8990669018:AAGueT781iRF9L3UCd2QjqqqDse1IQlN5HU"
+_SECRET = "test-bot-token-fixture"
 
 
 def _record(message: str, *args: object) -> logging.LogRecord:
