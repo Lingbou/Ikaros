@@ -109,7 +109,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
   6 个 Run（`IKAROS_AGENT_WORKERS`，默认 6、范围 1–8）；并发只发生在不同 Thread 之间，
   同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具调用按读/写闸门并发执行
-  （只读工具可重叠，写类工具独占）；每个 Branch 拥有串行队列。
+  （只读工具可重叠，写类工具独占）；每个 Branch 拥有串行队列。`subagent` 的
+  `wait=false` 子 Run 也经同一调度器运行；父 Run 正常结束不会取消它。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
   独立数据库，只共享 Runtime-home 锁。
 - Desktop 与 Runtime 的生命周期绑定：关闭应用会先请求 Runtime 干净关闭。
@@ -267,14 +268,16 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — 导出 Memory 存储与召回。
 - `domain.py` — Memory 领域类型：kind/state/scope、来源、revision、内容上限。
+- `governance.py` — 精炼写入治理：NFKC/casefold 正文规范化、确定性词元
+  相似度、重复跳过与合并目标选择。
 - `refinement.py` — 后台记忆精炼：Run 终态触发、Thread 串行与通知排队、
-  游标增量抽取、严格 JSON 解析与追加写入（`auto_extracted`）。
+  游标增量抽取、严格 JSON 解析、重复跳过与 revision 合并（`auto_extracted`）。
 - `retrieval.py` — 确定性混合召回：FTS5(BM25) 池 + 关键词重叠池，RRF（k=60）
   融合；候选 ≤2,000、选中 ≤8 条 / 6,000 字符。
 - `schema.py` — memory.db schema 3 的 DDL 与逐字节校验（含 FTS5 召回索引与
   抽取游标表）。
 - `store.py` — memory.db SQLite 所有者：CRUD、revision、墓碑、操作回执、
-  FTS 索引维护、BM25 排名与精炼游标/去重查询。
+  按 ID 的最新 revision 更新/遗忘、FTS 索引维护、BM25 排名与精炼游标查询。
 
 `protocol/`：
 
@@ -316,7 +319,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — 服务导出。
 - `files.py` — `file.preview` / `file.change.get`：线程内只读文件访问与变更查询。
-- `memories.py` — `memory.*`：幂等创建/纠正/遗忘、分页列表、来源校验。
+- `memories.py` — `memory.*`：幂等创建/纠正/遗忘、按 ID 的最新 revision 更新/遗忘、分页列表、来源校验。
 - `processes.py` — `process.read` / `process.stop`：在线进程查询与重启后的历史回退。
 - `providers.py` — `provider.*` / `model.*`：配置、发现、断开、移除、启用与容量设置。
 - `skills.py` — `skill.list` / `skill.set_enabled`：全局技能发现与启用状态。
@@ -364,8 +367,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 2,000 字符。
 - `history_read.py` — `history_read` 工具：itemId 周边的有界切片。
 - `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
-- `memory.py` — `memory` 工具：模型侧 save / search；save 复用 `memory.create`
-  的校验、凭据保护、来源捕获与幂等路径，search 复用确定性混合召回（只读）。
+- `memory.py` — `memory` 工具：模型侧 save / search / update / forget；save 与
+  update 复用 `memory.create` / `memory.correct` 的校验、凭据保护、来源捕获与
+  幂等路径，forget 走墓碑 revision，search 复用确定性混合召回（只读）。
 - `policy.py` — 执行策略：当前固定 FullAccessPolicy。
 - `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
   终止 6 秒 / 排空 2 秒；持久化 `background` 并支持前台完成门禁。
@@ -402,8 +406,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_maintenance.py` — check/backup/repair 测试。
 - `test_memory_recall.py` — Memory 召回整链路测试。
 - `test_memory_retrieval.py` — 召回算法与预算测试。
-- `test_memory_tool.py` — `memory` 工具 save / search、幂等、凭据拒绝与参数越界测试。
-- `test_memory.py` — Memory 存储、幂等、墓碑测试。
+- `test_memory_tool.py` — `memory` 工具 save / search / update / forget、幂等、
+  revision、凭据拒绝与参数越界测试。
+- `test_memory.py` — Memory 存储、幂等、墓碑、revision 与来源测试。
 - `test_model_defaults.py` — 默认上下文窗口测试。
 - `test_model_input_pipeline.py` — RunConfig → StepInput 流水线测试。
 - `test_model_input.py` — 输入快照校验测试。
@@ -654,10 +659,11 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - 召回：FTS5(BM25) 池与关键词重叠池经 RRF（k=60）融合
   （`deterministic-hybrid-rrf-v2`），候选上限 2,000 条，选中上限 8 条 / 6,000
   字符；每个 Run 冻结精确 revision。
-- 自动精炼：Run 成功后后台追加的记忆带 `sourceKind=auto_extracted`，与其他
-  记忆一样可见、可纠正、可遗忘；界面按 Session 来源展示可用性。
+- 自动精炼：Run 成功后后台写入或合并的记忆带 `sourceKind=auto_extracted`，
+  与其他记忆一样可见、可纠正、可遗忘；界面按 Session 来源展示可用性。
 - 语义：Run 执行中的纠正只影响之后的新 Run；遗忘阻止继续发送已不可用版本；
-  自动精炼只追加，不删除也不改写已有 Memory。
+  自动精炼按规范化正文 + kind/scope 跳过重复，同一条事实的补充或修正产生
+  同一 memoryId 的新 revision，旧 revision 仅保留审计价值。
 
 ### 4.7 文件与命令界面
 
@@ -895,6 +901,12 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
   Run 内工具调用按读/写闸门并发（只读可重叠、写类独占）；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
   下一个可运行 Thread。
+- 子 Agent：`subagent` 默认 `wait=true`，在父 worker 上 inline 执行以保证等待
+  子 Run 不会死锁；`wait=false` 通过调度器 enqueue 并立即返回，父 Run 正常结束
+  不强杀子 Run，父 Run 取消会传播到所有子 Run。每个 Run 最多 4 个存活的非阻塞
+  子 Run；嵌套深度由 `IKAROS_SUBAGENT_MAX_DEPTH` 控制，默认 2、范围 1–8。
+  父会话用 `thread_read` 收集子会话结果；子 Run 未结算时返回 `activeRun` 与
+  明确提示。
 - 无总模型调用次数/时长上限；可手动取消；单次 Provider 请求有超时；资源清理
   有界。
 - 失败/取消的 Run 向后续对话提供：已持久化的工具结果 + 独立的 Runtime 状态块
@@ -975,8 +987,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules` 与已知二进制扩展名，不设深度上限；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–200）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 2,000 字符；单文件 ≤32 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
-| `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
-| `subagent` | `prompt`（非空字符串）、可选 `title`（≤200 字符，与 Thread 标题同限） | 创建子 Thread + 子 Run 并等待结束，返回最终回答原文（不截断）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；子会话不能再 spawn（深度 1）；不设墙钟超时（父取消会传播，长任务由取消而非计时终止）；同一工具调用重放幂等 |
+| `memory` | `action`（`save` / `search` / `update` / `forget`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5）；update：`memoryId` + `content`（不得改 kind/scope）；forget：`memoryId` | save/update 复用 `memory.create` / `memory.correct` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；forget 按 ID 追加内容抹除墓碑，删除只由显式 forget 触发 |
+| `subagent` | `prompt`（非空字符串）、可选 `title`（≤200 字符，与 Thread 标题同限）、可选 `wait`（布尔，默认 `true`） | `wait=true` 创建子 Thread + 子 Run 并在父 worker 上 inline 等待结束，返回最终回答原文（不截断）；`wait=false` 经调度器 enqueue 后立即返回 `threadId`/`runId`，父 Run 正常结束不强杀子 Run，但父取消会传播；每个 Run 最多 4 个存活的非阻塞子 Run；嵌套深度由 `IKAROS_SUBAGENT_MAX_DEPTH` 控制（默认 2、范围 1–8）；子会话在侧边栏可见，父会话可用 `thread_read` 读细节；未结算时 `thread_read` 返回 `activeRun` 与提示；不设墙钟超时；同一工具调用重放幂等 |
+
+
 
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
@@ -1049,9 +1063,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   引用、revision、内容完整性摘要（摘要私有，Forget 时清除）；
   `memory_extraction_cursors` 保存每个 Thread 的后台精炼进度（已处理 Item 的
   排序键 + 尝试/成功时间）。
-- 操作：create / correct / forget / list / get；创建与纠正幂等；遗忘产生内容抹除
-  的墓碑 revision；冲突返回有界 `reasonCode`（协议错误码 `-32020`
-  `memory operation failed`）。
+- 操作：RPC create / correct / forget / list / get；创建与纠正幂等；遗忘产生
+  内容抹除的墓碑 revision；模型工具另提供按 ID 的 update / forget（内部复用
+  `memory.correct` / `memory.forget` 的最新 revision 路径）。冲突返回有界
+  `reasonCode`（协议错误码 `-32020` `memory operation failed`）。
 - 溯源：可选的来源必须指向本 Session 已存在的 Item；Session 重置只会让软来源
   退化，不删除 Memory。`source_kind` 区分用户显式（`user_explicit`）、会话内
   显式引用（`session_item`）与后台自动抽取（`auto_extracted`）。
@@ -1066,25 +1081,30 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   embedding 服务、不做 LLM 精排。
 - 输入包装：Memory 正文以 contextual-data 包装进入模型，不改变工具权限、身份、
   执行策略或用户请求；审计只记录 ID/revision/scope/字符数。
-- 模型工具：单个 provider 工具 `memory`（`save` / `search`）。save 走与
-  `memory.create` 相同的校验、凭据保护、来源捕获与幂等路径（`clientRequestId`
-  由工具调用 Item ID 派生；来源指向触发本次 Run 的 User Item，因为工具调用 Item
-  尚未结算）；workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生，模型
-  不能指定。search 复用 `MemoryRetriever`，只读、不改变每 Run 冻结的召回集合；
-  limit 1–8（默认 5），正文总量 ≤6,000 字符并显式报告截断。没有 forget / delete：
-  删除仍由用户控制。
+- 模型工具：单个 provider 工具 `memory`（`save` / `search` / `update` / `forget`）。
+  save 走与 `memory.create` 相同的校验、凭据保护、来源捕获与幂等路径；update
+  按 `memoryId` + `content` 追加当前 revision 的 `correct`，不能改变 scope/kind；
+  forget 按 `memoryId` 追加内容抹除的墓碑 revision。`clientRequestId` 由工具调用
+  Item ID 派生，update/forget 幂等；两者的 provenance 都指向触发本次 Run 的 User
+  Item。workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生，模型不能指定。
+  search 复用 `MemoryRetriever`，只读、不改变每 Run 冻结的召回集合；limit 1–8
+  （默认 5），正文总量 ≤6,000 字符并显式报告截断。删除只由显式 forget 触发，
+  不做自动删除。
 - 后台精炼（`MemoryRefinementService`）：Run 进入 `completed` 终态后在后台
-  asyncio 任务里追加一次抽取；每个完成 Run 都触发，不设间隔预算（只受额度之外
-  的输入/候选上限约束）。同一 Thread 同时只有一个任务（游标必须有序），期间
-  到达的通知会排队，在当前抽取结束后再跑一轮。只读该 Thread 默认分支上已完成
-  的 user/assistant Item（游标之后、≤40 条且 ≤24KB 输入），用该 Run 的
-  provider/model 请求一次严格 JSON（≤4 条候选、每条 ≤512 字符、带 kind/scope/
-  sourceItemId）；解析防御式，任何失败只记日志，不影响 Run 结算。写入复用
-  `create_memory_once`（确定性 clientRequestId + 正文去重），provenance 指向
-  产生该事实的 Item；命中受保护值不写入。Runtime 关闭时任务被取消。
-- 边界：精炼只追加、不删除也不合并 Memory，不跨 Thread 学习，不读命令日志或
-  文件差异；删除仍由用户控制（模型侧没有 forget / delete 工具）；只有通过
-  长度、scope 与凭据校验的候选才会写入。
+  asyncio 任务里抽取一次；每个完成 Run 都触发，不设间隔预算（只受输入/候选上限
+  约束）。同一 Thread 同时只有一个任务（游标必须有序），期间到达的通知会排队，
+  在当前抽取结束后再跑一轮。只读该 Thread 默认分支上已完成的 user/assistant Item
+  （游标之后、≤40 条且 ≤24KB 输入），同时注入有界 active Memory 目录（≤32 条、
+  每条 ≤512 字符、≤8KB，带 id/kind/scope/revision），用该 Run 的 provider/model
+  请求一次严格 JSON（≤4 条候选、每条 ≤512 字符、带 kind/scope/sourceItemId，可选
+  memoryId）。候选与当前 active Memory 按规范化正文 + kind/scope 比对：完全相同
+  跳过；同一条事实的补充/修正复用 `memory.correct` 追加 revision（显式 memoryId
+  优先，否则使用确定性词元相似度阈值），旧 revision 保留；其余写入新 Memory。
+  provenance 指向产生该事实的 Item；命中受保护值不写入。日志输出
+  `written` / `merged` / `skipped_duplicate` / `dropped` 计数。Runtime 关闭时任务
+  被取消。
+- 边界：不做跨 Thread 学习、向量检索或自动删除；删除只由显式 forget 触发；
+  只有通过长度、scope 与凭据校验的候选才会写入或合并。
 
 ### 6.12 Skills 子系统
 
@@ -1193,6 +1213,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
 - `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 6，范围 1–8；值为 1
   时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
+- `IKAROS_SUBAGENT_MAX_DEPTH`：子 Agent 最大嵌套深度，默认 2、范围 1–8；
+  非法值会让 Runtime 启动失败。深度 0 是顶层 Run，深度达到上限的 Run 再调用
+  `subagent` 会得到 `subagent_depth_limit`。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
 - `channels.yaml`（version 1）结构概要：
@@ -2191,11 +2214,11 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   主窗口时不发送；
 - Telegram 通道：单用户私聊、固定 `Telegram` Thread、long polling、文本消息；
   暂不支持群组、附件、webhook 与 headless 常驻；
-- Multi-Agent 与更深的子 Agent 树（当前支持单层 `subagent`，子会话不可再 spawn；不同 Thread 的多个 Run 已可并发）；
+- 子 Agent 树支持到 `IKAROS_SUBAGENT_MAX_DEPTH`（默认 2），但不提供树状可视化或跨 Run 的父子消息总线；
 - cron 与主动唤醒任务；
 - 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
-- 自动 Memory 提取与 Skill 学习；
+- Skill 自动学习（Memory 自动精炼与治理已实现，见 §6.11）；
 - Linux 安装包内置 Runtime、自动更新、代码签名与正式发布渠道；
 - 交互式权限模式（当前只有 full_access）。
 
@@ -2240,10 +2263,11 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
 | Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
 | Memory | 精炼触发 | Run completed 后后台一次（无间隔预算）；同 Thread 串行，期间通知排队再跑 |
-| Memory | 精炼输入 / 候选 | 游标后已完成消息 ≤40 条且 ≤24KB；候选 ≤4 条、每条 ≤512 字符 |
+| Memory | 精炼输入 / 候选 | 游标后已完成消息 ≤40 条且 ≤24KB；active 目录 ≤32 条 / 每条 ≤512 字符 / ≤8KB；候选 ≤4 条、每条 ≤512 字符 |
 | Memory | 精炼输出 | 1,024 tokens；响应 ≤16,384 字符；超时 120 秒 |
+| Memory | 精炼治理 | 规范化正文 + kind/scope 去重；显式 memoryId 优先，自动合并相似度 ≥0.75 |
 | Memory | 列表分页 | 默认 50、最大 100 |
-| Memory | 模型工具 | `memory`（save / search）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符 |
+| Memory | 模型工具 | `memory`（save / search / update / forget）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符；update/forget 按 ID 幂等 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
 | 文件 | glob | 结果上限默认 1,000、最大 5,000；不设扫描深度上限；忽略 .git/node_modules/二进制 |
 | 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤200 行；单行 2,000 字符；单文件 ≤32 MiB |
@@ -2269,7 +2293,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 11；36 方法；15 事件；17 工具 |
-| 工具 | subagent | 无墙钟超时；返回完整最终回答；允许深度 1；`title` ≤200 字符 |
+| 工具 | subagent | `wait` 默认 true；`wait=false` 每 Run 最多 4 个存活子 Run；深度上限 `IKAROS_SUBAGENT_MAX_DEPTH` 默认 2、范围 1–8；无墙钟超时；`title` ≤200 字符 |
 | 存储 | 版本 | state schema 15；Journal 11；memory 3；config 2；channel 1 |
 | Thread | 标题生成 | 首个 Run 终态后后台一次；≤24 tokens、超时 30 秒、标题 ≤60 字符；`IKAROS_THREAD_TITLES=0` 关闭 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |

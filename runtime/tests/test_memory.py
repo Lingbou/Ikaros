@@ -382,6 +382,89 @@ def test_correct_appends_revision_and_is_idempotent_across_restart(
         reopened.close()
 
 
+def test_latest_correct_and_forget_are_idempotent_with_provenance(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory.db"
+    source = MemorySourceSnapshot(
+        thread_id="thread_" + "5" * 32,
+        turn_id="turn_" + "6" * 32,
+        item_id="item_" + "7" * 32,
+        item_digest="8" * 64,
+    )
+    store = SqliteMemoryStore(path)
+    memory_id = _create(store, "create-before-latest", content="original")
+    corrected = store.correct_memory_latest_once(
+        memory_id=memory_id,
+        content="latest correction",
+        client_request_id="latest-correct",
+        source=source,
+        source_kind="auto_extracted",
+    )
+    assert corrected.to_wire() == {
+        "memoryId": memory_id,
+        "resultingRevision": 2,
+        "created": True,
+    }
+    record = store.get_memory(memory_id)
+    assert record.revision == 2
+    assert record.content == "latest correction"
+    assert record.provenance.source_kind == "auto_extracted"
+    assert record.provenance.item_id == source.item_id
+    store.close()
+
+    reopened = SqliteMemoryStore(path)
+    try:
+        repeated = reopened.correct_memory_latest_once(
+            memory_id=memory_id,
+            content="latest correction",
+            client_request_id="latest-correct",
+            source=source,
+            source_kind="auto_extracted",
+        )
+        assert repeated.resulting_revision == 2
+        assert repeated.created is False
+        with pytest.raises(MemoryOperationError) as changed_retry:
+            reopened.correct_memory_latest_once(
+                memory_id=memory_id,
+                content="different body",
+                client_request_id="latest-correct",
+                source=source,
+                source_kind="auto_extracted",
+            )
+        _assert_memory_error(changed_retry, "memory_idempotency_conflict")
+
+        forgotten = reopened.forget_memory_latest_once(
+            memory_id=memory_id,
+            client_request_id="latest-forget",
+            source=source,
+            source_kind="auto_extracted",
+        )
+        assert forgotten.to_wire() == {
+            "memoryId": memory_id,
+            "resultingRevision": 3,
+            "created": True,
+        }
+        assert reopened.get_memory(memory_id).provenance.source_kind == "auto_extracted"
+        replay = reopened.forget_memory_latest_once(
+            memory_id=memory_id,
+            client_request_id="latest-forget",
+            source=source,
+            source_kind="auto_extracted",
+        )
+        assert replay.resulting_revision == 3
+        assert replay.created is False
+        with pytest.raises(MemoryOperationError) as stale:
+            reopened.correct_memory_latest_once(
+                memory_id=memory_id,
+                content="cannot revive",
+                client_request_id="latest-after-forget",
+            )
+        _assert_memory_error(stale, "memory_forgotten")
+    finally:
+        reopened.close()
+
+
 def test_forget_creates_tombstone_redacts_all_derived_content_and_replays(
     tmp_path: Path,
 ) -> None:

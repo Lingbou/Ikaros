@@ -622,7 +622,8 @@ class RefiningOpenAIEndpoint(FakeOpenAIEndpoint):
             for message in messages
         ):
             prompt = str(messages[-1]["content"])
-            records = json.loads(prompt[prompt.index("["):])
+            payload = json.loads(prompt[prompt.index("{"):])
+            records = payload["records"]
             return _fake_sse_text(
                 json.dumps(
                     {

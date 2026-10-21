@@ -159,6 +159,8 @@ class RuntimeApplication:
             store=store,
             run_child=self._run_subagent,
             publish=publish,
+            enqueue=self._enqueue_subagent_run,
+            cancel=self._cancel_subagent_run,
         )
         tool_executor = ToolExecutor(
             ToolRegistry(
@@ -174,7 +176,7 @@ class RuntimeApplication:
                     EditTool(),
                     HistoryReadTool(store.read_history_slice),
                     ThreadListTool(store.list_threads_for_model),
-                    ThreadReadTool(store.read_thread_slice),
+                    ThreadReadTool(self._subagents.read_thread),
                     GlobTool(),
                     GrepTool(),
                     ListTool(),
@@ -321,6 +323,16 @@ class RuntimeApplication:
         if outcome.cancel_after_ack is not None:
             await self._scheduler.cancel(outcome.cancel_after_ack)
 
+    def _notify_run_terminal(self, config: RunConfig, status: str) -> None:
+        self._subagents.notify_run_terminal(config.run_id)
+        self._refinement.notify_run_terminal(config, status)
+
+    async def _enqueue_subagent_run(self, run_id: str) -> None:
+        await self._scheduler.enqueue(run_id)
+
+    async def _cancel_subagent_run(self, run_id: str) -> None:
+        await self._scheduler.cancel(run_id)
+
     async def _run_subagent(
         self,
         run_id: str,
@@ -340,6 +352,7 @@ class RuntimeApplication:
                     logging.getLogger("ikaros_runtime").exception(
                         "telegram channel shutdown failed"
                     )
+            self._subagents.close()
             await self._scheduler.close()
             await self._refinement.close()
             await self._titles.close()
