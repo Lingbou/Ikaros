@@ -12,7 +12,12 @@ import pytest
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent, JsonObject
-from ikaros_runtime.providers.base import ProviderEvent, ProviderRequest, ResponseCompleted
+from ikaros_runtime.providers.base import (
+    ProviderEvent,
+    ProviderRequest,
+    ResponseCompleted,
+    TextDelta,
+)
 from ikaros_runtime.services.subagents import SubagentError, SubagentService
 from ikaros_runtime.storage import SqliteRuntimeStore
 from ikaros_runtime.tools import (
@@ -52,13 +57,34 @@ class _SlowProvider:
     id = "scripted"
     model_id = "scripted-v1"
 
+    def __init__(self, delay: float = 30.0) -> None:
+        self.delay = delay
+
     async def stream(
         self,
         request: ProviderRequest,
         *,
         cancellation: CancellationToken,
     ) -> AsyncIterator[ProviderEvent]:
-        await cancellation.sleep(30)
+        await cancellation.sleep(self.delay)
+        yield TextDelta("slow child finished")
+        yield ResponseCompleted()
+
+
+_LONG_ANSWER = "L" * 5_000
+
+
+class _LongAnswerProvider:
+    id = "scripted"
+    model_id = "scripted-v1"
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        yield TextDelta(_LONG_ANSWER)
         yield ResponseCompleted()
 
 
@@ -66,7 +92,6 @@ def _setup(
     tmp_path: Path,
     *,
     provider: Any = None,
-    timeout_seconds: float = 30.0,
 ) -> tuple[SqliteRuntimeStore, SubagentService, list[JournalEvent], str, str]:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     events: list[JournalEvent] = []
@@ -81,7 +106,6 @@ def _setup(
         store=store,
         run_child=loop.run,
         publish=publish,
-        timeout_seconds=timeout_seconds,
     )
     thread, _created = store.create_thread("Parent")
     turn = prepare_turn(
@@ -112,8 +136,6 @@ async def test_subagent_spawns_a_child_thread_and_returns_the_final_message(
         )
         assert result["status"] == "completed"
         assert result["summary"] == "Scripted response to: child task"
-        assert result["timedOut"] is False
-        assert result["truncated"] is False
         assert result["threadId"] != parent_thread
         page = store.list_thread_page(cursor=None, limit=50, archived=False)
         child = next(thread for thread in page.threads if thread.id == result["threadId"])
@@ -169,22 +191,44 @@ async def test_subagent_depth_limit_rejects_nested_spawning(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_subagent_timeout_cancels_the_child_run(tmp_path: Path) -> None:
+async def test_subagent_waits_for_slow_child_work_without_a_wall_clock_cutoff(
+    tmp_path: Path,
+) -> None:
     store, service, _events, parent_run, _parent_thread = _setup(
         tmp_path,
-        provider=_SlowProvider(),
-        timeout_seconds=0.05,
+        provider=_SlowProvider(delay=0.2),
     )
     try:
         result = await service.spawn(
             parent_run_id=parent_run,
-            request_id="item_child_timeout",
+            request_id="item_child_slow",
             prompt="slow child",
             title=None,
             cancellation=CancellationToken(),
         )
-        assert result["timedOut"] is True
-        assert result["status"] == "cancelled"
+        assert result["status"] == "completed"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_subagent_returns_the_full_final_message_without_truncation(
+    tmp_path: Path,
+) -> None:
+    store, service, _events, parent_run, _parent_thread = _setup(
+        tmp_path,
+        provider=_LongAnswerProvider(),
+    )
+    try:
+        result = await service.spawn(
+            parent_run_id=parent_run,
+            request_id="item_child_long",
+            prompt="long child",
+            title=None,
+            cancellation=CancellationToken(),
+        )
+        assert result["status"] == "completed"
+        assert result["summary"] == _LONG_ANSWER
     finally:
         store.close()
 
@@ -210,7 +254,6 @@ async def test_subagent_parent_cancellation_cancels_the_child_run(tmp_path: Path
         token.cancel()
         result = await asyncio.wait_for(task, timeout=10)
         assert result["status"] == "cancelled"
-        assert result["timedOut"] is False
     finally:
         store.close()
 
@@ -223,8 +266,6 @@ async def test_subagent_tool_validates_arguments_and_projects_results() -> None:
             "runId": "run_child",
             "status": "completed",
             "summary": "done",
-            "truncated": False,
-            "timedOut": False,
         }
     )
     tool = SubagentTool(backend)
@@ -260,3 +301,30 @@ async def test_subagent_tool_validates_arguments_and_projects_results() -> None:
     )
     assert not denied.ok
     assert denied.details["errorCode"] == "subagent_depth_limit"
+
+@pytest.mark.asyncio
+async def test_subagent_tool_returns_the_full_summary_without_truncation() -> None:
+    long_summary = "R" * 5_000
+    tool = SubagentTool(
+        _RecordingBackend(
+            {
+                "threadId": "thread_child",
+                "runId": "run_child",
+                "status": "completed",
+                "summary": long_summary,
+            }
+        )
+    )
+    context = ToolExecutionContext("run_parent", 1, "item_child", "thread_parent", None)
+    result = await tool.execute(
+        ToolCall("call_long", "subagent", {"prompt": "long"}),
+        cancellation=CancellationToken(),
+        context=context,
+    )
+    assert result.ok
+    assert result.output == long_summary
+    assert result.details == {
+        "threadId": "thread_child",
+        "runId": "run_child",
+        "status": "completed",
+    }

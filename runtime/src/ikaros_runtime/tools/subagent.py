@@ -16,8 +16,7 @@ from .core import (
 )
 
 SUBAGENT_TOOL_NAME = "subagent"
-SUBAGENT_MAX_PROMPT_CHARS = 32768
-SUBAGENT_MAX_TITLE_CHARS = 120
+SUBAGENT_MAX_TITLE_CHARS = 200
 
 
 class SubagentBackend(Protocol):
@@ -51,11 +50,7 @@ class SubagentTool:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": SUBAGENT_MAX_PROMPT_CHARS,
-                    },
+                    "prompt": {"type": "string", "minLength": 1},
                     "title": {
                         "type": "string",
                         "minLength": 1,
@@ -88,10 +83,6 @@ class SubagentTool:
             return ToolResult.rejected(
                 call, code="invalid_arguments", message="prompt must be a non-empty string"
             )
-        if len(prompt) > SUBAGENT_MAX_PROMPT_CHARS:
-            return ToolResult.rejected(
-                call, code="invalid_arguments", message="prompt is too long"
-            )
         if title is not None and (
             not isinstance(title, str)
             or not title.strip()
@@ -122,12 +113,8 @@ class SubagentTool:
         cancellation.raise_if_cancelled()
         status = str(payload.get("status", "failed"))
         summary = str(payload.get("summary", ""))
-        if status == "completed" and summary:
-            output = summary
-        elif status == "completed":
-            output = "Subagent completed without a final message."
-        elif bool(payload.get("timedOut")):
-            output = "Subagent timed out and was cancelled."
+        if status == "completed":
+            output = summary or "Subagent completed without a final message."
         else:
             output = f"Subagent {status}."
         return ToolResult(
@@ -139,9 +126,6 @@ class SubagentTool:
                 "threadId": str(payload.get("threadId", "")),
                 "runId": str(payload.get("runId", "")),
                 "status": status,
-                "summary": summary,
-                "truncated": bool(payload.get("truncated")),
-                "timedOut": bool(payload.get("timedOut")),
             },
         )
 
