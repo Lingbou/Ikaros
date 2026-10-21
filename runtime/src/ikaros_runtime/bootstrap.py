@@ -138,6 +138,7 @@ class RuntimeApplication:
             task.add_done_callback(self._process_events.discard)
 
         self._process_manager = ProcessManager(
+            logs_root=paths.processes,
             record=record_process,
             protected_values=self.security.protected_values,
         )
@@ -287,7 +288,7 @@ class RuntimeApplication:
             self.skills,
             self.memories,
             self.files,
-            ProcessService(self._process_manager, store),
+            ProcessService(self._process_manager, store, logs_root=paths.processes),
             self._channel_service,
         )
 

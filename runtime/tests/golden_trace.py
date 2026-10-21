@@ -102,11 +102,14 @@ class _DeterministicMonotonic:
         return value
 
 
-async def _golden_spawn(command: str, cwd: str | None) -> _SpawnedProcess:
+async def _golden_spawn(
+    command: str, cwd: str | None, *, log: Any = None
+) -> _SpawnedProcess:
     if command != "golden" or (cwd != "C:/golden-workspace" and cwd != "C:\\golden-workspace"):
         raise AssertionError("unexpected golden command or workspace")
+    if log is not None:
+        log.write(b"golden-output\n")
     stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
-    stdout.feed_data(b"golden-output\n")
     stdout.feed_eof()
     stderr.feed_eof()
     process = cast(
@@ -309,7 +312,9 @@ async def build_production_messages(database_path: Path) -> list[GoldenMessage]:
         def record_process(fact: dict[str, Any]) -> None:
             store.record_process(fact)
 
-        manager = ProcessManager(record=record_process)
+        manager = ProcessManager(
+            logs_root=database_path.parent / "processes", record=record_process
+        )
         executor = ToolExecutor(
             ToolRegistry(
                 (

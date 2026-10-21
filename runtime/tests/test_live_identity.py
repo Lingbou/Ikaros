@@ -497,8 +497,16 @@ async def test_live_deepseek_identity_ab_and_tool_gate(tmp_path: Path) -> None:
     def record_process(fact: dict[str, object]) -> None:
         store.record_process(fact)
 
-    manager_a = ProcessManager(record=record_process, protected_values=lambda: (api_key,))
-    manager_b = ProcessManager(record=record_process, protected_values=lambda: (api_key,))
+    manager_a = ProcessManager(
+        logs_root=state_path.parent / "processes",
+        record=record_process,
+        protected_values=lambda: (api_key,),
+    )
+    manager_b = ProcessManager(
+        logs_root=state_path.parent / "processes",
+        record=record_process,
+        protected_values=lambda: (api_key,),
+    )
     tools_a = _new_tool_executor(manager_a)
     tools_b = _new_tool_executor(manager_b)
     adapter_a = OpenAICompatibleAdapter(provider)

@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
@@ -32,6 +34,7 @@ from ikaros_runtime.tools import (
     process_platform,
 )
 from ikaros_runtime.tools import process_manager as manager_module
+from ikaros_runtime.tools.process_log import ProcessLog, ProcessLogError
 from ikaros_runtime.tools.process_manager import ProcessError
 
 
@@ -63,7 +66,7 @@ async def _dispose(manager: ProcessManager) -> None:
     await manager.close()
 
 
-def test_restart_process_read_uses_unicode_character_cursors() -> None:
+def test_restart_process_read_uses_byte_cursors(tmp_path: Path) -> None:
     class RestartStore:
         def process_records(self) -> list[JsonObject]:
             return [
@@ -71,17 +74,24 @@ def test_restart_process_read_uses_unicode_character_cursors() -> None:
                     "processId": "process_restarted",
                     "threadId": "thread_test",
                     "output": "中文 output",
+                    "outputBytes": 13,
+                    "headBytes": 13,
+                    "tailStart": 0,
+                    "fileBytes": 13,
+                    "truncated": False,
                 }
             ]
 
-    service = ProcessService(ProcessManager(), cast(Any, RestartStore()))
+    manager = ProcessManager(logs_root=tmp_path / "processes")
+    service = ProcessService(manager, cast(Any, RestartStore()), logs_root=tmp_path / "processes")
 
     page = service.read(
-        {"threadId": "thread_test", "processId": "process_restarted", "cursor": 1}
+        {"threadId": "thread_test", "processId": "process_restarted", "cursor": 3}
     )
 
     assert page["output"] == "文 output"
-    assert page["nextCursor"] == len("中文 output")
+    assert page["nextCursor"] == 13
+    assert page["hasMore"] is False
 
 
 def _command(*, windows: str, posix: str) -> str:
@@ -172,7 +182,7 @@ def _windows_sleep_child_command(
 @pytest.mark.asyncio
 async def test_start_wait_proves_actual_completion_and_workspace(tmp_path: Path) -> None:
     facts: list[JsonObject] = []
-    manager = ProcessManager(record=facts.append)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
     executor = _executor(manager)
     context = _context(cwd=str(tmp_path))
     started = await executor.execute(
@@ -215,7 +225,7 @@ async def test_start_wait_proves_actual_completion_and_workspace(tmp_path: Path)
         "exited",
     ]
     assert facts[0]["errorCode"] == "start_pending"
-    assert "中文" in facts[-1]["stdout"] and "error" in facts[-1]["stderr"]
+    assert "中文" in facts[-1]["output"] and "error" in facts[-1]["output"]
     canonical_timestamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
     for fact in facts:
         assert canonical_timestamp.fullmatch(str(fact["startedAt"]))
@@ -226,7 +236,7 @@ async def test_start_wait_proves_actual_completion_and_workspace(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_repeated_start_and_read_do_not_replay_command(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     context = _context()
     command = _command(windows="Write-Output 'once'", posix="printf once")
     first, second = await asyncio.gather(
@@ -269,7 +279,7 @@ async def test_repeated_start_and_read_do_not_replay_command(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_wait_timeout_leaves_process_running_and_stop_is_terminal(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     context = _context()
     result = await manager.start(
         _command(
@@ -292,7 +302,7 @@ async def test_wait_timeout_leaves_process_running_and_stop_is_terminal(tmp_path
 
 @pytest.mark.asyncio
 async def test_wait_cancellation_does_not_spawn_or_implicitly_stop(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     context = _context()
     result = await manager.start(
         _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -330,7 +340,7 @@ async def test_root_exit_stops_descendants_without_pipe_hang(
     tmp_path: Path,
     inherit_output: bool,
 ) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     context = _context()
     pid_file = tmp_path / "child.pid"
     result = await manager.start(
@@ -351,7 +361,7 @@ async def test_root_exit_stops_descendants_without_pipe_hang(
 
 @pytest.mark.asyncio
 async def test_nonzero_exit_and_invalid_tool_arguments(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     executor = _executor(manager)
     context = _context(cwd=str(tmp_path))
     started = await executor.execute(
@@ -395,7 +405,7 @@ async def test_nonzero_exit_and_invalid_tool_arguments(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_relative_and_missing_workspace(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     executor = _executor(manager)
     child = tmp_path / "nested"
     child.mkdir()
@@ -428,7 +438,7 @@ async def test_output_is_bounded_paged_and_secret_environment_not_inherited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("IKAROS_TEST_SECRET", "do-not-inherit-me")
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     context = _context()
     command = _command(
         windows="[Console]::Write($env:IKAROS_TEST_SECRET); [Console]::Write(('x' * 2000000))",
@@ -460,7 +470,11 @@ async def test_secret_split_across_stream_chunks_never_reaches_read_or_record(
 ) -> None:
     facts: list[JsonObject] = []
     secret = "credential-very-secret"
-    manager = ProcessManager(record=facts.append, protected_values=lambda: (secret,))
+    manager = ProcessManager(
+        logs_root=tmp_path / "processes",
+        record=facts.append,
+        protected_values=lambda: (secret,),
+    )
     context = _context()
     command = _command(
         windows="[Console]::Write('credential-'); Start-Sleep -Milliseconds 300; "
@@ -485,7 +499,7 @@ async def test_secret_split_across_stream_chunks_never_reaches_read_or_record(
 
 @pytest.mark.asyncio
 async def test_commands_outlive_the_run_and_serve_later_runs(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     first = _context(item="item_first", run="run_one")
     started = await manager.start(
         _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -511,7 +525,7 @@ async def test_commands_outlive_the_run_and_serve_later_runs(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_restore_readopts_a_live_command_and_stop_settles_it(tmp_path: Path) -> None:
     facts: list[JsonObject] = []
-    manager = ProcessManager(record=facts.append)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
     context = _context()
     started = await manager.start(
         _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -524,7 +538,7 @@ async def test_restore_readopts_a_live_command_and_stop_settles_it(tmp_path: Pat
     running = dict(facts[-1])
     await manager.close()  # a Runtime exit keeps the command alive
     recovered: list[JsonObject] = []
-    restored = ProcessManager(record=recovered.append)
+    restored = ProcessManager(logs_root=tmp_path / "processes", record=recovered.append)
     restored.restore([running])
     assert recovered[-1]["state"] == "running"
     assert recovered[-1]["errorCode"] == "runtime_recovered"
@@ -546,7 +560,7 @@ async def test_restore_readopts_a_live_command_and_stop_settles_it(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: Path) -> None:
     facts: list[JsonObject] = []
-    manager = ProcessManager(record=facts.append)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
     context = _context()
     started = await manager.start(
         _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -561,7 +575,7 @@ async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: P
     await _wait_for_process_exit(int(running["pid"]))
     await manager.close()
     recovered: list[JsonObject] = []
-    restored = ProcessManager(record=recovered.append)
+    restored = ProcessManager(logs_root=tmp_path / "processes", record=recovered.append)
     restored.restore([running])  # the command already exited
     assert recovered[-1]["state"] == "unknown"
     assert recovered[-1]["exitCode"] is None
@@ -570,7 +584,7 @@ async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: P
     # A live PID whose recorded start time does not match must never be adopted.
     mismatched = dict(running, pid=os.getpid(), startedAt="2020-01-01T00:00:00.000Z")
     reused: list[JsonObject] = []
-    other = ProcessManager(record=reused.append)
+    other = ProcessManager(logs_root=tmp_path / "processes", record=reused.append)
     other.restore([mismatched])
     assert reused[-1]["state"] == "unknown"
     assert reused[-1]["errorCode"] == "runtime_interrupted"
@@ -580,7 +594,7 @@ async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_active_command_quota(tmp_path: Path) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     for index in range(64):
         await manager.start(
             _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -607,7 +621,7 @@ async def test_record_failure_after_spawn_cleans_tree(tmp_path: Path) -> None:
         if fact["state"] == "running":
             raise RuntimeError("disk write failed")
 
-    manager = ProcessManager(record=record)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=record)
     with pytest.raises(RuntimeError, match="disk write failed"):
         await manager.start(
             _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -631,15 +645,17 @@ async def test_task_cancellation_during_spawn_cleans_command(
     original = process_platform._spawn_process
     pids: list[int] = []
 
-    async def delayed(command: str, cwd: str | None) -> process_platform._SpawnedProcess:
-        result = await original(command, cwd)
+    async def delayed(
+        command: str, cwd: str | None, *, log: object = None
+    ) -> process_platform._SpawnedProcess:
+        result = await original(command, cwd, log=cast(Any, log))
         pids.append(result.process.pid)
         spawned.set()
         await release.wait()
         return result
 
     monkeypatch.setattr(manager_module, "_spawn_process", delayed)
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     task = asyncio.create_task(
         manager.start(
             _command(windows="Start-Sleep 60", posix="sleep 60"),
@@ -685,7 +701,7 @@ async def test_windows_shell_hidden_suspended_until_job_assignment(
 @pytest.mark.asyncio
 async def test_split_secret_across_stdout_stderr_is_hidden_in_combined_log(tmp_path: Path) -> None:
     secret = "joined-secret"
-    manager = ProcessManager(protected_values=lambda: (secret,))
+    manager = ProcessManager(logs_root=tmp_path / "processes", protected_values=lambda: (secret,))
     command = _command(
         windows="[Console]::Write('joined-'); Start-Sleep -Milliseconds 200; "
         "[Console]::Error.Write('secret')",
@@ -707,7 +723,7 @@ async def test_terminal_facts_keep_flushed_output_and_bounded_number_of_records(
     tmp_path: Path,
 ) -> None:
     facts: list[JsonObject] = []
-    manager = ProcessManager(record=facts.append)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
     context = _context()
     command = _command(
         windows="[Console]::Write(('z' * 2000000))",
@@ -721,11 +737,14 @@ async def test_terminal_facts_keep_flushed_output_and_bounded_number_of_records(
     )
     assert final["state"] == "exited"
     expected = (
-        "z" * (128 * 1024)
-        + f"\n... {2_000_000 - 256 * 1024} bytes omitted ...\n"
-        + "z" * (128 * 1024)
+        "z" * (512 * 1024)
+        + f"\n... {2_000_000 - 1024 * 1024} bytes omitted ...\n"
+        + "z" * (512 * 1024)
     )
-    assert facts[-1]["stdout"] == expected
+    assert facts[-1]["output"] == expected
+    assert facts[-1]["truncated"] is True
+    assert facts[-1]["outputBytes"] == 2_000_000
+    assert facts[-1]["headBytes"] == 512 * 1024
     assert len(facts) <= 12
     assert len(facts[-1]["output"].encode()) <= 1024 * 1024 + 128
     await manager.close()
@@ -734,7 +753,7 @@ async def test_terminal_facts_keep_flushed_output_and_bounded_number_of_records(
 @pytest.mark.asyncio
 async def test_run_closure_keeps_settled_results_readable(tmp_path: Path) -> None:
     facts: list[JsonObject] = []
-    manager = ProcessManager(record=facts.append)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
     context = _context()
     start = await manager.start(
         "echo saved", str(tmp_path), context=context, cancellation=CancellationToken()
@@ -767,7 +786,7 @@ async def test_record_failure_before_spawn_never_executes_command(
         raise RuntimeError("storage unavailable")
 
     monkeypatch.setattr(manager_module, "_spawn_process", unexpected)
-    manager = ProcessManager(record=reject)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=reject)
     with pytest.raises(RuntimeError, match="storage unavailable"):
         await manager.start(
             "echo no", str(tmp_path), context=_context(), cancellation=CancellationToken()
@@ -781,7 +800,7 @@ async def test_cancelled_wait_tool_retains_partial_output_for_turn_history(tmp_p
     from ikaros_runtime.tools import ToolExecutionCancelled
 
     facts: list[JsonObject] = []
-    manager = ProcessManager(record=facts.append)
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
     executor = _executor(manager)
     context = _context()
     start = await manager.start(
@@ -824,14 +843,14 @@ async def test_cancelled_wait_tool_retains_partial_output_for_turn_history(tmp_p
     assert manager.read(start["processId"], context=context)["state"] == "running"
     await _dispose(manager)
     assert facts[-1]["state"] == "terminated"
-    assert "partial" in facts[-1]["stdout"]
+    assert "partial" in facts[-1]["output"]
 
 
 @pytest.mark.asyncio
 async def test_more_than_thirty_two_sequential_commands_keep_old_results_and_start_identity(
     tmp_path: Path,
 ) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     cancellation = CancellationToken()
     command = _command(
         windows="Add-Content -LiteralPath commands.txt -Value 'done'; Write-Output 'done'",
@@ -872,7 +891,7 @@ async def test_more_than_thirty_two_sequential_commands_keep_old_results_and_sta
 async def test_sixty_four_active_commands_block_the_sixty_fifth_until_one_finishes(
     tmp_path: Path,
 ) -> None:
-    manager = ProcessManager()
+    manager = ProcessManager(logs_root=tmp_path / "processes")
     cancellation = CancellationToken()
     command = _command(windows="Start-Sleep -Seconds 60", posix="sleep 60")
     running: list[JsonObject] = []
@@ -917,3 +936,253 @@ async def test_sixty_four_active_commands_block_the_sixty_fifth_until_one_finish
         assert "released" in result["output"]
     finally:
         await _dispose(manager)
+
+def _slow_writer_command() -> str:
+    return _command(
+        windows=(
+            "for ($i = 0; $i -lt 120; $i++) { [Console]::Out.WriteLine('tick' + $i); "
+            "[Console]::Out.Flush(); Start-Sleep -Milliseconds 50 }"
+        ),
+        posix=(
+            "i=0; while [ $i -lt 120 ]; do printf 'tick%s\\n' \"$i\"; "
+            "i=$((i+1)); sleep 0.05; done"
+        ),
+    )
+
+
+async def _read_until(
+    manager: ProcessManager,
+    process_id: str,
+    context: ToolExecutionContext,
+    predicate: Any,
+    *,
+    cursor: int = 0,
+    budget_seconds: float = 15.0,
+) -> tuple[str, int]:
+    deadline = time.monotonic() + budget_seconds
+    text = ""
+    page_cursor = cursor
+    while time.monotonic() < deadline:
+        page = manager.read(process_id, context=context, cursor=page_cursor)
+        text += str(page["output"])
+        page_cursor = int(page["nextCursor"])
+        if predicate(text):
+            return text, page_cursor
+        await asyncio.sleep(0.03)
+    raise AssertionError(f"command did not produce expected output: {text[-200:]!r}")
+
+
+def _kill_process(pid: int) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return
+    killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", None)
+    with suppress(ProcessLookupError):
+        if killpg is not None and sigkill is not None:
+            killpg(pid, sigkill)
+        else:
+            os.kill(pid, signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_output_is_file_backed_and_restart_reads_downtime_output(tmp_path: Path) -> None:
+    logs_root = tmp_path / "processes"
+    context = _context(item="item_durable_output", run="run_durable_output")
+    manager = ProcessManager(logs_root=logs_root)
+    started = await manager.start(
+        _slow_writer_command(),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+        background=True,
+    )
+    process_id = started["processId"]
+    log_path = logs_root / "thread_test" / f"{process_id}.log"
+    metadata_path = logs_root / "thread_test" / f"{process_id}.json"
+    assert log_path.is_file() and metadata_path.is_file()
+    before, cursor = await _read_until(
+        manager, process_id, context, lambda value: "tick3" in value
+    )
+    last_tick = int(re.findall(r"tick(\d+)", before)[-1])
+    record = manager._entries[process_id].fact()
+    await manager.close()  # Runtime exit; the command keeps writing to the log file
+    await asyncio.sleep(0.4)
+    restored = ProcessManager(logs_root=logs_root)
+    restored.restore([record])
+    assert restored.read(process_id, context=context)["state"] == "running"
+    downtime, _ = await _read_until(
+        restored,
+        process_id,
+        context,
+        lambda value: bool(re.search(rf"tick({last_tick + 1})", value)),
+        cursor=cursor,
+    )
+    combined = before + downtime
+    assert combined.count("tick0") == 1
+    assert re.findall(r"tick(\d+)", downtime)
+    stopped = await restored.stop(process_id, context=context)
+    assert stopped["state"] == "terminated"
+    await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_supervise_restarts_with_backoff_until_the_storm_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(manager_module, "_SUPERVISE_MAX_RESTARTS", 2)
+    monkeypatch.setattr(manager_module, "_SUPERVISE_BACKOFF_MAX_MS", 100)
+    manager = ProcessManager(logs_root=tmp_path / "processes")
+    context = _context(item="item_supervise_storm")
+    started = await manager.start(
+        _command(windows="Write-Output 'boom'; exit 3", posix="printf 'boom\\n'; exit 3"),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+        background=True,
+        supervise="on-failure",
+        backoff_ms=100,
+    )
+    final = await manager.wait(
+        started["processId"], context=context, cancellation=CancellationToken(), timeout_ms=20000
+    )
+    assert final["state"] == "exited"
+    assert final["exitCode"] == 3
+    assert final["errorCode"] == "supervise_storm"
+    assert final["restartCount"] == 2
+    assert isinstance(final["lastRestartAt"], str) and final["lastRestartAt"]
+    assert final["output"].count("boom") == 3
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_supervise_on_failure_keeps_a_clean_exit_settled(tmp_path: Path) -> None:
+    manager = ProcessManager(logs_root=tmp_path / "processes")
+    context = _context(item="item_supervise_clean")
+    started = await manager.start(
+        _command(windows="Write-Output 'clean'; exit 0", posix="printf 'clean\\n'"),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+        background=True,
+        supervise="on-failure",
+        backoff_ms=100,
+    )
+    final = await manager.wait(
+        started["processId"], context=context, cancellation=CancellationToken(), timeout_ms=8000
+    )
+    assert final["state"] == "exited" and final["exitCode"] == 0
+    assert final["errorCode"] is None
+    assert final["restartCount"] == 0
+    assert final["supervise"] == "on-failure"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_supervision_and_keeps_it_stopped(tmp_path: Path) -> None:
+    manager = ProcessManager(logs_root=tmp_path / "processes")
+    context = _context(item="item_supervise_stop")
+    started = await manager.start(
+        _command(windows="Start-Sleep 60", posix="sleep 60"),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+        background=True,
+        supervise="always",
+        backoff_ms=100,
+    )
+    await asyncio.sleep(0.4)
+    stopped = await manager.stop(started["processId"], context=context)
+    assert stopped["state"] == "terminated"
+    await asyncio.sleep(0.5)  # longer than one backoff window
+    again = manager.read(started["processId"], context=context)
+    assert again["state"] == "terminated"
+    assert again["restartCount"] == 0
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_restore_restarts_a_supervised_command_that_died_while_down(
+    tmp_path: Path,
+) -> None:
+    logs_root = tmp_path / "processes"
+    context = _context(item="item_supervise_crash", run="run_supervise_crash")
+    manager = ProcessManager(logs_root=logs_root)
+    started = await manager.start(
+        _command(windows="Start-Sleep 60", posix="sleep 60"),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+        background=True,
+        supervise="always",
+        backoff_ms=100,
+    )
+    pid = int(started["pid"])
+    record = manager._entries[started["processId"]].fact()
+    await manager.close()
+    await asyncio.to_thread(_kill_process, pid)
+    await _wait_for_process_exit(pid)
+    restored = ProcessManager(logs_root=logs_root)
+    restored.restore([record])
+    entry = restored._entries[started["processId"]]
+    for _ in range(200):
+        if (
+            entry.restart_count >= 1
+            and entry.state == "running"
+            and entry.spawned is not None
+            and entry.pid != pid
+        ):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("supervised command was not restarted after the Runtime restart")
+    assert entry.error_code is None
+    assert entry.last_restart_at
+    stopped = await restored.stop(started["processId"], context=context)
+    assert stopped["state"] == "terminated"
+    await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_process_log_file_is_bounded_after_large_output(tmp_path: Path) -> None:
+    logs_root = tmp_path / "processes"
+    manager = ProcessManager(logs_root=logs_root)
+    context = _context(item="item_bounded_log")
+    started = await manager.start(
+        _command(
+            windows="[Console]::Write(('y' * 3000000))",
+            posix='head -c 3000000 /dev/zero | tr "\\0" y',
+        ),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+    )
+    process_id = started["processId"]
+    final = await manager.wait(
+        process_id, context=context, cancellation=CancellationToken(), timeout_ms=20000
+    )
+    assert final["state"] == "exited"
+    assert final["truncated"] is True
+    log_path = logs_root / "thread_test" / f"{process_id}.log"
+    assert log_path.stat().st_size <= manager_module._PROCESS_OUTPUT_LIMIT
+    first = manager.read(process_id, context=context, cursor=0)
+    second = manager.read(process_id, context=context, cursor=0)
+    assert first == second
+    await manager.close()
+
+
+def test_process_log_paths_stay_inside_the_process_root(tmp_path: Path) -> None:
+    root = tmp_path / "processes"
+    with pytest.raises(ProcessLogError):
+        ProcessLog.open(root, "../escape", "process_" + "0" * 32)
+    with pytest.raises(ProcessLogError):
+        ProcessLog.open(root, "thread_test", "process_../../escape")
+    log = ProcessLog.open(root, "thread_test", "process_" + "0" * 32)
+    assert log.path.parent == (root.resolve() / "thread_test")
+    assert log.path.parent.is_relative_to(root.resolve())
+

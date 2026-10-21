@@ -27,6 +27,7 @@ class RuntimePaths:
     memory_db: Path
     skills: Path
     artifacts: Path
+    processes: Path
     channels_config: Path
     channels_db: Path
 
@@ -40,6 +41,7 @@ class RuntimePaths:
             memory_db=home / "memory.db",
             skills=home / "skills",
             artifacts=home / "artifacts",
+            processes=home / "processes",
             channels_config=home / "channels.yaml",
             channels_db=home / "channels.db",
         )

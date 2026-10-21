@@ -694,7 +694,9 @@ async def test_cancelled_real_command_keeps_partial_output_in_next_turn_without_
     def record_process(record: dict[str, Any]) -> None:
         store.record_process(record)
 
-    manager = ProcessManager(record=record_process)
+    manager = ProcessManager(
+        logs_root=tmp_path / "processes", record=record_process
+    )
     try:
         thread, _ = store.create_thread("Cancel command and continue")
         executor = ToolExecutor(
