@@ -60,6 +60,8 @@ interface DraftModel {
   id: string;
   displayName: string;
   contextWindow: string;
+  reasoningEfforts: string[];
+  reasoningEffort: string;
 }
 
 interface DraftHeader {
@@ -91,7 +93,14 @@ function nextDraftRowKey(): number {
 }
 
 function createModelDraft(): DraftModel {
-  return { key: nextDraftRowKey(), id: "", displayName: "", contextWindow: "32768" };
+  return {
+    key: nextDraftRowKey(),
+    id: "",
+    displayName: "",
+    contextWindow: "32768",
+    reasoningEfforts: [],
+    reasoningEffort: ""
+  };
 }
 
 function createHeaderDraft(): DraftHeader {
@@ -104,7 +113,9 @@ function createModelDrafts(models: readonly RuntimeModelSummary[]): DraftModel[]
     key: nextDraftRowKey(),
     id: model.id,
     displayName: model.displayName,
-    contextWindow: String(model.contextWindow)
+    contextWindow: String(model.contextWindow),
+    reasoningEfforts: canonicalEfforts(model.reasoningEfforts ?? []),
+    reasoningEffort: model.reasoningEffort ?? ""
   }));
 }
 
@@ -119,7 +130,17 @@ function normalizedModels(drafts: readonly DraftModel[]): RuntimeModelInput[] | 
     seen.add(id);
     const contextWindow = Number(draft.contextWindow);
     if (!Number.isSafeInteger(contextWindow) || contextWindow <= 1) return null;
-    models.push({ id, displayName: displayName || id, contextWindow });
+    const reasoningEfforts = canonicalEfforts(draft.reasoningEfforts);
+    const reasoningEffort =
+      draft.reasoningEffort && reasoningEfforts.includes(draft.reasoningEffort)
+        ? draft.reasoningEffort
+        : null;
+    const model: RuntimeModelInput = { id, displayName: displayName || id, contextWindow };
+    if (reasoningEfforts.length > 0 || reasoningEffort) {
+      model.reasoningEfforts = reasoningEfforts;
+      model.reasoningEffort = reasoningEffort;
+    }
+    models.push(model);
   }
   return models.length > 0 ? models : null;
 }
@@ -469,6 +490,72 @@ function ModelDraftEditor({
               <input type="number" min={2} step={1} value={model.contextWindow}
                 onChange={(event) => update(model.key, { contextWindow: event.currentTarget.value })}
                 className={inputClassName} />
+            </Field>
+          </div>
+          <div className="mt-3">
+            <Field
+              label={t("settings.models.reasoningLevels")}
+              hint={t("settings.models.reasoningLevelsHint")}
+            >
+              <div
+                role="group"
+                aria-label={t("settings.models.reasoningLevels")}
+                className="flex flex-wrap gap-1.5"
+              >
+                {REASONING_EFFORT_LEVELS.map((level) => {
+                  const active = model.reasoningEfforts.includes(level);
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      role="checkbox"
+                      aria-checked={active}
+                      onClick={() => {
+                        const next = active
+                          ? model.reasoningEfforts.filter((candidate) => candidate !== level)
+                          : canonicalEfforts([...model.reasoningEfforts, level]);
+                        update(model.key, {
+                          reasoningEfforts: next,
+                          reasoningEffort: next.includes(model.reasoningEffort)
+                            ? model.reasoningEffort
+                            : ""
+                        });
+                      }}
+                      className={cx(
+                        "h-7 rounded-lg border px-2.5 text-[11px] font-medium transition-colors",
+                        active
+                          ? "border-[var(--muted-strong)] bg-[var(--surface-hover)] text-[var(--text)]"
+                          : "border-[var(--border)] text-[var(--muted-strong)] hover:text-[var(--text)]"
+                      )}
+                    >
+                      {level}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          </div>
+          <div className="mt-3">
+            <Field
+              label={t("settings.models.reasoningDefault")}
+              hint={t("settings.models.reasoningHint")}
+            >
+              <select
+                aria-label={t("settings.models.reasoningDefault")}
+                value={model.reasoningEffort}
+                disabled={model.reasoningEfforts.length === 0}
+                onChange={(event) =>
+                  update(model.key, { reasoningEffort: event.currentTarget.value })
+                }
+                className={cx(inputClassName, "disabled:opacity-60")}
+              >
+                <option value="">{t("settings.models.reasoningAuto")}</option>
+                {model.reasoningEfforts.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
             </Field>
           </div>
           </details>

@@ -256,12 +256,14 @@ def _model_inputs(value: Any) -> tuple[ModelInput, ...]:
     if not isinstance(value, list):
         raise InvalidParamsError("models must be an array")
     models: list[ModelInput] = []
+    required_keys = {"id", "displayName", "contextWindow"}
+    allowed_keys = required_keys | {"reasoningEfforts", "reasoningEffort"}
     for item in value:
-        if not isinstance(item, dict) or set(item) != {
-            "id",
-            "displayName",
-            "contextWindow",
-        }:
+        if (
+            not isinstance(item, dict)
+            or not required_keys <= set(item)
+            or set(item) - allowed_keys
+        ):
             raise InvalidParamsError(
                 "each model requires id, displayName, and contextWindow"
             )
@@ -278,5 +280,39 @@ def _model_inputs(value: Any) -> tuple[ModelInput, ...]:
             raise InvalidParamsError(
                 "model context window must be a positive safe integer"
             )
-        models.append(ModelInput(model_id, display_name, context_window))
+        raw_efforts = item.get("reasoningEfforts", [])
+        if not isinstance(raw_efforts, list) or any(
+            not isinstance(level, str) or level not in REASONING_EFFORT_LEVELS
+            for level in raw_efforts
+        ):
+            raise InvalidParamsError(
+                "reasoningEfforts entries must be one of "
+                + ", ".join(REASONING_EFFORT_ORDER)
+            )
+        selected = set(raw_efforts)
+        reasoning_efforts = tuple(
+            level for level in REASONING_EFFORT_ORDER if level in selected
+        )
+        raw_effort = item.get("reasoningEffort")
+        if raw_effort is not None and (
+            not isinstance(raw_effort, str)
+            or raw_effort not in REASONING_EFFORT_LEVELS
+        ):
+            raise InvalidParamsError(
+                "reasoningEffort must be null or one of "
+                + ", ".join(REASONING_EFFORT_ORDER)
+            )
+        if raw_effort is not None and raw_effort not in reasoning_efforts:
+            raise InvalidParamsError(
+                "reasoningEffort must be one of the selected reasoningEfforts"
+            )
+        models.append(
+            ModelInput(
+                model_id,
+                display_name,
+                context_window,
+                reasoning_efforts,
+                raw_effort,
+            )
+        )
     return tuple(models)
