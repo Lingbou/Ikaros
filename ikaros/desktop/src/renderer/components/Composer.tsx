@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   FileText,
+  Folder,
   Paperclip,
   Plus,
   X,
@@ -45,6 +46,8 @@ export function Composer({
   const stopRun = useAppStore((state) => state.stopRun);
   const attachComposerContext = useAppStore((state) => state.attachComposerContext);
   const composerAttachments = useAppStore((state) => state.composerAttachments);
+  const newThreadWorkspace = useAppStore((state) => state.newThreadWorkspace);
+  const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const removeComposerAttachment = useAppStore((state) => state.removeComposerAttachment);
   const [projectFolderError, setProjectFolderError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -185,6 +188,21 @@ export function Composer({
           data-composer-surface
           className="composer-shadow rounded-[22px] border border-[var(--border)] bg-[var(--panel-raised)] px-3 pb-2.5 pt-3.5"
         >
+          {newThreadWorkspace && selectedThreadId === null ? (
+            <div
+              data-composer-project
+              className="mb-2 flex items-center gap-2 border-b border-[var(--border-soft)] px-1 pb-2 text-[12px] leading-4 text-[var(--muted-strong)]"
+            >
+              <Folder size={13} className="shrink-0" aria-hidden="true" />
+              <span
+                className="min-w-0 truncate"
+                title={newThreadWorkspace.rootUri ?? undefined}
+              >
+                {newThreadWorkspace.name}
+              </span>
+            </div>
+          ) : null}
+
           {composerAttachments.length ? (
             <div data-composer-attachments className="mb-2 flex flex-wrap gap-1.5 px-1">
               {composerAttachments.map((path) => (

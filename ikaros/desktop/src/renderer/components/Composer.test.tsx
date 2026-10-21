@@ -226,6 +226,30 @@ describe("Composer input and clearance", () => {
     expect(otherItem.querySelector("svg")).toBeNull();
   });
 
+  it("shows the staged project above the input for a new project chat", () => {
+    useAppStore.setState({
+      newThreadWorkspace: {
+        id: "project-research",
+        name: "Research",
+        kind: "project",
+        rootUri: "/workspace/research",
+      },
+      selectedThreadId: null,
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    const header = document.querySelector("[data-composer-project]");
+    expect(header).not.toBeNull();
+    expect(header?.textContent).toContain("Research");
+
+    act(() => useAppStore.setState({ newThreadWorkspace: null }));
+    expect(document.querySelector("[data-composer-project]")).toBeNull();
+  });
+
   it("stays quiet without a configured provider and keeps the draft, thread, and workspace", () => {
     const sendDraft = vi.fn(async () => undefined);
     const workspace = {
