@@ -12,7 +12,7 @@ import pytest
 
 from ikaros_runtime.agent import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
-from ikaros_runtime.domain import JournalEvent, JsonObject
+from ikaros_runtime.domain import JournalEvent, JsonObject, WorkspaceSummary
 from ikaros_runtime.errors import RunCancelled
 from ikaros_runtime.protocol.spec import PROVIDER_TOOL_IDS
 from ikaros_runtime.providers.base import (
@@ -729,3 +729,42 @@ def test_thread_messaging_errors_carry_model_visible_codes() -> None:
     error = ThreadMessagingError("thread_busy", "busy")
     assert error.code == "thread_busy"
     assert str(error) == "busy"
+
+
+@pytest.mark.asyncio
+async def test_thread_create_inherits_the_calling_thread_project(tmp_path: Path) -> None:
+    store, service, _scheduler, _events, tools = _environment(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    try:
+        thread, _event = store.create_thread(
+            "Caller",
+            workspace=WorkspaceSummary(
+                "workspace_project",
+                "Project",
+                "project",
+                str(project),
+            ),
+        )
+        prepared = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="parent task",
+            run_config_template=run_config_template("scripted", "scripted-v1", tools=tools),
+        )
+        store.mark_run_running(prepared.run_id)
+
+        tool = ThreadCreateTool(service)
+        result = await tool.execute(
+            ToolCall("call_inherit", "thread_create", {"title": "Child"}),
+            cancellation=CancellationToken(),
+            context=_context(prepared.run_id),
+        )
+
+        assert result.ok
+        payload = json.loads(result.output)
+        assert payload["workspace"]["kind"] == "project"
+        assert payload["workspace"]["id"] == "workspace_project"
+        assert Path(payload["workspace"]["rootUri"]) == project.resolve()
+    finally:
+        store.close()

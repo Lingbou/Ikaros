@@ -162,7 +162,7 @@ class AgentLoop:
         self._provider_snapshot_resolver = provider_snapshot_resolver
         self._identity_core = identity_core
         self._on_run_terminal = on_run_terminal
-        self._tool_gate = ToolExecutionGate()
+        self._tool_gates: dict[str, ToolExecutionGate] = {}
 
     def run_thread_id(self, run_id: str) -> str:
         """Return the scheduling scope that must serialize this Run."""
@@ -178,6 +178,9 @@ class AgentLoop:
         try:
             cancellation.raise_if_cancelled()
             config = self._store.get_run_config(run_id)
+            # One gate per Run: nested Runs (subagent / thread_send) share this
+            # loop but must never contend with their caller's tool batch.
+            self._tool_gates[run_id] = ToolExecutionGate()
             self._validate_submission_environment(config)
             if self._store.run_status(run_id) == "queued":
                 await self._publish(self._store.mark_run_running(run_id))
@@ -203,6 +206,7 @@ class AgentLoop:
             _LOGGER.exception("Run %s failed", run_id)
             status, reason = "failed", _failure_reason_code(error)
         finally:
+            self._tool_gates.pop(run_id, None)
             if cancel_wait is not None:
                 cancel_wait.cancel()
                 with suppress(asyncio.CancelledError):
@@ -982,7 +986,7 @@ class AgentLoop:
                     call,
                     item_id,
                     cancellation,
-                    gate=self._tool_gate,
+                    gate=self._tool_gates.setdefault(run_id, ToolExecutionGate()),
                     default_cwd=default_cwd,
                     run_id=run_id,
                     thread_id=thread_id,

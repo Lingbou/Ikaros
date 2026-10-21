@@ -1010,7 +1010,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `history_read` | `itemId`、`before`/`after`（0–41）、`maxChars`（256–24,000） | 读取已结算对话 Item 的有界切片 |
 | `thread_list` | 可选 `archived`（布尔，默认 `false`）、可选 `limit`（1–50，默认 20） | 返回 `id`/`title`/`updatedAt`/`archived` 的稳定目录（`updatedAt` 降序、`id` 升序），供模型发现会话 id；只读、无副作用 |
 | `thread_read` | `threadId`、可选 `itemId`（锚点）、`before`/`after`（0–41）、`maxChars`（256–24,000，默认 24,000） | 跨 Thread 只读已结算 Item 的有界切片（含 Thread 元数据与时间）；缺省锚点为默认分支最新已结算 Item；`thread_not_found` / `item_not_found` / `item_not_settled` 为显式错误码；不改变每 Run 冻结上下文 |
-| `thread_create` | 可选 `title`（≤200 字符）、可选 `workspace`（已存在绝对目录，≤4,096 字符） | 创建 Thread（缺省 `title`/`workspace` 时按既有规则分配托管工作区）；`clientRequestId` 由工具调用 Item ID 派生，重放返回同一个 Thread（`created: false`）；显式 project 目录的工作区 id 与 Desktop 的项目标识一致 |
+| `thread_create` | 可选 `title`（≤200 字符）、可选 `workspace`（已存在绝对目录，≤4,096 字符） | 创建 Thread（缺省 `workspace` 时继承调用方 Thread 的 project；调用方没有工作区时才分配托管工作区）；`clientRequestId` 由工具调用 Item ID 派生，重放返回同一个 Thread（`created: false`）；显式 project 目录的工作区 id 与 Desktop 的项目标识一致 |
 | `thread_rename` | `threadId`、`title`（1–200 字符） | 重命名 Thread；同标题重复调用返回 `changed: false`；未知 Thread 返回 `thread_not_found` |
 | `thread_archive` | `threadId`、可选 `archived`（布尔，默认 `true`） | 归档 / 取消归档；重复状态返回 `changed: false`；目标有活动 Run 时归档返回 `thread_busy` |
 | `thread_send` | `threadId`、`content`（1–32,768 字符）、可选 `wait`（布尔，默认 `false`） | 向目标 Thread 投递一条消息并启动 Turn/Run：默认非阻塞（立即返回 `threadId`/`runId`/`status`），`wait: true` 在调用方 worker 内联执行该 Run 并返回最终回答原文；目标忙 `thread_busy`、归档 `thread_archived`、超过 hop 上限 `thread_hop_limit`；重放返回同一个 Run |
@@ -2363,7 +2363,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 12；36 方法；15 事件；21 工具 |
 | 工具 | subagent | `wait` 默认 true；`wait=false` 每 Run 最多 4 个存活子 Run；深度上限 `IKAROS_SUBAGENT_MAX_DEPTH` 默认 2、范围 1–8；无墙钟超时；`title` ≤200 字符 |
-| 工具 | thread_create / thread_rename / thread_archive | 与 RPC 共用 `ThreadService` 校验；`title` ≤200 字符；`workspace` 为已存在绝对目录；重放幂等，重复状态 `changed=false` |
+| 工具 | thread_create / thread_rename / thread_archive | 与 RPC 共用 `ThreadService` 校验；`title` ≤200 字符；`workspace` 为已存在绝对目录，缺省继承调用方 project；重放幂等，重复状态 `changed=false` |
 | 工具 | thread_send | 默认非阻塞；`wait=true` 内联等待并返回最终回答；hop 上限 3；正文 ≤32,768 字符；目标忙 `thread_busy`、归档 `thread_archived` |
 | 存储 | 版本 | state schema 16；Journal 11；memory 3；config 2；channel 1 |
 | Thread | 标题生成 | 首个 Run 终态后后台一次；≤24 tokens、超时 30 秒、标题 ≤60 字符；`IKAROS_THREAD_TITLES=0` 关闭 |

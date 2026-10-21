@@ -42,6 +42,7 @@ class ThreadManagementBackend(Protocol):
         title: str | None,
         workspace: str | None,
         request_id: str,
+        parent_run_id: str,
     ) -> JsonObject: ...
 
     async def rename(self, *, thread_id: str, title: str) -> JsonObject: ...
@@ -100,7 +101,8 @@ class ThreadCreateTool:
         name=THREAD_CREATE_TOOL_NAME,
         description=(
             "Create a new conversation Thread, optionally with a title and an existing "
-            "project directory as its workspace. Returns the new threadId; use "
+            "project directory as its workspace. Without a workspace the new Thread "
+            "inherits the calling Thread's project. Returns the new threadId; use "
             "thread_send to start work in it. Replaying the same Tool Call returns the "
             "same Thread."
         ),
@@ -167,6 +169,7 @@ class ThreadCreateTool:
                 title=title.strip() if isinstance(title, str) else None,
                 workspace=workspace.strip() if isinstance(workspace, str) else None,
                 request_id=context.item_id,
+                parent_run_id=context.run_id,
             )
         except ValueError as error:
             return _rejected(call, error)

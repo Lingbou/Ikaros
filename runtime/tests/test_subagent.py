@@ -37,9 +37,11 @@ from ikaros_runtime.tools import (
     SubagentTool,
     ThreadReadTool,
     ToolCall,
+    ToolDefinition,
     ToolExecutionContext,
     ToolExecutor,
     ToolRegistry,
+    ToolResult,
 )
 
 from .fakes.scripted_provider import ScriptedProvider
@@ -836,3 +838,118 @@ async def test_subagent_tool_returns_the_full_summary_without_truncation() -> No
         "runId": "run_child",
         "status": "completed",
     }
+
+class _MutatingProbeTool:
+    """A mutating Tool the child Run calls while the parent holds its gate."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="probe_write",
+            description="probe",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            mutating=True,
+        )
+
+    async def execute(
+        self,
+        call: ToolCall,
+        *,
+        cancellation: CancellationToken,
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        self.calls += 1
+        return ToolResult(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            ok=True,
+            output="probe ok",
+            details={"durationMs": 0, "truncated": False},
+        )
+
+
+class _NestedProvider:
+    """Parent delegates, the child mutates, then both answer."""
+
+    id = "scripted"
+    model_id = "scripted-v1"
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        cancellation.raise_if_cancelled()
+        users = [message.content for message in request.messages if message.role == "user"]
+        has_results = any(message.role == "tool" for message in request.messages)
+        last_user = users[-1] if users else ""
+        if last_user == "parent task" and not has_results:
+            yield ToolCallCompleted(
+                ToolCall(
+                    id="call_parent",
+                    name="subagent",
+                    arguments={"prompt": "child task"},
+                )
+            )
+            yield ResponseCompleted()
+            return
+        if last_user == "child task" and not has_results:
+            yield ToolCallCompleted(
+                ToolCall(id="call_child", name="probe_write", arguments={})
+            )
+            yield ResponseCompleted()
+            return
+        yield TextDelta("done")
+        yield ResponseCompleted()
+
+
+@pytest.mark.asyncio
+async def test_inline_subagent_child_can_use_mutating_tools(tmp_path: Path) -> None:
+    """A nested Run must not deadlock behind its caller's tool gate."""
+
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    events: list[JournalEvent] = []
+
+    async def publish(event: JournalEvent) -> None:
+        events.append(event)
+
+    probe = _MutatingProbeTool()
+    loop_holder: dict[str, AgentLoop] = {}
+
+    async def run_child(run_id: str, cancellation: CancellationToken) -> None:
+        await loop_holder["loop"].run(run_id, cancellation)
+
+    service = SubagentService(store=store, run_child=run_child, publish=publish)
+    executor = ToolExecutor(
+        ToolRegistry([probe, SubagentTool(service), ThreadReadTool(store.read_thread_slice)]),
+        FullAccessPolicy(),
+    )
+    provider = _NestedProvider()
+    loop = AgentLoop(store, {provider.id: provider}, publish, executor)
+    loop_holder["loop"] = loop
+    try:
+        thread, _created = store.create_thread("Parent")
+        prepared = prepare_turn(
+            store,
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="parent task",
+            provider_id=provider.id,
+            model_id=provider.model_id,
+            tools=executor.definitions,
+        )
+
+        await asyncio.wait_for(loop.run(prepared.run_id, CancellationToken()), timeout=15)
+
+        assert store.run_status(prepared.run_id) == "completed"
+        assert probe.calls == 1
+    finally:
+        store.close()
