@@ -42,10 +42,16 @@ export type UiPreferencesPatch = Partial<
   lightTheme?: ThemePreferencesPatch;
 };
 
+export interface WorkspaceEntrySelection {
+  directories: RuntimeWorkspaceSummary[];
+  files: string[];
+}
+
 export interface IkarosDesktopApi {
   readonly runtime: IkarosRuntimeBridgeApi;
   readonly workspace: {
     chooseDirectory(): Promise<RuntimeWorkspaceSummary | null>;
+    chooseEntries(): Promise<WorkspaceEntrySelection | null>;
   };
   readonly preferences: {
     get(): Promise<UiPreferences>;
@@ -149,7 +155,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     usageRead: "ikaros:runtime:usage-read"
   },
   workspace: {
-    chooseDirectory: "ikaros:workspace:choose-directory"
+    chooseDirectory: "ikaros:workspace:choose-directory",
+    chooseEntries: "ikaros:workspace:choose-entries"
   },
   preferences: {
     changed: "ikaros:preferences:changed",

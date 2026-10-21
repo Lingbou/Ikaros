@@ -168,7 +168,8 @@ function desktopApiWithPreferences(
         onStatus: () => () => undefined
       },
       workspace: {
-        chooseDirectory: async () => null
+        chooseDirectory: async () => null,
+        chooseEntries: async () => null
       },
       preferences: {
         get: async () => cloneUiPreferences(current),

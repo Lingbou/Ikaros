@@ -151,6 +151,7 @@ interface AppState {
   selectedThreadId: string | null;
   runStatus: RunStatus;
   draft: string;
+  composerAttachments: string[];
   fileSelection: RuntimeFileSelection | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -200,7 +201,9 @@ interface AppState {
   newChat: () => void;
   newProjectChat: (projectId: string) => void;
   stageProjectWorkspace: (workspace: RuntimeWorkspaceSummary) => void;
-  bindWorkspaceFromFolder: () => Promise<void>;
+  attachComposerContext: () => Promise<void>;
+  addComposerAttachments: (paths: string[]) => void;
+  removeComposerAttachment: (path: string) => void;
   selectThread: (threadId: string) => Promise<void>;
   retryRuntimeThread: (threadId: string) => Promise<void>;
   loadOlderRuntimeTurns: (threadId: string) => Promise<void>;
@@ -2709,6 +2712,12 @@ function continueRuntimeSubmission(
   return continuation;
 }
 
+export function composePromptContent(prompt: string, attachments: readonly string[]): string {
+  if (!attachments.length) return prompt;
+  const references = attachments.map((path) => `- ${path}`).join("\n");
+  return `${prompt}\n\nAttached files:\n${references}`;
+}
+
 async function sendRuntimeDraft(
   set: StoreSet,
   get: StoreGet,
@@ -2761,6 +2770,7 @@ async function sendRuntimeDraft(
   };
   set((state) => ({
     draft: "",
+    composerAttachments: [],
     runStatus: "queued",
     runtimeError: null,
     runtimeIssue: null,
@@ -2815,7 +2825,7 @@ async function steerRuntimeDraft(set: StoreSet, get: StoreGet, prompt: string): 
       content: prompt,
       clientRequestId,
     });
-    set({ draft: "", runtimeError: null, runtimeIssue: null });
+    set({ draft: "", composerAttachments: [], runtimeError: null, runtimeIssue: null });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Supplement was not received";
     set({ runtimeError: message, runtimeIssue: { kind: "send", message, threadId: state.selectedThreadId, prompt } });
@@ -2857,6 +2867,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectedThreadId: null,
   runStatus: "idle",
   draft: "",
+  composerAttachments: [],
   fileSelection: null,
   sidebarOpen: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -2974,6 +2985,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModel: reconcileModelSelection(null, state.providers, state.models),
       runStatus: state.pendingRuntimeNewThread ? "queued" : "idle",
       draft: "",
+      composerAttachments: [],
       settingsOpen: false,
       newThreadWorkspace: null,
       runtimeForegroundGeneration: state.runtimeForegroundGeneration + 1,
@@ -2989,6 +3001,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModel: reconcileModelSelection(null, current.providers, current.models),
       runStatus: current.pendingRuntimeNewThread ? "queued" : "idle",
       draft: "",
+      composerAttachments: [],
       settingsOpen: false,
       newThreadWorkspace: workspace,
       expandedProjects: { ...current.expandedProjects, [projectId]: true },
@@ -3018,7 +3031,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  bindWorkspaceFromFolder: async () => {
+  attachComposerContext: async () => {
     const desktop = (
       window as unknown as Window & {
         ikarosDesktop?: import("../shared/platform").IkarosDesktopApi;
@@ -3027,10 +3040,25 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (!desktop) {
       throw new Error("Desktop workspace picker is unavailable.");
     }
-    const workspace = await desktop.workspace.chooseDirectory();
-    if (!workspace) return;
-    get().stageProjectWorkspace(workspace);
+    const selection = await desktop.workspace.chooseEntries();
+    if (!selection) return;
+    if (selection.directories.length > 1) {
+      throw new Error("Only one project folder can be bound at a time.");
+    }
+    const directory = selection.directories[0];
+    if (directory) get().stageProjectWorkspace(directory);
+    if (selection.files.length) get().addComposerAttachments(selection.files);
   },
+
+  addComposerAttachments: (paths) =>
+    set((state) => ({
+      composerAttachments: [...new Set([...state.composerAttachments, ...paths])],
+    })),
+
+  removeComposerAttachment: (path) =>
+    set((state) => ({
+      composerAttachments: state.composerAttachments.filter((candidate) => candidate !== path),
+    })),
 
   selectThread: async (threadId) => {
     const state = get();
@@ -3062,8 +3090,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const state = get();
     const prompt = state.draft.trim();
     if (!prompt) return;
+    const content = composePromptContent(prompt, state.composerAttachments);
     if (isRunActive(state.runStatus)) {
-      await steerRuntimeDraft(set, get, prompt);
+      await steerRuntimeDraft(set, get, content);
       return;
     }
     if (!runtimeClient) return;
@@ -3075,14 +3104,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await sendRuntimeDraft(
       set,
       get,
-      prompt,
+      content,
       state.selectedThreadId,
       state.selectedModel,
     );
   },
   steerRun: async () => {
-    const prompt = get().draft.trim();
-    if (prompt) await steerRuntimeDraft(set, get, prompt);
+    const state = get();
+    const prompt = state.draft.trim();
+    if (prompt) {
+      await steerRuntimeDraft(set, get, composePromptContent(prompt, state.composerAttachments));
+    }
   },
 
   stopRun: () => {

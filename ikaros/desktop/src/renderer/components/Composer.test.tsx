@@ -47,7 +47,7 @@ describe("Composer input and clearance", () => {
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Research" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Full access" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Add context" })).toHaveClass("size-7");
+    expect(screen.getByRole("button", { name: "Add" })).toHaveClass("size-7");
     expect(screen.getByRole("textbox", { name: "Message Ikaros" })).toBeVisible();
   });
 
@@ -92,42 +92,59 @@ describe("Composer input and clearance", () => {
     expect(sendDraft).toHaveBeenCalledTimes(1);
   });
 
-  it("binds a selected project folder from the context menu", async () => {
-    const bindWorkspaceFromFolder = vi.fn(async () => undefined);
-    useAppStore.setState({ bindWorkspaceFromFolder } as Partial<typeof initialState>);
+  it("adds files and folders from the grouped context menu", async () => {
+    const attachComposerContext = vi.fn(async () => undefined);
+    useAppStore.setState({ attachComposerContext } as Partial<typeof initialState>);
     render(
       <Tooltip.Provider>
         <Composer onClearanceChange={() => undefined} />
       </Tooltip.Provider>,
     );
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Add context" }));
-    const projectFolderItem = await screen.findByRole("menuitem", {
-      name: "Add project folder",
-    });
-    expect(projectFolderItem).not.toHaveTextContent("Unavailable");
-    fireEvent.click(projectFolderItem);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Add" }));
+    expect(await screen.findByText("Add")).toBeInTheDocument();
+    const entry = await screen.findByRole("menuitem", { name: "Files and folders" });
+    fireEvent.click(entry);
 
-    expect(bindWorkspaceFromFolder).toHaveBeenCalledTimes(1);
+    expect(attachComposerContext).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a fixed localized error when project folder binding fails", async () => {
-    const bindWorkspaceFromFolder = vi.fn(async () => {
+  it("shows a fixed localized error when the picker fails", async () => {
+    const attachComposerContext = vi.fn(async () => {
       throw new Error("C:\\private\\workspace: directory picker exploded");
     });
-    useAppStore.setState({ bindWorkspaceFromFolder } as Partial<typeof initialState>);
+    useAppStore.setState({ attachComposerContext } as Partial<typeof initialState>);
     render(
       <Tooltip.Provider>
         <Composer onClearanceChange={() => undefined} />
       </Tooltip.Provider>,
     );
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Add context" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Add project folder" }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Files and folders" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not add project folder.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not add the selection.");
     expect(screen.queryByText(/private|directory picker exploded/i)).toBeNull();
     expect(screen.getByRole("textbox", { name: "Message Ikaros" })).toBeVisible();
+  });
+
+  it("lists attached files above the input and removes them", async () => {
+    useAppStore.setState({
+      composerAttachments: ["/tmp/notes.txt", "/tmp/spec.md"],
+    });
+    render(
+      <Tooltip.Provider>
+        <Composer onClearanceChange={() => undefined} />
+      </Tooltip.Provider>,
+    );
+
+    expect(screen.getByText("notes.txt")).toBeVisible();
+    expect(screen.getByText("spec.md")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
+
+    expect(useAppStore.getState().composerAttachments).toEqual(["/tmp/spec.md"]);
+    expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
   it("uses one primary button for steer and Stop while a run is active", () => {
