@@ -1,4 +1,4 @@
-"""Model-facing save/search over durable explicit Memory.
+"""Model-facing save/search/update/forget over durable explicit Memory.
 
 The Memory vocabulary and limits live in ``memory.domain``, which reaches the
 Run-input budget constants, which import ``tools.core``.  Importing them at
@@ -26,7 +26,7 @@ from .core import (
     require_exact_arguments,
 )
 
-MEMORY_TOOL_ACTIONS = ("save", "search")
+MEMORY_TOOL_ACTIONS = ("save", "search", "update", "forget")
 MEMORY_TOOL_SEARCH_DEFAULT_LIMIT = 5
 MEMORY_TOOL_SEARCH_MAX_LIMIT = 8
 
@@ -52,6 +52,23 @@ class MemoryToolBackend(Protocol):
         limit: int,
     ) -> JsonObject: ...
 
+    def update_memory(
+        self,
+        *,
+        run_id: str,
+        item_id: str,
+        memory_id: str,
+        content: str,
+    ) -> JsonObject: ...
+
+    def forget_memory(
+        self,
+        *,
+        run_id: str,
+        item_id: str,
+        memory_id: str,
+    ) -> JsonObject: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _SaveArguments:
@@ -67,8 +84,24 @@ class _SearchArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class _UpdateArguments:
+    memory_id: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ForgetArguments:
+    memory_id: str
+
+
+type _MemoryArguments = (
+    _SaveArguments | _SearchArguments | _UpdateArguments | _ForgetArguments
+)
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryTool:
-    """Save one durable Memory, or search saved Memory, inside the Run scope."""
+    """Save, search, update, or forget durable Memory inside the Run scope."""
 
     backend: MemoryToolBackend
 
@@ -86,10 +119,15 @@ class MemoryTool:
         cancellation.raise_if_cancelled()
         action = call.arguments.get("action")
         if not isinstance(action, str) or action not in MEMORY_TOOL_ACTIONS:
-            return _rejected(call, "action must be save or search")
-        arguments: _SaveArguments | _SearchArguments | ToolResult = (
-            _validate_save(call) if action == "save" else _validate_search(call)
-        )
+            return _rejected(call, "action must be save, search, update, or forget")
+        if action == "save":
+            arguments: _MemoryArguments | ToolResult = _validate_save(call)
+        elif action == "search":
+            arguments = _validate_search(call)
+        elif action == "update":
+            arguments = _validate_update(call)
+        else:
+            arguments = _validate_forget(call)
         if isinstance(arguments, ToolResult):
             return arguments
         cancellation.raise_if_cancelled()
@@ -100,7 +138,7 @@ class MemoryTool:
         except MemoryOperationError as error:
             return ToolResult.rejected(
                 call,
-                code="memory_operation_failed",
+                code=error.reason_code,
                 message=error.reason_code,
             )
         except MemoryRetrievalError as error:
@@ -126,7 +164,7 @@ class MemoryTool:
 
     def _dispatch(
         self,
-        arguments: _SaveArguments | _SearchArguments,
+        arguments: _MemoryArguments,
         context: ToolExecutionContext,
     ) -> JsonObject:
         if isinstance(arguments, _SaveArguments):
@@ -136,6 +174,19 @@ class MemoryTool:
                 content=arguments.content,
                 kind=arguments.kind,
                 scope=arguments.scope,
+            )
+        if isinstance(arguments, _UpdateArguments):
+            return self.backend.update_memory(
+                run_id=context.run_id,
+                item_id=context.item_id,
+                memory_id=arguments.memory_id,
+                content=arguments.content,
+            )
+        if isinstance(arguments, _ForgetArguments):
+            return self.backend.forget_memory(
+                run_id=context.run_id,
+                item_id=context.item_id,
+                memory_id=arguments.memory_id,
             )
         return self.backend.search_memories(
             run_id=context.run_id,
@@ -175,10 +226,12 @@ def memory_tool_definition() -> ToolDefinition:
     return ToolDefinition(
         name="memory",
         description=(
-            "Save or search durable user Memory. save requires content, kind, and scope; "
-            "search requires query and accepts limit 1-8 (default 5). Save only stable facts, "
-            "preferences, relationships, or project context the user expects to persist; "
-            "never save credentials or transient Run details."
+            "Save, search, update, or forget durable user Memory. save requires content, "
+            "kind, and scope; search requires query and accepts limit 1-8 (default 5); "
+            "update requires memoryId and content and cannot change kind or scope; "
+            "forget requires memoryId. Save only stable facts, preferences, "
+            "relationships, or project context the user expects to persist; never save "
+            "credentials or transient Run details."
         ),
         input_schema={
             "type": "object",
@@ -196,6 +249,12 @@ def memory_tool_definition() -> ToolDefinition:
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MEMORY_TOOL_SEARCH_MAX_LIMIT,
+                },
+                "memoryId": {
+                    "type": "string",
+                    "pattern": "^memory_[0-9a-f]{32}$",
+                    "minLength": 39,
+                    "maxLength": 39,
                 },
             },
             "required": ["action"],
@@ -248,20 +307,65 @@ def _validate_search(call: ToolCall) -> _SearchArguments | ToolResult:
     return _SearchArguments(query=query, limit=limit)
 
 
+def _validate_update(call: ToolCall) -> _UpdateArguments | ToolResult:
+    mismatch = require_exact_arguments(
+        call.arguments,
+        required={"action", "memoryId", "content"},
+        optional=set(),
+    )
+    if mismatch is not None:
+        return _rejected(call, mismatch)
+    memory_id = _memory_id_argument(call.arguments["memoryId"])
+    if memory_id is None:
+        return _rejected(call, "memoryId is invalid")
+    content = call.arguments["content"]
+    if not isinstance(content, str):
+        return _rejected(call, "content must be a string")
+    return _UpdateArguments(memory_id=memory_id, content=content)
+
+
+def _validate_forget(call: ToolCall) -> _ForgetArguments | ToolResult:
+    mismatch = require_exact_arguments(
+        call.arguments,
+        required={"action", "memoryId"},
+        optional=set(),
+    )
+    if mismatch is not None:
+        return _rejected(call, mismatch)
+    memory_id = _memory_id_argument(call.arguments["memoryId"])
+    if memory_id is None:
+        return _rejected(call, "memoryId is invalid")
+    return _ForgetArguments(memory_id=memory_id)
+
+
+def _memory_id_argument(value: object) -> str | None:
+    if not isinstance(value, str) or not value.startswith("memory_"):
+        return None
+    suffix = value.removeprefix("memory_")
+    if len(suffix) != 32 or any(
+        character not in "0123456789abcdef" for character in suffix
+    ):
+        return None
+    return value
+
+
 def _rejected(call: ToolCall, message: str) -> ToolResult:
     return ToolResult.rejected(call, code="invalid_arguments", message=message)
 
 
 def _result_details(payload: JsonObject) -> JsonObject:
+    action = payload["action"]
     details: JsonObject = {
-        "action": payload["action"],
+        "action": action,
         "truncated": bool(payload.get("truncated")),
     }
-    if payload["action"] == "save":
-        details["memoryId"] = payload["memoryId"]
-        details["created"] = payload["created"]
-    else:
+    if action == "search":
         details["count"] = payload["count"]
+        return details
+    details["memoryId"] = payload["memoryId"]
+    details["created"] = payload["created"]
+    if action in {"update", "forget"}:
+        details["revision"] = payload["revision"]
     return details
 
 
