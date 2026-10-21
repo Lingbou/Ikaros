@@ -55,6 +55,7 @@ from .tools import (
 from .tools.artifacts import ToolArtifactStore
 from .tools.core import ToolExecutor, ToolRegistry
 from .tools.policy import FullAccessPolicy
+from .workspaces import provision_managed_workspace
 
 
 class RuntimeApplication:
@@ -174,7 +175,11 @@ class RuntimeApplication:
         self._scheduler = AgentScheduler(loop)
         self._publish = publish
 
-        self.threads = ThreadService(store, self.security.assert_request_safe)
+        self.threads = ThreadService(
+            store,
+            self.security.assert_request_safe,
+            managed_workspace_factory=provision_managed_workspace,
+        )
         self.turns = TurnService(
             store,
             self._scheduler,

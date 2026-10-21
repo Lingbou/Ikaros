@@ -1,6 +1,9 @@
+export type RuntimeWorkspaceKind = "project" | "managed";
+
 export interface RuntimeWorkspaceSummary {
   id: string;
   name: string;
+  kind: RuntimeWorkspaceKind;
   rootUri: string | null;
 }
 

@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from ..domain import (
     JOURNAL_EVENT_SCHEMA_VERSION,
+    WORKSPACE_KINDS,
     ContextItem,
     JournalEvent,
     PreparedTurn,
@@ -393,18 +394,20 @@ def workspace_from_json(value: object) -> WorkspaceSummary | None:
 def workspace_from_wire(value: object) -> WorkspaceSummary | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {"id", "name", "rootUri"}:
+    if not isinstance(value, dict) or set(value) != {"id", "name", "kind", "rootUri"}:
         raise ValueError("thread workspace projection is invalid")
     workspace_id = value["id"]
     name = value["name"]
+    kind = value["kind"]
     root_uri = value["rootUri"]
     if (
         not isinstance(workspace_id, str)
         or not isinstance(name, str)
+        or kind not in WORKSPACE_KINDS
         or (root_uri is not None and not isinstance(root_uri, str))
     ):
         raise ValueError("thread workspace projection is invalid")
-    return WorkspaceSummary(workspace_id, name, root_uri)
+    return WorkspaceSummary(workspace_id, name, kind, root_uri)
 
 
 def apply_event(

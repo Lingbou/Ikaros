@@ -152,6 +152,7 @@ function workspaceFromDirectory(directory: string): RuntimeWorkspaceSummary {
   return {
     id: `workspace-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`,
     name: basename(rootUri) || rootUri,
+    kind: "project",
     rootUri
   };
 }

@@ -161,7 +161,12 @@ describe("Composer input and clearance", () => {
 
   it("stays quiet without a configured provider and keeps the draft, thread, and workspace", () => {
     const sendDraft = vi.fn(async () => undefined);
-    const workspace = { id: "workspace-setup", name: "Setup", rootUri: "/workspace/setup" };
+    const workspace = {
+      id: "workspace-setup",
+      name: "Setup",
+      kind: "project" as const,
+      rootUri: "/workspace/setup",
+    };
     useAppStore.setState({
             providers: [],
       models: [],

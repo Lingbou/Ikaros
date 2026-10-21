@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Final, Literal
 
 from .protocol.spec import JOURNAL_EVENT_SCHEMA_VERSION as JOURNAL_EVENT_SCHEMA_VERSION
 
@@ -18,16 +18,30 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+type WorkspaceKind = Literal["project", "managed"]
+
+WORKSPACE_KINDS: Final = frozenset({"project", "managed"})
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceSummary:
+    """Workspace bound to a Thread.
+
+    ``project`` workspaces are chosen by the user and group Threads in the
+    Desktop sidebar; ``managed`` workspaces are provisioned per Thread under
+    the user documents directory and never become projects.
+    """
+
     id: str
     name: str
+    kind: WorkspaceKind
     root_uri: str | None
 
     def to_wire(self) -> JsonObject:
         return {
             "id": self.id,
             "name": self.name,
+            "kind": self.kind,
             "rootUri": self.root_uri,
         }
 

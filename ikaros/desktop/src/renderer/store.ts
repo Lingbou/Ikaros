@@ -493,6 +493,7 @@ function workspaceForProject(
   return {
     id: project.id,
     name: project.name,
+    kind: "project",
     rootUri: project.rootUri ?? null,
   };
 }
@@ -513,6 +514,7 @@ function mergeRuntimeProjects(
     projectRuntimeProjects(summaries).map((project) => ({
       id: project.id,
       name: project.name,
+      kind: "project" as const,
       rootUri: project.rootUri ?? null,
     })),
   );
@@ -522,12 +524,14 @@ function mergeWorkspaceProjects(
   projects: readonly Project[],
   workspaces: readonly RuntimeWorkspaceSummary[],
 ): Project[] {
-  const additions = workspaces.map((workspace) => ({
-    id: workspace.id,
-    name: workspace.name,
-    color: "var(--muted-strong)",
-    ...(workspace.rootUri === null ? {} : { rootUri: workspace.rootUri }),
-  }));
+  const additions = workspaces
+    .filter((workspace) => workspace.kind === "project")
+    .map((workspace) => ({
+      id: workspace.id,
+      name: workspace.name,
+      color: "var(--muted-strong)",
+      ...(workspace.rootUri === null ? {} : { rootUri: workspace.rootUri }),
+    }));
   if (!additions.length) return [...projects];
   const next = new Map(projects.map((project) => [project.id, project] as const));
   for (const project of additions) {
@@ -1933,7 +1937,7 @@ function runtimeSummaryForProjectedThread(
     title: thread.title || null,
     defaultBranchId: thread.activeBranchId,
     workspace: project
-      ? { id: project.id, name: project.name, rootUri: project.rootUri ?? null }
+      ? { id: project.id, name: project.name, kind: "project", rootUri: project.rootUri ?? null }
       : null,
     createdAt: branch?.createdAt ?? thread.updatedAt,
     updatedAt: thread.updatedAt,

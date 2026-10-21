@@ -367,7 +367,12 @@ describe("Runtime-backed renderer store", () => {
     useAppStore.getState().newChat();
     expect(useAppStore.getState().selectedModel).toEqual(first);
     useAppStore.getState().selectModel(second);
-    useAppStore.getState().stageProjectWorkspace({ id: "project", name: "Project", rootUri: "/project" });
+    useAppStore.getState().stageProjectWorkspace({
+      id: "project",
+      name: "Project",
+      kind: "project",
+      rootUri: "/project",
+    });
     expect(useAppStore.getState().selectedModel).toEqual(first);
     useAppStore.getState().selectModel(second);
     useAppStore.getState().newProjectChat("project");
@@ -648,6 +653,7 @@ describe("Runtime-backed renderer store", () => {
     const pickedWorkspace = {
       id: "workspace-ikaros",
       name: "Ikaros",
+      kind: "project" as const,
       rootUri: "C:\\Workspace\\github\\Ikaros",
     };
     const workspace = { ...pickedWorkspace, name: "Ikaros Runtime" };

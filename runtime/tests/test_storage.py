@@ -661,7 +661,9 @@ def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: 
     database_path = tmp_path / "state.db"
     workspace_root = tmp_path / "research"
     workspace_root.mkdir()
-    workspace = WorkspaceSummary("workspace-research", "Research", str(workspace_root.resolve()))
+    workspace = WorkspaceSummary(
+        "workspace-research", "Research", "project", str(workspace_root.resolve())
+    )
     store = SqliteRuntimeStore(database_path)
     try:
         expected, event, created = store.create_thread_once(
@@ -675,6 +677,7 @@ def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: 
         assert event.payload["thread"]["workspace"] == {
             "id": "workspace-research",
             "name": "Research",
+            "kind": "project",
             "rootUri": str(workspace_root.resolve()),
         }
         assert store.list_thread_page(cursor=None, limit=50).threads == (expected,)
@@ -699,7 +702,7 @@ def test_thread_workspace_survives_list_reload_and_projection_rebuild(tmp_path: 
             reloaded.create_thread_once(
                 "Workspace thread",
                 "workspace-create",
-                workspace=WorkspaceSummary("workspace-other", "Other", None),
+                workspace=WorkspaceSummary("workspace-other", "Other", "project", None),
             )
     finally:
         reloaded.close()
@@ -780,7 +783,7 @@ def test_archived_threads_cannot_start_turns_and_active_threads_cannot_be_archiv
 
 
 def test_run_descriptor_inherits_its_thread_workspace(tmp_path: Path) -> None:
-    workspace = WorkspaceSummary("workspace-run", "Run Workspace", None)
+    workspace = WorkspaceSummary("workspace-run", "Run Workspace", "project", None)
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Workspace run", workspace=workspace)
@@ -858,7 +861,7 @@ def test_credential_conflict_scan_includes_thread_workspace(tmp_path: Path) -> N
     try:
         store.create_thread(
             "Workspace credential",
-            workspace=WorkspaceSummary("workspace-safe", protected, None),
+            workspace=WorkspaceSummary("workspace-safe", protected, "project", None),
         )
 
         assert store.journal_contains_protected_values((protected,)) is True

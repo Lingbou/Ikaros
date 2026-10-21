@@ -122,6 +122,7 @@ describe("core store invariants", () => {
     const workspace = {
       id: "workspace-new",
       name: "Named project",
+      kind: "project" as const,
       rootUri: "C:\\Workspace\\named-project",
     };
     const beforeThreadIds = useAppStore.getState().threads.map((candidate) => candidate.id);
@@ -130,8 +131,10 @@ describe("core store invariants", () => {
 
     const state = useAppStore.getState();
     expect(state.projects).toContainEqual({
-      ...workspace,
+      id: workspace.id,
+      name: workspace.name,
       color: "var(--muted-strong)",
+      rootUri: workspace.rootUri,
     });
     expect(state.threads.map((candidate) => candidate.id)).toEqual(beforeThreadIds);
     expect(state.newThreadWorkspace).toEqual(workspace);
@@ -152,6 +155,7 @@ describe("core store invariants", () => {
     useAppStore.getState().stageProjectWorkspace({
       id: existing.id,
       name: "Ignored rename",
+      kind: "project",
       rootUri: "C:\\Different\\root",
     });
 
@@ -160,6 +164,7 @@ describe("core store invariants", () => {
     expect(state.newThreadWorkspace).toEqual({
       id: existing.id,
       name: existing.name,
+      kind: "project",
       rootUri: existing.rootUri,
     });
     expect(state.projects.filter((project) => project.id === existing.id)).toHaveLength(1);

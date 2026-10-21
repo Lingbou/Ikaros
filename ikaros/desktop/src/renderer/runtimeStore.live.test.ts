@@ -613,6 +613,7 @@ async function assertCredentialIsolated(
 afterEach(() => {
   vi.useRealTimers();
   vi.resetModules();
+  vi.unstubAllEnvs();
   Reflect.deleteProperty(window, "ikarosDesktop");
 });
 
@@ -622,6 +623,7 @@ describe("Scripted Runtime store history vertical slice", () => {
     { timeout: 60_000 },
     async () => {
       const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-scripted-history-"));
+      vi.stubEnv("IKAROS_WORKSPACES_ROOT", join(runtimeHome, "workspaces"));
       const host = new RuntimeHost({ runtimeRoot, runtimeHome, runtimeModule: testRuntimeModule });
       try {
         await host.start();
@@ -687,6 +689,7 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
       }
 
       const runtimeHome = await mkdtemp(join(tmpdir(), "ikaros-live-"));
+      vi.stubEnv("IKAROS_WORKSPACES_ROOT", join(runtimeHome, "workspaces"));
       const runtimeStderr: string[] = [];
       const host = new RuntimeHost({
         runtimeRoot,
@@ -1060,11 +1063,13 @@ describe.skipIf(!liveEnabled)("live DeepSeek Runtime store vertical slice", () =
         const memoryWorkspaceA = {
           id: "live-memory-workspace-a",
           name: "Live Memory workspace A",
+          kind: "project" as const,
           rootUri: memoryWorkspaceAPath,
         };
         const memoryWorkspaceB = {
           id: "live-memory-workspace-b",
           name: "Live Memory workspace B",
+          kind: "project" as const,
           rootUri: memoryWorkspaceBPath,
         };
         const stableValue = `STABLE_${randomBytes(8).toString("hex").toUpperCase()}`;

@@ -1584,6 +1584,7 @@ async def test_agent_passes_the_thread_workspace_to_tool_execution(tmp_path: Pat
             workspace=WorkspaceSummary(
                 id="workspace-test",
                 name="Workspace",
+                kind="project",
                 root_uri=str(workspace.resolve()),
             ),
         )

@@ -562,9 +562,14 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 ### 4.3 Projects 与 Workspace
 
-- Project 不是 Runtime 资源，而是按 Thread 的可选 workspace 归并出的桌面分组。
-- 选择文件夹即生成 workspace 快照；该目录成为托管命令的默认工作目录
-  （`process_start` 的默认 `cwd`）和相对文件路径（`read`/`write`/`edit`）的基准。
+- 每个 Thread 都有 workspace：显式选择文件夹得到 `kind=project` 的 workspace；未选择时
+  Runtime 自动创建 `kind=managed` 的独立目录
+  `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`（根目录可用
+  `IKAROS_WORKSPACES_ROOT` 覆盖），重启与幂等重试都复用同一目录。
+- Project 不是 Runtime 资源，而是按 Thread 的 `kind=project` workspace 归并出的桌面
+  分组；managed workspace 留在“最近”，不会把每个会话列成项目。
+- workspace 目录成为托管命令的默认工作目录（`process_start` 的默认 `cwd`）和相对
+  文件路径（`read`/`write`/`edit`）的基准。
 - 尚未产生消息的已选文件夹只作为临时桌面状态存在。
 - 详情读取：`thread.get` + 分页 `turn.list`（默认 50、最大 100），按 Turn 组装
   Run/Item 完整序列；页水位线与实时事件缓冲做去重合并。
@@ -1054,7 +1059,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - ThreadSummary 字段：`id`、`title`、`defaultBranchId`、`workspace`（可空）、
   `createdAt`、`updatedAt`、`archivedAt`（可空）。
-- WorkspaceSummary 字段：`id`、`name`、`rootUri`（可空）。
+- WorkspaceSummary 字段：`id`、`name`、`kind`（`project` / `managed`）、`rootUri`（可空）。
 - JournalEvent 信封字段：`seq`、`schemaVersion`、`type`、`threadId`、`branchId`、
   `turnId`、`runId`、`itemId`、`timestamp`、`payload`（作用域 ID 可为空）。
 - RunDescriptor 字段：`id`、`turnId`、`threadId`、`branchId`、`providerId`、
@@ -1108,6 +1113,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   会显式传递（可选 `runtimeHome`）。
 - `IKAROS_RUNTIME_PYTHON`：Desktop 指定 Runtime 的 Python 可执行文件；优先于内置
   payload（调试用）。
+- `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
+  每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
 - `config.yaml`（version 2）结构概要：
@@ -1247,7 +1254,7 @@ Process              running ──▶ exited / terminated
 
 | 方法 | 参数 | 返回 |
 | --- | --- | --- |
-| `thread.create` | `title: string\|null`；`workspace: {id≤200, name≤200, rootUri≤4096}\|null`；`clientRequestId?: string` | `{ thread, event }`（幂等时返回既有 Thread） |
+| `thread.create` | `title: string\|null`；`workspace: {id≤200, name≤200, kind: project\|managed, rootUri≤4096}\|null`（省略或 `null` 时自动创建 managed 工作区）；`clientRequestId?: string` | `{ thread, event }`（幂等时返回既有 Thread 与同一工作区） |
 | `thread.rename` | `threadId`；`title: string\|null` | `{ thread, changed, event\|null }` |
 | `thread.archive` | `threadId` | `{ thread, changed, event\|null }` |
 | `thread.unarchive` | `threadId` | `{ thread, changed, event\|null }` |
@@ -1354,10 +1361,12 @@ initialize（完整信封）：
 会话与目录：
 
 ```jsonc
-// thread.create
-{"title":"新对话","workspace":null,"clientRequestId":"req-1"}
+// thread.create（省略 workspace 时自动分配 managed 工作区）
+{"title":"新对话","clientRequestId":"req-1"}
 → {"thread":{"id":"thread_0123…cdef","title":"新对话","defaultBranchId":"branch_0123…cdef",
-            "workspace":null,"createdAt":"2026-10-01T10:00:00.000Z","updatedAt":"2026-10-01T10:00:00.000Z","archivedAt":null},
+            "workspace":{"id":"workspace_0123…cdef","name":"2026-10-01 10:00","kind":"managed",
+                         "rootUri":"/home/<user>/Documents/Ikaros/2026-10-01/100000-0123cdef"},
+            "createdAt":"2026-10-01T10:00:00.000Z","updatedAt":"2026-10-01T10:00:00.000Z","archivedAt":null},
    "event":{"seq":1,"schemaVersion":10,"type":"thread.created","threadId":"thread_0123…cdef","branchId":"branch_0123…cdef",
             "turnId":null,"runId":null,"itemId":null,"timestamp":"2026-10-01T10:00:00.000Z",
             "payload":{"thread":"(同上)","branch":{"id":"branch_0123…cdef","threadId":"thread_0123…cdef",
@@ -1569,7 +1578,7 @@ Memory、文件、进程与系统：
 | `created_at` / `updated_at` | TEXT NOT NULL |
 | `archived_at` | TEXT（可空） |
 | `client_request_id` | TEXT（可空，部分唯一索引） |
-| `workspace_json` | TEXT（可空） |
+| `workspace_json` | TEXT（可空，存 workspace 快照：id / name / kind / rootUri） |
 
 索引：`threads_client_request_id_idx`（唯一部分）、`threads_active_catalog_order_idx`、
 `threads_archived_catalog_order_idx`（按 `updated_at DESC, id ASC`）。
@@ -1976,13 +1985,15 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 - payload 目录只增不改：升级写入新的 `<payload version>`，旧目录与其余用户数据
   不被删除；卸载同样保留 `~/.ikaros`（NSIS `deleteAppDataOnUninstall: false`）。
+- 自动分配的 Thread 工作区不在 `~/.ikaros` 内，位于 `~/Documents/Ikaros/`
+  （`<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`，`IKAROS_WORKSPACES_ROOT` 可覆盖）。
 
 ## 10. 验证与测试现状
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线基线 | pytest 822 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 491 passed / 1 skipped |
+| Runtime 离线基线 | pytest 831 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
+| Desktop 离线基线 | Vitest 496 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2123,6 +2134,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
 | 协议 | 版本/规模 | protocol 8；32 方法；15 事件；13 工具 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
+| 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |
 | 服务 | 事件队列 / 发送超时 | 1,024 条 / 5 秒 |
 | 服务 | 锁超时 / 轮询 | 10 秒 / 50 ms |

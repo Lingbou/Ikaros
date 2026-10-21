@@ -34,7 +34,7 @@ def test_thread_get_reads_exact_metadata_without_writing_events(tmp_path: Path) 
     try:
         thread, created = store.create_thread(
             "Metadata",
-            workspace=WorkspaceSummary("workspace-1", "Workspace", str(workspace_root)),
+            workspace=WorkspaceSummary("workspace-1", "Workspace", "project", str(workspace_root)),
         )
         before = store.latest_sequence()
 
