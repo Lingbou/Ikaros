@@ -33,6 +33,7 @@ export type AppEventTextKind =
   | "tool.listDirectory"
   | "tool.listThreads"
   | "tool.readThread"
+  | "tool.memory"
   | "result.processCompleted"
   | "result.processRunning"
   | "result.processStopped"
@@ -64,7 +65,14 @@ export type AppEventTextKind =
   | "result.threadReadFailed"
   | "result.threadReadInterrupted"
   | "result.entryCount"
-  | "result.matchCount";
+  | "result.matchCount"
+  | "result.memorySaved"
+  | "result.memorySaveFailed"
+  | "result.memorySaveInterrupted"
+  | "result.memoryFound"
+  | "result.memorySearchFailed"
+  | "result.memorySearchInterrupted"
+  | "result.memoryCount";
 
 export type EventTextValues = Record<string, string | number>;
 
@@ -127,6 +135,7 @@ export interface ToolResultEvent extends EventBase {
     truncated?: boolean;
     entryCount?: number;
     matchCount?: number;
+    count?: number;
     processId?: string;
     background?: boolean;
     processState?: "running" | "exited" | "terminated" | "unknown";

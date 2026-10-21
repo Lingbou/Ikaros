@@ -316,6 +316,42 @@ const SEARCH_TOOL_RESULTS: Record<
   },
 };
 
+const MEMORY_TOOL_NAME = "memory";
+
+type MemoryAction = "save" | "search";
+
+function memoryActionOf(result: Record<string, unknown>): MemoryAction | undefined {
+  return result.action === "save" || result.action === "search" ? result.action : undefined;
+}
+
+const MEMORY_TOOL_RESULTS: Record<
+  MemoryAction,
+  Record<ToolResultEvent["status"], AppEventTextKind>
+> = {
+  save: {
+    success: "result.memorySaved",
+    error: "result.memorySaveFailed",
+    interrupted: "result.memorySaveInterrupted",
+  },
+  search: {
+    success: "result.memoryFound",
+    error: "result.memorySearchFailed",
+    interrupted: "result.memorySearchInterrupted",
+  },
+};
+
+function projectMemoryResultDetails(
+  result: Record<string, unknown>,
+): ToolResultEvent["details"] | undefined {
+  const details: NonNullable<ToolResultEvent["details"]> = {};
+  if (Number.isInteger(result.count) && Number(result.count) >= 0) {
+    details.count = Number(result.count);
+  }
+  if (typeof result.created === "boolean") details.created = result.created;
+  if (typeof result.truncated === "boolean") details.truncated = result.truncated;
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
 function projectSearchResultDetails(
   result: Record<string, unknown>,
 ): ToolResultEvent["details"] | undefined {
@@ -599,6 +635,8 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
               ? appEventText(SEARCH_TOOL_LABELS[toolName])
               : isThreadTool(toolName)
                 ? appEventText(THREAD_TOOL_LABELS[toolName])
+                : toolName === MEMORY_TOOL_NAME
+                  ? appEventText("tool.memory")
                 : externalEventText(toolName),
         status: toolStatus(item.status),
         arguments: projectToolArguments(toolName, item.data.arguments),
@@ -623,6 +661,8 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
       const fileTool = isFileToolName(toolName);
       const searchTool = isSearchTool(toolName);
       const threadTool = isThreadTool(toolName);
+      const memoryAction =
+        toolName === MEMORY_TOOL_NAME ? memoryActionOf(item.data.result) : undefined;
       const resultDetails = fileTool
         ? projectFileResultDetails(item.data.result)
         : isProcessTool(toolName)
@@ -631,7 +671,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
             ? projectSearchResultDetails(item.data.result)
             : threadTool
               ? projectThreadResultDetails(item.data.result)
-              : undefined;
+              : memoryAction === undefined
+                ? undefined
+                : projectMemoryResultDetails(item.data.result);
       const path =
         fileTool && typeof item.data.result.path === "string"
           ? item.data.result.path
@@ -656,7 +698,9 @@ export function applyRuntimeEvent(threads: Thread[], event: RuntimeJournalEvent)
               ? appEventText(SEARCH_TOOL_RESULTS[toolName][resultStatus])
               : threadTool
                 ? appEventText(THREAD_TOOL_RESULTS[toolName][resultStatus])
-                : externalEventText(toolName),
+                : memoryAction === undefined
+                  ? externalEventText(toolName)
+                  : appEventText(MEMORY_TOOL_RESULTS[memoryAction][resultStatus]),
         output: fileTool
           ? safeFileResultOutput(item.data.result.output, resultStatus)
           : typeof item.data.result.output === "string"

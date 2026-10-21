@@ -86,6 +86,7 @@ PROVIDER_TOOL_IDS: Final = (
     "glob",
     "grep",
     "list",
+    "memory",
 )
 def protocol_manifest() -> dict[str, object]:
     from ..history_status import HISTORY_STATUS_PREAMBLE

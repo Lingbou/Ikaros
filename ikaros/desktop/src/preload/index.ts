@@ -216,6 +216,10 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
     chooseDirectory: () =>
       ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.workspace.chooseDirectory) as Promise<
         import("../shared/runtime").RuntimeWorkspaceSummary | null
+      >,
+    chooseEntries: () =>
+      ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.workspace.chooseEntries) as Promise<
+        import("../shared/platform").WorkspaceEntrySelection | null
       >
   }),
   preferences: Object.freeze({

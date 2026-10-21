@@ -112,6 +112,7 @@ describe("Runtime protocol Golden Trace", () => {
       "glob",
       "grep",
       "list",
+      "memory",
     ]);
   });
 

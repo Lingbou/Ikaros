@@ -27,7 +27,7 @@ from .server.connection import handle_connection
 from .server.event_hub import EventHub
 from .server.host import RuntimeHomeLock, ServerSettings, run_host
 from .services.files import FileService
-from .services.memories import MemoryService
+from .services.memories import MemoryService, MemoryToolService
 from .services.processes import ProcessService
 from .services.providers import ModelDiscovery, ProviderService
 from .services.skills import SkillService
@@ -42,6 +42,7 @@ from .tools import (
     GrepTool,
     HistoryReadTool,
     ListTool,
+    MemoryTool,
     ProcessManager,
     ProcessReadTool,
     ProcessResizeTool,
@@ -74,6 +75,7 @@ class RuntimeApplication:
         identity_core: InstructionBlock | None = None,
         extra_providers: Mapping[str, ProviderAdapter] | None = None,
         provider_snapshot_resolver: ProviderSnapshotResolver | None = None,
+        agent_workers: int | None = None,
     ) -> None:
         self._store = store
         self._memory_store = memory_store
@@ -124,6 +126,12 @@ class RuntimeApplication:
                 if record["state"] == "running" or record["errorCode"] == "start_pending"
             )
         )
+        self.memories = MemoryService(
+            memory_store,
+            self.security.assert_request_safe,
+            store,
+        )
+        memory_retriever = MemoryRetriever(memory_store)
         tool_executor = ToolExecutor(
             ToolRegistry(
                 [
@@ -142,6 +150,13 @@ class RuntimeApplication:
                     GlobTool(),
                     GrepTool(),
                     ListTool(),
+                    MemoryTool(
+                        MemoryToolService(
+                            self.memories,
+                            memory_retriever,
+                            store.memory_tool_run_scope,
+                        )
+                    ),
                 ]
             ),
             FullAccessPolicy(),
@@ -174,9 +189,9 @@ class RuntimeApplication:
             protected_values=self.security.protected_values,
             provider_snapshot_resolver=provider_snapshot,
             identity_core=self.identity_core,
-            memory_retriever=MemoryRetriever(memory_store),
+            memory_retriever=memory_retriever,
         )
-        self._scheduler = AgentScheduler(loop)
+        self._scheduler = AgentScheduler(loop, max_workers=agent_workers)
         self._publish = publish
 
         self.threads = ThreadService(
@@ -203,11 +218,6 @@ class RuntimeApplication:
             self.security.assert_credentials_safe,
         )
         self.usage = UsageService(store)
-        self.memories = MemoryService(
-            memory_store,
-            self.security.assert_request_safe,
-            store,
-        )
         self.files = FileService(store, self.security, paths)
         self.router = RuntimeRouter(
             self.threads,

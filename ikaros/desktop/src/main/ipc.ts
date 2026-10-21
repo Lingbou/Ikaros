@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 import { BrowserWindow, dialog, ipcMain, Notification, type IpcMainInvokeEvent } from "electron";
@@ -194,6 +195,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.filePreview,
     DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
+    DESKTOP_IPC_CHANNELS.workspace.chooseEntries,
     DESKTOP_IPC_CHANNELS.preferences.get,
     DESKTOP_IPC_CHANNELS.preferences.update,
     DESKTOP_IPC_CHANNELS.window.close,
@@ -543,6 +545,27 @@ export function registerDesktopIpc(
     const result = await dialog.showOpenDialog(window, { properties: ["openDirectory"] });
     const directory = result.filePaths[0];
     return result.canceled || !directory ? null : workspaceFromDirectory(directory);
+  });
+
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.workspace.chooseEntries, async (event) => {
+    const window = trustedRequestingWindow(event, trustPolicy);
+    const result = await dialog.showOpenDialog(window, {
+      properties: ["openFile", "openDirectory", "multiSelections"],
+    });
+    if (result.canceled) return null;
+    const directories: RuntimeWorkspaceSummary[] = [];
+    const files: string[] = [];
+    for (const path of result.filePaths) {
+      let isDirectory = false;
+      try {
+        isDirectory = statSync(path).isDirectory();
+      } catch {
+        continue;
+      }
+      if (isDirectory) directories.push(workspaceFromDirectory(path));
+      else files.push(resolve(path));
+    }
+    return { directories, files };
   });
 
   ipcMain.handle(DESKTOP_IPC_CHANNELS.preferences.update, async (event, patch: unknown) => {

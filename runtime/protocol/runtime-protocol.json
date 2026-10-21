@@ -88,7 +88,8 @@
     "edit",
     "glob",
     "grep",
-    "list"
+    "list",
+    "memory"
   ],
   "inputBudgetMeasurementVersion": "conservative-utf8-upper-bound",
   "outputStyleContent": "Use a restrained, professional response style. Do not use emoji or decorative Unicode symbols unless the user explicitly asks for them. Never use them for decoration, headings, or list markers. Use Markdown hyphen bullets (`- item`) for ordinary unordered lists; the client will render them as simple round bullets.",

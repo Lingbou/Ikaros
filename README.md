@@ -36,7 +36,7 @@ Skill 扩展和多 Provider 模型接入，不局限于编码场景。
 - `runtime/`：Python Runtime
   - `src/ikaros_runtime/agent/`：Agent 循环、调度、上下文选择与压缩
   - `src/ikaros_runtime/providers/`：Provider 注册表与 OpenAI 兼容适配器
-  - `src/ikaros_runtime/tools/`：15 个内建工具与进程管理
+  - `src/ikaros_runtime/tools/`：16 个内建工具与进程管理
   - `src/ikaros_runtime/storage/`：SQLite 存储、Journal、投影、维护命令
   - `src/ikaros_runtime/memory/`：Memory 存储与召回
   - `src/ikaros_runtime/skills/`：Skill 目录扫描与提示词
@@ -106,8 +106,10 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - 每个应用生命周期只有 1 个 Python Runtime 进程；通过 `runtime.lock` 独占
   `~/.ikaros`，启动第二个实例会失败而不共享状态。
-- Runtime 内部是单事件循环（asyncio）；调度器只有 1 个 worker，同一时刻只运行
-  1 个 Run；同一 Run 内工具串行执行；每个 Branch 拥有串行队列。
+- Runtime 内部是单事件循环（asyncio）；调度器使用 worker 池，默认同时运行
+  2 个 Run（`IKAROS_AGENT_WORKERS`，范围 1–8）；并发只发生在不同 Thread 之间，
+  同一 Thread 同时至多 1 个活动 Run；同一 Run 内工具串行执行；每个 Branch 拥有
+  串行队列。
 - 数据库访问在单个连接上串行化（SQLite WAL）；`state.db` 与 `memory.db` 是两个
   独立数据库，只共享 Runtime-home 锁。
 - Desktop 与 Runtime 的生命周期绑定：关闭应用会先请求 Runtime 干净关闭。
@@ -244,7 +246,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `loop.py` — Agent 主循环：执行 Run、流式处理、工具调度、压缩、
   完成检查与终结。
 - `model_input.py` — 单步模型输入计划（ModelInputPlan）与校验。
-- `scheduler.py` — 单 worker 调度：预留/激活/取消/steer 与关闭顺序。
+- `scheduler.py` — worker 池调度：FIFO、同 Thread 串行、预留/激活/取消/steer
+  与关闭顺序。
 
 `memory/`（长期记忆）：
 
@@ -262,7 +265,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `generate.py` — 生成 `runtime-protocol.json` 与 Desktop 侧 TS 常量；支持 `--check`。
 - `jsonrpc.py` — JSON-RPC 信封与错误对象构造。
 - `router.py` — 方法派发：32 个 RPC → 各服务；错误码映射（-32602 / -32010 / -32020）。
-- `spec.py` — 协议注册表：版本 9、32 方法、15 事件、15 工具 ID（手工维护唯一来源）。
+- `spec.py` — 协议注册表：版本 9、32 方法、15 事件、16 工具 ID（手工维护唯一来源）。
 
 `providers/`：
 
@@ -344,6 +347,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `grep.py` — `grep`：正则检索，`文件:行号:内容`，单行截断 200 字符。
 - `history_read.py` — `history_read` 工具：itemId 周边的有界切片。
 - `list.py` — `list`：单层目录列举（名称 / 类型 / 大小 / 时间）。
+- `memory.py` — `memory` 工具：模型侧 save / search；save 复用 `memory.create`
+  的校验、凭据保护、来源捕获与幂等路径，search 复用确定性混合召回（只读）。
 - `policy.py` — 执行策略：当前固定 FullAccessPolicy。
 - `process_manager.py` — 托管进程管理器：64 并发、1 MiB 保留、4 条/秒快照、
   终止 6 秒 / 排空 2 秒；持久化 `background` 并支持前台完成门禁。
@@ -358,7 +363,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   取消令牌检查；含 glob / 正则编译。
 - `write.py` — `write`：临时文件 + SHA-256 校验 + fsync + 原子替换。
 
-`tests/`（Runtime 测试，共 43 个 Python 文件）：
+`tests/`（Runtime 测试，共 50 个 Python 文件）：
 
 - `__init__.py` — 测试包标记。
 - `golden_trace.py` — golden trace 加载与回放辅助。
@@ -380,6 +385,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `test_maintenance.py` — check/backup/repair 测试。
 - `test_memory_recall.py` — Memory 召回整链路测试。
 - `test_memory_retrieval.py` — 召回算法与预算测试。
+- `test_memory_tool.py` — `memory` 工具 save / search、幂等、凭据拒绝与参数越界测试。
 - `test_memory.py` — Memory 存储、幂等、墓碑测试。
 - `test_model_defaults.py` — 默认上下文窗口测试。
 - `test_model_input_pipeline.py` — RunConfig → StepInput 流水线测试。
@@ -479,7 +485,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `AppearanceSettings.tsx` — 外观设置：主题、颜色、字体、侧边栏、动效。
 - `ArchivedThreadsDialog.tsx` — 归档对话管理对话框（取消归档、空态、错误态）。
-- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、模型选择与运行状态提示。
+- `Composer.tsx` — 输入框：发送/停止、补充指令（steer）、草稿、附件路径、“文件和
+  文件夹”菜单、模型选择与运行状态提示。
 - `ConversationHeader.tsx` — 会话标题栏：重命名/归档菜单、Model 标识。
 - `CreateProjectDialog.tsx` — 新建项目（选择工作区文件夹）。
 - `EventCard.tsx` — 事件/工具卡片：命令、文件、状态、diff 入口。
@@ -496,7 +503,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - `SearchDialog.tsx` — 对话搜索对话框（标题过滤、键盘打开）。
 - `SettingsPage.tsx` — 设置页容器与导航（Provider/Model/Skills/Memory/Profile/
   外观/通用）。
-- `Sidebar.tsx` — 侧边栏：对话列表、Projects、归档入口、搜索按钮。
+- `Sidebar.tsx` — 侧边栏：对话列表、Projects、运行中指示、归档入口、搜索按钮。
 - `SkillsSettings.tsx` — Skills 设置：列表、诊断、启用开关。
 - `ThemePreview.tsx` — 主题预览卡与代码 diff 预览。
 - `TitleBar.tsx` — 自定义标题栏与窗口控制（最小化/最大化/关闭）。
@@ -543,6 +550,9 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   是否停止由用户决定。
 - 运行中补充（steering）：Run 执行期间可继续输入（`run.steer`），补充内容进入
   当前 Run 的后续模型调用。
+- 添加上下文：Composer 加号菜单目前只有“文件和文件夹”一项；选择文件夹绑定项目
+  工作区，选择文件生成可移除的附件条目，发送时把绝对路径追加到消息正文（内容
+  仍由 Agent 通过文件工具读取）。
 - 失败后继续：失败/取消的 Run 保留已结算的工具结果，并给出本地化说明和有界的
   原因码；新一轮对话不会重放旧命令，也不会回滚可能已生效的文件或命令操作。
 - 草稿保护：没有可用 Model 时，Composer 直接打开 Provider/Model 设置，并保留
@@ -787,7 +797,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - 协议版本 9，JSON-RPC 2.0，服务名 `ikaros-runtime`；初始化方法 `initialize`，
   事件通知方法 `event`。
-- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、15 个 provider
+- 规模：32 个 post-initialize RPC 方法、15 种持久化事件类型、16 个 provider
   工具 ID；由 `protocol/spec.py` 生成 `runtime-protocol.json` 与 Desktop 字面量
   联合类型；两端共用 `golden-trace.json`（约 139 KB）做协议回归。
 - RPC 方法清单：
@@ -835,7 +845,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 ### 6.4 崩溃恢复语义
 
 - 干净关闭：Scheduler 停止接收新工作 → 协作取消活动 Run → 排队/预留 Run 标记
-  `cancelled` → 等待 worker → 关闭数据库。
+  `cancelled` → 等待全部 worker → 关闭数据库。
 - 异常退出后启动：`running` Run → `failed`（原因码 `runtime_interrupted`，保留
   部分 assistant 文本）；`queued` Run 按原 Journal 顺序重新调度；终态 Run 永不
   重跑。
@@ -850,8 +860,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   + 其工具调用与结果）。
 - 提交时冻结 RunConfig：Provider/Model、workspace、工具定义（含 schema 哈希）、
   身份（IKAROS.md）、已启用 Skill 描述符、模型上下文窗口。
-- 调度：全局 1 个 scheduler worker（同时只跑一个 Run）；同一 Run 内工具串行
-  执行；每个 Branch 有串行队列。
+- 调度：全局 worker 池（`IKAROS_AGENT_WORKERS`，默认 2、范围 1–8）；FIFO
+  拉取，同一 Thread 同时至多 1 个活动 Run，并发只发生在不同 Thread 之间；同一
+  Run 内工具串行执行；每个 Branch 有串行队列。Run 结束后的 worker 立即拉取
+  下一个可运行 Thread。
 - 无总模型调用次数/时长上限；可手动取消；单次 Provider 请求有超时；资源清理
   有界。
 - 失败/取消的 Run 向后续对话提供：已持久化的工具结果 + 独立的 Runtime 状态块
@@ -913,7 +925,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - Model 发现：`/models` 响应体 ≤ 1 MB、最多解析 1,000 条；发现请求也使用相同的
   超时与错误分类。
 
-### 6.9 内建工具（15 个）
+### 6.9 内建工具（16 个）
 
 | 工具 | 参数 | 限制与行为 |
 | --- | --- | --- |
@@ -932,6 +944,7 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 | `glob` | `pattern`、可选 `path`、可选 `maxResults`（1–5,000，默认 1,000） | 纯 Python 遍历，不经 shell；默认忽略 `.git`、`node_modules`、已知二进制扩展名与深度 >12 的目录；不跟随目录符号链接；输出 `<绝对路径>\t<字节>\t<UTC mtime>`，按路径排序，截断时显式提示 |
 | `grep` | `pattern`、可选 `path`（默认 cwd）、可选 `include`、可选 `ignoreCase`、可选 `contextLines`（0–10）、可选 `maxMatches`（1–1,000，默认 100） | 正则检索（字面量可直接使用）；匹配行 `文件:行号:内容`、上下文行 `文件-行号-内容`；单行截断 200 字符；单文件 ≤4 MiB，跳过二进制与非 UTF-8 |
 | `list` | 可选 `path`（默认 cwd） | 单层目录列举，`名称\t类型\t大小\tUTC mtime`（类型 dir/file/symlink/other），按名称排序；条目上限 5,000 |
+| `memory` | `action`（`save` / `search`）。save：`content`（≤2,048 字符）、`kind`（fact / preference / relationship / project）、`scope`（global / workspace）；search：`query`（非空）、可选 `limit`（1–8，默认 5） | save 复用 `memory.create` 的校验、凭据保护、来源捕获与幂等路径：`clientRequestId` 由工具调用 Item ID 派生，来源指向触发本次 Run 的 User Item（工具调用 Item 尚未结算），workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生；search 复用 `MemoryRetriever`，只读且不改变每 Run 冻结的召回集合，返回 id / kind / scope / revision / content，正文总量 ≤6,000 字符，超限显式截断；不做 forget / delete |
 
 检索与路径规则：`glob` / `grep` / `list` 复用文件工具的路径规则（≤4,096 字符、
 相对路径按 Thread 工作区解析、符号链接解析到目标、只读语义），遍历在
@@ -1018,8 +1031,15 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   embedding 服务、不做 LLM 精排。
 - 输入包装：Memory 正文以 contextual-data 包装进入模型，不改变工具权限、身份、
   执行策略或用户请求；审计只记录 ID/revision/scope/字符数。
-- 边界：没有自动 Memory 写入器、没有学习循环；Memory 不保存运行进度、命令日志
-  或文件差异。
+- 模型工具：单个 provider 工具 `memory`（`save` / `search`）。save 走与
+  `memory.create` 相同的校验、凭据保护、来源捕获与幂等路径（`clientRequestId`
+  由工具调用 Item ID 派生；来源指向触发本次 Run 的 User Item，因为工具调用 Item
+  尚未结算）；workspace scope 的 key 由 Runtime 从 Run 的 Workspace 派生，模型
+  不能指定。search 复用 `MemoryRetriever`，只读、不改变每 Run 冻结的召回集合；
+  limit 1–8（默认 5），正文总量 ≤6,000 字符并显式报告截断。没有 forget / delete：
+  删除仍由用户控制。
+- 边界：没有自动 Memory 写入器（只有用户显式操作与模型显式调用的 `memory`
+  工具）、没有学习循环；Memory 不保存运行进度、命令日志或文件差异。
 
 ### 6.12 Skills 子系统
 
@@ -1120,6 +1140,8 @@ Electron main 在 `ipc.ts` 中注册全部通道：
   payload（调试用）。
 - `IKAROS_WORKSPACES_ROOT`：自动分配工作区的根目录覆盖（默认 `~/Documents/Ikaros`）；
   每个 Thread 按本地创建日期分桶到 `<root>/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`。
+- `IKAROS_AGENT_WORKERS`：Agent Run 并发 worker 上限，默认 2，范围 1–8；值为 1
+  时等价于原来的单 Run 串行调度。非法值会让 Runtime 启动失败。
 - `ELECTRON_RENDERER_URL`：开发模式下 Electron 加载的渲染地址（仅开发）。
 - live smoke：`IKAROS_LIVE_DEEPSEEK_SMOKE`、`IKAROS_LIVE_DEEPSEEK_KEY_FILE`。
 - `config.yaml`（version 2）结构概要：
@@ -1998,7 +2020,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 | 项目 | 状态 |
 | --- | --- |
 | Runtime 离线基线 | pytest 831 passed / 2 skipped（WSL Linux）；Windows 本机 811 passed，失败均为已知平台差异 |
-| Desktop 离线基线 | Vitest 496 passed / 1 skipped |
+| Desktop 离线基线 | Vitest 502 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
@@ -2068,9 +2090,9 @@ pytest / 协议生成检查）与 Desktop `pnpm check`，说明见 AGENTS.md 第
   会中断，非 PTY 命令只能接管既有事实且实时 IO 不可用，常驻进程守护未实现；
 - 系统通知受操作系统通知权限与勿扰 / 专注模式控制；Desktop 未运行或没有可用
   主窗口时不发送；
-- 多个 Run 并发、Multi-Agent 与子 Agent；
+- Multi-Agent 与子 Agent（不同 Thread 的多个 Run 已可并发）；
 - cron 与主动唤醒任务；
-- 附件、Web/浏览器/桌面操作工具；
+- 附件内容内联（当前只把选中文件的绝对路径追加到消息）、Web/浏览器/桌面操作工具；
 - MCP、插件与第三方工具生态；
 - 自动 Memory 提取与 Skill 学习；
 - Linux 安装包内置 Runtime、自动更新、代码签名与正式发布渠道；
@@ -2102,6 +2124,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 
 | 类别 | 参数 | 值 |
 | --- | --- | --- |
+| 调度 | Run 并发上限 | `IKAROS_AGENT_WORKERS` 默认 2，范围 1–8；同一 Thread 至多 1 个活动 Run |
 | 上下文 | 输入预算 | 模型窗口 95% |
 | 上下文 | 自动压缩阈值 | 模型窗口 90% |
 | 上下文 | 历史选择分页 | 32 Turns/页 |
@@ -2115,6 +2138,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Memory | 召回候选 / 选中 | 2,000 条 / 8 条、6,000 字符 |
 | Memory | 召回融合 | RRF k=60；每池深度 ≤200；查询词元 ≤64、短语 ≤16 bigram |
 | Memory | 列表分页 | 默认 50、最大 100 |
+| Memory | 模型工具 | `memory`（save / search）；search limit 1–8（默认 5）、正文总量 ≤6,000 字符 |
 | 文件 | read | ≤2,000 行、≤50 KiB/次、行截断 2,000 字符、分块 64 KiB |
 | 文件 | glob | 结果上限默认 1,000、最大 5,000；扫描深度 ≤12；忽略 .git/node_modules/二进制 |
 | 文件 | grep | 匹配上限默认 100、最大 1,000；上下文 ≤10 行；单行 200 字符；单文件 ≤4 MiB |
@@ -2139,7 +2163,7 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | Provider | 重试 | 请求 ≤4 次、流 ≤5 次；基础退避 0.2 秒、×2、抖动 0.9–1.1、上限 5 秒 |
 | Provider | 解析上限 | SSE 事件/工具参数/reasoning 各 ≤1,000,000 字符 |
 | Provider | 模型发现 | 响应 ≤1 MB、≤1,000 个 model |
-| 协议 | 版本/规模 | protocol 9；32 方法；15 事件；15 工具 |
+| 协议 | 版本/规模 | protocol 9；32 方法；15 事件；16 工具 |
 | 存储 | 版本 | state schema 14；Journal 10；memory 2；config 2 |
 | 工作区 | 自动工作区根 | `~/Documents/Ikaros/<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`；`IKAROS_WORKSPACES_ROOT` 覆盖 |
 | 存储 | config 上限 | 256 KiB |
