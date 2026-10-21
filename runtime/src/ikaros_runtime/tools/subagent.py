@@ -27,6 +27,7 @@ class SubagentBackend(Protocol):
         request_id: str,
         prompt: str,
         title: str | None,
+        wait: bool = True,
         cancellation: CancellationToken,
     ) -> JsonObject: ...
 
@@ -43,9 +44,14 @@ class SubagentTool:
             name=SUBAGENT_TOOL_NAME,
             description=(
                 "Spawn a child conversation (its own thread and run) for a "
-                "self-contained sub-task. Blocks until the child settles and returns "
-                "its final answer; use thread_read with the returned threadId for "
-                "details. Children cannot spawn further subagents."
+                "self-contained sub-task. By default blocks until the child settles "
+                "and returns its final answer; set wait=false to enqueue the child and "
+                "return its threadId/runId immediately. A non-blocking child keeps "
+                "running after this Run completes normally, but is cancelled if this "
+                "Run is cancelled. Collect settled results with thread_read using the "
+                "returned threadId; while the child is unsettled, thread_read includes "
+                "activeRun and a notice. Children can spawn further subagents up to the "
+                "configured depth."
             ),
             input_schema={
                 "type": "object",
@@ -55,6 +61,13 @@ class SubagentTool:
                         "type": "string",
                         "minLength": 1,
                         "maxLength": SUBAGENT_MAX_TITLE_CHARS,
+                    },
+                    "wait": {
+                        "type": "boolean",
+                        "description": (
+                            "Wait for the child Run to settle before returning. "
+                            "Default true."
+                        ),
                     },
                 },
                 "required": ["prompt"],
@@ -73,12 +86,13 @@ class SubagentTool:
         problem = require_exact_arguments(
             call.arguments,
             required={"prompt"},
-            optional={"title"},
+            optional={"title", "wait"},
         )
         if problem is not None:
             return ToolResult.rejected(call, code="invalid_arguments", message=problem)
         prompt = call.arguments["prompt"]
         title = call.arguments.get("title")
+        wait = call.arguments.get("wait", True)
         if not isinstance(prompt, str) or not prompt.strip():
             return ToolResult.rejected(
                 call, code="invalid_arguments", message="prompt must be a non-empty string"
@@ -91,6 +105,10 @@ class SubagentTool:
             return ToolResult.rejected(
                 call, code="invalid_arguments", message="title is invalid"
             )
+        if not isinstance(wait, bool):
+            return ToolResult.rejected(
+                call, code="invalid_arguments", message="wait must be a boolean"
+            )
         cancellation.raise_if_cancelled()
         try:
             payload = await self.backend.spawn(
@@ -98,6 +116,7 @@ class SubagentTool:
                 request_id=context.item_id,
                 prompt=prompt,
                 title=title,
+                wait=wait,
                 cancellation=cancellation,
             )
         except ValueError as error:
@@ -113,18 +132,29 @@ class SubagentTool:
         cancellation.raise_if_cancelled()
         status = str(payload.get("status", "failed"))
         summary = str(payload.get("summary", ""))
-        if status == "completed":
+        thread_id = str(payload.get("threadId", ""))
+        run_id = str(payload.get("runId", ""))
+        if not wait and status in {"queued", "running"}:
+            output = (
+                f"Subagent dispatched as thread {thread_id} / run {run_id} "
+                f"(status: {status}). It keeps running after this Run ends unless "
+                "this Run is cancelled; collect settled results with thread_read."
+            )
+            ok = True
+        elif status == "completed":
             output = summary or "Subagent completed without a final message."
+            ok = True
         else:
             output = f"Subagent {status}."
+            ok = False
         return ToolResult(
             tool_call_id=call.id,
             tool_name=call.name,
-            ok=status == "completed",
+            ok=ok,
             output=output,
             details={
-                "threadId": str(payload.get("threadId", "")),
-                "runId": str(payload.get("runId", "")),
+                "threadId": thread_id,
+                "runId": run_id,
                 "status": status,
             },
         )
