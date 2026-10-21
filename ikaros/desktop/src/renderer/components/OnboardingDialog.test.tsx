@@ -109,6 +109,7 @@ describe("first-run onboarding", () => {
             enabled: true,
             contextWindow: 32768,
             reasoningEffort: null,
+            reasoningEfforts: [],
           },
         ],
       });

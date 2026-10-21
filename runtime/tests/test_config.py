@@ -716,6 +716,7 @@ def test_model_context_window_persists_and_frozen_snapshot_remains_unchanged(
         "enabled": True,
         "contextWindow": 131072,
         "reasoningEffort": "high",
+        "reasoningEfforts": [],
     }
     assert reloaded.model_summaries()[0].reasoning_effort == "high"
     assert store.get_provider("deepseek") is not None
@@ -774,3 +775,33 @@ def test_reasoning_effort_can_be_cleared_and_rejects_unknown_levels(tmp_path: Pa
     with pytest.raises(ConfigError, match="reasoning effort"):
         store.set_model_limits("deepseek", "deepseek-chat", 32768, "extreme")
     assert store.path.read_bytes() == before
+
+
+def test_reasoning_effort_levels_round_trip_and_require_a_supported_default(
+    tmp_path: Path,
+) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(api_key="test-reasoning-levels-secret", models=[model()])
+
+    updated = store.set_model_limits(
+        "deepseek",
+        "deepseek-chat",
+        32768,
+        "high",
+        ("max", "low", "high", "low"),
+    )
+    reloaded = ConfigStore(tmp_path)
+
+    assert updated.to_wire()["reasoningEfforts"] == ["low", "high", "max"]
+    assert reloaded.model_summaries()[0].reasoning_efforts == ("low", "high", "max")
+    document = store.path.read_text(encoding="utf-8")
+    assert "reasoning_efforts:" in document
+
+    with pytest.raises(ConfigError, match="default reasoning effort"):
+        store.set_model_limits("deepseek", "deepseek-chat", 32768, "ultra", ("low", "high"))
+    with pytest.raises(ConfigError, match="reasoning effort"):
+        store.set_model_limits("deepseek", "deepseek-chat", 32768, None, ("turbo",))
+
+    cleared = store.set_model_limits("deepseek", "deepseek-chat", 32768, None, ())
+    assert cleared.reasoning_efforts == ()
+    assert "reasoning_efforts" not in store.path.read_text(encoding="utf-8")

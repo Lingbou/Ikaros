@@ -14,6 +14,7 @@ from ..run_input import ProviderExecutionSnapshot
 from ..security import contains_protected_value
 from .base import (
     REASONING_EFFORT_LEVELS,
+    REASONING_EFFORT_ORDER,
     ModelConfig,
     ModelInput,
     ProviderAdapter,
@@ -77,6 +78,7 @@ class ModelSummary:
     enabled: bool
     context_window: int
     reasoning_effort: str | None = None
+    reasoning_efforts: tuple[str, ...] = ()
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -86,6 +88,7 @@ class ModelSummary:
             "enabled": self.enabled,
             "contextWindow": self.context_window,
             "reasoningEffort": self.reasoning_effort,
+            "reasoningEfforts": list(self.reasoning_efforts),
         }
 
 
@@ -142,6 +145,7 @@ class ConfigStore:
                 model.enabled,
                 model.context_window,
                 model.reasoning_effort,
+                model.reasoning_efforts,
             )
             for provider in sorted(self._providers.values(), key=lambda item: item.id)
             for model in provider.models
@@ -285,6 +289,7 @@ class ConfigStore:
             model.enabled,
             model.context_window,
             model.reasoning_effort,
+            model.reasoning_efforts,
         )
 
     def set_model_limits(
@@ -293,9 +298,17 @@ class ConfigStore:
         model_id: str,
         context_window: int,
         reasoning_effort: str | None = None,
+        reasoning_efforts: tuple[str, ...] = (),
     ) -> ModelSummary:
         context_window = _context_window(context_window)
         reasoning_effort = _reasoning_effort_value(reasoning_effort)
+        reasoning_efforts = _reasoning_effort_list(reasoning_efforts)
+        if (
+            reasoning_effort is not None
+            and reasoning_efforts
+            and reasoning_effort not in reasoning_efforts
+        ):
+            raise ConfigError("default reasoning effort must be one of the supported levels")
         provider = self._providers.get(provider_id)
         if provider is None:
             raise ConfigError("provider does not exist")
@@ -306,6 +319,7 @@ class ConfigStore:
             model,
             context_window=context_window,
             reasoning_effort=reasoning_effort,
+            reasoning_efforts=reasoning_efforts,
         )
         self._replace(
             replace(
@@ -323,6 +337,7 @@ class ConfigStore:
             model.enabled,
             context_window,
             reasoning_effort,
+            reasoning_efforts,
         )
 
     def _replace(self, provider: ProviderConfig) -> None:
@@ -375,6 +390,11 @@ def _provider_section(providers: Mapping[str, ProviderConfig]) -> dict[str, obje
                 **(
                     {"reasoning_effort": model.reasoning_effort}
                     if model.reasoning_effort is not None
+                    else {}
+                ),
+                **(
+                    {"reasoning_efforts": list(model.reasoning_efforts)}
+                    if model.reasoning_efforts
                     else {}
                 ),
             }
@@ -501,7 +521,7 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
             raise ConfigError("provider contains an invalid model record")
         required = {"display_name", "enabled", "supports_tools"}
         if not required <= set(raw_model) or set(raw_model) - (
-            required | {"context_window", "reasoning_effort"}
+            required | {"context_window", "reasoning_effort", "reasoning_efforts"}
         ):
             raise ConfigError("model configuration contains unsupported fields")
         model_id = _model_id(raw_id)
@@ -522,6 +542,7 @@ def _parse_models(value: Any) -> tuple[ModelConfig, ...]:
                 supports_tools=supports_tools,
                 context_window=context_window,
                 reasoning_effort=_reasoning_effort_value(raw_model.get("reasoning_effort")),
+                reasoning_efforts=_reasoning_effort_list(raw_model.get("reasoning_efforts")),
             )
         )
     return tuple(models)
@@ -551,6 +572,7 @@ def _models(
                 supports_tools=previous.supports_tools if previous is not None else True,
                 context_window=context_window,
                 reasoning_effort=previous.reasoning_effort if previous is not None else None,
+                reasoning_efforts=previous.reasoning_efforts if previous is not None else (),
             )
         )
     return tuple(models)
@@ -561,9 +583,22 @@ def _reasoning_effort_value(value: object) -> str | None:
         return None
     if not isinstance(value, str) or value not in REASONING_EFFORT_LEVELS:
         raise ConfigError(
-            "reasoning effort must be one of " + ", ".join(sorted(REASONING_EFFORT_LEVELS))
+            "reasoning effort must be one of " + ", ".join(REASONING_EFFORT_ORDER)
         )
     return value
+
+
+def _reasoning_effort_list(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError("reasoning efforts must be a list")
+    selected: set[str] = set()
+    for item in value:
+        level = _reasoning_effort_value(item)
+        assert level is not None
+        selected.add(level)
+    return tuple(level for level in REASONING_EFFORT_ORDER if level in selected)
 
 
 def _context_window(context_window: object) -> int:
