@@ -192,7 +192,7 @@ def _prepare(
 def test_agent_worker_limit_reads_and_validates_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert agent_worker_limit({}) == 2
+    assert agent_worker_limit({}) == 6
     assert agent_worker_limit({AGENT_WORKERS_ENV: "1"}) == 1
     assert agent_worker_limit({AGENT_WORKERS_ENV: " 8 "}) == 8
     for invalid in ("0", "9", "two", ""):

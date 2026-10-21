@@ -6,7 +6,6 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -54,16 +53,6 @@ def _snapshot(provider_id: str, model_id: str) -> ProviderExecutionSnapshot:
         supports_tools=True,
     )
 
-
-class _Clock:
-    def __init__(self) -> None:
-        self.now = datetime.now(UTC)
-
-    def __call__(self) -> datetime:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += timedelta(seconds=seconds)
 
 
 class _ExtractionProvider:
@@ -148,8 +137,6 @@ def _service(
     runtime_store: SqliteRuntimeStore,
     provider: ProviderAdapter | None,
     enabled: bool = True,
-    interval_seconds: float = 3_600.0,
-    clock: _Clock | None = None,
     protected_values: Sequence[str] = (),
 ) -> MemoryRefinementService:
     return MemoryRefinementService(
@@ -161,8 +148,6 @@ def _service(
         provider_snapshot=_snapshot,
         protected_values=lambda: tuple(protected_values),
         enabled=enabled,
-        interval_seconds=interval_seconds,
-        clock=clock,
     )
 
 
@@ -355,19 +340,17 @@ async def test_refinement_ignores_disabled_and_unsettled_runs(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_refinement_is_debounced_and_rate_limited_per_thread(tmp_path: Path) -> None:
+async def test_refinement_runs_for_every_completed_run(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     memory_store = SqliteMemoryStore(tmp_path / "memory.db")
     try:
         thread, branch_id, turns = _thread_with_turns(store, ["First preference."])
         _turn_id, run_id, first_item = turns[0]
-        clock = _Clock()
         provider = _ExtractionProvider([_response(_candidate(first_item))])
         service = _service(
             memory_store=memory_store,
             runtime_store=store,
             provider=provider,
-            clock=clock,
         )
         config = store.get_run_config(run_id)
 
@@ -383,7 +366,7 @@ async def test_refinement_is_debounced_and_rate_limited_per_thread(tmp_path: Pat
         await _drain(service)
         assert len(provider.requests) == 1
 
-        # New Items but an unexpired hourly budget: still no provider call.
+        # A new Run refines immediately: no hourly budget gates the next pass.
         prepared = prepare_turn(
             store,
             thread_id=thread,
@@ -394,14 +377,9 @@ async def test_refinement_is_debounced_and_rate_limited_per_thread(tmp_path: Pat
         )
         second_item = prepared.initial_events[0].item_id
         assert second_item is not None
-        service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
-        await _drain(service)
-        assert len(provider.requests) == 1
-
         provider.responses.append(
             _response(_candidate(second_item, content="The team deploys on Fridays."))
         )
-        clock.advance(3_601)
         service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
         await _drain(service)
         assert len(provider.requests) == 2
@@ -413,6 +391,76 @@ async def test_refinement_is_debounced_and_rate_limited_per_thread(tmp_path: Pat
         memory_store.close()
         store.close()
 
+
+class _QueuedBlockingProvider:
+    """Block the first extraction call until the test releases it."""
+
+    def __init__(self, responses: Sequence[str]) -> None:
+        self.responses = list(responses)
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.requests: list[ProviderRequest] = []
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken,
+    ) -> AsyncIterator[ProviderEvent]:
+        cancellation.raise_if_cancelled()
+        self.requests.append(request)
+        response = self.responses.pop(0)
+        if len(self.requests) == 1:
+            self.started.set()
+            await self.release.wait()
+        yield TextDelta(response)
+        yield ResponseCompleted()
+
+
+@pytest.mark.asyncio
+async def test_refinement_notifications_during_a_pass_queue_another_pass(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    memory_store = SqliteMemoryStore(tmp_path / "memory.db")
+    try:
+        thread, branch_id, turns = _thread_with_turns(store, ["First preference."])
+        _turn_id, run_id, first_item = turns[0]
+        provider = _QueuedBlockingProvider([_response(_candidate(first_item))])
+        service = _service(
+            memory_store=memory_store,
+            runtime_store=store,
+            provider=provider,
+        )
+        config = store.get_run_config(run_id)
+
+        service.notify_run_terminal(config, "completed")
+        await provider.started.wait()
+        prepared = prepare_turn(
+            store,
+            thread_id=thread,
+            branch_id=branch_id,
+            content="Second preference.",
+            provider_id=_PROVIDER_ID,
+            model_id=_MODEL_ID,
+        )
+        second_item = prepared.initial_events[0].item_id
+        assert second_item is not None
+        provider.responses.append(
+            _response(_candidate(second_item, content="The team deploys on Fridays."))
+        )
+        service.notify_run_terminal(store.get_run_config(prepared.run_id), "completed")
+        provider.release.set()
+        await _drain(service)
+
+        assert len(provider.requests) == 2
+        assert [record["itemId"] for record in _payload_records(provider.requests[1])] == [
+            second_item
+        ]
+        assert len(_active_memories(memory_store)) == 2
+    finally:
+        memory_store.close()
+        store.close()
 
 @pytest.mark.asyncio
 async def test_refinement_bounds_item_and_candidate_budgets(tmp_path: Path) -> None:
@@ -454,14 +502,12 @@ async def test_refinement_input_budget_defers_oversized_items(tmp_path: Path) ->
         contents = [f"{index}" + ("x" * 8_000) for index in range(6)]
         thread, _branch_id, turns = _thread_with_turns(store, contents)
         _turn_id, run_id, _item_id = turns[0]
-        clock = _Clock()
         provider = _ExtractionProvider(['{"memories":[]}', '{"memories":[]}'])
         service = _service(
             memory_store=memory_store,
             runtime_store=store,
             provider=provider,
-            clock=clock,
-        )
+            )
         service.notify_run_terminal(store.get_run_config(run_id), "completed")
         await _drain(service)
 
@@ -475,7 +521,6 @@ async def test_refinement_input_budget_defers_oversized_items(tmp_path: Path) ->
         assert cursor is not None
         assert cursor.item_id == first_records[-1]["itemId"]
 
-        clock.advance(3_601)
         service.notify_run_terminal(store.get_run_config(run_id), "completed")
         await _drain(service)
         rest = _payload_records(provider.requests[1])
@@ -550,7 +595,6 @@ async def test_refinement_failures_are_isolated(tmp_path: Path) -> None:
     try:
         thread, _branch_id, turns = _thread_with_turns(store, ["We deploy on Fridays."])
         _turn_id, run_id, item_id = turns[0]
-        clock = _Clock()
         failing = _ExtractionProvider(
             [ProviderFailure("server", "provider is unavailable", retryable=True)]
         )
@@ -558,8 +602,7 @@ async def test_refinement_failures_are_isolated(tmp_path: Path) -> None:
             memory_store=memory_store,
             runtime_store=store,
             provider=failing,
-            clock=clock,
-        )
+            )
         service.notify_run_terminal(store.get_run_config(run_id), "completed")
         await _drain(service)
 
@@ -568,20 +611,17 @@ async def test_refinement_failures_are_isolated(tmp_path: Path) -> None:
         assert memory_store.memory_extraction_cursor(thread) is None
         assert memory_store.memory_extraction_attempted_at(thread) is not None
 
-        clock.advance(3_601)
         malformed = _ExtractionProvider(["not a json document"])
         retry = _service(
             memory_store=memory_store,
             runtime_store=store,
             provider=malformed,
-            clock=clock,
-        )
+            )
         retry.notify_run_terminal(store.get_run_config(run_id), "completed")
         await _drain(retry)
         assert _active_memories(memory_store) == []
         assert memory_store.memory_extraction_cursor(thread) is None
 
-        clock.advance(3_601)
         unknown_source = _ExtractionProvider(
             [_response(_candidate("item_" + "0" * 32))]
         )
@@ -589,8 +629,7 @@ async def test_refinement_failures_are_isolated(tmp_path: Path) -> None:
             memory_store=memory_store,
             runtime_store=store,
             provider=unknown_source,
-            clock=clock,
-        )
+            )
         tolerant.notify_run_terminal(store.get_run_config(run_id), "completed")
         await _drain(tolerant)
         assert _active_memories(memory_store) == []

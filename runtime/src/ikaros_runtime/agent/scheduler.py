@@ -16,7 +16,7 @@ from ..cancellation import CancellationToken
 _LOGGER = logging.getLogger("ikaros_runtime.agent.scheduler")
 
 AGENT_WORKERS_ENV = "IKAROS_AGENT_WORKERS"
-DEFAULT_AGENT_WORKERS = 2
+DEFAULT_AGENT_WORKERS = 6
 MIN_AGENT_WORKERS = 1
 MAX_AGENT_WORKERS = 8
 
