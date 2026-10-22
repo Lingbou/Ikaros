@@ -740,6 +740,13 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - Fedora 构建需要 `libxcrypt-compat`、`rpm-build`；Debian/Ubuntu 生成 RPM 需要
   `rpm` 工具。
 - 安装包与 payload 均未签名，自动更新未实现。
+- 独立安装（Linux / WSL / 复用同一份 Runtime 的场景）：
+  `scripts/install-runtime.ps1`（Windows）与 `scripts/install-runtime.sh`
+  （Linux/macOS）用 `uv` 把 Runtime 装进 `~/.ikaros/runtime/<version>/`，并写
+  `~/.ikaros/runtime/install.json`（schema 1：`runtimeVersion`、`protocolVersion`、
+  `runtimeRoot`、`pythonExecutable`、`installedAt`）。客户端启动时**优先**读这份
+  manifest（`runtimeProvision.ts`），找不到才回落到随包 payload；`-Check` /
+  `--check` 只校验不安装，重复运行幂等。
 
 ### 4.12 界面语言与 i18n
 
