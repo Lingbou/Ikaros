@@ -568,7 +568,7 @@ function AssistantMessageCard({ event }: { event: Extract<AgentEvent, { type: "m
   const { t } = useTranslation();
 
   return (
-    <div className="group min-w-0">
+    <div className="group relative min-w-0">
       <Markdown content={event.content} streaming={event.status === "streaming"} />
       {event.status === "failed" ? (
         <div className="mt-1.5 flex items-center gap-1.5 text-[11px] leading-4 text-[#ff7f7f]">
@@ -583,7 +583,7 @@ function AssistantMessageCard({ event }: { event: Extract<AgentEvent, { type: "m
         </div>
       ) : null}
       {event.status !== "streaming" ? (
-        <div className="mt-1.5 flex h-6 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <div className="absolute -top-1 right-0 flex h-6 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <IconButton label={t("events.copyResponse")} className="size-6" onClick={() => copyText(event.content)}>
             <Clipboard size={12} />
           </IconButton>

@@ -214,7 +214,7 @@ export function EventFeed({
     estimateSize: (index) => {
       const event = events[index];
       if (event?.type === "runtime_outcome") return event.turn.status === "failed" || event.turn.status === "interrupted" ? 200 : 32;
-      if (event?.type === "message") return event.role === "user" ? 72 : 128;
+      if (event?.type === "message") return event.role === "user" ? 48 : 64;
       if (
         event?.type === "tool_result" &&
         toolCallIds.has(event.toolCallId) &&
@@ -225,7 +225,8 @@ export function EventFeed({
       ) {
         return 0;
       }
-      return 92;
+      if (event?.type === "tool_call" || event?.type === "tool_result") return 36;
+      return 48;
     },
     getItemKey: (index) => events[index]?.id ?? index,
     overscan: 7,
@@ -512,6 +513,8 @@ export function EventFeed({
                 className={cx(
                   "event-feed-row absolute left-0 top-0 w-full",
                   event.type === "runtime_outcome" && "event-feed-row--progress",
+                  (event.type === "tool_call" || event.type === "tool_result") &&
+                    "event-feed-row--tool",
                   isCollapsed && "event-feed-row--collapsed",
                 )}
                 style={{ transform: `translateY(${row.start + 18}px)` }}
