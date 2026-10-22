@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from ..domain import JournalEvent
+
+_LOGGER = logging.getLogger("ikaros_runtime")
 
 EventSink = Callable[[JournalEvent], None]
 
@@ -31,6 +34,12 @@ class EventHub:
         async with self._lock:
             if event.seq < self._next_seq or event.seq in self._pending:
                 return
+            if self._pending:
+                _LOGGER.warning(
+                    "Runtime event sequence gap: expected seq %d, buffering seq %d",
+                    self._next_seq,
+                    event.seq,
+                )
             self._pending[event.seq] = event
             while ready := self._pending.pop(self._next_seq, None):
                 self._next_seq += 1
