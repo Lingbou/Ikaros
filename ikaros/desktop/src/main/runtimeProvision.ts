@@ -16,6 +16,9 @@ export const RUNTIME_PAYLOAD_MANIFEST_FILE = "runtime-payload.json";
 export const RUNTIME_PAYLOAD_DIRECTORY = "runtime";
 /** Written last, inside the payload directory, once a deployment is complete. */
 export const RUNTIME_READY_MARKER_FILE = ".ikaros-runtime.json";
+/** Written by the standalone Runtime install script into <runtime home>/runtime. */
+export const RUNTIME_INSTALL_MANIFEST_FILE = "install.json";
+export const RUNTIME_INSTALL_SCHEMA_VERSION = 1;
 
 export interface RuntimePayloadManifest {
   schemaVersion: number;
@@ -37,6 +40,61 @@ export interface RuntimePayloadManifest {
 export interface RuntimeLaunch {
   runtimeRoot: string;
   pythonExecutable: string;
+}
+
+/**
+ * Installation record written by the Runtime install script. It is the contract
+ * between the desktop app and a Runtime that was installed separately from the
+ * app bundle.
+ */
+export interface RuntimeInstallManifest {
+  schemaVersion: number;
+  runtimeVersion: string;
+  protocolVersion: number;
+  runtimeRoot: string;
+  pythonExecutable: string;
+  installedAt: string;
+}
+
+export function runtimeInstallManifestPath(runtimeHome: string): string {
+  return join(runtimeHome, RUNTIME_PAYLOAD_DIRECTORY, RUNTIME_INSTALL_MANIFEST_FILE);
+}
+
+/** Reads the manifest written by the standalone Runtime install script. */
+export async function readRuntimeInstallManifest(
+  runtimeHome: string
+): Promise<RuntimeInstallManifest | undefined> {
+  const path = runtimeInstallManifestPath(runtimeHome);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${path} is not valid JSON.`);
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`${path} is not a Runtime install manifest.`);
+  }
+  const record = parsed as Record<string, unknown>;
+  const schemaVersion = requireNumber(record.schemaVersion, "schemaVersion", path);
+  if (schemaVersion !== RUNTIME_INSTALL_SCHEMA_VERSION) {
+    throw new Error(
+      `${path} uses install schema ${schemaVersion}, but this Desktop understands schema ${RUNTIME_INSTALL_SCHEMA_VERSION}.`
+    );
+  }
+  return {
+    schemaVersion,
+    runtimeVersion: requireString(record.runtimeVersion, "runtimeVersion", path),
+    protocolVersion: requireNumber(record.protocolVersion, "protocolVersion", path),
+    runtimeRoot: requireString(record.runtimeRoot, "runtimeRoot", path),
+    pythonExecutable: requireString(record.pythonExecutable, "pythonExecutable", path),
+    installedAt: requireString(record.installedAt, "installedAt", path)
+  };
 }
 
 interface RuntimeReadyMarker {
@@ -297,10 +355,23 @@ export function createRuntimeLaunchResolver(
     if (!options.isPackaged) {
       return { runtimeRoot: developmentRoot, pythonExecutable: runtimePython(developmentRoot) };
     }
+    const installed = await readRuntimeInstallManifest(options.runtimeHome);
+    if (installed !== undefined) {
+      if (!existsSync(installed.pythonExecutable)) {
+        throw new Error(
+          `The installed Ikaros Runtime interpreter is missing at ${installed.pythonExecutable}. Re-run the Runtime install script.`
+        );
+      }
+      return {
+        runtimeRoot: installed.runtimeRoot,
+        pythonExecutable: installed.pythonExecutable
+      };
+    }
+
     const manifest = await readRuntimePayloadManifest(options.resourcesPath);
     if (manifest === undefined) {
       throw new Error(
-        `The bundled Ikaros Runtime payload is missing from ${options.resourcesPath}. Reinstall Ikaros, or set IKAROS_RUNTIME_PYTHON to a Python 3.12/3.13 interpreter.`
+        `No Ikaros Runtime installation was found. Expected ${runtimeInstallManifestPath(options.runtimeHome)} from the Runtime install script, or a bundled payload in ${options.resourcesPath}. Reinstall Ikaros, or set IKAROS_RUNTIME_PYTHON to a Python 3.12/3.13 interpreter.`
       );
     }
     if (manifest.platform !== process.platform) {

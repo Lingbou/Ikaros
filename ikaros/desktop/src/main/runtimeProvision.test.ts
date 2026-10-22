@@ -15,6 +15,7 @@ import {
   createRuntimeLaunchResolver,
   ensureRuntimePayloadDeployed,
   readRuntimePayloadManifest,
+  runtimeInstallManifestPath,
   runtimePayloadManifestPath,
   type RuntimeLaunchResolverOptions,
   type RuntimePayloadManifest
@@ -248,7 +249,7 @@ describe("Runtime payload deployment", () => {
     const fixture = await createFixture();
     await rm(fixture.manifestPath, { force: true });
 
-    await expect(packagedResolver(fixture)()).rejects.toThrow(/payload is missing/);
+    await expect(packagedResolver(fixture)()).rejects.toThrow(/No Ikaros Runtime installation was found/);
   });
 
   it("rejects a payload built for another platform", async () => {
@@ -377,5 +378,41 @@ describe("Runtime payload manifest", () => {
     });
 
     expect(launch.pythonExecutable).toBe(deployedPython(fixture));
+  });
+});
+
+describe("Runtime install manifest", () => {
+  it("prefers a standalone installation over the bundled payload", async () => {
+    const fixture = await createFixture();
+    const installedRoot = join(fixture.runtimeHome, "runtime", "0.1.0-standalone");
+    const python = join(installedRoot, "bin", "python");
+    await mkdir(dirname(python), { recursive: true });
+    await writeFile(python, "");
+    await writeFile(
+      runtimeInstallManifestPath(fixture.runtimeHome),
+      JSON.stringify({
+        schemaVersion: 1,
+        runtimeVersion: "0.1.0",
+        protocolVersion: 12,
+        runtimeRoot: installedRoot,
+        pythonExecutable: python,
+        installedAt: "2026-10-22T00:00:00.000Z"
+      })
+    );
+
+    const launch = await packagedResolver(fixture)();
+
+    expect(launch.pythonExecutable).toBe(python);
+    expect(launch.runtimeRoot).toBe(installedRoot);
+  });
+
+  it("explains how to install a runtime when neither source exists", async () => {
+    const fixture = await createFixture();
+    await rm(join(fixture.resourcesPath, RUNTIME_PAYLOAD_RESOURCE_DIRECTORY), {
+      recursive: true,
+      force: true
+    });
+
+    await expect(packagedResolver(fixture)()).rejects.toThrow(/install\.json/);
   });
 });
