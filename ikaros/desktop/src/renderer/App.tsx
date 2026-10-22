@@ -8,6 +8,7 @@ import { ThreadPanel } from "./components/ThreadPanel";
 import { OnboardingDialog } from "./components/OnboardingDialog";
 import { SearchDialog } from "./components/SearchDialog";
 import { RuntimeStatusBanner } from "./components/RuntimeStatusBanner";
+import { RuntimeConnectionDialog } from "./components/RuntimeConnectionDialog";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
@@ -125,6 +126,7 @@ export function App() {
       </div>
       <SearchDialog />
       <OnboardingDialog />
+      <RuntimeConnectionDialog />
     </Tooltip.Provider>
   );
 }

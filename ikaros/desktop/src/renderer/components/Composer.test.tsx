@@ -584,12 +584,12 @@ describe("Composer input and clearance", () => {
     expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
   });
 
-  it("reconnects the Runtime instead of treating an offline catalog as unconfigured", () => {
-    const retryRuntimeConnection = vi.fn(async () => undefined);
-    useAppStore.setState({ runtimeConnectionStatus: "offline", providerCatalogStatus: "error", draft: "saved draft", retryRuntimeConnection });
+  it("stays quiet while the offline dialog owns the reconnect affordance", () => {
+    useAppStore.setState({ runtimeConnectionStatus: "offline", providerCatalogStatus: "error", draft: "saved draft" });
     render(<Tooltip.Provider><Composer onClearanceChange={() => undefined} /></Tooltip.Provider>);
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
-    expect(retryRuntimeConnection).toHaveBeenCalledOnce();
+
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+    expect(screen.queryByText(/The local runtime is offline/)).toBeNull();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Configure a model" })).toBeNull();
     expect(useAppStore.getState().draft).toBe("saved draft");
