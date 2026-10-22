@@ -593,6 +593,40 @@ async def test_restore_settles_missing_or_reused_commands_to_unknown(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_restore_keeps_the_recovered_window_inside_the_log_size(
+    tmp_path: Path,
+) -> None:
+    facts: list[JsonObject] = []
+    manager = ProcessManager(logs_root=tmp_path / "processes", record=facts.append)
+    context = _context()
+    started = await manager.start(
+        _command(windows="Start-Sleep 30", posix="sleep 30"),
+        str(tmp_path),
+        context=context,
+        cancellation=CancellationToken(),
+        background=True,
+    )
+    running = dict(facts[-1])
+    await manager.stop(started["processId"], context=context)
+    await _wait_for_process_exit(int(running["pid"]))
+    await manager.close()
+
+    # Windows shells commonly emit UTF-16. Decoding replaces every invalid byte
+    # with U+FFFD (three UTF-8 bytes), so the retained window can be larger than
+    # the raw log file. Recovery must still publish a self-consistent record.
+    log_path = next((tmp_path / "processes").rglob(f"{started['processId']}.log"))
+    with log_path.open("ab") as handle:
+        handle.write(b"\xff\xfe" * 64)
+
+    recovered: list[JsonObject] = []
+    restored = ProcessManager(logs_root=tmp_path / "processes", record=recovered.append)
+    restored.restore([running])
+    assert recovered[-1]["fileBytes"] >= recovered[-1]["headBytes"]
+    assert recovered[-1]["fileBytes"] >= recovered[-1]["tailStart"]
+    await restored.close()
+
+
+@pytest.mark.asyncio
 async def test_active_command_quota(tmp_path: Path) -> None:
     manager = ProcessManager(logs_root=tmp_path / "processes")
     for index in range(64):

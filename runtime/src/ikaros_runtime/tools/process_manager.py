@@ -281,7 +281,14 @@ class _Entry:
             "outputBytes": self.output.total,
             "headBytes": self.output.head_bytes,
             "tailStart": self.output.tail_start,
-            "fileBytes": self.file_bytes,
+            # The retained window holds decoded text, so replacement decoding can
+            # make it larger than the raw log file. The window came from that file
+            # and cannot exceed it, so report a size that is consistent with it.
+            "fileBytes": max(
+                self.file_bytes,
+                self.output.head_bytes,
+                self.output.tail_start,
+            ),
             "truncated": self.truncated,
             "errorCode": self.error_code,
         }
