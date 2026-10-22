@@ -50,4 +50,18 @@ describe("RuntimeConnectionDialog", () => {
     render(<RuntimeConnectionDialog />);
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
+
+  it("offers a one-click runtime install", () => {
+    const installRuntime = vi.fn(async () => undefined);
+    useAppStore.setState({
+      runtimeConnectionStatus: "offline",
+      installRuntime
+    } as never);
+
+    render(<RuntimeConnectionDialog />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Install runtime" }));
+    expect(installRuntime).toHaveBeenCalledTimes(1);
+  });
 });
+

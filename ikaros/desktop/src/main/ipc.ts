@@ -2,9 +2,17 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
-import { BrowserWindow, dialog, ipcMain, Notification, type IpcMainInvokeEvent } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Notification,
+  type IpcMainInvokeEvent
+} from "electron";
 
 import { DESKTOP_IPC_CHANNELS, type UiPreferences } from "../shared/platform";
+import { defaultInstallScriptPath, installRuntime } from "./runtimeInstaller";
 import type {
   RuntimeFileChangeGetParams,
   RuntimeFileChangeResult,
@@ -210,6 +218,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC_CHANNELS.runtime.channelResetBinding,
     DESKTOP_IPC_CHANNELS.runtime.filePreview,
     DESKTOP_IPC_CHANNELS.runtime.fileChangeGet,
+    DESKTOP_IPC_CHANNELS.runtime.runtimeInstall,
     DESKTOP_IPC_CHANNELS.workspace.chooseDirectory,
     DESKTOP_IPC_CHANNELS.workspace.chooseEntries,
     DESKTOP_IPC_CHANNELS.attachments.describe,
@@ -270,6 +279,19 @@ export function registerDesktopIpc(
       return invokeRuntime(() =>
         runtimeHost.request<RuntimeThreadListPage>("thread.list", { ...params })
       );
+    }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.runtime.runtimeInstall,
+    async (event) => {
+      trustPolicy.assertTrustedIpc(event);
+      const scriptPath = defaultInstallScriptPath({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath
+      });
+      return invokeRuntime(() => installRuntime({ scriptPath }));
     }
   );
 

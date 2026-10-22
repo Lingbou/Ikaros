@@ -176,7 +176,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
     channelList: "ikaros:runtime:channel-list",
     channelConfigure: "ikaros:runtime:channel-configure",
     channelTest: "ikaros:runtime:channel-test",
-    channelResetBinding: "ikaros:runtime:channel-reset-binding"
+    channelResetBinding: "ikaros:runtime:channel-reset-binding",
+    runtimeInstall: "ikaros:runtime:install"
   },
   workspace: {
     chooseDirectory: "ikaros:workspace:choose-directory",

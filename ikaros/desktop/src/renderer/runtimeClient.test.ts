@@ -45,6 +45,7 @@ function bridgeWithListThreads(
     testChannel: vi.fn(),
     resetChannelBinding: vi.fn(),
     previewFile: vi.fn(),
+    installRuntime: vi.fn(),
     getFileChange: vi.fn(),
     onEvent: vi.fn(() => () => undefined),
     onStatus: vi.fn(() => () => undefined)

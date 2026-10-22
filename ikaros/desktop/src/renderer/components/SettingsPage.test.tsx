@@ -148,6 +148,9 @@ function desktopApiWithPreferences(
         previewFile: async () => {
           throw new Error("not used in preference settings tests");
         },
+        installRuntime: async () => {
+          throw new Error("not used in preference settings tests");
+        },
         getFileChange: async () => {
           throw new Error("not used in preference settings tests");
         },
