@@ -214,11 +214,13 @@ class SubagentService:
         parent_config: RunConfig,
         cancellation: CancellationToken,
     ) -> JsonObject:
-        thread, _event, _created = self._store.create_thread_once(
+        thread, created_event, created = self._store.create_thread_once(
             child_title,
             f"subagent-thread:{request_id}",
             workspace=parent_config.workspace,
         )
+        if created:
+            await self._publish(created_event)
         prepared = self._store.prepare_turn(
             thread_id=thread.id,
             branch_id=thread.default_branch_id,
@@ -261,11 +263,13 @@ class SubagentService:
                 "subagent_unavailable",
                 "Non-blocking subagents require a running Runtime scheduler.",
             )
-        thread, _event, _created = self._store.create_thread_once(
+        thread, created_event, created = self._store.create_thread_once(
             child_title,
             f"subagent-thread:{request_id}",
             workspace=parent_config.workspace,
         )
+        if created:
+            await self._publish(created_event)
         prepared = self._store.prepare_turn(
             thread_id=thread.id,
             branch_id=thread.default_branch_id,

@@ -236,6 +236,7 @@ class _Harness:
     parent_run_id: str
     parent_thread_id: str
     enqueued: list[str]
+    baseline_seq: int
 
     async def aclose(self) -> None:
         self.service.close()
@@ -316,6 +317,7 @@ def _setup(
         parent_run_id=turn.run_id,
         parent_thread_id=thread.id,
         enqueued=enqueued,
+        baseline_seq=store.latest_sequence(),
     )
 
 
@@ -382,6 +384,20 @@ def _assert_journal_order(events: list[JournalEvent]) -> None:
     sequences = [event.seq for event in events]
     assert sequences == sorted(sequences)
     assert len(set(sequences)) == len(sequences)
+
+
+def _assert_publishes_every_journal_event(harness: _Harness) -> None:
+    """Subscribers must receive every Journal event, with no holes.
+
+    The Runtime fans events out strictly in seq order, so a single unpublished
+    event leaves every later event buffered forever: connected clients then hang
+    on a Run that already settled.
+    """
+
+    persisted, _latest = harness.store.replay_events(harness.baseline_seq, 10_000)
+    assert [event.seq for event in harness.events] == [
+        event.seq for event in persisted
+    ]
 
 
 def _assert_run_settles_last(events: list[JournalEvent], run_id: str) -> None:
@@ -513,6 +529,7 @@ async def test_subagent_wait_false_parent_completion_does_not_kill_child(
         assert settled_payload["thread"].get("activeRun") is None
         _assert_journal_order(harness.events)
         _assert_run_settles_last(harness.events, child_run_id)
+        _assert_publishes_every_journal_event(harness)
     finally:
         await harness.aclose()
 
@@ -611,6 +628,7 @@ async def test_subagent_wait_true_inline_avoids_scheduler_deadlock(
         _assert_journal_order(harness.events)
         _assert_run_settles_last(harness.events, child_run_id)
         _assert_run_settles_last(harness.events, harness.parent_run_id)
+        _assert_publishes_every_journal_event(harness)
     finally:
         await harness.aclose()
 
@@ -674,6 +692,7 @@ async def test_subagent_spawns_a_child_thread_and_returns_the_final_message(
         assert child.title == "Subagent: child task"
         assert harness.store.run_status(str(result["runId"])) == "completed"
         _assert_run_settles_last(harness.events, str(result["runId"]))
+        _assert_publishes_every_journal_event(harness)
     finally:
         await harness.aclose()
 
