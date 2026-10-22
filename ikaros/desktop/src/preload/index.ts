@@ -12,6 +12,7 @@ import type {
   RuntimeFileChangeResult,
   RuntimeFilePreviewParams,
   RuntimeFilePreviewResult,
+  RuntimeInstallResult,
   RuntimeInvocationResult,
   RuntimeJournalEvent,
   RuntimeHostStatus,
@@ -224,6 +225,10 @@ const desktopApi: IkarosDesktopApi = Object.freeze({
         DESKTOP_IPC_CHANNELS.runtime.channelResetBinding,
         params
       ) as Promise<RuntimeInvocationResult<RuntimeChannelResetResult>>,
+    installRuntime: () =>
+      ipcRenderer.invoke(
+        DESKTOP_IPC_CHANNELS.runtime.runtimeInstall
+      ) as Promise<RuntimeInvocationResult<RuntimeInstallResult>>,
     previewFile: (params: RuntimeFilePreviewParams) =>
       ipcRenderer.invoke(
         DESKTOP_IPC_CHANNELS.runtime.filePreview,

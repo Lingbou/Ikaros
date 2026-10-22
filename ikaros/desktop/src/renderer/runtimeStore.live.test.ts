@@ -233,6 +233,7 @@ function runtimeBridge(
       bridgeInvocation(() =>
         host.request<RuntimeChannelResetResult>("channel.resetBinding", { ...params })
       ),
+    installRuntime: () => bridgeInvocation(async () => ({ ok: true, output: "" })),
     previewFile: (params) =>
       bridgeInvocation(() => host.request<RuntimeFilePreviewResult>("file.preview", { ...params })),
     getFileChange: (params) =>

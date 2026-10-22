@@ -7,6 +7,7 @@ import type {
   RuntimeFileChangeResult,
   RuntimeFilePreviewParams,
   RuntimeFilePreviewResult,
+  RuntimeInstallResult,
   IkarosRuntimeApi,
   IkarosRuntimeBridgeApi,
   RuntimeCancelRunResult,
@@ -330,6 +331,10 @@ export class RuntimeClient implements IkarosRuntimeApi {
     params: RuntimeChannelResetParams
   ): Promise<RuntimeChannelResetResult> {
     return unwrapRuntimeInvocation(this.api.resetChannelBinding(params));
+  }
+
+  installRuntime(): Promise<RuntimeInstallResult> {
+    return unwrapRuntimeInvocation(this.api.installRuntime());
   }
 
   previewFile(params: RuntimeFilePreviewParams): Promise<RuntimeFilePreviewResult> {

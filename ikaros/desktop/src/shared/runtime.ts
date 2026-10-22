@@ -734,6 +734,12 @@ export interface IkarosRuntimeApi {
   onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
 }
 
+/** Result of running the standalone Runtime installer from the desktop app. */
+export interface RuntimeInstallResult {
+  ok: boolean;
+  output: string;
+}
+
 export interface IkarosRuntimeBridgeApi {
   listThreads(params?: RuntimeThreadCatalogParams): Promise<
     RuntimeInvocationResult<RuntimeThreadListPage>
@@ -815,6 +821,7 @@ export interface IkarosRuntimeBridgeApi {
   resetChannelBinding(
     params: RuntimeChannelResetParams
   ): Promise<RuntimeInvocationResult<RuntimeChannelResetResult>>;
+  installRuntime(): Promise<RuntimeInvocationResult<RuntimeInstallResult>>;
   previewFile(
     params: RuntimeFilePreviewParams
   ): Promise<RuntimeInvocationResult<RuntimeFilePreviewResult>>;

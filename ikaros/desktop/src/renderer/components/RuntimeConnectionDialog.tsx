@@ -11,6 +11,9 @@ export function RuntimeConnectionDialog() {
   const status = useAppStore((state) => state.runtimeConnectionStatus);
   const error = useAppStore((state) => state.runtimeError);
   const retry = useAppStore((state) => state.retryRuntimeConnection);
+  const installRuntime = useAppStore((state) => state.installRuntime);
+  const installing = useAppStore((state) => state.runtimeInstalling);
+  const installOutput = useAppStore((state) => state.runtimeInstallOutput);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   if (status !== "offline") return null;
@@ -62,7 +65,27 @@ export function RuntimeConnectionDialog() {
               ) : null}
             </div>
           ) : null}
+          {installOutput ? (
+            <div className="px-6 pt-4">
+              <p className="text-[11px] font-medium leading-4 text-[var(--muted-strong)]">
+                {t("runtime.offline.installOutput")}
+              </p>
+              <pre className="app-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--border-soft)] bg-[var(--panel)] px-3 py-2 font-mono text-[11px] leading-4 text-[var(--muted)]">
+                {installOutput}
+              </pre>
+            </div>
+          ) : null}
           <div className="flex items-center justify-end gap-2 px-6 py-5">
+            <button
+              type="button"
+              disabled={installing}
+              onClick={() => void installRuntime()}
+              className="inline-flex h-8 items-center rounded-lg px-3 text-[12px] font-medium text-[var(--muted-strong)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {installing
+                ? t("runtime.offline.installing")
+                : t("runtime.offline.install")}
+            </button>
             <button
               type="button"
               onClick={() => void window.ikarosDesktop?.windowControls.close()}
@@ -72,8 +95,9 @@ export function RuntimeConnectionDialog() {
             </button>
             <button
               type="button"
+              disabled={installing}
               onClick={() => void retry()}
-              className="inline-flex h-8 items-center rounded-lg bg-[var(--text)] px-3.5 text-[12px] font-medium text-[var(--canvas)] transition-opacity hover:opacity-85"
+              className="inline-flex h-8 items-center rounded-lg bg-[var(--text)] px-3.5 text-[12px] font-medium text-[var(--canvas)] transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("runtime.offline.reconnect")}
             </button>

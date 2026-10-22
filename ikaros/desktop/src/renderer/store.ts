@@ -138,6 +138,8 @@ interface AppState {
   runtimeConnectionStatus: RuntimeHostStatusState;
   runtimeError: string | null;
   runtimeIssue: RuntimeIssue | null;
+  runtimeInstalling: boolean;
+  runtimeInstallOutput: string;
   runtimeSeq: number;
   providerCatalogStatus: ProviderCatalogStatus;
   providers: RuntimeProviderSummary[];
@@ -189,6 +191,7 @@ interface AppState {
   initializeRuntime: () => Promise<void>;
   retryRuntimeConnection: () => Promise<void>;
   retryRuntimeIssue: () => Promise<void>;
+  installRuntime: () => Promise<void>;
   clearRuntimeError: () => void;
   applyRuntimeEvent: (event: RuntimeJournalEvent) => void;
   loadMoreThreads: () => Promise<void>;
@@ -2145,6 +2148,25 @@ function applyRuntimeHostStatus(set: StoreSet, status: RuntimeHostStatus): void 
   });
 }
 
+async function installRuntimeInStore(set: StoreSet, get: StoreGet): Promise<void> {
+  if (!runtimeClient || get().runtimeInstalling) return;
+  set({ runtimeInstalling: true, runtimeInstallOutput: "" });
+  try {
+    const result = await runtimeClient.installRuntime();
+    set({ runtimeInstallOutput: result.output });
+    if (result.ok) {
+      await retryRuntimeConnectionInStore(set, get);
+    }
+  } catch (error: unknown) {
+    set({
+      runtimeInstallOutput:
+        error instanceof Error ? error.message : "Runtime installation failed",
+    });
+  } finally {
+    set({ runtimeInstalling: false });
+  }
+}
+
 async function retryRuntimeConnectionInStore(
   set: StoreSet,
   get: StoreGet,
@@ -2925,6 +2947,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   runtimeConnectionStatus: runtimeClient === null ? "offline" : "starting",
   runtimeError: null,
   runtimeIssue: null,
+  runtimeInstalling: false,
+  runtimeInstallOutput: "",
   runtimeSeq: 0,
   providerCatalogStatus: "idle",
   providers: [],
@@ -2975,6 +2999,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   initializeRuntime: () => initializeRuntimeInStore(set, get),
   retryRuntimeConnection: () => retryRuntimeConnectionInStore(set, get),
+  installRuntime: () => installRuntimeInStore(set, get),
   retryRuntimeIssue: () => retryRuntimeIssueInStore(set, get),
   clearRuntimeError: () => set({ runtimeError: null, runtimeIssue: null }),
   applyRuntimeEvent: (event) => enqueueRuntimeEvent(set, get, event),
