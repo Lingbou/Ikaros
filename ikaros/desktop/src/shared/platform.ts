@@ -8,6 +8,11 @@ export type CodeFontPreference = "system-mono" | "cascadia-code" | "consolas";
 export const DEFAULT_SIDEBAR_WIDTH = 260;
 export const MIN_SIDEBAR_WIDTH = 220;
 export const MAX_SIDEBAR_WIDTH = 520;
+export const DEFAULT_THREAD_PANEL_WIDTH = 460;
+export const MIN_THREAD_PANEL_WIDTH = 320;
+export const MAX_THREAD_PANEL_WIDTH = 760;
+/** The main conversation always keeps at least this much width beside the panel. */
+export const THREAD_PANEL_MAIN_MIN_WIDTH = 520;
 export const DEFAULT_PROFILE_USERNAME = "User";
 export const MAX_PROFILE_USERNAME_LENGTH = 32;
 

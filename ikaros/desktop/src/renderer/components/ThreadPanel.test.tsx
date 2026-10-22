@@ -151,3 +151,70 @@ describe("ThreadPanel", () => {
     expect(useAppStore.getState().panelThreadId).toBeNull();
   });
 });
+
+describe("ThreadPanel resizer", () => {
+  const CHILD = "thread_child";
+  const resizeName = "Resize conversation panel";
+
+  function mountPanel(width: number) {
+    const child = thread(CHILD, "Subagent: stats", []);
+    useAppStore.setState({
+      threads: [child],
+      selectedThreadId: child.id,
+      panelThreadId: child.id,
+      runtimeThreadDetails: { [child.id]: readyDetail() },
+      threadPanelWidth: width,
+    });
+    render(
+      <Tooltip.Provider>
+        <ThreadPanel />
+      </Tooltip.Provider>,
+    );
+    const separator = screen.getByRole("separator", { name: resizeName });
+    Object.defineProperty(separator, "setPointerCapture", { value: vi.fn() });
+    Object.defineProperty(separator, "hasPointerCapture", {
+      value: vi.fn(() => true),
+    });
+    Object.defineProperty(separator, "releasePointerCapture", { value: vi.fn() });
+    return separator;
+  }
+
+  it("previews and clamps the width while dragging the left edge", () => {
+    const separator = mountPanel(460);
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 3, clientX: 700 });
+    expect(document.documentElement.dataset.resizingThreadPanel).toBe("true");
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 680 });
+    expect(useAppStore.getState().threadPanelWidth).toBe(480);
+    expect(separator.getAttribute("aria-valuenow")).toBe("480");
+    fireEvent.pointerUp(separator, { pointerId: 3, clientX: 680 });
+    expect(document.documentElement.dataset.resizingThreadPanel).toBeUndefined();
+
+    // Narrower than the minimum clamps to 320.
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 4, clientX: 700 });
+    fireEvent.pointerMove(separator, { pointerId: 4, clientX: 3000 });
+    fireEvent.pointerUp(separator, { pointerId: 4, clientX: 3000 });
+    expect(useAppStore.getState().threadPanelWidth).toBe(320);
+
+    // Widening never squeezes the main column below its minimum: jsdom reports
+    // a 1024px viewport, so the panel caps at 1024 - 520.
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 5, clientX: 700 });
+    fireEvent.pointerMove(separator, { pointerId: 5, clientX: -300 });
+    fireEvent.pointerUp(separator, { pointerId: 5, clientX: -300 });
+    expect(useAppStore.getState().threadPanelWidth).toBe(504);
+  });
+
+  it("resizes with the keyboard and resets on double-click", () => {
+    const separator = mountPanel(460);
+
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(useAppStore.getState().threadPanelWidth).toBe(476);
+    fireEvent.keyDown(separator, { key: "Home" });
+    expect(useAppStore.getState().threadPanelWidth).toBe(320);
+    fireEvent.keyDown(separator, { key: "End" });
+    expect(useAppStore.getState().threadPanelWidth).toBe(504);
+
+    fireEvent.doubleClick(separator);
+    expect(useAppStore.getState().threadPanelWidth).toBe(460);
+  });
+});

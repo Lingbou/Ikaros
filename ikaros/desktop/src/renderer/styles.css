@@ -192,6 +192,49 @@ html[data-resizing-sidebar="true"] * {
   user-select: none !important;
 }
 
+.thread-panel-resizer {
+  position: absolute;
+  z-index: 45;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+
+.thread-panel-resizer::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: color-mix(in srgb, var(--accent) 58%, var(--border));
+  content: "";
+  opacity: 0;
+  transform: scaleX(0.7);
+  transition:
+    opacity 130ms ease,
+    transform 130ms ease,
+    box-shadow 130ms ease;
+}
+
+.thread-panel-resizer:hover::after,
+.thread-panel-resizer:focus-visible::after,
+.thread-panel-resizer[data-resizing="true"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+html[data-resizing-thread-panel="true"],
+html[data-resizing-thread-panel="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 .turn-navigator {
   top: 16px;
   bottom: calc(var(--turn-navigator-bottom-clearance, 0px) + 16px);
