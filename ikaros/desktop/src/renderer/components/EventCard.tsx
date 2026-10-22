@@ -307,25 +307,10 @@ function ToolCallCard({
       >
         {summary}
       </span>
-      {duration ? (
-        <span className="shrink-0 font-mono text-[10px] leading-4 text-[var(--muted)]">
-          {duration}
-        </span>
-      ) : null}
-      <span
-        className={cx("flex shrink-0 items-center gap-1", status.className)}
-        title={status.label}
-      >
-        {status.icon}
-        {event.status === "error" || event.status === "interrupted" ? (
-          <span className="text-[10px] leading-4">{status.label}</span>
-        ) : null}
-      </span>
     </>
   );
 
-  const contentClassName =
-    "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left";
+  const contentClassName = "flex w-full min-w-0 items-center gap-2 text-left";
   const mainContent = disclosure ? (
     <button
       type="button"
@@ -333,10 +318,7 @@ function ToolCallCard({
       aria-controls={disclosure.controlsId}
       data-tool-call-id={event.id}
       onClick={() => disclosure.onToggle(event.id)}
-      className={cx(
-        contentClassName,
-        "cursor-pointer transition-colors hover:bg-[var(--panel-hover)]",
-      )}
+      className={cx(contentClassName, "cursor-pointer")}
     >
       {content}
     </button>
@@ -367,29 +349,37 @@ function ToolCallCard({
   );
 
   return (
-    <div
-      className={cx(
-        "group w-full min-w-0",
-        fileDetails &&
-          "rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] px-1 py-0.5",
-      )}
-    >
-      <div className="flex w-full min-w-0 items-center gap-1">
+    <div className="group w-full min-w-0">
+      <div className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--panel-hover)]">
         <div className="min-w-0 flex-1">{commandTrigger}</div>
-        {sessionThreadId ? (
-          <button
-            type="button"
-            aria-label={t("events.openSession")}
-            title={t("events.openSession")}
-            onClick={() => openThreadPanel(sessionThreadId)}
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted)] opacity-0 transition-opacity hover:bg-[var(--panel-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
-          >
-            <ArrowUpRight size={13} aria-hidden="true" />
-          </button>
-        ) : null}
+        <span className="w-10 shrink-0 text-right font-mono text-[10px] leading-4 text-[var(--muted)]">
+          {duration ?? ""}
+        </span>
+        <span
+          data-tool-status="true"
+          className={cx("flex size-4 shrink-0 items-center justify-center", status.className)}
+          title={status.label}
+        >
+          {status.icon}
+        </span>
+        <span data-tool-action="true" className="flex size-6 shrink-0 items-center justify-center">
+          {sessionThreadId ? (
+            <button
+              type="button"
+              aria-label={t("events.openSession")}
+              title={t("events.openSession")}
+              onClick={() => openThreadPanel(sessionThreadId)}
+              className="flex size-6 items-center justify-center rounded-md text-[var(--muted)] opacity-0 transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <ArrowUpRight size={13} aria-hidden="true" />
+            </button>
+          ) : null}
+        </span>
       </div>
       {fileDetails ? (
-        <FileActions path={fileDetails.path} toolName={event.toolName} toolCallItemId={event.id} running={event.status === "running"} />
+        <div className="pb-1 pl-8 pr-2">
+          <FileActions path={fileDetails.path} toolName={event.toolName} toolCallItemId={event.id} running={event.status === "running"} />
+        </div>
       ) : null}
     </div>
   );
