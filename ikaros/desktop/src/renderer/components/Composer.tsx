@@ -45,7 +45,6 @@ export function Composer({
   const connectionStatus = useAppStore((state) => state.runtimeConnectionStatus);
   const providerCatalogStatus = useAppStore((state) => state.providerCatalogStatus);
   const loadProviderCatalog = useAppStore((state) => state.loadProviderCatalog);
-  const retryRuntimeConnection = useAppStore((state) => state.retryRuntimeConnection);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const selectModel = useAppStore((state) => state.selectModel);
   const setModelLimits = useAppStore((state) => state.setModelLimits);
@@ -99,13 +98,7 @@ export function Composer({
     message: TranslationKey;
     action?: () => void;
   } | null = null;
-  if (connectionStatus === "offline") {
-    modelAccess = {
-      label: "composer.reconnectRuntime",
-      message: "composer.runtimeOffline",
-      action: () => void retryRuntimeConnection(),
-    };
-  } else if (connectionStatus === "starting" || connectionStatus === "reconnecting") {
+  if (connectionStatus === "starting" || connectionStatus === "reconnecting") {
     modelAccess = {
       label: connectionStatus === "starting" ? "runtime.starting" : "runtime.reconnecting",
       message: "composer.waitForRuntime",

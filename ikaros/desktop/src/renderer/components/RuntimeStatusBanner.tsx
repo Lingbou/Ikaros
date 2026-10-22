@@ -1,4 +1,4 @@
-import { AlertCircle, LoaderCircle, RotateCcw, WifiOff, X } from "lucide-react";
+import { AlertCircle, LoaderCircle, RotateCcw, X } from "lucide-react";
 
 import { type TranslationKey, useTranslation } from "../i18n";
 import { type RuntimeIssue, useAppStore } from "../store";
@@ -24,7 +24,6 @@ export function RuntimeStatusBanner() {
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const draft = useAppStore((state) => state.draft);
   const activeRunId = useAppStore((state) => state.activeRun?.runId ?? null);
-  const retryConnection = useAppStore((state) => state.retryRuntimeConnection);
   const retryIssue = useAppStore((state) => state.retryRuntimeIssue);
   const clearError = useAppStore((state) => state.clearRuntimeError);
 
@@ -40,6 +39,10 @@ export function RuntimeStatusBanner() {
     );
   }
 
+  // Offline is a blocking dialog now; this banner only carries recoverable
+  // operation errors while the Runtime is reachable.
+  if (status === "offline") return null;
+
   const matchingIssue = issue?.message === error ? issue : null;
   if (
     status === "connected" &&
@@ -49,10 +52,9 @@ export function RuntimeStatusBanner() {
   }
   if (status === "connected" && !error) return null;
 
-  const offline = status === "offline";
-  const title = offline
-    ? t("runtime.offline")
-    : t(matchingIssue ? ISSUE_TITLE_KEYS[matchingIssue.kind] : "runtime.error.generic");
+  const title = t(
+    matchingIssue ? ISSUE_TITLE_KEYS[matchingIssue.kind] : "runtime.error.generic",
+  );
   const issueStillRetryable =
     matchingIssue !== null &&
     (matchingIssue.kind === "send"
@@ -60,7 +62,7 @@ export function RuntimeStatusBanner() {
       : matchingIssue.kind === "cancel"
         ? matchingIssue.runId === activeRunId
         : true);
-  const retry = offline ? retryConnection : issueStillRetryable ? retryIssue : null;
+  const retry = issueStillRetryable ? retryIssue : null;
 
   return (
     <div
@@ -68,7 +70,7 @@ export function RuntimeStatusBanner() {
       className="flex min-h-10 shrink-0 select-none items-center gap-2.5 border-b border-[#e07070]/20 bg-[#e07070]/[0.07] px-3.5 text-[11px] leading-4 sm:px-5"
     >
       <span className="flex size-5 shrink-0 items-center justify-center text-[#e07070]">
-        {offline ? <WifiOff size={13} aria-hidden="true" /> : <AlertCircle size={13} aria-hidden="true" />}
+        <AlertCircle size={13} aria-hidden="true" />
       </span>
       <span className="shrink-0 font-medium text-[var(--text)]">{title}</span>
       {error ? (
@@ -88,15 +90,13 @@ export function RuntimeStatusBanner() {
           {t("common.retry")}
         </button>
       ) : null}
-      {!offline ? (
-        <IconButton
-          label={t("common.dismiss")}
-          className="size-7 rounded-lg"
-          onClick={clearError}
-        >
-          <X size={12} aria-hidden="true" />
-        </IconButton>
-      ) : null}
+      <IconButton
+        label={t("common.dismiss")}
+        className="size-7 rounded-lg"
+        onClick={clearError}
+      >
+        <X size={12} aria-hidden="true" />
+      </IconButton>
     </div>
   );
 }

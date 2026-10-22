@@ -78,19 +78,17 @@ describe("RuntimeStatusBanner", () => {
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
   });
 
-  it("keeps an offline connection retry visible and non-dismissible", () => {
+  it("leaves an offline Runtime to the blocking dialog", () => {
     const retryRuntimeConnection = vi.fn(async () => undefined);
     useAppStore.setState({
-            runtimeConnectionStatus: "offline",
+      runtimeConnectionStatus: "offline",
       runtimeError: "socket closed",
       runtimeIssue: { kind: "connection", message: "socket closed" },
       retryRuntimeConnection,
     });
     renderBanner();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Local runtime is offline");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(retryRuntimeConnection).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(retryRuntimeConnection).not.toHaveBeenCalled();
   });
 });
