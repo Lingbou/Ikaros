@@ -655,7 +655,8 @@
               "threadId": "thread_00000000000000000000000000000001",
               "createdAt": "2026-08-15T12:00:00.000Z",
               "isDefault": true
-            }
+            },
+            "origin": "user"
           }
         }
       }

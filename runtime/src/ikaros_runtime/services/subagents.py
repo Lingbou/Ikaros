@@ -218,6 +218,7 @@ class SubagentService:
             child_title,
             f"subagent-thread:{request_id}",
             workspace=parent_config.workspace,
+            origin="agent",
         )
         if created:
             await self._publish(created_event)
@@ -267,6 +268,7 @@ class SubagentService:
             child_title,
             f"subagent-thread:{request_id}",
             workspace=parent_config.workspace,
+            origin="agent",
         )
         if created:
             await self._publish(created_event)

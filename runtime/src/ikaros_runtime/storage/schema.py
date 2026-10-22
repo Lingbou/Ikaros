@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 _FILE_CHANGES_SCHEMA = """
 CREATE TABLE file_changes (
     tool_call_item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
@@ -40,7 +40,10 @@ CREATE TABLE threads (
     updated_at TEXT NOT NULL,
     archived_at TEXT,
     client_request_id TEXT,
-    workspace_json TEXT
+    workspace_json TEXT,
+    -- Threads created by an agent tool are not user conversations: they stay
+    -- readable by id but never enter the conversation catalog.
+    origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user', 'agent'))
 );
 
 CREATE UNIQUE INDEX threads_client_request_id_idx

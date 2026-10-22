@@ -454,7 +454,7 @@ def apply_event(
         insert_item(connection, item)
         return
     if event_type == "thread.created":
-        _require_keys(payload, {"thread", "branch"}, {"clientRequestId"})
+        _require_keys(payload, {"thread", "branch"}, {"clientRequestId", "origin"})
         thread = _record(payload, "thread", _THREAD_KEYS)
         branch = _record(payload, "branch", _BRANCH_KEYS)
         _validate_thread(thread)
@@ -475,12 +475,15 @@ def apply_event(
         )
         _require_equal("thread default branch", thread["defaultBranchId"], branch["id"])
         _require_equal("branch thread", branch["threadId"], thread["id"])
+        origin = payload.get("origin", "user")
+        if origin not in {"user", "agent"}:
+            raise RuntimeError("thread.created origin is invalid")
         connection.execute(
             """
             INSERT INTO threads(
                 id, title, title_source, default_branch_id, workspace_json,
-                created_at, updated_at, archived_at, client_request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, archived_at, client_request_id, origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 thread["id"],
@@ -494,6 +497,7 @@ def apply_event(
                 thread["updatedAt"],
                 thread["archivedAt"],
                 payload.get("clientRequestId"),
+                origin,
             ),
         )
         connection.execute(

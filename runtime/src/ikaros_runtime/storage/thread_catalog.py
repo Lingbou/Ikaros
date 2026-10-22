@@ -75,7 +75,7 @@ def list_thread_page(
                 SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
                        archived_at
                 FROM threads
-                WHERE archived_at IS {archive_filter}
+                WHERE archived_at IS {archive_filter} AND origin = 'user'
                 ORDER BY updated_at DESC, id ASC
                 LIMIT ?
                 """.format(archive_filter="NOT NULL" if archived else "NULL"),
@@ -87,7 +87,7 @@ def list_thread_page(
                 SELECT id, title, default_branch_id, workspace_json, created_at, updated_at,
                        archived_at
                 FROM threads
-                WHERE archived_at IS {archive_filter}
+                WHERE archived_at IS {archive_filter} AND origin = 'user'
                   AND updated_at <= ? AND (updated_at < ? OR id > ?)
                 ORDER BY updated_at DESC, id ASC
                 LIMIT ?

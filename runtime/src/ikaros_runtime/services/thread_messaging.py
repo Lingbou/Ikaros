@@ -92,7 +92,7 @@ class ThreadMessagingService:
                 caller = None
             if caller is not None and caller.workspace is not None:
                 params["workspace"] = caller.workspace.to_wire()
-        outcome = self._threads.create(params)
+        outcome = self._threads.create(params, origin="agent")
         await self._publish_outcome(outcome)
         thread = _object(outcome.result["thread"])
         return {
