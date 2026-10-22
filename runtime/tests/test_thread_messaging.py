@@ -207,7 +207,9 @@ async def test_thread_create_tool_creates_a_thread_and_replays_idempotently(
         assert payload["workspace"]["kind"] == "managed"
         assert result.details == {"threadId": thread_id, "created": True}
         page = store.list_thread_page(cursor=None, limit=50, archived=False)
-        assert thread_id in {thread.id for thread in page.threads}
+        # Tool-created Threads belong to the agent, not the conversation list.
+        assert thread_id not in {thread.id for thread in page.threads}
+        assert store.get_thread(thread_id).thread.id == thread_id
         assert any(event.type == "thread.created" for event in events)
 
         replay = await tool.execute(

@@ -358,11 +358,14 @@ async def _wait_for_depth(
 
 
 def _thread_by_title(store: SqliteRuntimeStore, title: str) -> str:
-    page = store.list_thread_page(cursor=None, limit=50, archived=False)
-    thread = next((candidate for candidate in page.threads if candidate.title == title), None)
-    if thread is None:
+    # Agent Threads are deliberately absent from the conversation catalog.
+    row = store._connection.execute(
+        "SELECT id FROM threads WHERE title = ? ORDER BY created_at LIMIT 1",
+        (title,),
+    ).fetchone()
+    if row is None:
         raise AssertionError(f"thread {title!r} was not found")
-    return thread.id
+    return str(row["id"])
 
 
 def _run_id_for_thread(store: SqliteRuntimeStore, thread_id: str) -> str:
@@ -682,13 +685,7 @@ async def test_subagent_spawns_a_child_thread_and_returns_the_final_message(
         assert result["status"] == "completed"
         assert result["summary"] == "Scripted response to: child task"
         assert result["threadId"] != harness.parent_thread_id
-        child = next(
-            thread
-            for thread in harness.store.list_thread_page(
-                cursor=None, limit=50, archived=False
-            ).threads
-            if thread.id == result["threadId"]
-        )
+        child = harness.store.get_thread(str(result["threadId"])).thread
         assert child.title == "Subagent: child task"
         assert harness.store.run_status(str(result["runId"])) == "completed"
         _assert_run_settles_last(harness.events, str(result["runId"]))

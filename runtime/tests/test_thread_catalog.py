@@ -330,3 +330,24 @@ def test_thread_catalog_rejects_invalid_cursors_without_echoing_them(cursor: str
         decode_thread_catalog_cursor(cursor)
 
     assert cursor not in str(raised.value)
+
+
+def test_agent_threads_stay_out_of_the_catalog_but_remain_readable(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        user_thread, _ = store.create_thread("User conversation")
+        agent_thread, _ = store.create_thread("Subagent: work", origin="agent")
+        store.create_thread("Another user conversation")
+
+        page = store.list_thread_page(cursor=None, limit=50)
+        listed = {thread.id for thread in page.threads}
+
+        assert user_thread.id in listed
+        assert agent_thread.id not in listed
+        # Agents stay addressable by id so the conversation can still open them.
+        assert store.get_thread(agent_thread.id).thread.id == agent_thread.id
+    finally:
+        store.close()
+

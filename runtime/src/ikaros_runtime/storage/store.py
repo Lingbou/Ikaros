@@ -339,12 +339,14 @@ class SqliteRuntimeStore:
         *,
         workspace: WorkspaceSummary | None = None,
         managed_workspace: WorkspaceFactory | None = None,
+        origin: str = "user",
     ) -> tuple[ThreadSummary, JournalEvent]:
         thread, event, _created = self._create_thread(
             title,
             workspace=workspace,
             managed_workspace=managed_workspace,
             client_request_id=None,
+            origin=origin,
         )
         return thread, event
 
@@ -355,12 +357,14 @@ class SqliteRuntimeStore:
         *,
         workspace: WorkspaceSummary | None = None,
         managed_workspace: WorkspaceFactory | None = None,
+        origin: str = "user",
     ) -> tuple[ThreadSummary, JournalEvent, bool]:
         return self._create_thread(
             title,
             workspace=workspace,
             managed_workspace=managed_workspace,
             client_request_id=client_request_id,
+            origin=origin,
         )
 
     def _create_thread(
@@ -370,7 +374,10 @@ class SqliteRuntimeStore:
         workspace: WorkspaceSummary | None,
         managed_workspace: WorkspaceFactory | None,
         client_request_id: str | None,
+        origin: str = "user",
     ) -> tuple[ThreadSummary, JournalEvent, bool]:
+        if origin not in {"user", "agent"}:
+            raise ValueError("thread origin must be user or agent")
         if client_request_id is not None:
             existing = self._connection.execute(
                 """
@@ -442,6 +449,7 @@ class SqliteRuntimeStore:
                 "isDefault": True,
             },
         }
+        payload["origin"] = origin
         if client_request_id is not None:
             payload["clientRequestId"] = client_request_id
         with self._connection:
@@ -449,8 +457,8 @@ class SqliteRuntimeStore:
                 """
                 INSERT INTO threads(
                     id, title, title_source, default_branch_id, workspace_json,
-                    created_at, updated_at, client_request_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, client_request_id, origin
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     thread_id,
@@ -463,6 +471,7 @@ class SqliteRuntimeStore:
                     timestamp,
                     timestamp,
                     client_request_id,
+                    origin,
                 ),
             )
             self._connection.execute(

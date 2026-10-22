@@ -35,7 +35,9 @@ class ThreadService:
         self._assert_request_safe = assert_request_safe
         self._managed_workspace_factory = managed_workspace_factory
 
-    def create(self, params: dict[str, Any]) -> CommandOutcome:
+    def create(
+        self, params: dict[str, Any], *, origin: str = "user"
+    ) -> CommandOutcome:
         unknown = set(params) - {"title", "workspace", "clientRequestId"}
         if unknown:
             raise InvalidParamsError("thread.create contains unsupported parameters")
@@ -53,6 +55,7 @@ class ThreadService:
                 title,
                 workspace=workspace,
                 managed_workspace=managed_workspace,
+                origin=origin,
             )
             created = True
         else:
@@ -62,6 +65,7 @@ class ThreadService:
                     client_request_id,
                     workspace=workspace,
                     managed_workspace=managed_workspace,
+                    origin=origin,
                 )
             except LookupError as error:
                 raise InvalidParamsError(str(error)) from error
