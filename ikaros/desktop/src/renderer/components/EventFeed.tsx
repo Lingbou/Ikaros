@@ -1,5 +1,14 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { AlertCircle, LoaderCircle, RotateCcw } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowUpRight,
+  CheckCircle2,
+  ChevronRight,
+  CircleX,
+  LoaderCircle,
+  RotateCcw,
+  Wrench,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -92,11 +101,24 @@ function toolResultRegionId(toolCallId: string) {
   return `tool-result-${encodeURIComponent(toolCallId)}`;
 }
 
-type FeedRow = AgentEvent | {
+type RuntimeOutcomeRow = {
   type: "runtime_outcome";
   id: string;
   turn: Turn;
 };
+
+type ToolGroupRow = {
+  type: "tool_group";
+  id: string;
+  turn: Turn;
+  rows: FeedRow[];
+  callCount: number;
+  durationMs: number;
+  status: "running" | "success" | "error" | "interrupted";
+  threadIds: string[];
+};
+
+type FeedRow = AgentEvent | RuntimeOutcomeRow | ToolGroupRow;
 
 function eventRowVisualOffset(viewport: HTMLElement, eventId: string): number | null {
   const row = [...viewport.querySelectorAll<HTMLElement>("[data-event-id]")].find(
@@ -104,6 +126,199 @@ function eventRowVisualOffset(viewport: HTMLElement, eventId: string): number | 
   );
   const match = row?.style.transform.match(/translateY\(([-\d.]+)px\)/);
   return match ? Number(match[1]) : null;
+}
+
+const TOOL_ROW_STATUS_RANK = {
+  success: 0,
+  running: 1,
+  interrupted: 2,
+  error: 3,
+} as const;
+
+function aggregateToolRowStatus(members: readonly FeedRow[]): ToolGroupRow["status"] {
+  let status: ToolGroupRow["status"] = "success";
+  for (const member of members) {
+    if (member.type !== "tool_call" && member.type !== "tool_result") continue;
+    if (TOOL_ROW_STATUS_RANK[member.status] > TOOL_ROW_STATUS_RANK[status]) {
+      status = member.status;
+    }
+  }
+  return status;
+}
+
+function isToolGroupExpanded(
+  group: ToolGroupRow,
+  turn: Turn,
+  overrides: ReadonlyMap<string, boolean>,
+): boolean {
+  const override = overrides.get(group.id);
+  if (override !== undefined) return override;
+  return turn.status === "running" || turn.status === "queued";
+}
+
+/**
+ * Fold each run of consecutive tool rows into one summary row.
+ *
+ * A settled Turn collapses to a single line the user can reopen; a Turn that is
+ * still running stays expanded so the live activity remains visible. Explicit
+ * user toggles always win over that default.
+ */
+export function groupToolRows(
+  rows: readonly FeedRow[],
+  turn: Turn,
+  isExpanded: (group: ToolGroupRow) => boolean,
+): FeedRow[] {
+  const grouped: FeedRow[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const row = rows[index];
+    if (!row) break;
+    if (row.type !== "tool_call") {
+      grouped.push(row);
+      index += 1;
+      continue;
+    }
+    const members: FeedRow[] = [];
+    const callIds = new Set<string>();
+    let cursor = index;
+    while (cursor < rows.length) {
+      const candidate = rows[cursor];
+      if (!candidate) break;
+      if (candidate.type === "tool_call") {
+        members.push(candidate);
+        callIds.add(candidate.id);
+        cursor += 1;
+        continue;
+      }
+      if (candidate.type === "tool_result" && callIds.has(candidate.toolCallId)) {
+        members.push(candidate);
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+    index = cursor;
+    if (callIds.size < 2) {
+      grouped.push(...members);
+      continue;
+    }
+    const group: ToolGroupRow = {
+      type: "tool_group",
+      id: `group:${turn.id}:${members[0]?.id ?? "start"}`,
+      turn,
+      rows: members,
+      callCount: callIds.size,
+      durationMs: members.reduce(
+        (total, member) =>
+          member.type === "tool_call" && typeof member.durationMs === "number"
+            ? total + member.durationMs
+            : total,
+        0,
+      ),
+      status: aggregateToolRowStatus(members),
+      threadIds: members.flatMap((member) =>
+        member.type === "tool_result" && member.details?.threadId
+          ? [member.details.threadId]
+          : [],
+      ),
+    };
+    if (isExpanded(group)) grouped.push(...members);
+    else grouped.push(group);
+  }
+  return grouped;
+}
+
+function ToolGroupCard({
+  group,
+  expanded,
+  onToggle,
+}: {
+  group: ToolGroupRow;
+  expanded: boolean;
+  onToggle: (groupId: string, expanded: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const openThreadPanel = useAppStore((state) => state.openThreadPanel);
+  const status = {
+    running: {
+      icon: <LoaderCircle size={13} className="animate-spin" />,
+      label: t("events.running"),
+      className: "text-[var(--accent)]",
+    },
+    success: {
+      icon: <CheckCircle2 size={13} />,
+      label: t("events.complete"),
+      className: "text-[#72d3a7]",
+    },
+    error: {
+      icon: <CircleX size={13} />,
+      label: t("events.failed"),
+      className: "text-[#ff7f7f]",
+    },
+    interrupted: {
+      icon: <AlertCircle size={13} />,
+      label: t("events.interrupted"),
+      className: "text-[#d8a36f]",
+    },
+  }[group.status];
+  const duration =
+    group.durationMs >= 1000
+      ? `${(group.durationMs / 1000).toFixed(1)}s`
+      : group.durationMs > 0
+        ? `${group.durationMs}ms`
+        : undefined;
+  const childThreadId = group.threadIds[group.threadIds.length - 1];
+
+  return (
+    <div className="group flex w-full min-w-0 items-center gap-1">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => onToggle(group.id, !expanded)}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--panel-hover)]"
+      >
+        <ChevronRight
+          size={12}
+          aria-hidden="true"
+          className={cx(
+            "shrink-0 text-[var(--muted)] transition-transform",
+            expanded && "rotate-90",
+          )}
+        />
+        <span className="flex size-4 shrink-0 items-center justify-center text-[var(--muted)]">
+          <Wrench size={13} aria-hidden="true" />
+        </span>
+        <span className="shrink-0 text-[11px] font-medium leading-4 text-[var(--muted-strong)]">
+          {t("events.toolGroup", { count: group.callCount })}
+        </span>
+        {duration ? (
+          <span className="shrink-0 text-[10px] leading-4 text-[var(--muted)]">
+            {duration}
+          </span>
+        ) : null}
+        <span
+          className={cx("ml-auto flex shrink-0 items-center gap-1", status.className)}
+          title={status.label}
+        >
+          {status.icon}
+          {group.status === "error" || group.status === "interrupted" ? (
+            <span className="text-[10px] leading-4">{status.label}</span>
+          ) : null}
+        </span>
+      </button>
+      {childThreadId ? (
+        <button
+          type="button"
+          aria-label={t("events.openSession")}
+          title={t("events.openSession")}
+          onClick={() => openThreadPanel(childThreadId)}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted)] opacity-0 transition-opacity hover:bg-[var(--panel-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <ArrowUpRight size={13} aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 export function EventFeed({
@@ -127,31 +342,43 @@ export function EventFeed({
   );
   const branch = activeBranch(thread);
   const turns = branch?.turns;
+  const [groupExpansion, setGroupExpansion] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
+  const toggleToolGroup = useCallback((groupId: string, expanded: boolean) => {
+    setGroupExpansion((current) => {
+      const next = new Map(current);
+      next.set(groupId, expanded);
+      return next;
+    });
+  }, []);
   const events = useMemo<FeedRow[]>(
-    () => turns?.flatMap((turn): FeedRow[] => {
-      const rows: FeedRow[] = [...turn.events];
-      if (
-        !turn.runId ||
-        (!turn.runProgress && turn.status !== "failed" && turn.status !== "interrupted")
-      ) {
-        return rows;
-      }
-      let insertAt = rows.length;
-      for (let index = rows.length - 1; index >= 0; index -= 1) {
-        const row = rows[index];
-        if (row.type === "message" && row.role === "assistant") {
-          insertAt = index;
-          break;
+    () =>
+      turns?.flatMap((turn): FeedRow[] => {
+        const rows: FeedRow[] = [...turn.events];
+        if (
+          turn.runId &&
+          (turn.runProgress || turn.status === "failed" || turn.status === "interrupted")
+        ) {
+          let insertAt = rows.length;
+          for (let index = rows.length - 1; index >= 0; index -= 1) {
+            const row = rows[index];
+            if (row?.type === "message" && row.role === "assistant") {
+              insertAt = index;
+              break;
+            }
+          }
+          rows.splice(insertAt, 0, {
+            type: "runtime_outcome",
+            id: `outcome:${turn.runId}`,
+            turn,
+          });
         }
-      }
-      rows.splice(insertAt, 0, {
-        type: "runtime_outcome",
-        id: `outcome:${turn.runId}`,
-        turn,
-      });
-      return rows;
-    }) ?? [],
-    [turns],
+        return groupToolRows(rows, turn, (group) =>
+          isToolGroupExpanded(group, turn, groupExpansion),
+        );
+      }) ?? [],
+    [groupExpansion, turns],
   );
   const sessionThreadByCallId = useMemo(() => {
     const map = new Map<string, string>();
@@ -225,6 +452,7 @@ export function EventFeed({
       ) {
         return 0;
       }
+      if (event?.type === "tool_group") return 36;
       if (event?.type === "tool_call" || event?.type === "tool_result") return 36;
       return 48;
     },
@@ -513,7 +741,9 @@ export function EventFeed({
                 className={cx(
                   "event-feed-row absolute left-0 top-0 w-full",
                   event.type === "runtime_outcome" && "event-feed-row--progress",
-                  (event.type === "tool_call" || event.type === "tool_result") &&
+                  (event.type === "tool_call" ||
+                    event.type === "tool_result" ||
+                    event.type === "tool_group") &&
                     "event-feed-row--tool",
                   isCollapsed && "event-feed-row--collapsed",
                 )}
@@ -525,6 +755,16 @@ export function EventFeed({
                       <RuntimeRunProgress turn={event.turn} />
                       <RuntimeTurnOutcome turn={event.turn} />
                     </>
+                  ) : event.type === "tool_group" ? (
+                    <ToolGroupCard
+                      group={event}
+                      expanded={isToolGroupExpanded(
+                        event,
+                        event.turn,
+                        groupExpansion,
+                      )}
+                      onToggle={toggleToolGroup}
+                    />
                   ) : isMatchedToolResult ? (
                     <div
                       id={toolResultRegionId(event.toolCallId)}

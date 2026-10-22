@@ -11,7 +11,7 @@ import {
   type ToolResultEvent,
 } from "../domain";
 import { useAppStore } from "../store";
-import { EventFeed } from "./EventFeed";
+import { EventFeed, groupToolRows } from "./EventFeed";
 
 const initialState = useAppStore.getState();
 const rowHeights = new Map<number, number>();
@@ -676,5 +676,87 @@ describe("EventFeed dynamic row measurement", () => {
     expect(container.querySelector("[data-tool-call-id]")).toBeNull();
     expect(container.querySelector("[aria-expanded]")).toBeNull();
     expect(container.querySelector("[data-index] button")).toBeNull();
+  });
+});
+
+describe("EventFeed tool call groups", () => {
+  function groupedThread() {
+    return threadWith([
+      message("user-group", "turn-feed-measurement", "user", "Do it"),
+      toolCall("call-a", "First"),
+      toolResult("result-a", "call-a", "ok"),
+      toolCall("call-b", "Second"),
+      toolResult("result-b", "call-b", "ok"),
+      message("assistant-group", "turn-feed-measurement", "assistant", "Done"),
+    ]);
+  }
+
+  function rowIds(container: HTMLElement) {
+    return [...container.querySelectorAll<HTMLElement>("[data-event-id]")].map(
+      (row) => row.dataset.eventId,
+    );
+  }
+
+  it("folds a settled run of tool calls into one summary row", () => {
+    const thread = groupedThread();
+    Object.assign(thread.branches[0].turns[0], { status: "completed" });
+    useAppStore.setState({ threads: [thread], selectedThreadId: thread.id });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+
+    expect(rowIds(container)).toContain("group:turn-feed-measurement:call-a");
+    expect(rowIds(container)).not.toContain("call-a");
+    expect(rowIds(container)).not.toContain("call-b");
+    expect(screen.getByText("2 tool calls")).toBeVisible();
+
+    const toggle = container.querySelector<HTMLElement>(
+      '[data-event-id="group:turn-feed-measurement:call-a"] button',
+    );
+    if (!toggle) throw new Error("Expected a group toggle");
+    fireEvent.click(toggle);
+
+    expect(rowIds(container)).toEqual(
+      expect.arrayContaining(["call-a", "call-b"]),
+    );
+  });
+
+  it("keeps a running turn's tool calls expanded", () => {
+    const thread = groupedThread();
+    useAppStore.setState({ threads: [thread], selectedThreadId: thread.id });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+
+    expect(rowIds(container)).toContain("call-a");
+    expect(rowIds(container)).toContain("call-b");
+    expect(rowIds(container)).not.toContain("group:turn-feed-measurement:call-a");
+  });
+
+  it("does not fold tool calls across a message", () => {
+    const turn = threadWith([]).branches[0].turns[0];
+    const rows = groupToolRows(
+      [
+        toolCall("a", "A"),
+        toolCall("b", "B"),
+        message("m", turn.id, "assistant", "hi"),
+        toolCall("c", "C"),
+        toolCall("d", "D"),
+      ],
+      turn,
+      () => false,
+    );
+
+    expect(rows.map((row) => row.type)).toEqual([
+      "tool_group",
+      "message",
+      "tool_group",
+    ]);
   });
 });
