@@ -291,7 +291,15 @@ export function registerDesktopIpc(
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath
       });
-      return invokeRuntime(() => installRuntime({ scriptPath }));
+      const bundleDir = app.isPackaged
+        ? resolve(process.resourcesPath, "runtime")
+        : undefined;
+      const sourceRoot = app.isPackaged
+        ? undefined
+        : resolve(app.getAppPath(), "..", "..");
+      return invokeRuntime(() =>
+        installRuntime({ scriptPath, bundleDir, sourceRoot })
+      );
     }
   );
 

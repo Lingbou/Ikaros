@@ -4,16 +4,18 @@
 # The desktop app discovers a separately installed Runtime through
 # <runtime home>/runtime/install.json (see src/main/runtimeProvision.ts). This
 # script creates an isolated virtual environment under <runtime home>/runtime/<version>,
-# installs the Runtime package from a checkout with uv, and records the result.
+# installs the Runtime with uv, and records the result.
 #
 # Nothing outside the Runtime home is modified and the system Python is untouched.
 #
 # Usage:
-#   ./scripts/install-runtime.sh [--source <repo>] [--python 3.13] [--check]
+#   ./scripts/install-runtime.sh [--source <repo> | --bundle-dir <dir>]
+#                                [--python 3.13] [--check]
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_root="$(cd "$script_dir/.." && pwd)"
+bundle_dir=""
 python_version="3.13"
 check_only=0
 
@@ -21,6 +23,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --source)
       source_root="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --bundle-dir)
+      bundle_dir="$(cd "$2" && pwd)"
       shift 2
       ;;
     --python)
@@ -32,7 +38,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,16p' "${BASH_SOURCE[0]}"
+      sed -n '2,14p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
@@ -83,23 +89,38 @@ if [[ "$check_only" -eq 1 ]]; then
   exit $?
 fi
 
-pyproject="$source_root/runtime/pyproject.toml"
-protocol_manifest="$source_root/runtime/protocol/runtime-protocol.json"
-if [[ ! -f "$pyproject" ]]; then
-  echo "Missing $pyproject; point --source at the Ikaros repository root." >&2
-  exit 1
+if [[ -n "$bundle_dir" ]]; then
+  bundle_manifest="$bundle_dir/runtime-bundle.json"
+  if [[ ! -f "$bundle_manifest" ]]; then
+    echo "Missing $bundle_manifest; the packaged Runtime bundle is incomplete." >&2
+    exit 1
+  fi
+  version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$bundle_manifest")"
+  protocol_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocolVersion"])' "$bundle_manifest")"
+  install_target="$bundle_dir/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["wheel"])' "$bundle_manifest")"
+  if [[ ! -f "$install_target" ]]; then
+    echo "Missing Runtime wheel $install_target" >&2
+    exit 1
+  fi
+else
+  pyproject="$source_root/runtime/pyproject.toml"
+  protocol_manifest="$source_root/runtime/protocol/runtime-protocol.json"
+  if [[ ! -f "$pyproject" ]]; then
+    echo "Missing $pyproject; point --source at the Ikaros repository root." >&2
+    exit 1
+  fi
+  if [[ ! -f "$protocol_manifest" ]]; then
+    echo "Missing $protocol_manifest; run the protocol generator first." >&2
+    exit 1
+  fi
+  version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$pyproject" | head -n 1)"
+  if [[ -z "$version" ]]; then
+    echo "Could not read the Runtime version from $pyproject." >&2
+    exit 1
+  fi
+  protocol_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocolVersion"])' "$protocol_manifest")"
+  install_target="$source_root/runtime"
 fi
-if [[ ! -f "$protocol_manifest" ]]; then
-  echo "Missing $protocol_manifest; run the protocol generator first." >&2
-  exit 1
-fi
-
-version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$pyproject" | head -n 1)"
-if [[ -z "$version" ]]; then
-  echo "Could not read the Runtime version from $pyproject." >&2
-  exit 1
-fi
-protocol_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocolVersion"])' "$protocol_manifest")"
 
 target="$runtime_dir/$version"
 python_executable="$target/bin/python"
@@ -110,12 +131,12 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "Installing Ikaros Runtime $version (protocol $protocol_version)"
-echo "  source: $source_root/runtime"
-echo "  target: $target"
+echo "  package: $install_target"
+echo "  target:  $target"
 
 mkdir -p "$runtime_dir"
 uv venv --python "$python_version" --allow-existing "$target"
-uv pip install --python "$python_executable" "$source_root/runtime"
+uv pip install --python "$python_executable" "$install_target"
 
 installed_at="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
 cat > "$manifest_path" <<JSON

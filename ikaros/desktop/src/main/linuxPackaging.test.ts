@@ -18,6 +18,19 @@ describe("Linux distribution packaging", () => {
         { target: "rpm", arch: ["x64"] },
       ],
     });
+    expect(configuration.linux).toMatchObject({
+      extraResources: [
+        {
+          from: "../../scripts/install-runtime.sh",
+          to: "scripts/install-runtime.sh",
+        },
+        {
+          from: "build/runtime",
+          to: "runtime",
+          filter: ["*.whl", "runtime-bundle.json"],
+        },
+      ],
+    });
     expect((desktopPackage as { desktopName?: string }).desktopName).toBe(
       "io.github.lingbou.ikaros.desktop",
     );

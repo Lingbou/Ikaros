@@ -6,12 +6,15 @@ Installs the Ikaros Runtime into <runtime home>/runtime and writes install.json.
 The desktop app discovers a separately installed Runtime through
 <runtime home>/runtime/install.json (see src/main/runtimeProvision.ts). This
 script creates an isolated virtual environment under <runtime home>/runtime/<version>,
-installs the Runtime package from a checkout with uv, and records the result.
+installs the Runtime with uv, and records the result.
 
 Nothing outside the Runtime home is modified and the system Python is untouched.
 
 .PARAMETER Source
-Repository root that contains the runtime/ project. Defaults to the parent of this script.
+Repository root that contains runtime/. Used when installing from a checkout.
+
+.PARAMETER BundleDir
+Directory that ships a built wheel plus runtime-bundle.json. Used by packaged apps.
 
 .PARAMETER Python
 Interpreter version uv should provision; the Runtime requires >=3.12,<3.14.
@@ -22,6 +25,7 @@ Only verify an existing installation; install nothing.
 [CmdletBinding()]
 param(
   [string]$Source = "",
+  [string]$BundleDir = "",
   [string]$Python = "3.13",
   [switch]$Check
 )
@@ -75,15 +79,36 @@ function Read-ProtocolVersion {
   return [int]$value
 }
 
-$sourceRoot = Resolve-SourceRoot $Source
+function Read-Bundle {
+  param([string]$Directory)
+  $manifest = Join-Path $Directory "runtime-bundle.json"
+  if (-not (Test-Path -LiteralPath $manifest)) {
+    throw "Missing $manifest; the packaged Runtime bundle is incomplete."
+  }
+  $parsed = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+  $wheel = Join-Path $Directory ([string]$parsed.wheel)
+  if (-not (Test-Path -LiteralPath $wheel)) {
+    throw "Missing Runtime wheel $wheel."
+  }
+  return [pscustomobject]@{
+    Version = [string]$parsed.version
+    ProtocolVersion = [int]$parsed.protocolVersion
+    InstallTarget = $wheel
+  }
+}
+
+function Read-Source {
+  param([string]$RepositoryRoot)
+  return [pscustomobject]@{
+    Version = (Read-RuntimeVersion $RepositoryRoot)
+    ProtocolVersion = (Read-ProtocolVersion $RepositoryRoot)
+    InstallTarget = (Join-Path $RepositoryRoot "runtime")
+  }
+}
+
 $runtimeHome = Get-IkarosHome
 $runtimeDirectory = Join-Path $runtimeHome "runtime"
 $manifestPath = Join-Path $runtimeDirectory "install.json"
-
-function Read-Manifest {
-  if (-not (Test-Path -LiteralPath $manifestPath)) { return $null }
-  return (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json)
-}
 
 function Test-Installation {
   $manifest = Read-Manifest
@@ -125,10 +150,21 @@ function Test-Installation {
 
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
+function Read-Manifest {
+  if (-not (Test-Path -LiteralPath $manifestPath)) { return $null }
+  return (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json)
+}
+
 if ($Check) { exit (Test-Installation) }
 
-$version = Read-RuntimeVersion $sourceRoot
-$protocolVersion = Read-ProtocolVersion $sourceRoot
+if ($BundleDir -and $BundleDir.Trim().Length -gt 0) {
+  $resolved = Read-Bundle (Resolve-Path -LiteralPath $BundleDir.Trim()).Path
+} else {
+  $resolved = Read-Source (Resolve-SourceRoot $Source)
+}
+
+$version = $resolved.Version
+$protocolVersion = $resolved.ProtocolVersion
 $target = Join-Path $runtimeDirectory $version
 $pythonExecutable = Join-Path $target "Scripts/python.exe"
 
@@ -136,14 +172,14 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
   throw "uv is required. Install it from https://docs.astral.sh/uv/ and re-run this script."
 }
 
-Write-Output "Installing Ikaros Runtime $version (protocol $protocolVersion)"
-Write-Output "  source: $sourceRoot/runtime"
-Write-Output "  target: $target"
+Write-Host "Installing Ikaros Runtime $version (protocol $protocolVersion)"
+Write-Host "  package: $($resolved.InstallTarget)"
+Write-Host "  target:  $target"
 
 New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 & uv venv --python $Python --allow-existing $target
 if ($LASTEXITCODE -ne 0) { throw "uv venv failed with exit code $LASTEXITCODE." }
-& uv pip install --python $pythonExecutable (Join-Path $sourceRoot "runtime")
+& uv pip install --python $pythonExecutable $resolved.InstallTarget
 if ($LASTEXITCODE -ne 0) { throw "uv pip install failed with exit code $LASTEXITCODE." }
 
 $manifest = [ordered]@{
@@ -159,5 +195,5 @@ $manifest = [ordered]@{
   ($manifest | ConvertTo-Json) + "`n",
   $utf8
 )
-Write-Output "Wrote $manifestPath"
+Write-Host "Wrote $manifestPath"
 exit (Test-Installation)

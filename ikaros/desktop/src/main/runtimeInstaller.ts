@@ -15,6 +15,10 @@ export interface RuntimeInstallOptions {
   scriptPath?: string;
   /** Directory that receives runtime/<version> and install.json. */
   runtimeHome?: string;
+  /** Packaged bundle (wheel + runtime-bundle.json) shipped under resources/runtime. */
+  bundleDir?: string;
+  /** Checkout root that contains runtime/; used for development runs. */
+  sourceRoot?: string;
   /** Timeout for the whole installation. */
   timeoutMs?: number;
 }
@@ -50,11 +54,16 @@ export async function installRuntime(
     };
   }
   const runtimeHome = options.runtimeHome ?? resolveRuntimeHome();
-  const command = process.platform === "win32" ? "powershell.exe" : "bash";
-  const args =
-    process.platform === "win32"
-      ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath]
-      : [scriptPath];
+  const isWindows = process.platform === "win32";
+  const command = isWindows ? "powershell.exe" : "bash";
+  const targetArgs = options.bundleDir
+    ? [isWindows ? "-BundleDir" : "--bundle-dir", options.bundleDir]
+    : options.sourceRoot
+      ? [isWindows ? "-Source" : "--source", options.sourceRoot]
+      : [];
+  const args = isWindows
+    ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, ...targetArgs]
+    : [scriptPath, ...targetArgs];
   const timeoutMs = options.timeoutMs ?? INSTALL_TIMEOUT_MS;
 
   return await new Promise<RuntimeInstallOutcome>((resolve) => {

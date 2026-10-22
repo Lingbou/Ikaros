@@ -726,15 +726,22 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - Linux（x64，未签名）：AppImage、DEB、RPM；安装 `io.github.lingbou.ikaros.desktop`
   启动器、应用图标和 `ikaros` 可执行文件。
-- Windows（x64，未签名）：NSIS 安装器，自带 Python Runtime。`pnpm package:win`
-  先由 `scripts/prepare-runtime-payload.mjs` 生成 `build/runtime/`
-  （`ikaros-runtime-win-x64.tar.gz`：python-build-standalone CPython + `uv export`
-  锁定的 Runtime 依赖 + `ikaros_runtime` 源码，以及 `runtime-payload.json` 清单），
-  再由 electron-builder 以 `extraResources` 放进 `resources/runtime/`。
-- 首次启动把归档解压到 `~/.ikaros/runtime/<payload version>/`（见 §6.1、§9），用户
-  不需要自备 Python / uv / 源码 checkout；升级写入新版本目录，不覆盖旧目录。
-- Linux 安装包尚未携带 Runtime（AppImage/DEB/RPM 内置 Runtime 留后续 Issue）；
-  Linux 上仍需 checkout 加本地 Python 3.12/3.13。
+- Windows（x64，未签名）：NSIS 安装器；Linux：AppImage / DEB / RPM。两者都**不再
+  内置 Python Runtime**，而是随包携带：
+  - `resources/scripts/install-runtime.ps1` / `.sh`；
+  - `resources/runtime/ikaros_runtime-<version>-py3-none-any.whl` +
+    `runtime-bundle.json`（`version`、`protocolVersion`、`wheel`）。
+
+  `pnpm package:win` / `package:linux` / `package:dir` 先跑
+  `scripts/prepare-runtime-wheel.mjs`（`uv build --wheel` + 写 bundle 清单），
+  再由 electron-builder 以 `extraResources` 放到上述位置。
+- 首次启动检测不到 Runtime 时，离线弹窗提供「安装 Runtime」：调用随包脚本，
+  用 `uv` 在 `~/.ikaros/runtime/<version>/` 建隔离 venv 并从 wheel 安装
+  （见 §4.11 下方「独立安装」）。客户端只认
+  `~/.ikaros/runtime/install.json`，所以 Runtime 可以独立升级，不必重装客户端。
+- 旧的「随包 python-build-standalone payload」仍保留代码路径（
+  `prepare-runtime-payload.mjs` + `runtimeProvision.ts` 的 payload 分支）作为兜底，
+  但打包脚本不再调用它。
 - 生成 payload 需要 `uv` 在 PATH 上，首次运行需要网络：CPython 归档按
   `SHA256SUMS` 校验后缓存在 `build/runtime/cache/`。
 - Fedora 构建需要 `libxcrypt-compat`、`rpm-build`；Debian/Ubuntu 生成 RPM 需要
