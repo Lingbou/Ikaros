@@ -760,3 +760,36 @@ describe("EventFeed tool call groups", () => {
     ]);
   });
 });
+
+describe("EventFeed tool row gutter", () => {
+  it("keeps one status column and one action slot on every tool row", () => {
+    const thread = threadWith([
+      message("user-gutter", "turn-feed-measurement", "user", "Do it"),
+      toolCall("gutter-a", "First"),
+      toolResult("result-gutter-a", "gutter-a", "ok"),
+      toolCall("gutter-b", "Second"),
+      toolResult("result-gutter-b", "gutter-b", "ok"),
+      { ...toolCall("gutter-c", "Third"), status: "error" },
+    ]);
+    useAppStore.setState({ threads: [thread], selectedThreadId: thread.id });
+
+    const { container } = render(
+      <Tooltip.Provider>
+        <EventFeed bottomClearance={0} />
+      </Tooltip.Provider>,
+    );
+
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-event-id^="gutter-"]')];
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row.querySelectorAll("[data-tool-status]")).toHaveLength(1);
+      expect(row.querySelectorAll("[data-tool-action]")).toHaveLength(1);
+      // Status and action must be adjacent siblings of one fixed gutter, so
+      // every row lands its status icon on the same vertical line.
+      const status = row.querySelector("[data-tool-status]");
+      const action = row.querySelector("[data-tool-action]");
+      expect(status?.nextElementSibling).toBe(action);
+      expect(action?.parentElement).toBe(status?.parentElement);
+    }
+  });
+});

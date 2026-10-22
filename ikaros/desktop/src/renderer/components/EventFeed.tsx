@@ -270,12 +270,12 @@ function ToolGroupCard({
   const childThreadId = group.threadIds[group.threadIds.length - 1];
 
   return (
-    <div className="group flex w-full min-w-0 items-center gap-1">
+    <div className="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--panel-hover)]">
       <button
         type="button"
         aria-expanded={expanded}
         onClick={() => onToggle(group.id, !expanded)}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--panel-hover)]"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
       >
         <ChevronRight
           size={12}
@@ -291,32 +291,30 @@ function ToolGroupCard({
         <span className="shrink-0 text-[11px] font-medium leading-4 text-[var(--muted-strong)]">
           {t("events.toolGroup", { count: group.callCount })}
         </span>
-        {duration ? (
-          <span className="shrink-0 text-[10px] leading-4 text-[var(--muted)]">
-            {duration}
-          </span>
-        ) : null}
-        <span
-          className={cx("ml-auto flex shrink-0 items-center gap-1", status.className)}
-          title={status.label}
-        >
-          {status.icon}
-          {group.status === "error" || group.status === "interrupted" ? (
-            <span className="text-[10px] leading-4">{status.label}</span>
-          ) : null}
-        </span>
       </button>
-      {childThreadId ? (
-        <button
-          type="button"
-          aria-label={t("events.openSession")}
-          title={t("events.openSession")}
-          onClick={() => openThreadPanel(childThreadId)}
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--muted)] opacity-0 transition-opacity hover:bg-[var(--panel-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          <ArrowUpRight size={13} aria-hidden="true" />
-        </button>
-      ) : null}
+      <span className="w-10 shrink-0 text-right font-mono text-[10px] leading-4 text-[var(--muted)]">
+        {duration ?? ""}
+      </span>
+      <span
+        data-tool-status="true"
+        className={cx("flex size-4 shrink-0 items-center justify-center", status.className)}
+        title={status.label}
+      >
+        {status.icon}
+      </span>
+      <span data-tool-action="true" className="flex size-6 shrink-0 items-center justify-center">
+        {childThreadId ? (
+          <button
+            type="button"
+            aria-label={t("events.openSession")}
+            title={t("events.openSession")}
+            onClick={() => openThreadPanel(childThreadId)}
+            className="flex size-6 items-center justify-center rounded-md text-[var(--muted)] opacity-0 transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <ArrowUpRight size={13} aria-hidden="true" />
+          </button>
+        ) : null}
+      </span>
     </div>
   );
 }
