@@ -13,6 +13,7 @@ import {
 } from "./domain";
 import {
   DEFAULT_SIDEBAR_WIDTH,
+  DEFAULT_THREAD_PANEL_WIDTH,
   type DesktopAttachmentDescriptor,
   type DesktopAttachmentKind,
   type IkarosDesktopApi,
@@ -170,6 +171,7 @@ interface AppState {
   composerAttachments: ComposerAttachment[];
   fileSelection: RuntimeFileSelection | null;
   panelThreadId: string | null;
+  threadPanelWidth: number;
   sidebarOpen: boolean;
   sidebarWidth: number;
   searchOpen: boolean;
@@ -211,6 +213,7 @@ interface AppState {
   closeFile: () => void;
   openThreadPanel: (threadId: string) => void;
   closeThreadPanel: () => void;
+  setThreadPanelWidth: (width: number) => void;
   setSidebarOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSearchOpen: (open: boolean) => void;
@@ -2955,6 +2958,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerAttachments: [],
   fileSelection: null,
   panelThreadId: null,
+  threadPanelWidth: DEFAULT_THREAD_PANEL_WIDTH,
   sidebarOpen: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   searchOpen: false,
@@ -3053,6 +3057,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     void loadRuntimeThreadIntoStore(set, get, threadId).catch(() => undefined);
   },
   closeThreadPanel: () => set({ panelThreadId: null }),
+  setThreadPanelWidth: (threadPanelWidth) => set({ threadPanelWidth }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
   setSearchOpen: (searchOpen) => set({ searchOpen }),
