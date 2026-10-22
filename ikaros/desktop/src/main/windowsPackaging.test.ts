@@ -4,19 +4,20 @@ import desktopPackage from "../../package.json";
 import configuration from "../../electron-builder.config";
 
 describe("Windows distribution packaging", () => {
-  it("ships the bundled Runtime payload as extra resources", () => {
+  it("ships the Runtime installer and wheel as extra resources", () => {
     expect(configuration.win).toMatchObject({
       artifactName: "Ikaros-${version}-windows-${arch}-setup.${ext}",
       executableName: "Ikaros",
       target: [{ target: "nsis", arch: ["x64"] }],
       extraResources: [
         {
-          from: "build/runtime/ikaros-runtime-win-x64.tar.gz",
-          to: "runtime/ikaros-runtime-win-x64.tar.gz"
+          from: "../../scripts/install-runtime.ps1",
+          to: "scripts/install-runtime.ps1"
         },
         {
-          from: "build/runtime/runtime-payload.json",
-          to: "runtime/runtime-payload.json"
+          from: "build/runtime",
+          to: "runtime",
+          filter: ["*.whl", "runtime-bundle.json"]
         }
       ]
     });
@@ -30,16 +31,19 @@ describe("Windows distribution packaging", () => {
     });
   });
 
-  it("generates the Runtime payload before packaging", () => {
-    expect(desktopPackage.scripts["prepare:runtime"]).toContain(
-      "scripts/prepare-runtime-payload.mjs"
+  it("builds the Runtime wheel before packaging", () => {
+    expect(desktopPackage.scripts["prepare:wheel"]).toContain(
+      "scripts/prepare-runtime-wheel.mjs"
     );
     expect(desktopPackage.scripts["package:win"]).toContain(
+      "scripts/prepare-runtime-wheel.mjs"
+    );
+    expect(desktopPackage.scripts["package:win"]).not.toContain(
       "scripts/prepare-runtime-payload.mjs"
     );
     expect(desktopPackage.scripts["package:win"]).toContain("--win nsis --x64");
     expect(desktopPackage.scripts["package:dir"]).toContain(
-      "scripts/prepare-runtime-payload.mjs"
+      "scripts/prepare-runtime-wheel.mjs"
     );
   });
 });
