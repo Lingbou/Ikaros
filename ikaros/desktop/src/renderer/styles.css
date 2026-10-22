@@ -317,6 +317,10 @@ html[data-translucent-sidebar="true"] .sidebar-gradient {
   transition: padding-block 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.event-feed-row--tool {
+  padding-block: 0.375rem;
+}
+
 .event-feed-row--collapsed {
   padding-block: 0;
   pointer-events: none;
