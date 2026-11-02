@@ -6,8 +6,6 @@ messaging channel never invalidates an existing provider configuration.
 
 from __future__ import annotations
 
-import os
-import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,15 +13,14 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from ..configuration_io import atomic_write_file
 from ..errors import ConfigError
 from ..paths import RuntimePaths
 
 CHANNEL_CONFIG_VERSION = 1
 MAX_CHANNEL_CONFIG_BYTES = 64 * 1024
 _TELEGRAM_KEY = "telegram"
-_TELEGRAM_KEYS = frozenset(
-    {"enabled", "token", "proxy", "defaultProviderId", "defaultModelId"}
-)
+_TELEGRAM_KEYS = frozenset({"enabled", "token", "proxy", "defaultProviderId", "defaultModelId"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,16 +78,24 @@ class TelegramConfigStore:
         if normalized.proxy is not None:
             telegram["proxy"] = normalized.proxy
         document = {"version": CHANNEL_CONFIG_VERSION, _TELEGRAM_KEY: telegram}
-        self._atomic_write(_serialize(document))
+        write_failed = False
+        try:
+            atomic_write_file(
+                self._path,
+                _serialize(document),
+                temporary_prefix=".channels-",
+            )
+        except OSError:
+            write_failed = True
+        if write_failed:
+            raise ConfigError("channels.yaml could not be updated")
         self._config = normalized
         return normalized
 
     def protected_values(self) -> tuple[str, ...]:
         config = self._config
         return tuple(
-            value
-            for value in (config.token, config.proxy)
-            if isinstance(value, str) and value
+            value for value in (config.token, config.proxy) if isinstance(value, str) and value
         )
 
     def _load(self) -> TelegramConfig:
@@ -134,39 +139,6 @@ class TelegramConfigStore:
                 default_model_id=raw.get("defaultModelId"),
             )
         )
-
-    def _atomic_write(self, serialized: bytes) -> None:
-        temporary_path: Path | None = None
-        descriptor = -1
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if os.name != "nt":
-                os.chmod(self._path.parent, 0o700)
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=".channels-",
-                suffix=".tmp",
-                dir=self._path.parent,
-            )
-            temporary_path = Path(temporary_name)
-            if os.name != "nt":
-                os.chmod(temporary_path, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                descriptor = -1
-                handle.write(serialized)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, self._path)
-            temporary_path = None
-            _sync_directory_best_effort(self._path.parent)
-        except OSError:
-            raise ConfigError("channels.yaml could not be updated") from None
-        finally:
-            if descriptor >= 0:
-                with suppress(OSError):
-                    os.close(descriptor)
-            if temporary_path is not None:
-                with suppress(OSError):
-                    temporary_path.unlink(missing_ok=True)
 
 
 def _normalize(config: TelegramConfig) -> TelegramConfig:
@@ -228,19 +200,6 @@ def _serialize(document: dict[str, object]) -> bytes:
     if len(serialized) > MAX_CHANNEL_CONFIG_BYTES:
         raise ConfigError("channels.yaml exceeds the supported size")
     return serialized
-
-
-def _sync_directory_best_effort(directory: Path) -> None:
-    if os.name == "nt":
-        return
-    try:
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    except OSError:
-        pass
 
 
 __all__ = [

@@ -11,51 +11,13 @@ from typing import Any
 
 import yaml
 
+from ..configuration_io import load_unique_yaml_document
 from ..domain import SkillDescriptor, is_valid_skill_description, is_valid_skill_name
 
 MAX_SKILL_BYTES = 256 * 1024
 MAX_FRONTMATTER_BYTES = 16 * 1024
 
 type ProtectedValuesSource = Callable[[], Sequence[str]]
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """Safe YAML loader that refuses silent mapping-key replacement."""
-
-
-def _construct_unique_mapping(
-    loader: _UniqueKeyLoader,
-    node: yaml.nodes.MappingNode,
-    deep: bool = False,
-) -> dict[object, object]:
-    loader.flatten_mapping(node)
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as error:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found an unhashable key",
-                key_node.start_mark,
-            ) from error
-        if duplicate:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found a duplicate key",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_mapping,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +134,7 @@ def _parse_descriptor(directory_name: str, location: Path, source: bytes) -> Ski
     if len(frontmatter.encode("utf-8")) > MAX_FRONTMATTER_BYTES:
         raise _SkillReadError("frontmatter_too_large")
     try:
-        metadata: Any = yaml.load(frontmatter, Loader=_UniqueKeyLoader)
+        metadata: Any = load_unique_yaml_document(frontmatter)
     except yaml.YAMLError:
         raise _SkillReadError("invalid_frontmatter") from None
     if not isinstance(metadata, Mapping):
