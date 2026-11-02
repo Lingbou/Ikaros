@@ -976,9 +976,10 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 - 原始 Items 永不改写；被省略内容可通过 `history_read` 找回；同一 Run 可多次
   压缩，每次追加新 revision。
 - 中途兜底（对齐 Codex 的 mid-turn compaction）：若当前 Run 自身超过输入预算，
-  先按默认策略裁剪；仍放不下时降级为「只保留放得下的最新内容」，被省略的当前
-  Run 记录写入确定性压缩摘要，并通过 `current_run_omitted_through_item_id`
-  持久化边界，重启后不会重新引入。
+  先按默认策略裁剪；仍放不下时降级为「只保留放得下的最新内容」。被省略的当前
+  Run 记录**优先走语义摘要**（无工具摘要请求 → 重试），语义摘要失败才退回确定性
+  摘要；省略边界通过 `current_run_omitted_through_item_id` 持久化，重启后不会
+  重新引入。
 - 计费口径：Token 总量、每日分桶、最长任务、连续天数都来自 Provider 上报。
 
 实现位置：`runtime/src/ikaros_runtime/run_input.py`、
