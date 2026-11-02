@@ -9,9 +9,14 @@ class ModelCapacityDefaults:
 
 
 UNKNOWN_MODEL_CAPACITY = ModelCapacityDefaults(32_768)
-_DEEPSEEK_V4_CAPACITY = ModelCapacityDefaults(1_000_000)
-_DEEPSEEK_V4_MODELS = frozenset(
-    {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"}
+_LARGE_CONTEXT_CAPACITY = ModelCapacityDefaults(1_000_000)
+_LARGE_CONTEXT_MODELS = frozenset(
+    {
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-vision-exp",
+    }
 )
 _VISION_MODEL_IDS = frozenset({"deepseek-v4-flash-vision-exp"})
 _VISION_NAME_MARKERS = frozenset({"vision", "vl", "multimodal"})
@@ -33,6 +38,6 @@ def model_supports_vision(model_id: str) -> bool:
 def default_model_capacity(model_id: str) -> ModelCapacityDefaults:
     """Initial model context window before discovery or explicit configuration."""
 
-    if model_id in _DEEPSEEK_V4_MODELS:
-        return _DEEPSEEK_V4_CAPACITY
+    if model_id in _LARGE_CONTEXT_MODELS:
+        return _LARGE_CONTEXT_CAPACITY
     return UNKNOWN_MODEL_CAPACITY

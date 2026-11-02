@@ -265,6 +265,8 @@ class ConfigStore:
                         enabled=enabled,
                         supports_tools=model.supports_tools,
                         context_window=model.context_window,
+                        reasoning_effort=model.reasoning_effort,
+                        reasoning_efforts=model.reasoning_efforts,
                     )
                 )
             else:

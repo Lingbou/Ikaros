@@ -162,10 +162,14 @@ describe("RuntimeHost integration", () => {
   beforeAll(async () => {
     managedWorkspacesRoot = await mkdtemp(join(tmpdir(), "ikaros-managed-workspaces-"));
     process.env.IKAROS_WORKSPACES_ROOT = managedWorkspacesRoot;
+    // These tests cover persistence and reconnection, not background title
+    // generation; keep titles stable across the restart assertion.
+    process.env.IKAROS_THREAD_TITLES = "0";
   });
 
   afterAll(async () => {
     delete process.env.IKAROS_WORKSPACES_ROOT;
+    delete process.env.IKAROS_THREAD_TITLES;
     await rm(managedWorkspacesRoot, { recursive: true, force: true });
   });
 

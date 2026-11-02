@@ -21,6 +21,7 @@ from ikaros_runtime.storage import SqliteRuntimeStore
 @pytest.mark.parametrize(
     "model_id,explicit_limits,expected",
     [
+        ("deepseek-flash", {}, 1_000_000),
         ("deepseek-v4-flash", {}, 1_000_000),
         ("deepseek-v4-pro", {}, 1_000_000),
         ("deepseek-v4-flash-vision-exp", {}, 1_000_000),
@@ -73,6 +74,7 @@ async def test_discovery_assigns_known_capacity_and_unknown_fallback() -> None:
             200,
             json={
                 "data": [
+                    {"id": "deepseek-flash"},
                     {"id": "deepseek-v4-flash"},
                     {"id": "deepseek-v4-pro"},
                     {"id": "deepseek-v4-flash-vision-exp"},
@@ -87,6 +89,7 @@ async def test_discovery_assigns_known_capacity_and_unknown_fallback() -> None:
         )
 
     assert {item.id: item.context_window for item in discovered} == {
+        "deepseek-flash": 1_000_000,
         "deepseek-v4-flash": 1_000_000,
         "deepseek-v4-pro": 1_000_000,
         "deepseek-v4-flash-vision-exp": 1_000_000,
@@ -155,3 +158,21 @@ async def test_rediscovery_preserves_saved_capacity_but_provider_edit_can_change
     finally:
         await registry.close()
         store.close()
+
+
+def test_model_toggle_preserves_reasoning_configuration(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path)
+    store.configure_deepseek(
+        api_key="test-toggle-reasoning-secret",
+        models=[ModelInput("deepseek-chat", "DeepSeek Chat", 32768)],
+    )
+    store.set_model_limits("deepseek", "deepseek-chat", 32768, "high", ("low", "high", "max"))
+
+    disabled = store.set_model_enabled("deepseek", "deepseek-chat", False)
+
+    assert disabled.enabled is False
+    assert disabled.reasoning_effort == "high"
+    assert disabled.reasoning_efforts == ("low", "high", "max")
+    reloaded = ConfigStore(tmp_path).model_summaries()[0]
+    assert reloaded.reasoning_effort == "high"
+    assert reloaded.reasoning_efforts == ("low", "high", "max")

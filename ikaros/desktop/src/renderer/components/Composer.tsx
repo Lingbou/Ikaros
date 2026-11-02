@@ -426,24 +426,33 @@ export function Composer({
                         );
                       }
                       return (
-                        <DropdownMenu.Sub key={`${candidate.providerId}/${candidate.modelId}`}>
-                          <DropdownMenu.SubTrigger
+                        <div
+                          key={`${candidate.providerId}/${candidate.modelId}`}
+                          className="flex h-9 items-center rounded-lg"
+                        >
+                          <DropdownMenu.Item
                             onSelect={() =>
                               selectModel({
                                 providerId: candidate.providerId,
                                 modelId: candidate.modelId,
                               })
                             }
-                            className={rowClassName}
+                            className="flex h-full min-w-0 flex-1 items-center gap-3 rounded-lg px-2.5 text-[13px] leading-5 text-[var(--text)] outline-none data-[highlighted]:bg-[var(--surface-hover)]"
                           >
                             {label}
-                            <ChevronRight
-                              size={13}
-                              aria-hidden="true"
-                              className="shrink-0 text-[var(--muted)]"
-                            />
-                          </DropdownMenu.SubTrigger>
-                          <DropdownMenu.Portal>
+                            {selected ? (
+                              <Check size={14} className="shrink-0 text-[var(--accent)]" />
+                            ) : null}
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Sub>
+                            <DropdownMenu.SubTrigger
+                              aria-label={t("settings.models.reasoningLevels")}
+                              title={t("settings.models.reasoningLevels")}
+                              className="flex size-7 shrink-0 items-center justify-center rounded-md text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] data-[highlighted]:bg-[var(--surface-hover)] data-[state=open]:bg-[var(--surface-hover)]"
+                            >
+                              <ChevronRight size={13} aria-hidden="true" />
+                            </DropdownMenu.SubTrigger>
+                            <DropdownMenu.Portal>
                             <DropdownMenu.SubContent
                               sideOffset={6}
                               alignOffset={-4}
@@ -468,8 +477,9 @@ export function Composer({
                                 );
                               })}
                             </DropdownMenu.SubContent>
-                          </DropdownMenu.Portal>
-                        </DropdownMenu.Sub>
+                            </DropdownMenu.Portal>
+                          </DropdownMenu.Sub>
+                        </div>
                       );
                     })}
                   </DropdownMenu.Content>
