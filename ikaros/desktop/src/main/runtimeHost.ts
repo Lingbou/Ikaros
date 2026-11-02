@@ -11,7 +11,7 @@ import {
   type RuntimeJournalEvent
 } from "../shared/runtime";
 import { runtimePython } from "./runtimePaths";
-import type { RuntimeLaunch } from "./runtimeProvision";
+import type { RuntimeLaunch } from "./runtimeLaunchResolver";
 import {
   RuntimeRpcError,
   isRuntimeNotification,
@@ -428,11 +428,6 @@ export class RuntimeHost {
 
   get pid(): number | undefined {
     return this.child?.pid;
-  }
-
-  /** Surfaces payload deployment progress on the existing host status channel. */
-  reportStartupProgress(message: string): void {
-    this.updateHostStatus("starting", message);
   }
 
   onNotification(listener: (notification: RuntimeNotification) => void): () => void {

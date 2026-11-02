@@ -175,7 +175,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 | 文件系统内容 | 用户（工具以用户权限访问） |
 | 会话 SQLite、Memory SQLite、配置文档 | `~/.ikaros`（Runtime 独占管理） |
 | 进程输出文件（`~/.ikaros/processes/`） | Runtime（命令跨 Run 与 Runtime 重启保留） |
-| 内置 Runtime payload（`~/.ikaros/runtime/`） | Desktop（安装包携带，首次启动布置） |
+| 已安装 Runtime（`~/.ikaros/runtime/`） | Runtime 安装脚本创建；Desktop 只读取 `install.json` 并启动 |
 
 ## 2. 技术栈与版本
 
@@ -447,16 +447,15 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 配置与脚本：
 
 - `electron-builder.config.ts` — 打包配置：Linux（AppImage/DEB/RPM，x64）、Windows
-  （NSIS，x64，以 `extraResources` 携带 Runtime payload）、应用 ID、图标与安装项。
+  （NSIS，x64，以 `extraResources` 携带 Runtime wheel bundle）、应用 ID、图标与安装项。
 - `electron.vite.config.ts` — electron-vite 构建配置（main / preload / renderer）。
 - `package.json` — 脚本与依赖（Electron 43、React 19、Vite 7、Vitest 4 等）。
 - `pnpm-lock.yaml` / `pnpm-workspace.yaml` — 依赖锁与工作区定义。
 - `tsconfig.json` / `tsconfig.node.json` / `tsconfig.web.json` / `tsconfig.live.json`
   — TypeScript 项目引用与三套构建/测试配置。
 - `vitest.config.ts` — 测试环境配置。
-- `scripts/prepare-runtime-payload.mjs` — 构建期生成内置 Runtime payload：下载
-  python-build-standalone 的 CPython、用 `uv export` 锁定依赖装入 payload、打包
-  `ikaros-runtime-win-x64.tar.gz` 并写出 `runtime-payload.json` 清单。
+- `scripts/prepare-runtime-wheel.mjs` — 构建期用 `uv build` 生成 Runtime wheel，
+  并写出 `runtime-bundle.json`（版本、协议版本、wheel 文件名）。
 - `scripts/run-live-deepseek.mjs` — live smoke 运行器：读取 key file、执行真实
   DeepSeek 用例并扫描输出中的凭据（PASS/FAIL）。
 
@@ -475,8 +474,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   。
 - `runtimePaths.ts` — 路径解析：Runtime home（`IKAROS_HOME` / `~/.ikaros`）、开发态
   checkout Runtime 根与 venv 解释器。
-- `runtimeProvision.ts` — 内置 Runtime payload：读清单、校验归档 SHA-256、解压到
-  `~/.ikaros/runtime/<payload version>/` 并写就绪标记。
+- `runtimeLaunchResolver.ts` — 解析 Runtime 解释器：显式 override、开发态
+  `runtime/.venv`、打包态 `runtime/install.json`。
 - `security.ts` — 渲染信任策略与窗口安全设置。
 - `window.ts` — 创建主窗口、标题栏选项、开发/生产渲染地址。
 
@@ -726,8 +725,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - Linux（x64，未签名）：AppImage、DEB、RPM；安装 `io.github.lingbou.ikaros.desktop`
   启动器、应用图标和 `ikaros` 可执行文件。
-- Windows（x64，未签名）：NSIS 安装器；Linux：AppImage / DEB / RPM。两者都**不再
-  内置 Python Runtime**，而是随包携带：
+- Windows（x64，未签名）：NSIS 安装器；Linux：AppImage / DEB / RPM。两者都**不内置
+  Python Runtime**，而是随包携带：
   - `resources/scripts/install-runtime.ps1` / `.sh`；
   - `resources/runtime/ikaros_runtime-<version>-py3-none-any.whl` +
     `runtime-bundle.json`（`version`、`protocolVersion`、`wheel`）。
@@ -736,24 +735,19 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
   `scripts/prepare-runtime-wheel.mjs`（`uv build --wheel` + 写 bundle 清单），
   再由 electron-builder 以 `extraResources` 放到上述位置。
 - 首次启动检测不到 Runtime 时，离线弹窗提供「安装 Runtime」：调用随包脚本，
-  用 `uv` 在 `~/.ikaros/runtime/<version>/` 建隔离 venv 并从 wheel 安装
-  （见 §4.11 下方「独立安装」）。客户端只认
-  `~/.ikaros/runtime/install.json`，所以 Runtime 可以独立升级，不必重装客户端。
-- 旧的「随包 python-build-standalone payload」仍保留代码路径（
-  `prepare-runtime-payload.mjs` + `runtimeProvision.ts` 的 payload 分支）作为兜底，
-  但打包脚本不再调用它。
-- 生成 payload 需要 `uv` 在 PATH 上，首次运行需要网络：CPython 归档按
-  `SHA256SUMS` 校验后缓存在 `build/runtime/cache/`。
+  用 `uv` 在 `~/.ikaros/runtime/<version>/` 建隔离 venv 并从 wheel 安装。
+  客户端只认 `~/.ikaros/runtime/install.json`，所以 Runtime 可以独立升级，
+  不必重装客户端。
+- 构建 Runtime wheel 需要 `uv` 在 PATH 上；用户侧执行离线安装时同样需要 `uv`。
 - Fedora 构建需要 `libxcrypt-compat`、`rpm-build`；Debian/Ubuntu 生成 RPM 需要
   `rpm` 工具。
-- 安装包与 payload 均未签名，自动更新未实现。
+- 安装包与 Runtime wheel 均未签名，自动更新未实现。
 - 独立安装（Linux / WSL / 复用同一份 Runtime 的场景）：
   `scripts/install-runtime.ps1`（Windows）与 `scripts/install-runtime.sh`
   （Linux/macOS）用 `uv` 把 Runtime 装进 `~/.ikaros/runtime/<version>/`，并写
   `~/.ikaros/runtime/install.json`（schema 1：`runtimeVersion`、`protocolVersion`、
-  `runtimeRoot`、`pythonExecutable`、`installedAt`）。客户端启动时**优先**读这份
-  manifest（`runtimeProvision.ts`），找不到才回落到随包 payload；`-Check` /
-  `--check` 只校验不安装，重复运行幂等。
+  `runtimeRoot`、`pythonExecutable`、`installedAt`）。客户端启动时只读取这份
+  manifest；`-Check` / `--check` 只校验不安装，重复运行幂等。
 
 ### 4.12 界面语言与 i18n
 
@@ -846,11 +840,9 @@ Electron main 在 `ipc.ts` 中注册全部通道：
 
 - 每个应用启动一个长驻 Python Runtime；Desktop 主进程通过回环 WebSocket
   JSON-RPC 连接（`Authorization: Bearer <每次启动随机 token>`）。
-- 解释器解析顺序：`IKAROS_RUNTIME_PYTHON` 显式覆盖 → 打包态内置 payload
-  （`~/.ikaros/runtime/<payload version>/python/python.exe`）→ 开发态 checkout 的
-  `runtime/.venv`。payload 未就绪时解压归档（先解压到 `.staging` 再改名就位，中断
-  不会留下“看似就绪”的目录）并写就绪标记 `.ikaros-runtime.json`；标记、归档校验或
-  解释器对不上时重新布置。
+- 解释器解析顺序：`IKAROS_RUNTIME_PYTHON` 显式覆盖 → 开发态 checkout 的
+  `runtime/.venv` → 打包态 `~/.ikaros/runtime/install.json` 指向的隔离 venv。
+  打包态没有安装记录或解释器缺失时启动失败，由 Desktop 的 Runtime 安装弹窗处理。
 - 启动参数：`--host 127.0.0.1`、`--port 0`（临时端口）、`--token`、
   `--parent-pid`。标准输出只有一条机器可读就绪记录（含选定端口）；日志走标准错误。
 - 单实例：通过 `runtime.lock` 独占 Runtime home；等锁默认超时 10 秒、轮询间隔
@@ -2210,14 +2202,15 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
   processes/           进程输出（<threadId>/<processId>.log + .json 元数据）
   skills/              用户 Skills：<name>/SKILL.md
   logs/                持久文件日志（启用时创建）
-  runtime/             内置 Runtime payload（打包态首次启动布置）
-    <payload version>/ 例如 0.1.0-py3.12.15-win-x64
-      python/          CPython 与 Runtime 依赖（python-build-standalone 布局）
-      .ikaros-runtime.json  就绪标记：写入即代表该版本布置完成
+  runtime/             Runtime 安装目录
+    install.json       当前 Runtime 解释器与协议版本
+    <version>/         隔离 venv，例如 0.1.0
+      bin/python       Linux/macOS 解释器
+      Scripts/python.exe  Windows 解释器
 ```
 
-- payload 目录只增不改：升级写入新的 `<payload version>`，旧目录与其余用户数据
-  不被删除；卸载同样保留 `~/.ikaros`（NSIS `deleteAppDataOnUninstall: false`）。
+- Runtime 安装目录按版本隔离；`install.json` 指向当前解释器。卸载保留
+  `~/.ikaros`（NSIS `deleteAppDataOnUninstall: false`）。
 - 自动分配的 Thread 工作区不在 `~/.ikaros` 内，位于 `~/Documents/Ikaros/`
   （`<YYYY-MM-DD>/<HHMMSS>-<thread 后缀>`，`IKAROS_WORKSPACES_ROOT` 可覆盖）。
 
@@ -2226,12 +2219,12 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 | 项目 | 状态 |
 | --- | --- |
 | Runtime 离线基线 | pytest 1004 passed / 2 skipped（WSL Linux）；Windows 本机 924 passed，失败均为已知平台差异（file.preview 换行、Golden Trace 仅 POSIX 生成校验） |
-| Desktop 离线基线 | Vitest 553 passed / 1 skipped |
+| Desktop 离线基线 | Vitest 538 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
 
-离线基线对应 2026-10-21 代码状态（重构批次 PR #45–#62 集成后的结果）。Windows 上
+离线基线对应 2026-11-02 代码状态（PR #174 与 Runtime payload 路径清理批次集成后的结果）。Windows 上
 `test_file_preview.py`、golden trace 回放与 `test_file_changes.py` 存在 CRLF /
 路径分隔符 / 环境上限等平台差异，基线以 Linux 为准。
 
@@ -2315,7 +2308,7 @@ uv sync --project runtime --locked
 cd ikaros/desktop; pnpm install; pnpm dev
 
 # 检查与打包（ikaros/desktop）
-pnpm check; pnpm prepare:runtime; pnpm package:dir; pnpm package:linux; pnpm package:win
+pnpm check; pnpm prepare:wheel; pnpm package:dir; pnpm package:linux; pnpm package:win
 
 # Runtime 校验（仓库根目录）
 uv run --project runtime ruff check runtime
@@ -2395,9 +2388,9 @@ uv run --project runtime python -m ikaros_runtime storage repair-projections
 | 桌面 | 重连退避 | 50/100/200/400/800 ms；进程重启 100/200/400 ms |
 | 桌面 | 分页 | 目录与回合 ≤100/页 |
 | 桌面 | 偏好 | 侧边栏 220–520 px；用户名 ≤32 字符 |
-| 打包 | Runtime payload 版本 | `<runtime 版本>-py<CPython 版本>-<平台>`，如 `0.1.0-py3.12.15-win-x64` |
-| 打包 | payload 位置/标记 | `~/.ikaros/runtime/<payload version>/` / `.ikaros-runtime.json` |
-| 打包 | payload 归档 | `resources/runtime/ikaros-runtime-win-x64.tar.gz`（SHA-256 校验后解压） |
+| 打包 | Runtime bundle | `resources/runtime/` 中的 `.whl` + `runtime-bundle.json` |
+| Runtime 安装 | 目录/清单 | `~/.ikaros/runtime/<version>/` + `~/.ikaros/runtime/install.json` |
+| Runtime 安装 | manifest schema | 1 |
 | Skills | 名称/描述/位置 | `^[a-z0-9][a-z0-9-]{0,63}$` / ≤1,024 / ≤32,767 字符 |
 | Skills | 文件 | SKILL.md ≤256 KiB；frontmatter ≤16 KiB |
 | 身份 | 核心预算 | ≤2,048 字符；id `ikaros-identity` v1 |
