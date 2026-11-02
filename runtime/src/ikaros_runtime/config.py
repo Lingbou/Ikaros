@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Mapping
-from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 
+from .configuration_io import (
+    atomic_write_file,
+    load_unique_yaml_document,
+    sync_directory_best_effort,
+)
 from .errors import ConfigError
 from .paths import RuntimePaths
 
@@ -22,45 +24,6 @@ type ConfigSectionName = Literal["providers", "skills"]
 
 _SECTION_NAMES: tuple[ConfigSectionName, ...] = ("providers", "skills")
 _TOP_LEVEL_KEYS = frozenset({"version", *_SECTION_NAMES})
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """Safe YAML loader that rejects mappings whose keys would be overwritten."""
-
-
-def _construct_unique_mapping(
-    loader: _UniqueKeyLoader,
-    node: yaml.nodes.MappingNode,
-    deep: bool = False,
-) -> dict[object, object]:
-    loader.flatten_mapping(node)
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as error:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found an unhashable key",
-                key_node.start_mark,
-            ) from error
-        if duplicate:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found a duplicate key",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_mapping,
-)
 
 
 class ConfigDocumentStore:
@@ -137,7 +100,7 @@ class ConfigDocumentStore:
         parse_failed = False
         document: Any = None
         try:
-            document = yaml.load(source.decode("utf-8"), Loader=_UniqueKeyLoader)
+            document = load_unique_yaml_document(source.decode("utf-8"))
         except (UnicodeError, yaml.YAMLError):
             parse_failed = True
         if parse_failed:
@@ -156,7 +119,17 @@ class ConfigDocumentStore:
             if section:
                 document[name] = section
         serialized = _serialize(document)
-        self._atomic_write(serialized)
+        write_failed = False
+        try:
+            atomic_write_file(
+                self._path,
+                serialized,
+                temporary_prefix=".config-",
+            )
+        except OSError:
+            write_failed = True
+        if write_failed:
+            raise ConfigError("config.yaml could not be updated")
 
     def _delete_document(self) -> None:
         delete_failed = False
@@ -167,43 +140,7 @@ class ConfigDocumentStore:
         if delete_failed:
             raise ConfigError("config.yaml could not be updated")
         if self._runtime_home.exists():
-            _sync_directory_best_effort(self._runtime_home)
-
-    def _atomic_write(self, serialized: bytes) -> None:
-        temporary_path: Path | None = None
-        descriptor = -1
-        write_failed = False
-        try:
-            self._runtime_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if os.name != "nt":
-                os.chmod(self._runtime_home, 0o700)
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=".config-",
-                suffix=".tmp",
-                dir=self._runtime_home,
-            )
-            temporary_path = Path(temporary_name)
-            if os.name != "nt":
-                os.chmod(temporary_path, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                descriptor = -1
-                handle.write(serialized)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, self._path)
-            temporary_path = None
-            _sync_directory_best_effort(self._runtime_home)
-        except OSError:
-            write_failed = True
-        finally:
-            if descriptor >= 0:
-                with suppress(OSError):
-                    os.close(descriptor)
-            if temporary_path is not None:
-                with suppress(OSError):
-                    temporary_path.unlink(missing_ok=True)
-        if write_failed:
-            raise ConfigError("config.yaml could not be updated")
+            sync_directory_best_effort(self._runtime_home)
 
 
 def _parse_document(value: Any) -> dict[ConfigSectionName, dict[str, object]]:
@@ -270,19 +207,6 @@ def _serialize(document: Mapping[str, object]) -> bytes:
     if len(encoded) > MAX_CONFIG_BYTES:
         raise ConfigError("config.yaml exceeds the supported size")
     return encoded
-
-
-def _sync_directory_best_effort(directory: Path) -> None:
-    if os.name == "nt":
-        return
-    try:
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    except OSError:
-        pass
 
 
 __all__ = [

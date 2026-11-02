@@ -15,7 +15,7 @@ export interface DesktopNotificationOptions {
   body: string;
 }
 
-export interface DesktopNotificationHandle {
+interface DesktopNotificationHandle {
   show(): void;
   on(event: "click", listener: () => void): void;
 }

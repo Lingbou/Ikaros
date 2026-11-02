@@ -7,7 +7,7 @@ const MILLISECONDS_PER_DAY = 86_400_000;
 const TOKEN_ACTIVITY_CELL_COUNT = TOKEN_ACTIVITY_WEEK_COUNT * TOKEN_ACTIVITY_DAY_COUNT;
 
 export type TokenActivityView = "daily" | "weekly" | "cumulative";
-export type TokenActivityLevel = 0 | 1 | 2 | 3 | 4;
+type TokenActivityLevel = 0 | 1 | 2 | 3 | 4;
 export type ProfileUsageLanguage = "en" | "zh-CN";
 
 export interface TokenActivityChart {

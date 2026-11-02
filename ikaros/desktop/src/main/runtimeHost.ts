@@ -26,22 +26,6 @@ import {
   type RuntimeNotification
 } from "./runtime/wire";
 
-export {
-  RuntimeRpcError,
-  parseRuntimeEventNotification,
-  parseRuntimeInitializeResult,
-  parseRuntimeJournalEvent,
-  parseRuntimeJsonRpcResponse,
-  parseRuntimeMethodResult,
-  parseRuntimeReplayResult,
-  parseRuntimeThreadGetResult,
-  parseRuntimeThreadListPage,
-  parseRuntimeThreadMutationResult,
-  parseRuntimeTurnListPage,
-  parseRuntimeUsageReadResult
-} from "./runtime/wire";
-export type { RuntimeNotification } from "./runtime/wire";
-
 const SOCKET_RECONNECT_DELAYS_MS = [50, 100, 200, 400, 800] as const;
 const RUNTIME_RESTART_DELAYS_MS = [100, 200, 400] as const;
 export const RUNTIME_HOST_STATUS_NOTIFICATION = "ikaros.host.status";
@@ -490,7 +474,7 @@ export class RuntimeHost {
       throw new Error("Runtime connection is unavailable.");
     }
     const result = await connection.request<unknown>(method, params, this.options.startTimeoutMs);
-    return parseRuntimeMethodResult(method, result, params) as TResult;
+    return parseRuntimeMethodResult(method, result) as TResult;
   }
 
   private async ensureConnectedOnce(): Promise<RuntimeConnectionInfo> {

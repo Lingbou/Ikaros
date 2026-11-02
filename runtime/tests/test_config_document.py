@@ -161,7 +161,7 @@ def test_document_atomic_replace_failure_preserves_all_sections_and_cleans_temp(
         del source, target
         raise OSError("failure containing secret-sentinel")
 
-    monkeypatch.setattr("ikaros_runtime.config.os.replace", fail_replace)
+    monkeypatch.setattr("ikaros_runtime.configuration_io.os.replace", fail_replace)
 
     with pytest.raises(ConfigError) as captured:
         document.replace_section("providers", {"provider": {"api_key": "secret-sentinel"}})

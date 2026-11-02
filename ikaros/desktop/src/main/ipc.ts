@@ -82,11 +82,8 @@ import {
 } from "./backgroundProcessNotifications";
 import { getUiPreferences, updateUiPreferences } from "./preferences";
 import type { RendererTrustPolicy } from "./security";
-import {
-  RUNTIME_HOST_STATUS_NOTIFICATION,
-  RuntimeRpcError,
-  type RuntimeHost
-} from "./runtimeHost";
+import { RUNTIME_HOST_STATUS_NOTIFICATION, type RuntimeHost } from "./runtimeHost";
+import { RuntimeRpcError } from "./runtime/wire";
 import { updateWindowChrome } from "./window";
 
 type RemoveIpcHandlers = () => void;

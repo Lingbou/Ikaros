@@ -1,6 +1,5 @@
 import {
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
-  RUNTIME_JOURNAL_EVENT_TYPES,
   RUNTIME_PROTOCOL_MANIFEST,
   RUNTIME_RPC_METHODS,
   type RuntimeJournalEventType,
@@ -21,7 +20,6 @@ import type {
 import { RUNTIME_MEMORY_ERROR_REASON_CODES_BY_METHOD } from "../../shared/runtime";
 
 const RUNTIME_RPC_METHOD_SET = new Set<string>(RUNTIME_RPC_METHODS);
-const RUNTIME_JOURNAL_EVENT_TYPE_SET = new Set<string>(RUNTIME_JOURNAL_EVENT_TYPES);
 const MEMORY_OPERATION_ERROR_CODE =
   RUNTIME_PROTOCOL_MANIFEST.errors.memoryOperation.code;
 const MEMORY_OPERATION_ERROR_MESSAGE =
@@ -326,10 +324,7 @@ export function parseRuntimeThreadMutationResult(
   };
 }
 
-export function parseRuntimeTurnListPage(
-  value: unknown,
-  expectedScope?: { threadId: string; branchId: string }
-): RuntimeTurnListPage {
+export function parseRuntimeTurnListPage(value: unknown): RuntimeTurnListPage {
   if (
     !isWireObject(value) ||
     !Array.isArray(value.turns) ||
@@ -357,11 +352,7 @@ function isRuntimeRpcMethod(method: string): method is RuntimeRpcMethod {
   return RUNTIME_RPC_METHOD_SET.has(method);
 }
 
-export function parseRuntimeMethodResult(
-  method: string,
-  value: unknown,
-  params: Readonly<Record<string, unknown>> = {}
-): unknown {
+export function parseRuntimeMethodResult(method: string, value: unknown): unknown {
   if (!isRuntimeRpcMethod(method)) {
     throw new Error(`Desktop does not support Runtime RPC method ${method}.`);
   }

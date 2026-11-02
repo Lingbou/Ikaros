@@ -7,11 +7,8 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  RUNTIME_HOST_STATUS_NOTIFICATION,
-  RuntimeHost,
-  RuntimeRpcError
-} from "../main/runtimeHost";
+import { RUNTIME_HOST_STATUS_NOTIFICATION, RuntimeHost } from "../main/runtimeHost";
+import { RuntimeRpcError } from "../main/runtime/wire";
 import type { IkarosDesktopApi } from "../shared/platform";
 import type {
   RuntimeFileChangeResult,
