@@ -21,20 +21,19 @@ import {
   type RuntimeTurnHistory,
   type RuntimeUsageReadResult
 } from "../shared/runtime";
+import { RuntimeHost, type RuntimeConnectionInfo } from "./runtimeHost";
 import {
-  parseRuntimeThreadGetResult,
-  parseRuntimeThreadMutationResult,
+  RuntimeRpcError,
   parseRuntimeJournalEvent,
   parseRuntimeJsonRpcResponse,
   parseRuntimeReplayResult,
+  parseRuntimeThreadGetResult,
   parseRuntimeThreadListPage,
+  parseRuntimeThreadMutationResult,
   parseRuntimeTurnListPage,
   parseRuntimeUsageReadResult,
-  RuntimeHost,
-  RuntimeRpcError,
-  type RuntimeConnectionInfo,
   type RuntimeNotification
-} from "./runtimeHost";
+} from "./runtime/wire";
 
 const runtimeRoot = fileURLToPath(new URL("../../../../runtime", import.meta.url));
 /** Module that launches the Runtime with the deterministic fake provider injected. */
@@ -333,8 +332,7 @@ describe("RuntimeHost integration", () => {
       snapshotSeq: 8,
       extra: "passthrough"
     };
-    const scope = { threadId: "thread-1", branchId: "branch-1" };
-    expect(parseRuntimeTurnListPage(page, scope)).toEqual(page);
+    expect(parseRuntimeTurnListPage(page)).toEqual(page);
     for (const invalid of [
       null,
       {},
@@ -343,7 +341,7 @@ describe("RuntimeHost integration", () => {
       { ...page, turns: null },
       { ...page, hasMore: "not-a-bool" }
     ]) {
-      expect(() => parseRuntimeTurnListPage(invalid, scope)).toThrow(
+      expect(() => parseRuntimeTurnListPage(invalid)).toThrow(
         "Runtime returned an invalid Turn history page."
       );
     }

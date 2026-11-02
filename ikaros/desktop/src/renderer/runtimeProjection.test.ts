@@ -1579,7 +1579,6 @@ describe("Runtime Turn model selection", () => {
     const sessionItem = (
       id: string,
       kind: "tool_call" | "tool_result",
-      toolName: string,
       data: Record<string, unknown>,
     ) => ({
       id,
@@ -1597,14 +1596,14 @@ describe("Runtime Turn model selection", () => {
 
     const [thread] = replayRuntimeEvents(projectRuntimeThreads([summary]), [
       event(2, "item.completed", "turn-session", "run-session", "call-subagent", {
-        item: sessionItem("call-subagent", "tool_call", "subagent", {
+        item: sessionItem("call-subagent", "tool_call", {
           callId: "provider-call-subagent",
           toolName: "subagent",
           arguments: { title: "Survey", prompt: "Look around" },
         }),
       }),
       event(3, "item.completed", "turn-session", "run-session", "result-subagent", {
-        item: sessionItem("result-subagent", "tool_result", "subagent", {
+        item: sessionItem("result-subagent", "tool_result", {
           callId: "provider-result-subagent",
           toolCallItemId: "call-subagent",
           toolName: "subagent",
@@ -1617,7 +1616,7 @@ describe("Runtime Turn model selection", () => {
         }),
       }),
       event(4, "item.completed", "turn-session", "run-session", "result-rename", {
-        item: sessionItem("result-rename", "tool_result", "thread_rename", {
+        item: sessionItem("result-rename", "tool_result", {
           callId: "provider-result-rename",
           toolCallItemId: "call-rename",
           toolName: "thread_rename",

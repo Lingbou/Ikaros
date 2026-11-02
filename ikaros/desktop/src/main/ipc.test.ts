@@ -9,11 +9,8 @@ import {
   DEFAULT_UI_PREFERENCES,
 } from "../shared/platform";
 import { getUiPreferences } from "./preferences";
-import {
-  RUNTIME_HOST_STATUS_NOTIFICATION,
-  RuntimeRpcError,
-  type RuntimeNotification
-} from "./runtimeHost";
+import { RUNTIME_HOST_STATUS_NOTIFICATION } from "./runtimeHost";
+import { RuntimeRpcError, type RuntimeNotification } from "./runtime/wire";
 
 const electron = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();

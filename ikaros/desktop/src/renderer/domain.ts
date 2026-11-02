@@ -198,7 +198,7 @@ export interface Turn {
   events: AgentEvent[];
 }
 
-export interface Branch {
+interface Branch {
   id: string;
   threadId: string;
   turns: Turn[];

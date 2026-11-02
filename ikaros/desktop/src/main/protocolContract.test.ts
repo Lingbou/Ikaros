@@ -84,11 +84,7 @@ describe("Runtime protocol Golden Trace", () => {
           throw new Error("Golden response method is missing");
         }
         expect(
-          parseRuntimeMethodResult(
-            message.method,
-            response.result,
-            message.requestParams ?? {}
-          )
+          parseRuntimeMethodResult(message.method, response.result)
         ).toBeDefined();
       }
     }
@@ -156,7 +152,7 @@ describe("Runtime protocol Golden Trace", () => {
       );
     }
 
-    expect(() => parseRuntimeMethodResult("thread.unknown", {}, {})).toThrow(
+    expect(() => parseRuntimeMethodResult("thread.unknown", {})).toThrow(
       "Desktop does not support Runtime RPC method thread.unknown."
     );
     expect(() => parseRuntimeMethodResult("thread.list", null)).toThrow(

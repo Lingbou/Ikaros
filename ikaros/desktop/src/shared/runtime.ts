@@ -1,4 +1,4 @@
-export type RuntimeWorkspaceKind = "project" | "managed";
+type RuntimeWorkspaceKind = "project" | "managed";
 
 export interface RuntimeWorkspaceSummary {
   id: string;
@@ -30,7 +30,7 @@ export interface RuntimeJournalEvent {
   payload: Record<string, unknown>;
 }
 
-export interface RuntimeSkillDescriptor {
+interface RuntimeSkillDescriptor {
   name: string;
   description: string;
   location: string;
@@ -105,7 +105,7 @@ export interface RuntimeMemoryCreateParams {
   source?: RuntimeMemorySource;
 }
 
-export interface RuntimeMemorySource {
+interface RuntimeMemorySource {
   type: "session_item";
   itemId: string;
 }
@@ -295,7 +295,7 @@ export interface RuntimeThreadMutationResult {
   event: RuntimeJournalEvent | null;
 }
 
-export type RuntimeAttachmentKind = "image" | "text";
+type RuntimeAttachmentKind = "image" | "text";
 
 export interface RuntimeAttachmentInput {
   kind: RuntimeAttachmentKind;
@@ -341,15 +341,15 @@ export interface RuntimeSteerRunResult {
   status: "received" | "processed" | "unprocessed";
 }
 
-export type RuntimeChannelStatus = "disabled" | "connecting" | "connected" | "error";
+type RuntimeChannelStatus = "disabled" | "connecting" | "connected" | "error";
 
-export interface RuntimeChannelBot {
+interface RuntimeChannelBot {
   id: string;
   username: string;
   name: string;
 }
 
-export interface RuntimeChannelOwner {
+interface RuntimeChannelOwner {
   userId: string | null;
   username: string | null;
 }
@@ -404,7 +404,7 @@ export interface RuntimeChannelResetResult {
   channel: RuntimeChannelSummary;
 }
 
-export interface RuntimeProcessRecord {
+interface RuntimeProcessRecord {
   processId: string;
   threadId: string;
   runId: string;
@@ -552,7 +552,7 @@ export interface RuntimeModelSetEnabledResult {
   model: RuntimeModelSummary;
 }
 
-export interface RuntimeUsageSummary {
+interface RuntimeUsageSummary {
   lifetimeTokens: number | null;
   peakDailyTokens: number | null;
   longestRunningTurnSec: number | null;
@@ -580,7 +580,7 @@ export interface RuntimeFilePreviewParams {
   expectedRevision?: string;
 }
 
-export type RuntimeFilePreviewUnavailableReason =
+type RuntimeFilePreviewUnavailableReason =
   | "file_not_found"
   | "not_a_file"
   | "binary_file"
@@ -607,7 +607,7 @@ export interface RuntimeFilePreviewText {
   truncationReason: "byte_limit" | "line_limit" | "scan_limit" | null;
 }
 
-export interface RuntimeFilePreviewUnavailable {
+interface RuntimeFilePreviewUnavailable {
   threadId: string;
   path: string | null;
   status: "unavailable";
@@ -632,7 +632,7 @@ export interface RuntimeFileRevisionMetadata {
   lineCount: number | null;
 }
 
-export type RuntimeFileChangeUnavailableReason =
+type RuntimeFileChangeUnavailableReason =
   | "not_recorded"
   | "too_large"
   | "binary_file"
@@ -655,7 +655,7 @@ export interface RuntimeFileChangeRecord {
   deletions: number;
 }
 
-export interface RuntimeFileChangeUnavailable {
+interface RuntimeFileChangeUnavailable {
   threadId: string;
   toolCallItemId: string;
   path: string | null;
@@ -669,7 +669,7 @@ export interface RuntimeFileChangeUnavailable {
 
 export type RuntimeFileChangeResult = RuntimeFileChangeRecord | RuntimeFileChangeUnavailable;
 
-export interface RuntimeRpcFailure {
+interface RuntimeRpcFailure {
   kind: "json_rpc";
   code: number;
   message: string;
@@ -832,7 +832,6 @@ export interface IkarosRuntimeBridgeApi {
   onStatus(listener: (status: RuntimeHostStatus) => void): () => void;
 }
 import {
-  RUNTIME_ATTACHMENT_LIMITS,
   RUNTIME_JOURNAL_EVENT_SCHEMA_VERSION,
   RUNTIME_PROTOCOL_MANIFEST,
   type RuntimeJournalEventType
