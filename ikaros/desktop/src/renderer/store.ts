@@ -2766,7 +2766,7 @@ function desktopBridge(): IkarosDesktopApi | undefined {
   ).ikarosDesktop;
 }
 
-export function composerAttachmentName(path: string): string {
+function composerAttachmentName(path: string): string {
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return separator === -1 ? path : path.slice(separator + 1);
 }

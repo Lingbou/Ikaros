@@ -96,7 +96,7 @@ export const DEFAULT_DARK_THEME: Readonly<ThemePreferences> = Object.freeze({
   contrast: 60
 });
 
-export const DEFAULT_LIGHT_THEME: Readonly<ThemePreferences> = Object.freeze({
+const DEFAULT_LIGHT_THEME: Readonly<ThemePreferences> = Object.freeze({
   accent: "#087eea",
   background: "#f7f7f7",
   foreground: "#171717",

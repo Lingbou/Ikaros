@@ -7,15 +7,9 @@ import {
   type RuntimeRpcMethod
 } from "../../shared/generated/runtimeProtocol";
 import type {
-  RuntimeFileChangeResult,
-  RuntimeFilePreviewResult,
   RuntimeInitializeResult,
   RuntimeJournalEvent,
-  RuntimeMemoryCreateResult,
   RuntimeMemoryErrorReasonCode,
-  RuntimeMemoryGetResult,
-  RuntimeMemoryListPage,
-  RuntimeMemoryMutationResult,
   RuntimeMemoryRpcMethod,
   RuntimeReplayResult,
   RuntimeThreadGetResult,
@@ -357,71 +351,6 @@ export function parseRuntimeUsageReadResult(
     throw new Error("Runtime returned invalid usage metrics.");
   }
   return value as unknown as RuntimeUsageReadResult;
-}
-
-export function parseRuntimeMemoryCreateResult(
-  value: unknown
-): RuntimeMemoryCreateResult {
-  if (!isWireObject(value)) {
-    throw new Error("Runtime returned an invalid memory creation result.");
-  }
-  return value as unknown as RuntimeMemoryCreateResult;
-}
-
-export function parseRuntimeMemoryMutationResult(
-  value: unknown,
-  params?: unknown,
-  method?: string
-): RuntimeMemoryMutationResult {
-  if (!isWireObject(value)) {
-    throw new Error("Runtime returned an invalid memory mutation result.");
-  }
-  return value as unknown as RuntimeMemoryMutationResult;
-}
-
-export function parseRuntimeMemoryListPage(
-  value: unknown,
-  params?: unknown
-): RuntimeMemoryListPage {
-  if (!isWireObject(value) || !Array.isArray(value.memories)) {
-    throw new Error("Runtime returned an invalid memory list page.");
-  }
-  return value as unknown as RuntimeMemoryListPage;
-}
-
-export function parseRuntimeMemoryGetResult(
-  value: unknown,
-  expectedMemoryId?: string
-): RuntimeMemoryGetResult {
-  if (
-    !isWireObject(value) ||
-    !isWireObject(value.memory) ||
-    typeof value.memory.id !== "string" ||
-    (expectedMemoryId !== undefined && value.memory.id !== expectedMemoryId)
-  ) {
-    throw new Error("Runtime returned an invalid memory record.");
-  }
-  return value as unknown as RuntimeMemoryGetResult;
-}
-
-export function parseRuntimeFilePreviewResult(
-  value: unknown,
-  params?: unknown
-): RuntimeFilePreviewResult {
-  if (!isWireObject(value)) {
-    throw new Error("Runtime returned an invalid file preview result.");
-  }
-  return value as unknown as RuntimeFilePreviewResult;
-}
-
-export function parseRuntimeFileChangeResult(
-  value: unknown,
-  params?: unknown
-): RuntimeFileChangeResult {
-  if (!isWireObject(value)) {
-    throw new Error("Runtime returned an invalid file change result.");
-  }
-  return value as unknown as RuntimeFileChangeResult;
 }
 
 function isRuntimeRpcMethod(method: string): method is RuntimeRpcMethod {
