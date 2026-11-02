@@ -347,6 +347,71 @@ def test_current_run_compaction_omits_old_completed_units_and_keeps_new_items(
         store.close()
 
 
+def test_current_run_overflow_drops_oversized_suffix_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    store = SqliteRuntimeStore(tmp_path / "state.db")
+    try:
+        thread, _ = store.create_thread("Mid-run overflow")
+        template = RunConfigTemplate.create(
+            provider=ProviderExecutionSnapshot(
+                provider_id="scripted",
+                origin="test",
+                base_url=None,
+                model_id="scripted-v1",
+                supports_tools=True,
+                context_window=3000,
+            ),
+            execution_policy="full_access",
+            skills=(),
+            tools=(),
+            identity_core=None,
+        )
+        turn = store.prepare_turn(
+            thread_id=thread.id,
+            branch_id=thread.default_branch_id,
+            content="Keep working",
+            run_config_template=template,
+        )
+        store.mark_run_running(turn.run_id)
+        store.prepare_model_step(turn.run_id, step_ordinal=1)
+
+        huge_id, _ = store.create_assistant_item(turn.run_id)
+        store.append_text_delta(huge_id, "OVERSIZED " + "x" * 20_000)
+        store.complete_provider_step(
+            turn.run_id,
+            step_ordinal=1,
+            assistant_item_id=huge_id,
+            tool_calls=(),
+            reasoning_content=None,
+            usage=None,
+            response_model_id=None,
+            request_id=None,
+        )
+
+        # The protected suffix (the huge unit) no longer fits. The fallback
+        # must drop it, keep the user message, and continue the Run.
+        prepared = store.prepare_model_step(turn.run_id, step_ordinal=2)
+
+        assert prepared.context_revision.revision > 1
+        assert prepared.context_revision.current_run_omitted_through_item_id == huge_id
+        budget = prepared.context_revision.budget
+        assert budget.total_tokens + budget.reserved_current_run_tokens <= budget.maximum_tokens
+        assert all("OVERSIZED" not in item.content for item in prepared.items)
+        revision = get_context_revision(store._connection, turn.run_id)
+        assert revision is not None
+        loaded = load_context_for_revision(
+            store._connection,
+            run_id=turn.run_id,
+            snapshot=revision,
+        )
+        assert tuple(item.content for item in loaded) == tuple(
+            item.content for item in prepared.items
+        )
+    finally:
+        store.close()
+
+
 def test_compaction_preserves_frozen_memory_omissions(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
@@ -591,24 +656,21 @@ async def test_agent_uses_a_tool_free_semantic_summary_before_continuing(
             )
         revision = get_context_revision(store._connection, turn.run_id)
         assert revision is not None
+        assert any(event.type == "context.compacted" for event in events)
+        assert revision.revision == 2
+        assert revision.current_run_omitted_through_item_id
         if summary_failure:
-            assert revision.revision == 1
+            # The semantic summary failed, so the deterministic fallback trims
+            # the oversized current-Run unit instead of failing the Run.
             assert revision.compaction_summary == ""
-            # The first deterministic pass is inside the same transaction as
-            # prepare_model_step; raising ContextCompactionRequired rolls it
-            # back, so no orphan context.compacted sequence is published.
-            assert not any(event.type == "context.compacted" for event in events)
         else:
-            assert any(event.type == "context.compacted" for event in events)
-            assert revision.revision == 2
             assert revision.compaction_summary.startswith("Prior context summary")
         loaded = load_context_for_revision(
             store._connection,
             run_id=turn.run_id,
             snapshot=revision,
         )
-        if not summary_failure:
-            assert not any("VERIFIED-BLOB-RESULT" in item.content for item in loaded)
+        assert not any("VERIFIED-BLOB-RESULT" in item.content for item in loaded)
     finally:
         store.close()
 

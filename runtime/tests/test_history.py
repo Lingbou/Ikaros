@@ -9,7 +9,7 @@ from ikaros_runtime.agent.history import HistorySelector
 from ikaros_runtime.agent.loop import AgentLoop
 from ikaros_runtime.cancellation import CancellationToken
 from ikaros_runtime.domain import JournalEvent
-from ikaros_runtime.errors import ContextBudgetExceededError, ModelInputUnavailableError
+from ikaros_runtime.errors import ModelInputUnavailableError
 from ikaros_runtime.json_codec import dumps as json_dumps
 from ikaros_runtime.json_codec import loads as json_loads
 from ikaros_runtime.providers.base import ProviderEvent, ProviderRequest, TextDelta
@@ -603,7 +603,7 @@ def test_current_run_may_grow_past_reserve_while_total_stays_within_budget(
         store.close()
 
 
-def test_current_run_fails_only_when_actual_total_exceeds_budget(tmp_path: Path) -> None:
+def test_current_run_overflow_compacts_instead_of_failing(tmp_path: Path) -> None:
     store = SqliteRuntimeStore(tmp_path / "state.db")
     try:
         thread, _ = store.create_thread("Tool growth overflow")
@@ -635,10 +635,12 @@ def test_current_run_fails_only_when_actual_total_exceeds_budget(tmp_path: Path)
         )
         latest_seq = store.latest_sequence()
 
-        with pytest.raises(ContextBudgetExceededError, match="context_budget_exceeded"):
-            store.prepare_model_step(current.run_id, step_ordinal=2)
+        prepared = store.prepare_model_step(current.run_id, step_ordinal=2)
 
-        assert store.latest_sequence() == latest_seq
+        assert prepared.context_revision.revision > 1
+        assert prepared.context_revision.current_run_omitted_through_item_id
+        assert store.latest_sequence() > latest_seq
+        assert all(item.content != "x" * 50_000 for item in prepared.items)
     finally:
         store.close()
 
