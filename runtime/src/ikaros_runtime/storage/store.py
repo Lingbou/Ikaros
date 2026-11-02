@@ -1588,6 +1588,21 @@ class SqliteRuntimeStore:
                             preserve_recent_user_tokens=20_000,
                             retain_latest_oversized=not allow_oversized_current_omission,
                         )
+                        if not (
+                            trimmed.truncated and trimmed.retained_tokens <= current_capacity
+                        ):
+                            # Codex-style mid-turn fallback: the protected suffix
+                            # itself may be larger than the remaining window.
+                            # Drop suffix protection and keep only what fits; the
+                            # omitted records feed the deterministic summary below
+                            # and remain recoverable through history_read.
+                            trimmed = trim_context_records(
+                                current_all,
+                                maximum_tokens=current_capacity,
+                                preserve_suffix_units=0,
+                                preserve_recent_user_tokens=20_000,
+                                retain_latest_oversized=False,
+                            )
                         if trimmed.truncated and trimmed.retained_tokens <= current_capacity:
                             omitted_current_ids = set(trimmed.omitted_item_ids)
                             current_run_omitted_through_item_id = current_all[-1].item_id

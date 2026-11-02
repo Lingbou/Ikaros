@@ -3295,10 +3295,11 @@
               "item_0000000000000000000000000000000a",
               "item_0000000000000000000000000000000d",
               "item_0000000000000000000000000000000e",
-              "item_0000000000000000000000000000000f"
+              "item_0000000000000000000000000000000f",
+              "item_0000000000000000000000000000001a"
             ],
-            "trigger": "budget_exceeded",
-            "targetTokens": 5700,
+            "trigger": "threshold",
+            "targetTokens": 2850,
             "contextRevision": {
               "revision": 2,
               "historyGroups": [
@@ -3379,7 +3380,7 @@
               },
               "memoryContextCharacters": 0,
               "compactionSummary": "",
-              "currentRunOmittedThroughItemId": ""
+              "currentRunOmittedThroughItemId": "item_0000000000000000000000000000001a"
             },
             "turnId": "turn_00000000000000000000000000000017",
             "runId": "run_00000000000000000000000000000018"
@@ -3442,14 +3443,6 @@
                   "kind": "message",
                   "role": "user",
                   "tokens": 79
-                },
-                {
-                  "itemId": "item_0000000000000000000000000000001a",
-                  "turnId": "turn_00000000000000000000000000000017",
-                  "runId": "run_00000000000000000000000000000018",
-                  "kind": "message",
-                  "role": "assistant",
-                  "tokens": 2564
                 }
               ],
               "memory": [],
@@ -3462,9 +3455,9 @@
                 "contextDataTokens": 0,
                 "toolTokens": 0,
                 "historyTokens": 577,
-                "currentRunTokens": 2643,
+                "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 4751
+                "totalTokens": 2187
               },
               "omissions": [
                 {
