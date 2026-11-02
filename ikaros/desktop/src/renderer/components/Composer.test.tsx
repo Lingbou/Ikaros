@@ -360,6 +360,7 @@ describe("Composer input and clearance", () => {
 
   it("changes the reasoning level from the model submenu", async () => {
     const setModelLimits = vi.fn(async () => undefined);
+    const selectModel = vi.fn();
     useAppStore.setState({
       providers: [
         {
@@ -386,6 +387,7 @@ describe("Composer input and clearance", () => {
       runtimeConnectionStatus: "connected",
       providerCatalogStatus: "ready",
       setModelLimits,
+      selectModel,
     });
     render(
       <Tooltip.Provider>
@@ -394,7 +396,14 @@ describe("Composer input and clearance", () => {
     );
 
     fireEvent.pointerDown(screen.getByRole("button", { name: /DeepSeek Flash/ }));
-    const subTrigger = await screen.findByRole("menuitem", { name: /DeepSeek Flash/ });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /DeepSeek Flash/ }));
+    expect(selectModel).toHaveBeenCalledWith({
+      providerId: "deepseek",
+      modelId: "deepseek-flash",
+    });
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: /DeepSeek Flash/ }));
+    const subTrigger = await screen.findByRole("menuitem", { name: "Reasoning levels" });
     fireEvent.keyDown(subTrigger, { key: "ArrowRight" });
     fireEvent.click(await screen.findByRole("menuitem", { name: "max" }));
 
@@ -445,7 +454,7 @@ describe("Composer input and clearance", () => {
     );
 
     fireEvent.pointerDown(screen.getByRole("button", { name: /DeepSeek Flash/ }));
-    const subTrigger = await screen.findByRole("menuitem", { name: /DeepSeek Flash/ });
+    const subTrigger = await screen.findByRole("menuitem", { name: "Reasoning levels" });
     fireEvent.keyDown(subTrigger, { key: "ArrowRight" });
 
     expect(screen.queryByRole("menuitem", { name: "Auto" })).toBeNull();
@@ -496,9 +505,9 @@ describe("Composer input and clearance", () => {
     );
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "DeepSeek Flash" }));
-    const item = await screen.findByRole("menuitem", { name: "DeepSeek Flash" });
+    await screen.findByRole("menuitem", { name: "DeepSeek Flash" });
 
-    expect(item.getAttribute("aria-haspopup")).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Reasoning levels" })).toBeNull();
   });
 
   it("stays quiet without a configured provider and keeps the draft, thread, and workspace", () => {

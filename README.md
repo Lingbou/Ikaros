@@ -293,7 +293,7 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 
 - `__init__.py` — Provider 契约导出。
 - `base.py` — ProviderAdapter 协议、ProviderRequest 与内部事件词汇。
-- `model_defaults.py` — 默认上下文窗口：DeepSeek V4 三个模型 1,000,000；未知 32,768。
+- `model_defaults.py` — 默认上下文窗口：`deepseek-flash` 与 DeepSeek V4 三个模型 1,000,000；未知 32,768。
 - `registry.py` — Provider/model 配置解析、注册表、DeepSeek 发现、密钥保护
   。
 - `openai_compatible/__init__.py` — 适配器导出。
@@ -647,8 +647,8 @@ uv run --project runtime python -m ikaros_runtime.protocol.generate --check
 - Model 启用/禁用；新对话选择第一个启用 Model；打开旧对话优先恢复其最近使用的
   Model。
 - 上下文窗口：可编辑（有效范围 1 到 9,007,199,254,740,991）。默认值：
-  - `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp`：
-    1,000,000 tokens
+  - `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`、
+    `deepseek-v4-flash-vision-exp`：1,000,000 tokens
   - 其他未知 model：32,768 tokens
 - 图片输入（vision）：模型 id 含 `vision` / `vl` / `multimodal` 词元（如
   `deepseek-v4-flash-vision-exp`）时，附件图片作为内容块随请求发送；其他模型按
@@ -2225,8 +2225,8 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 | 项目 | 状态 |
 | --- | --- |
-| Runtime 离线基线 | pytest 1002 passed / 2 skipped（WSL Linux）；Windows 本机 924 passed，失败均为已知平台差异（file.preview 换行、Golden Trace 仅 POSIX 生成校验） |
-| Desktop 离线基线 | Vitest 524 passed / 1 skipped |
+| Runtime 离线基线 | pytest 1004 passed / 2 skipped（WSL Linux）；Windows 本机 924 passed，失败均为已知平台差异（file.preview 换行、Golden Trace 仅 POSIX 生成校验） |
+| Desktop 离线基线 | Vitest 553 passed / 1 skipped |
 | 静态检查 | Ruff、strict mypy（src+tests）、协议生成检查、Desktop typecheck、生产构建 全部通过；Golden Trace 在 POSIX 环境生成与校验 |
 | 真实 DeepSeek | 3 个简单 Run 跑通（含工具调用与状态落盘，0 次压缩） |
 | 长任务验收 | 30+ 步、2+ 次压缩、1 MiB 输出、64 并发、断线重连、Windows/Linux 实机：待完成 |
