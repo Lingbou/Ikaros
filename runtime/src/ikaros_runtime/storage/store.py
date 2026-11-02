@@ -1162,6 +1162,7 @@ class SqliteRuntimeStore:
                     ),
                     compaction_summary=compaction_summary,
                     allowed_omitted_item_ids=compaction_omitted_item_ids,
+                    semantic_compaction=semantic_compaction,
                     allow_oversized_current_omission=semantic_compaction
                     or compaction_summary is not None,
                 )
@@ -1200,6 +1201,7 @@ class SqliteRuntimeStore:
                 target_tokens=frame.maximum_input_tokens,
                 compaction_summary=compaction_summary,
                 allowed_omitted_item_ids=compaction_omitted_item_ids,
+                semantic_compaction=semantic_compaction,
                 allow_oversized_current_omission=semantic_compaction
                 or compaction_summary is not None,
             )
@@ -1452,6 +1454,7 @@ class SqliteRuntimeStore:
         target_tokens: int | None = None,
         compaction_summary: str | None = None,
         allowed_omitted_item_ids: Sequence[str] | None = None,
+        semantic_compaction: bool = False,
         allow_oversized_current_omission: bool = False,
     ) -> tuple[ContextRevision, tuple[ContextItemRecord, ...], JournalEvent] | None:
         current_baseline = tuple(
@@ -1580,7 +1583,11 @@ class SqliteRuntimeStore:
                     fixed_without_current = (
                         revision.budget.total_tokens - revision.budget.current_run_tokens
                     )
-                    current_capacity = limit - fixed_without_current
+                    current_capacity = (
+                        limit
+                        - fixed_without_current
+                        - revision.budget.reserved_current_run_tokens
+                    )
                     if current_capacity >= 1:
                         trimmed = trim_context_records(
                             current_all,
@@ -1620,6 +1627,19 @@ class SqliteRuntimeStore:
                                 if record.turn_id in dropped
                                 or record.item_id in omitted_current_ids
                             )
+                            if (
+                                semantic_compaction
+                                and compaction_summary is None
+                                and summary_records
+                            ):
+                                # Codex-style mid-turn checkpoint: summarize the
+                                # omitted current-Run units with the model instead
+                                # of persisting a lossy deterministic note.
+                                raise ContextCompactionRequired(
+                                    records=records,
+                                    omitted_records=summary_records,
+                                    existing_summary=snapshot.compaction_summary,
+                                )
                             revision = build_revision(
                                 candidate_baseline,
                                 retained_history_status,

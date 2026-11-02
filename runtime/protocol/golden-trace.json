@@ -3286,23 +3286,26 @@
           "timestamp": "2026-08-15T12:00:00.048Z",
           "payload": {
             "revision": 2,
-            "droppedTurns": [
-              "turn_00000000000000000000000000000003"
-            ],
+            "droppedTurns": [],
             "omittedItemIds": [
-              "item_00000000000000000000000000000005",
-              "item_00000000000000000000000000000009",
-              "item_0000000000000000000000000000000a",
-              "item_0000000000000000000000000000000d",
-              "item_0000000000000000000000000000000e",
-              "item_0000000000000000000000000000000f",
               "item_0000000000000000000000000000001a"
             ],
-            "trigger": "threshold",
-            "targetTokens": 2850,
+            "trigger": "budget_exceeded",
+            "targetTokens": 5700,
             "contextRevision": {
               "revision": 2,
               "historyGroups": [
+                {
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "itemIds": [
+                    "item_00000000000000000000000000000005",
+                    "item_00000000000000000000000000000009",
+                    "item_0000000000000000000000000000000a",
+                    "item_0000000000000000000000000000000d",
+                    "item_0000000000000000000000000000000e",
+                    "item_0000000000000000000000000000000f"
+                  ]
+                },
                 {
                   "turnId": "turn_00000000000000000000000000000011",
                   "itemIds": [
@@ -3319,6 +3322,54 @@
                 }
               ],
               "historyItems": [
+                {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "tokens": 83
+                },
+                {
+                  "itemId": "item_00000000000000000000000000000009",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 172
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000a",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 521
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000d",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 226
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000e",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 554
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000f",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "assistant",
+                  "tokens": 105
+                },
                 {
                   "itemId": "item_00000000000000000000000000000013",
                   "turnId": "turn_00000000000000000000000000000011",
@@ -3361,18 +3412,12 @@
                 "instructionTokens": 1531,
                 "contextDataTokens": 0,
                 "toolTokens": 0,
-                "historyTokens": 577,
+                "historyTokens": 2238,
                 "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 2187
+                "totalTokens": 3848
               },
-              "omissions": [
-                {
-                  "sourceType": "history",
-                  "sourceId": "turn_00000000000000000000000000000003",
-                  "reason": "omitted_by_budget"
-                }
-              ],
+              "omissions": [],
               "historyStatus": {
                 "version": 1,
                 "characters": 0,
@@ -3413,6 +3458,54 @@
               "contextRevision": 2,
               "historyItems": [
                 {
+                  "itemId": "item_00000000000000000000000000000005",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "user",
+                  "tokens": 83
+                },
+                {
+                  "itemId": "item_00000000000000000000000000000009",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 172
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000a",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 521
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000d",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_call",
+                  "role": "assistant",
+                  "tokens": 226
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000e",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "tool_result",
+                  "role": "tool",
+                  "tokens": 554
+                },
+                {
+                  "itemId": "item_0000000000000000000000000000000f",
+                  "turnId": "turn_00000000000000000000000000000003",
+                  "runId": "run_00000000000000000000000000000004",
+                  "kind": "message",
+                  "role": "assistant",
+                  "tokens": 105
+                },
+                {
                   "itemId": "item_00000000000000000000000000000013",
                   "turnId": "turn_00000000000000000000000000000011",
                   "runId": "run_00000000000000000000000000000012",
@@ -3454,18 +3547,12 @@
                 "instructionTokens": 1531,
                 "contextDataTokens": 0,
                 "toolTokens": 0,
-                "historyTokens": 577,
+                "historyTokens": 2238,
                 "currentRunTokens": 79,
                 "memoryTokens": 0,
-                "totalTokens": 2187
+                "totalTokens": 3848
               },
-              "omissions": [
-                {
-                  "sourceType": "history",
-                  "sourceId": "turn_00000000000000000000000000000003",
-                  "reason": "omitted_by_budget"
-                }
-              ],
+              "omissions": [],
               "historyStatus": {
                 "version": 1,
                 "characters": 0,

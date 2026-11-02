@@ -525,9 +525,7 @@ async def test_agent_uses_a_tool_free_semantic_summary_before_continuing(
                 tool_call_id=call.id,
                 tool_name=call.name,
                 ok=True,
-                output="VERIFIED-BLOB-RESULT " + "x" * (
-                    5_000 if not summary_failure else 300
-                ),
+                output="VERIFIED-BLOB-RESULT " + "x" * 5_000,
                 details={"durationMs": 0, "truncated": False},
             )
 
