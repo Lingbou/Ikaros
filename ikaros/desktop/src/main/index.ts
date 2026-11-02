@@ -8,7 +8,7 @@ import {
 import { applyNativeTheme, getUiPreferences } from "./preferences";
 import { RuntimeHost } from "./runtimeHost";
 import { developmentRuntimeRoot, resolveRuntimeHome } from "./runtimePaths";
-import { createRuntimeLaunchResolver } from "./runtimeProvision";
+import { createRuntimeLaunchResolver } from "./runtimeLaunchResolver";
 import { createRendererTrustPolicy } from "./security";
 import { createMainWindow, rendererEntryUrl, updateWindowChrome } from "./window";
 
@@ -39,16 +39,14 @@ async function initializeDesktop(): Promise<void> {
 
   const runtimeHome = resolveRuntimeHome();
   runtimeHost = new RuntimeHost({
-    // Development runs keep using the checkout Runtime; packaged runs deploy and
-    // start the bundled payload under <runtime home>/runtime/<payload version>.
+    // Development runs use the checkout Runtime; packaged runs use the Runtime
+    // installation recorded in <runtime home>/runtime/install.json.
     runtimeRoot: developmentRuntimeRoot(app.getAppPath()),
     runtimeHome,
     resolveLaunch: createRuntimeLaunchResolver({
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath,
-      runtimeHome,
-      onProgress: (message) => runtimeHost?.reportStartupProgress(message)
+      runtimeHome
     })
   });
 

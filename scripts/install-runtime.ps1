@@ -4,7 +4,7 @@ Installs the Ikaros Runtime into <runtime home>/runtime and writes install.json.
 
 .DESCRIPTION
 The desktop app discovers a separately installed Runtime through
-<runtime home>/runtime/install.json (see src/main/runtimeProvision.ts). This
+<runtime home>/runtime/install.json (see src/main/runtimeLaunchResolver.ts). This
 script creates an isolated virtual environment under <runtime home>/runtime/<version>,
 installs the Runtime with uv, and records the result.
 

@@ -38,9 +38,6 @@ describe("Windows distribution packaging", () => {
     expect(desktopPackage.scripts["package:win"]).toContain(
       "scripts/prepare-runtime-wheel.mjs"
     );
-    expect(desktopPackage.scripts["package:win"]).not.toContain(
-      "scripts/prepare-runtime-payload.mjs"
-    );
     expect(desktopPackage.scripts["package:win"]).toContain("--win nsis --x64");
     expect(desktopPackage.scripts["package:dir"]).toContain(
       "scripts/prepare-runtime-wheel.mjs"
