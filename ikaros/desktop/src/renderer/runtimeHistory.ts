@@ -4,7 +4,7 @@ import type {
   RuntimeTurnHistory,
 } from "../shared/runtime";
 
-export const TURN_HISTORY_PAGE_LIMIT = 25;
+const TURN_HISTORY_PAGE_LIMIT = 25;
 
 type RuntimeHistoryReader = Pick<IkarosRuntimeApi, "getThread" | "listTurns">;
 

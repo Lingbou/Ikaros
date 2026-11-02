@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import IO
 
 from ..json_codec import dumps as json_dumps
-from ..json_codec import loads as json_loads
 
 PROCESS_LOG_LIMIT = 1024 * 1024
 PROCESS_LOG_READ_CHUNK = 64 * 1024
@@ -173,14 +172,3 @@ class ProcessLog:
         except OSError:
             with suppress(OSError):
                 temporary.unlink()
-
-    def read_metadata(self) -> dict[str, object] | None:
-        try:
-            raw = self.metadata_path.read_bytes()
-        except OSError:
-            return None
-        try:
-            value = json_loads(raw.decode("utf-8"))
-        except ValueError:
-            return None
-        return value if isinstance(value, dict) else None

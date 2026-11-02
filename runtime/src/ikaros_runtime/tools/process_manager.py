@@ -91,17 +91,6 @@ def _drop_utf8_continuation(value: bytes, count: int) -> bytes:
     return value[boundary:]
 
 
-def _slice_utf8(value: bytes, offset: int) -> bytes:
-    if offset <= 0:
-        return value
-    if offset >= len(value):
-        return b""
-    boundary = offset
-    while boundary < len(value) and value[boundary] & 0xC0 == 0x80:
-        boundary += 1
-    return value[boundary:]
-
-
 class _RetainedOutput:
     """A stable-offset, byte-bounded head/tail view of one output stream."""
 
